@@ -61,8 +61,21 @@ fn create_native_border_indicator(app: &mut App) {
                         let _ = tx.send(true);
                         (false, false, rx)
                     });
-                let border_visible =
-                    panel_visible && !crate::app_runtime_launch::cua_safe_mode_enabled();
+                // #8094: the native border must not appear at boot unless capture
+                // is EFFECTIVELY permitted. On a fresh no-consent profile the
+                // effective gate is closed, so the border stays hidden even though
+                // `indicator.show_border` (→ `panel_visible`) defaults true.
+                let effective_capture = app
+                    .app_handle()
+                    .try_state::<crate::runtime_state::AppState>()
+                    .map(|s| crate::magic_overlay::effective_capture_permitted(&s, paused))
+                    .unwrap_or(false);
+                let border_visible = crate::magic_overlay::native_recording_border_visible(
+                    effective_capture,
+                    panel_visible,
+                    paused,
+                    crate::app_runtime_launch::cua_safe_mode_enabled(),
+                );
                 border.set_paused(paused);
                 if border_visible {
                     border.show();

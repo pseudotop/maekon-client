@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-record-suggestion-replay-event"
+description = "Enables the record_suggestion_replay_event command without any pre-configured scope."
+commands.allow = ["record_suggestion_replay_event"]
+
+[[permission]]
+identifier = "deny-record-suggestion-replay-event"
+description = "Denies the record_suggestion_replay_event command without any pre-configured scope."
+commands.deny = ["record_suggestion_replay_event"]

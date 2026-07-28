@@ -33,6 +33,17 @@ describe('standalone detection', () => {
     expect(window.localStorage.getItem(STANDALONE_STORAGE_KEY)).toBe('0')
   })
 
+  it('does not force mock API fallback after a Tauri transport failure', async () => {
+    ;(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+
+    const standalone = await import('../standalone')
+    const response = await standalone.handleStandaloneRequest('/api/stats/summary', undefined, true)
+
+    expect(response).toBeNull()
+    expect(standalone.isStandaloneModeEnabled()).toBe(false)
+    expect(window.localStorage.getItem(STANDALONE_STORAGE_KEY)).toBe('0')
+  })
+
   it('still honors explicit standalone query mode outside Tauri', async () => {
     window.history.replaceState({}, '', `${window.location.pathname}?standalone=1`)
 

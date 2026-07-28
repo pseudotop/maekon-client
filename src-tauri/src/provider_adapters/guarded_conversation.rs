@@ -10,9 +10,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use maekon_core::error::CoreError;
 use maekon_core::models::ai_session::{ConversationSessionInfo, SessionMessage};
 use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
+use maekon_core::ports::egress_ledger::EgressLedgerSink;
 
 use super::types::ensure_non_external_endpoints_are_loopback;
 
@@ -33,7 +35,13 @@ pub(crate) trait ConversationContentGuard: Send + Sync {
     async fn sanitize_outbound(
         &self,
         message: &SessionMessage,
+        correlation_id: &str,
     ) -> Result<SessionMessage, CoreError>;
+
+    /// Privacy-safe consent snapshot persisted beside an egress decision.
+    fn consent_state_snapshot(&self) -> String {
+        "full_text_extraction=unknown".to_string()
+    }
 }
 
 /// Decorator that sanitizes user content before an external session transmits
@@ -41,6 +49,7 @@ pub(crate) trait ConversationContentGuard: Send + Sync {
 pub(crate) struct GuardedConversationSession {
     inner: Arc<dyn ConversationSession>,
     guard: Arc<dyn ConversationContentGuard>,
+    egress_ledger: Option<Arc<dyn EgressLedgerSink>>,
 }
 
 impl GuardedConversationSession {
@@ -48,7 +57,60 @@ impl GuardedConversationSession {
         inner: Arc<dyn ConversationSession>,
         guard: Arc<dyn ConversationContentGuard>,
     ) -> Self {
-        Self { inner, guard }
+        Self {
+            inner,
+            guard,
+            egress_ledger: None,
+        }
+    }
+
+    /// Attach the durable, erase-retained egress ledger used by the production
+    /// composition root. Tests and standalone callers may omit it.
+    pub(crate) fn with_egress_ledger(
+        mut self,
+        egress_ledger: Option<Arc<dyn EgressLedgerSink>>,
+    ) -> Self {
+        self.egress_ledger = egress_ledger;
+        self
+    }
+
+    async fn record_external_egress(
+        &self,
+        event_type: &'static str,
+        disposition: &'static str,
+        byte_count: i64,
+        recipient_count: i64,
+        consent_state: &str,
+    ) {
+        let Some(ledger) = self.egress_ledger.clone() else {
+            return;
+        };
+        let record = maekon_core::models::storage_records::EgressLedgerRecord {
+            record_id: uuid::Uuid::new_v4().to_string(),
+            event_type: event_type.to_string(),
+            // The session id is already the sanitized runtime/audit correlation
+            // key. Reusing it here joins runtime, session audit, and ledger
+            // without persisting prompt or response content.
+            event_id: Some(self.session_id().to_string()),
+            byte_count,
+            recipient_count,
+            destination: "external_ai.conversation".to_string(),
+            disposition: disposition.to_string(),
+            consent_state: consent_state.to_string(),
+            occurred_at: Utc::now().to_rfc3339(),
+        };
+        match tokio::task::spawn_blocking(move || ledger.record_egress(&record)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    err.code = %error.code(),
+                    "external conversation egress ledger write failed: {error}"
+                );
+            }
+            Err(error) => {
+                tracing::warn!("external conversation egress ledger task panicked: {error}");
+            }
+        }
     }
 }
 
@@ -65,8 +127,37 @@ impl ConversationSession for GuardedConversationSession {
         }
         // Fail-closed: a guard error blocks transmission; `?` returns before
         // the inner session is ever called with the raw content.
-        let sanitized = self.guard.sanitize_outbound(message).await?;
-        self.inner.send_message(&sanitized).await
+        let consent_state = self.guard.consent_state_snapshot();
+        let sanitized = match self
+            .guard
+            .sanitize_outbound(message, self.session_id())
+            .await
+        {
+            Ok(sanitized) => sanitized,
+            Err(error) => {
+                self.record_external_egress("ConversationMessage", "blocked", 0, 0, &consent_state)
+                    .await;
+                return Err(error);
+            }
+        };
+        let byte_count = serde_json::to_vec(&sanitized)
+            .map(|bytes| bytes.len() as i64)
+            .unwrap_or(0);
+        let result = self.inner.send_message(&sanitized).await;
+        let (disposition, recipient_count) = if result.is_ok() {
+            ("uploaded", 1)
+        } else {
+            ("blocked", 0)
+        };
+        self.record_external_egress(
+            "ConversationMessage",
+            disposition,
+            byte_count,
+            recipient_count,
+            &consent_state,
+        )
+        .await;
+        result
     }
 
     fn info(&self) -> ConversationSessionInfo {
@@ -87,6 +178,12 @@ impl ConversationSession for GuardedConversationSession {
 
     fn egress_endpoint_urls(&self) -> Vec<&str> {
         self.inner.egress_endpoint_urls()
+    }
+
+    /// Forward the inner session's self-heal capability (#8057 P3) so a wrapped
+    /// non-self-healing backend (Codex app-server) is not falsely "recovered".
+    fn can_self_heal_on_retry(&self) -> bool {
+        self.inner.can_self_heal_on_retry()
     }
 
     /// Forward interrupt to the inner session (E21 #5017). Interrupt carries NO
@@ -111,8 +208,37 @@ impl ConversationSession for GuardedConversationSession {
             )?;
             return self.inner.steer(message).await;
         }
-        let sanitized = self.guard.sanitize_outbound(message).await?;
-        self.inner.steer(&sanitized).await
+        let consent_state = self.guard.consent_state_snapshot();
+        let sanitized = match self
+            .guard
+            .sanitize_outbound(message, self.session_id())
+            .await
+        {
+            Ok(sanitized) => sanitized,
+            Err(error) => {
+                self.record_external_egress("ConversationSteer", "blocked", 0, 0, &consent_state)
+                    .await;
+                return Err(error);
+            }
+        };
+        let byte_count = serde_json::to_vec(&sanitized)
+            .map(|bytes| bytes.len() as i64)
+            .unwrap_or(0);
+        let result = self.inner.steer(&sanitized).await;
+        let (disposition, recipient_count) = if result.is_ok() {
+            ("uploaded", 1)
+        } else {
+            ("blocked", 0)
+        };
+        self.record_external_egress(
+            "ConversationSteer",
+            disposition,
+            byte_count,
+            recipient_count,
+            &consent_state,
+        )
+        .await;
+        result
     }
 
     async fn terminate(&self) {
@@ -133,7 +259,9 @@ mod tests {
     use maekon_core::models::ai_session::{
         ConversationSessionInfo, MessageRole, SessionMessage, SessionState, SessionTransport,
     };
+    use maekon_core::models::storage_records::EgressLedgerRecord;
     use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
+    use maekon_core::ports::egress_ledger::EgressLedgerSink;
 
     /// Inner session double: records the content it actually received and
     /// reports a configurable `is_external`.
@@ -213,6 +341,34 @@ mod tests {
         called: Mutex<bool>,
     }
 
+    #[derive(Default)]
+    struct RecordingLedger {
+        records: Mutex<Vec<EgressLedgerRecord>>,
+        fail: bool,
+    }
+
+    impl RecordingLedger {
+        fn failing() -> Self {
+            Self {
+                records: Mutex::new(Vec::new()),
+                fail: true,
+            }
+        }
+    }
+
+    impl EgressLedgerSink for RecordingLedger {
+        fn record_egress(&self, record: &EgressLedgerRecord) -> Result<(), CoreError> {
+            if self.fail {
+                return Err(CoreError::Internal {
+                    code: maekon_core::error_codes::InternalCode::Generic,
+                    message: "injected ledger failure".to_string(),
+                });
+            }
+            self.records.lock().unwrap().push(record.clone());
+            Ok(())
+        }
+    }
+
     impl RecordingGuard {
         fn new(mode: GuardMode) -> Self {
             Self {
@@ -227,6 +383,7 @@ mod tests {
         async fn sanitize_outbound(
             &self,
             message: &SessionMessage,
+            _correlation_id: &str,
         ) -> Result<SessionMessage, CoreError> {
             *self.called.lock().unwrap() = true;
             match self.mode {
@@ -239,6 +396,13 @@ mod tests {
                     code: maekon_core::error_codes::PolicyCode::Denied,
                     message: "guard fail-closed".to_string(),
                 }),
+            }
+        }
+
+        fn consent_state_snapshot(&self) -> String {
+            match self.mode {
+                GuardMode::Sanitize => "full_text_extraction=true".to_string(),
+                GuardMode::Fail => "full_text_extraction=false".to_string(),
             }
         }
     }
@@ -258,7 +422,9 @@ mod tests {
     async fn external_session_sanitizes_before_inner() {
         let inner = Arc::new(RecordingInner::new(true));
         let guard = Arc::new(RecordingGuard::new(GuardMode::Sanitize));
-        let session = GuardedConversationSession::new(inner.clone(), guard.clone());
+        let ledger = Arc::new(RecordingLedger::default());
+        let session = GuardedConversationSession::new(inner.clone(), guard.clone())
+            .with_egress_ledger(Some(ledger.clone()));
 
         // send_message must succeed; the guard sanitizes before inner is called.
         let _stream = session
@@ -271,13 +437,30 @@ mod tests {
             Some("SANITIZED"),
             "inner must receive sanitized content, not the raw prompt"
         );
+        let rows = ledger.records.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "ConversationMessage");
+        assert_eq!(rows[0].event_id.as_deref(), Some("inner"));
+        assert_eq!(rows[0].destination, "external_ai.conversation");
+        assert_eq!(rows[0].disposition, "uploaded");
+        assert_eq!(rows[0].recipient_count, 1);
+        assert_eq!(rows[0].consent_state, "full_text_extraction=true");
+        assert!(rows[0].byte_count > 0);
+        assert!(
+            !serde_json::to_string(&rows[0])
+                .unwrap()
+                .contains("secret@example.com"),
+            "ledger metadata must never persist the raw prompt"
+        );
     }
 
     #[tokio::test]
     async fn local_session_passes_through_without_guard() {
         let inner = Arc::new(RecordingInner::new(false));
         let guard = Arc::new(RecordingGuard::new(GuardMode::Sanitize));
-        let session = GuardedConversationSession::new(inner.clone(), guard.clone());
+        let ledger = Arc::new(RecordingLedger::default());
+        let session = GuardedConversationSession::new(inner.clone(), guard.clone())
+            .with_egress_ledger(Some(ledger.clone()));
 
         // Local sessions bypass the guard entirely; send_message must succeed.
         let _stream = session
@@ -292,6 +475,10 @@ mod tests {
             inner.received.lock().unwrap().as_deref(),
             Some("local-data"),
             "local inner receives the original content untouched"
+        );
+        assert!(
+            ledger.records.lock().unwrap().is_empty(),
+            "on-device sessions must not create external-egress records"
         );
     }
 
@@ -331,7 +518,9 @@ mod tests {
         // that drops the sanitize/`?` would let the raw content reach inner.
         let inner = Arc::new(RecordingInner::new(true));
         let guard = Arc::new(RecordingGuard::new(GuardMode::Sanitize));
-        let session = GuardedConversationSession::new(inner.clone(), guard.clone());
+        let ledger = Arc::new(RecordingLedger::default());
+        let session = GuardedConversationSession::new(inner.clone(), guard.clone())
+            .with_egress_ledger(Some(ledger.clone()));
 
         // steer must succeed; the guard sanitizes the user content before inner.steer.
         session
@@ -347,6 +536,12 @@ mod tests {
             Some("SANITIZED"),
             "inner.steer must receive sanitized content, not the raw steering text"
         );
+        let rows = ledger.records.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "ConversationSteer");
+        assert_eq!(rows[0].event_id.as_deref(), Some("inner"));
+        assert_eq!(rows[0].disposition, "uploaded");
+        assert_eq!(rows[0].recipient_count, 1);
     }
 
     #[tokio::test]
@@ -354,7 +549,9 @@ mod tests {
         // A guard failure blocks the steer before inner.steer is ever called.
         let inner = Arc::new(RecordingInner::new(true));
         let guard = Arc::new(RecordingGuard::new(GuardMode::Fail));
-        let session = GuardedConversationSession::new(inner.clone(), guard.clone());
+        let ledger = Arc::new(RecordingLedger::default());
+        let session = GuardedConversationSession::new(inner.clone(), guard.clone())
+            .with_egress_ledger(Some(ledger.clone()));
 
         let result = session.steer(&msg("secret@example.com")).await;
 
@@ -366,6 +563,12 @@ mod tests {
             inner.steered.lock().unwrap().is_none(),
             "fail-closed: inner.steer must NOT run when the guard refuses"
         );
+        let rows = ledger.records.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "ConversationSteer");
+        assert_eq!(rows[0].event_id.as_deref(), Some("inner"));
+        assert_eq!(rows[0].disposition, "blocked");
+        assert_eq!(rows[0].recipient_count, 0);
     }
 
     #[tokio::test]
@@ -413,7 +616,9 @@ mod tests {
     async fn guard_error_fails_closed_inner_not_called() {
         let inner = Arc::new(RecordingInner::new(true));
         let guard = Arc::new(RecordingGuard::new(GuardMode::Fail));
-        let session = GuardedConversationSession::new(inner.clone(), guard.clone());
+        let ledger = Arc::new(RecordingLedger::default());
+        let session = GuardedConversationSession::new(inner.clone(), guard.clone())
+            .with_egress_ledger(Some(ledger.clone()));
 
         let result = session.send_message(&msg("secret@example.com")).await;
 
@@ -428,5 +633,27 @@ mod tests {
             inner.received.lock().unwrap().is_none(),
             "fail-closed: inner must NOT receive any content when the guard refuses"
         );
+        let rows = ledger.records.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_id.as_deref(), Some("inner"));
+        assert_eq!(rows[0].disposition, "blocked");
+        assert_eq!(rows[0].byte_count, 0);
+        assert_eq!(rows[0].recipient_count, 0);
+        assert_eq!(rows[0].consent_state, "full_text_extraction=false");
+    }
+
+    #[tokio::test]
+    async fn ledger_failure_is_non_fatal_to_an_allowed_send() {
+        let inner = Arc::new(RecordingInner::new(true));
+        let guard = Arc::new(RecordingGuard::new(GuardMode::Sanitize));
+        let ledger = Arc::new(RecordingLedger::failing());
+        let session =
+            GuardedConversationSession::new(inner.clone(), guard).with_egress_ledger(Some(ledger));
+
+        let _stream = session
+            .send_message(&msg("safe synthetic prompt"))
+            .await
+            .expect("the egress ledger is observability and must not fail the provider send");
+        assert_eq!(inner.received.lock().unwrap().as_deref(), Some("SANITIZED"));
     }
 }

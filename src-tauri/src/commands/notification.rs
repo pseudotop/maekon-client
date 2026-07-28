@@ -1,12 +1,16 @@
 use serde::Serialize;
-use tauri::{command, AppHandle, Emitter, Manager};
+use tauri::{command, AppHandle};
+#[cfg(debug_assertions)]
+use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
+#[cfg(debug_assertions)]
 use tracing::debug;
 
 use crate::ipc_error::IpcError;
+use crate::notification_manager::NotificationActivationOutcome;
+#[cfg(debug_assertions)]
 use crate::notification_manager::{
     notification_activation_outcome_from_route, NotificationActivationError,
-    NotificationActivationOutcome,
 };
 
 const TEST_NOTIFICATION_TITLE_FALLBACK: &str = "Maekon test notification";
@@ -26,6 +30,7 @@ fn debug_notification_disabled() -> IpcError {
     )
 }
 
+#[cfg(debug_assertions)]
 fn activation_error_to_ipc(error: NotificationActivationError) -> IpcError {
     IpcError::new("validation.invalid_arguments", error.message())
 }
@@ -63,6 +68,17 @@ pub async fn send_test_notification(
     Ok(TestNotificationResult { delivered: true })
 }
 
+/// Debug-only harness that exercises the notification navigation seam
+/// ([`notification_activation_outcome_from_route`] → focus main window → emit the
+/// `navigate` event) as if an OS toast had been clicked.
+///
+/// This SIMULATES the click; it is not production click routing. Real desktop
+/// toasts cannot invoke this path because `tauri-plugin-notification` 2.3.3
+/// delivers no desktop click/action callback (see the routing function's doc for
+/// the full rationale, #8058 P2-8) — hence the `#[cfg(debug_assertions)]` gate,
+/// which keeps this dev/test-only affordance out of release builds so it cannot
+/// masquerade as a shipped feature. The genuine navigation surface is the in-app
+/// overlay/suggestion panel.
 #[command]
 pub async fn simulate_notification_activation(
     app: AppHandle,

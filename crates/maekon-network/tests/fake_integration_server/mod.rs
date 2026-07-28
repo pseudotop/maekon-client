@@ -175,6 +175,15 @@ impl FakeIntegrationServer {
         );
     }
 
+    pub fn push_live_prompt_with_event_type(&self, prompt: ProactivePrompt, event_type: &str) {
+        let mut event = prompt_to_cloudevent(prompt);
+        event.event_type = event_type.to_string();
+        self.push_live_json(
+            serde_json::to_string(&event)
+                .expect("serialize fake integration live prompt with custom event type"),
+        );
+    }
+
     pub fn push_live_prompt_batch(&self, prompts: Vec<ProactivePrompt>) {
         let batch = PromptCloudEventBatch {
             events: prompts.into_iter().map(prompt_to_cloudevent).collect(),

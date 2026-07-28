@@ -89,6 +89,7 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let AppRuntimeLaunchResult {
         frontend_web_port,
         local_auth_token,
+        reauth_gate,
         state_builder,
         // F-RR-C36-01: destructure the handles and register them as Tauri managed
         // state. Tauri owns managed state until app shutdown, so the process
@@ -133,6 +134,15 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         local_auth_token.clone(),
     ));
 
+    // #8044: register the capture-history re-auth managed state — the SAME gate
+    // Arc the web `require_capture_reauth` middleware reads, plus the platform
+    // biometric verifier (macOS Touch ID; PIN fallback elsewhere). The
+    // biometric/PIN command opens this gate on a successful re-auth.
+    app.manage(crate::reauth::ReauthRuntimeState::new(
+        reauth_gate,
+        Arc::new(crate::reauth::verifier::PlatformReauthVerifier::new()),
+    ));
+
     // F-RR-C36-01: register the external gRPC supervisor + TLS watcher as Tauri
     // managed state. Managed state is dropped on app shutdown, so the tasks are
     // cleaned up properly. Wrapped in Option so it stays safe in builds where the
@@ -157,6 +167,9 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let tray_watch_handle =
         crate::tray_watch::spawn_tray_watch_task(&config_manager_for_tray, app.handle().clone());
     app.manage(tray_watch_handle);
+
+    #[cfg(debug_assertions)]
+    crate::commands::bug_report::maybe_spawn_debug_native_dialog_from_env(app.handle());
 
     info!("Tauri setup complete");
     crate::lifecycle::sd_notify::notify_ready();
@@ -368,20 +381,16 @@ mod tests {
         );
     }
 
-    /// Statically verifies that the desktop startup helper contains a window.show()
-    /// call. Prevents the show() call from being accidentally removed in a future
-    /// refactor.
+    /// Statically verifies that desktop startup routes through the shared
+    /// show/restore/focus helper. That helper retains Tauri's show/focus calls
+    /// and the Windows native restore/foreground fallbacks.
     #[test]
-    fn desktop_startup_contains_window_show_call() {
+    fn desktop_startup_uses_shared_restore_and_focus_path() {
         let setup_src = include_str!("../desktop_startup.rs");
 
         assert!(
-            setup_src.contains("window.show()"),
-            "desktop startup must call window.show() — without this, the GUI window is invisible on launch"
-        );
-        assert!(
-            setup_src.contains("window.set_focus()"),
-            "desktop startup must call window.set_focus() after show()"
+            setup_src.contains("show_restore_and_focus_main_window"),
+            "desktop startup must use the shared show/restore/focus path"
         );
     }
 

@@ -165,8 +165,15 @@ impl CoachingEngine {
             if let Some(ref label) = *prev_id {
                 let alpha = self.tunable_params.read().await.ema_alpha as f64;
                 let mut avgs = self.regime_avg_duration.write().await;
-                let ema = avgs.entry(label.clone()).or_insert(dwell_secs);
-                *ema = *ema * (1.0 - alpha) + dwell_secs * alpha;
+                // `LruCache` has no `entry` API: peek the prior EMA (None on the
+                // first observation → seed with the raw dwell), apply the EMA step,
+                // then `put`. Matches the previous `or_insert(dwell)`+step exactly
+                // (first observation yields `dwell_secs`).
+                let updated = match avgs.peek(label).copied() {
+                    Some(prev) => prev * (1.0 - alpha) + dwell_secs * alpha,
+                    None => dwell_secs,
+                };
+                avgs.put(label.clone(), updated);
             }
         }
         drop(entered);
@@ -239,7 +246,8 @@ impl CoachingEngine {
             let avgs = self.regime_avg_duration.read().await;
             current_id
                 .as_deref()
-                .and_then(|id| avgs.get(id))
+                // `peek` (immutable) under the read lock — no recency bump.
+                .and_then(|id| avgs.peek(id))
                 .copied()
                 .unwrap_or(1800.0) as u64
         };
@@ -726,7 +734,7 @@ mod tests {
         engine.on_regime_change(Some("email")).await;
 
         let avgs = engine.regime_avg_duration.read().await;
-        let coding_avg = avgs.get("coding");
+        let coding_avg = avgs.peek("coding");
         assert!(
             coding_avg.is_some(),
             "EMA should be recorded for completed regime"
@@ -794,7 +802,7 @@ mod tests {
             .regime_avg_duration
             .read()
             .await
-            .get("coding")
+            .peek("coding")
             .expect("EMA should have been recorded for regime id 'coding'");
 
         // build_variables is called with the HUMAN label ("Deep Work"), which
@@ -812,6 +820,43 @@ mod tests {
             vars.get("comparison").unwrap(),
             &super::super::helpers::humanize_duration(1800),
             "comparison must not silently fall back to the 1800s default when history exists"
+        );
+    }
+
+    // ── remove_regime cascade eviction (#8045 C1) ────────────────
+
+    /// #8045 C1: `remove_regime` evicts a regime's EMA-duration entry so a
+    /// hard-deleted / merged-away regime does not linger in `regime_avg_duration`
+    /// (the map is additionally a bounded `LruCache`, but this is the immediate
+    /// cascade path from a maintenance sweep).
+    #[tokio::test]
+    async fn remove_regime_evicts_avg_duration_entry() {
+        let engine = CoachingEngine::new(enabled_config());
+        engine.on_regime_change(Some("coding")).await;
+        // num_seconds() truncates sub-second dwell to 0 — sleep past 1s so a
+        // positive EMA is recorded for "coding" on the transition OUT.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        engine.on_regime_change(Some("email")).await;
+        assert!(
+            engine
+                .regime_avg_duration
+                .read()
+                .await
+                .peek("coding")
+                .is_some(),
+            "precondition: EMA recorded for 'coding'"
+        );
+
+        engine.remove_regime("coding").await;
+
+        assert!(
+            engine
+                .regime_avg_duration
+                .read()
+                .await
+                .peek("coding")
+                .is_none(),
+            "remove_regime must evict the regime's EMA entry"
         );
     }
 }

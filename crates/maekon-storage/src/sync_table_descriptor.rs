@@ -424,6 +424,18 @@ pub(crate) fn tombstone_pk_col(table_name: &str) -> Option<&'static str> {
     })
 }
 
+/// Look up the [`TableDescriptor`] for a synced `table_name`, or `None` for a
+/// non-synced/unknown table. Lets the erase-time / retention-time / DeletionEvent
+/// tombstone-capture paths derive the row_id SQL expression from this single
+/// descriptor registry instead of re-hardcoding a 7th copy of the per-table
+/// column facts (the #7742 SSOT rationale).
+pub(crate) fn descriptor_for(table_name: &str) -> Option<&'static TableDescriptor> {
+    ALL_TABLES
+        .iter()
+        .copied()
+        .find(|d| d.data_table == table_name)
+}
+
 // ──────────────────────── row extraction + binding ────────────────────────
 
 /// A column value ready to bind into a rusqlite statement — the small set
@@ -503,6 +515,23 @@ impl TableDescriptor {
     /// `format!("{segment_id}/{model_id}")`), otherwise the bare pk value.
     pub(crate) fn merge_row_label(&self, pk_values: &[&str]) -> String {
         pk_values.join("/")
+    }
+
+    /// The SQL expression yielding a row's cross-device-stable tombstone `row_id`
+    /// for a tombstone-capture `SELECT` (erase, retention, or DeletionEvent fast
+    /// path): the `Simple` pk column, or the `char(31)`-joined composite for a
+    /// `CompositeWithSurrogate` table (whose visible `id` is a per-device
+    /// autoincrement, not cross-device-stable). Matches the merge-side
+    /// [`Self::tombstone_key`] (EMB_KEY_SEP = U+001F = `char(31)`) and
+    /// `delete_all_data_inner`'s `SYNCED_TOMBSTONE_SOURCES` — the runtime string
+    /// value of one is the SQL-side value of the other.
+    pub(crate) fn tombstone_row_id_sql(&self) -> String {
+        match &self.pk {
+            PrimaryKey::Simple(pk) => (*pk).to_string(),
+            PrimaryKey::CompositeWithSurrogate { parts: (a, b), .. } => {
+                format!("{a} || char(31) || {b}")
+            }
+        }
     }
 
     /// The `sync_tombstones` suppression key: identical to the pk value for

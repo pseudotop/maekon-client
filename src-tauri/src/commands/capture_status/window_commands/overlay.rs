@@ -2,40 +2,34 @@
 //!
 //! ADR-013 split from `capture_status/window_commands.rs`.
 
+#[cfg(debug_assertions)]
 use std::time::Duration;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager};
+use tauri::AppHandle;
+#[cfg(debug_assertions)]
+use tauri::{LogicalPosition, LogicalSize, Manager};
 
 use crate::ipc_error::IpcError;
 
 use super::super::types::DebugWindowStateResponse;
+#[cfg(debug_assertions)]
 use super::debug_window_state_response;
 
+#[cfg(not(debug_assertions))]
 pub async fn debug_place_overlay_for_window(
     app: AppHandle,
     target_label: String,
     interactive: bool,
 ) -> Result<DebugWindowStateResponse, IpcError> {
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = (app, target_label, interactive);
-        return Ok(DebugWindowStateResponse {
-            ok: false,
-            label: String::new(),
-            exists: false,
-            visible: None,
-            focused: None,
-            fullscreen: None,
-            outer_position: None,
-            inner_size: None,
-            cursor_position: None,
-            cursor_monitor_index: None,
-            resolved_monitor_index: None,
-            current_monitor: None,
-            available_monitors: Vec::new(),
-            error_code: Some("debug_only".to_string()),
-            error_message: Some("debug commands are not available in release builds".to_string()),
-        });
-    }
+    let _ = (app, target_label, interactive);
+    Ok(super::debug_window_state_disabled())
+}
+
+#[cfg(debug_assertions)]
+pub async fn debug_place_overlay_for_window(
+    app: AppHandle,
+    target_label: String,
+    interactive: bool,
+) -> Result<DebugWindowStateResponse, IpcError> {
     let target_label = target_label.trim().to_string();
     let Some(target_window) = app.get_webview_window(&target_label) else {
         return Ok(DebugWindowStateResponse {

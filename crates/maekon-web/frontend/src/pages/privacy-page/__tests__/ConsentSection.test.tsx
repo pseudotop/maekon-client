@@ -77,10 +77,12 @@ vi.mock('../../../api/client', async (importOriginal) => {
  * route, danger button + context consumer) in a memory router. The get_capture_status IPC is
  * answered via mockIPC so the layout's mount effect does not fall into reject.
  */
-function renderDangerZone() {
+function renderDangerZone(
+  captureStatus = { paused: false, indicator_visible: true, consent_granted: true, permitted: true },
+) {
   mockIPC((cmd) => {
     if (cmd === 'get_capture_status') {
-      return { paused: false, indicator_visible: true }
+      return captureStatus
     }
     return undefined
   })
@@ -113,6 +115,18 @@ describe('ConsentSection delete-all (revoke-first)', () => {
     vi.restoreAllMocks()
   })
 
+  it('shows consent-required state and disables pause before screen consent', async () => {
+    renderDangerZone({
+      paused: false,
+      indicator_visible: true,
+      consent_granted: false,
+      permitted: false,
+    })
+
+    expect((await screen.findAllByText(en.privacy.captureConsentRequired)).length).toBeGreaterThan(0)
+    expect(screen.queryByText(en.privacy.captureRunning)).not.toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: en.privacy.captureConsentRequired })).toBeDisabled()
+  })
   it('calls withdraw_consent BEFORE deleteAllData (revoke-first ordering)', async () => {
     renderDangerZone()
 

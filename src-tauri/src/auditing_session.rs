@@ -1,6 +1,7 @@
 //! Audit decorator — wraps any ConversationSession with best-effort audit logging.
 //! Phase 2: wired into SessionManagerImpl when adapters are created.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -17,11 +18,30 @@ use maekon_core::ports::conversation_session::{ConversationSession, ResponseStre
 pub struct AuditingSession {
     inner: Arc<dyn ConversationSession>,
     audit: Arc<dyn AuditLogPort>,
+    /// #8050: optional shared LLM-connectivity flag. As the OUTERMOST decorator
+    /// wrapping every chat provider (subprocess/http/local, guarded or not),
+    /// this is the single provider-agnostic chokepoint that observes each send's
+    /// outcome — so it records `true` on a successful send and `false` on a
+    /// failed one, and the health-check loop surfaces that in the tray. `None`
+    /// for sessions built without the flag (e.g. unit tests).
+    llm_health_flag: Option<Arc<AtomicBool>>,
 }
 
 impl AuditingSession {
     pub fn new(inner: Arc<dyn ConversationSession>, audit: Arc<dyn AuditLogPort>) -> Self {
-        Self { inner, audit }
+        Self {
+            inner,
+            audit,
+            llm_health_flag: None,
+        }
+    }
+
+    /// Attach the shared LLM-connectivity flag written on every send outcome
+    /// (#8050). Wired from the session factory's `decorate_session` so it covers
+    /// all providers through this one outermost decorator.
+    pub(crate) fn with_llm_health_flag(mut self, flag: Option<Arc<AtomicBool>>) -> Self {
+        self.llm_health_flag = flag;
+        self
     }
 }
 
@@ -43,6 +63,14 @@ impl ConversationSession for AuditingSession {
             .await;
 
         let result = self.inner.send_message(message).await;
+
+        // #8050: record LLM connectivity from the send outcome. This is the
+        // outermost decorator over every provider, so one write here covers all
+        // transports. `true` on a started/successful send, `false` on a send
+        // error; the flag returns to healthy on the next successful send.
+        if let Some(ref flag) = self.llm_health_flag {
+            flag.store(result.is_ok(), Ordering::Relaxed);
+        }
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let event_type = if result.is_ok() {
@@ -84,6 +112,13 @@ impl ConversationSession for AuditingSession {
     /// that inspects the outermost decorator.
     fn is_external(&self) -> bool {
         self.inner.is_external()
+    }
+
+    /// Forward the inner session's self-heal capability (#8057 P3). Without this,
+    /// a wrapped Codex app-server (which cannot self-heal) would report the trait
+    /// default `true` to `recover_session` and be falsely "recovered".
+    fn can_self_heal_on_retry(&self) -> bool {
+        self.inner.can_self_heal_on_retry()
     }
 
     /// Forward interrupt to the inner session AND audit it (E21 #5017). Records a
@@ -319,5 +354,101 @@ pub(crate) mod tests {
         let session = AuditingSession::new(Arc::new(MockSession), audit);
         assert_eq!(session.session_id(), "test");
         assert_eq!(session.provider_name(), "mock");
+    }
+
+    /// Inner session that always fails `send_message` — used to prove the health
+    /// flag flips unhealthy on a send error (#8050).
+    struct FailingSession;
+
+    #[async_trait]
+    impl ConversationSession for FailingSession {
+        async fn send_message(&self, _: &SessionMessage) -> Result<ResponseStream, CoreError> {
+            Err(CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: "send: injected failure".to_string(),
+            })
+        }
+        fn info(&self) -> ConversationSessionInfo {
+            ConversationSessionInfo {
+                session_id: "fail".to_string(),
+                provider_name: "fail".to_string(),
+                model: "m".to_string(),
+                state: SessionState::Active,
+                transport: SessionTransport::HttpApi,
+                created_at: Utc::now(),
+                last_active: Utc::now(),
+                turn_count: 0,
+                title: None,
+            }
+        }
+        fn session_id(&self) -> &str {
+            "fail"
+        }
+        fn provider_name(&self) -> &str {
+            "fail"
+        }
+    }
+
+    fn user_msg(content: &str) -> SessionMessage {
+        SessionMessage {
+            role: MessageRole::User,
+            content: content.to_string(),
+            attachments: vec![],
+            tools: None,
+            context: None,
+            response_format: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_message_writes_llm_health_flag_on_success_and_failure() {
+        // #8050: the AuditingSession is the outermost decorator over every
+        // provider, so it is the single chokepoint that records LLM connectivity.
+        // A successful send flips the shared flag healthy; a failed send flips it
+        // unhealthy; the next success recovers it.
+        let audit = Arc::new(MockAudit::default());
+        // Start unhealthy so a successful send must actively flip it true.
+        let flag = Arc::new(AtomicBool::new(false));
+
+        let ok_session = AuditingSession::new(Arc::new(MockSession), audit.clone())
+            .with_llm_health_flag(Some(flag.clone()));
+        let _stream = ok_session
+            .send_message(&user_msg("hi"))
+            .await
+            .expect("mock send is Ok");
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "a successful send must report the LLM connected"
+        );
+
+        let failing = AuditingSession::new(Arc::new(FailingSession), audit.clone())
+            .with_llm_health_flag(Some(flag.clone()));
+        let _ = failing.send_message(&user_msg("hi")).await;
+        assert!(
+            !flag.load(Ordering::Relaxed),
+            "a failed send must report the LLM disconnected"
+        );
+
+        // Recovery through a healthy provider flips it back.
+        let _stream = ok_session
+            .send_message(&user_msg("hi again"))
+            .await
+            .expect("mock send is Ok");
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "a recovered send must report the LLM connected again"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_without_health_flag_is_a_noop() {
+        // No flag wired (unit/standalone use) → the decorator must not panic and
+        // simply records audit events as before.
+        let audit = Arc::new(MockAudit::default());
+        let session = AuditingSession::new(Arc::new(MockSession), audit.clone());
+        let _stream = session
+            .send_message(&user_msg("hi"))
+            .await
+            .expect("send is Ok even without a health flag");
     }
 }

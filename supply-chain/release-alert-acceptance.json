@@ -1,4 +1,27 @@
 {
-  "dependabot": [],
+  "dependabot": [
+    {
+      "package": "pillow",
+      "manifest": "scripts/requirements-training.txt",
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-07-23",
+      "reason": "Pillow < 12.3.0 advisories affect only the offline ML-training helper scripts (scripts/requirements-training.txt). The dependency is never installed into, bundled with, or executed by shipped client artifacts (DMG/MSI/DEB). Upgrading past the deliberate <12.0 cap requires separate training-pipeline validation; re-triage before 2026-10-31."
+    },
+    {
+      "package": "Pillow",
+      "manifest": "scripts/requirements-training.txt",
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-07-23",
+      "reason": "Case-variant duplicate of the pillow entry above — Dependabot reports the same requirements-training.txt advisories under both spellings and the gate matches package names exactly."
+    },
+    {
+      "advisory": "GHSA-qwww-vcr4-c8h2",
+      "package": "react-router",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-08-15",
+      "accepted_at": "2026-07-27",
+      "reason": "The advisory is limited to React Router RSC-mode server actions. Maekon ships a client-only BrowserRouter/Routes SPA and has no RSC server router, loaders, actions, or hydration path. react-router-dom 7.18.1 closes the other published router advisories; the advisory's stated fixed line (8.3.0) is not published on npm yet. Re-triage immediately when a fixed release becomes available and no later than 2026-08-15."
+    }
+  ],
   "codeql": []
 }

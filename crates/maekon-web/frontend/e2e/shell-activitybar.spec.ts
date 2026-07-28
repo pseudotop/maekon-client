@@ -53,12 +53,13 @@ test.describe('ActivityBar Actions', () => {
     await expect(active).toHaveAttribute('data-testid', 'nav-group-manage')
   })
 
-  test('P014: activity bar exposes exactly five nav buttons', async ({ page }) => {
-    // 3 group icons + 2 bottom direct icons = 5 total.  Guards against
+  test('P014: activity bar exposes exactly six nav buttons', async ({ page }) => {
+    // 3 group icons + 3 bottom direct icons (settings, privacy, support —
+    // #8079 added the childless Support leaf) = 6 total.  Guards against
     // accidental re-introduction of per-route icons in the 48px rail.
     const nav = page.locator('nav[aria-label]')
     const buttons = nav.locator('button[data-testid]')
-    await expect(buttons).toHaveCount(5)
+    await expect(buttons).toHaveCount(6)
   })
 
   test('P015: clicking the active group toggles the SidePanel', async ({ page }) => {

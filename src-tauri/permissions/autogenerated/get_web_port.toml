@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-web-port"
+description = "Enables the get_web_port command without any pre-configured scope."
+commands.allow = ["get_web_port"]
+
+[[permission]]
+identifier = "deny-get-web-port"
+description = "Denies the get_web_port command without any pre-configured scope."
+commands.deny = ["get_web_port"]

@@ -11,11 +11,12 @@ use tempfile::tempdir;
 use tokio::process::Command;
 
 use super::{
-    append_model_flag, append_oneshot_flags, build_intent_prompt,
+    append_codex_reasoning_effort, append_model_flag, append_oneshot_flags, build_intent_prompt,
     classify_subprocess_error_with_redactions, default_llm_model_for_surface,
     invocation_runtime_for_surface, is_gemini_json_flag_error, parse_interpreted_action_output,
     provider_name_for_surface_id, write_prompt_and_collect_output, BoxFuture,
-    DetectedSubprocessCli, SubprocessKind, ACTION_SCHEMA_JSON, DEFAULT_SUBPROCESS_TIMEOUT_SECS,
+    DetectedSubprocessCli, SubprocessKind, ACTION_SCHEMA_JSON, DEFAULT_CODEX_SUBPROCESS_MODEL,
+    DEFAULT_SUBPROCESS_TIMEOUT_SECS,
 };
 use maekon_api_contracts::provider_specs::subprocess_supports_json_output;
 
@@ -41,7 +42,7 @@ impl SubprocessLlmProvider {
                     .ok()
                     .flatten()
             })
-            .unwrap_or_else(|| "gpt-5.4".to_string());
+            .unwrap_or_else(|| DEFAULT_CODEX_SUBPROCESS_MODEL.to_string());
         let timeout_secs = config
             .llm_api
             .as_ref()
@@ -106,6 +107,7 @@ impl SubprocessLlmProvider {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
+        append_codex_reasoning_effort(&mut child, &self.surface.surface_id);
 
         let child = child.spawn().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
@@ -317,6 +319,29 @@ pub(super) fn gemini_llm_runtime<'a>(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn explicit_codex_model_override_wins_over_catalog_default() {
+        let mut config = AiProviderConfig::default();
+        config.llm_api = Some(maekon_core::config::ExternalApiEndpoint {
+            endpoint: String::new(),
+            api_key: String::new(),
+            model: Some("gpt-explicit-override".to_string()),
+            timeout_secs: DEFAULT_SUBPROCESS_TIMEOUT_SECS,
+            provider_type: Default::default(),
+            surface_id: None,
+            credential: None,
+        });
+        let provider = SubprocessLlmProvider::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.openai.subprocess_cli".to_string(),
+                executable_path: PathBuf::from("codex"),
+            },
+            &config,
+        );
+
+        assert_eq!(provider.model, "gpt-explicit-override");
+    }
 
     #[tokio::test]
     async fn claude_llm_invocation_uses_json_output_envelope() {

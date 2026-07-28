@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-tray-geometry"
+description = "Enables the get_tray_geometry command without any pre-configured scope."
+commands.allow = ["get_tray_geometry"]
+
+[[permission]]
+identifier = "deny-get-tray-geometry"
+description = "Denies the get_tray_geometry command without any pre-configured scope."
+commands.deny = ["get_tray_geometry"]

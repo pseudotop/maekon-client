@@ -93,6 +93,13 @@ impl ChangeSet {
 }
 
 /// Result of applying a changeset via ChangeMerger.
+///
+/// The `applied`/`skipped_*`/`tombstoned` counts describe the **pull+merge**
+/// phase. The `push_*` fields (populated by `SyncEngine::run_cycle`, not the
+/// merger) describe the **push** phase so a caller can distinguish a clean
+/// no-op cycle from a cycle that had local changes but reached zero peers
+/// (#8056 P3): with only the merge counts, `push delivered = 0` (all peers
+/// offline/failed) is indistinguishable from "nothing to push".
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncResult {
     /// Rows successfully applied (inserted or updated via LWW).
@@ -105,6 +112,16 @@ pub struct SyncResult {
     pub tombstoned: usize,
     /// The new high-watermark HLC after applying the changeset.
     pub new_watermark: Hlc,
+    /// Whether the cycle had local changes and therefore attempted a push.
+    /// `false` means "nothing to push" (clean no-op) — distinct from a push
+    /// that reached no peer. Set by `SyncEngine::run_cycle`, not the merger.
+    #[serde(default)]
+    pub push_attempted: bool,
+    /// Number of peers that confirmed receipt of the pushed changeset. `0` with
+    /// `push_attempted = true` means the local changes reached NO peer (all
+    /// peers offline or the push failed) — the ambiguity #8056 P3 surfaces.
+    #[serde(default)]
+    pub pushed_to_peers: usize,
 }
 
 /// Information about a known sync peer.

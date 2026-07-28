@@ -38,7 +38,11 @@ test.describe('Sub-pathname routing redirects survive empty data', () => {
     await page.goto('/')
     await page.waitForURL('**/overview')
     await expect(page).toHaveURL(/\/overview$/)
-    await expect(page.getByRole('heading', { name: i18nRegex('emptyState.dashboard.title') })).toBeVisible({ timeout: 5000 })
+    // Outside the Tauri runtime the capture status probe stays null, so the
+    // dashboard empty state resolves to its `unavailable` variant.
+    await expect(
+      page.getByRole('heading', { name: i18nRegex('emptyState.dashboard.unavailable.title') }),
+    ).toBeVisible({ timeout: 5000 })
   })
 
   test('/timeline → /timeline/all when no frames are stored yet', async ({ page }) => {

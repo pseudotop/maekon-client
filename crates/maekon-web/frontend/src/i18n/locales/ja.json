@@ -1,5 +1,7 @@
 {
   "common": {
+    "refresh": "更新",
+    "retry": "再試行",
     "loading": "読み込み中...",
     "error": "エラー",
     "save": "保存",
@@ -20,14 +22,61 @@
     "actions": "操作",
     "edit": "編集",
     "create": "作成",
-    "back": "Back",
-    "dismiss": "Dismiss",
-    "less": "Show less",
-    "lightbox": "Image lightbox",
-    "navigate": "Navigate",
-    "previous": "Previous"
+    "back": "戻る",
+    "dismiss": "閉じる",
+    "less": "表示を減らす",
+    "lightbox": "画像ライトボックス",
+    "navigate": "移動",
+    "previous": "前へ"
+  },
+  "support": {
+    "pageTitle": "サポートと診断",
+    "pageDescription": "ヘルプを利用し、診断を実行し、問題を報告できます。診断やバグ報告のデータは要求した場合にのみ作成され、操作しない限りデバイスの外に送信されることはありません。",
+    "reportProblem": "問題を報告"
+  },
+  "integrations": {
+    "title": "連携",
+    "description": "Maekon を組織のシステムに接続して、プロンプトを受信しコンテキストを同期します。すべての送信はまずプライバシーと同意のチェックを通過します。",
+    "loading": "連携ステータスを読み込み中...",
+    "statusError": "連携ステータスを読み込めませんでした。",
+    "disabledTitle": "連携がオフになっています",
+    "disabledDescription": "アウトバウンド連携ランタイムが無効です。設定 → 詳細で連携を有効にするか、承認済みの管理対象連携プロファイルを適用してください。",
+    "auth": {
+      "title": "デバイス認証",
+      "description": "このデバイスを連携に接続することを承認します。",
+      "loading": "認証ステータスを確認中...",
+      "error": "認証の確認に失敗しました。",
+      "expired": "認証リクエストの有効期限が切れました。もう一度開始してください。",
+      "startError": "認証を開始できませんでした。",
+      "nonInteractive": "この連携は非対話型の資格情報を使用するため、ここからは承認できません。",
+      "notConnected": "このデバイスは接続されていません。",
+      "connect": "接続",
+      "awaiting": "このデバイスの承認を待っています。",
+      "instructions": "確認ページを開いて、このコードを入力してください:",
+      "codeLabel": "コード",
+      "openVerification": "確認ページを開く",
+      "expiresAt": "有効期限",
+      "cancel": "キャンセル",
+      "connected": "接続済み",
+      "disconnectHint": "接続を解除すると、このデバイスの認証と保留中のサインインがクリアされます。ID プロバイダーの資格情報は取り消されません。",
+      "disconnect": "接続を解除"
+    },
+    "inbox": {
+      "title": "受信トレイ",
+      "description": "接続されたシステムから受信したプロンプトとリクエストです。",
+      "refresh": "更新",
+      "error": "受信トレイを読み込めませんでした。",
+      "actionError": "操作に失敗しました。もう一度お試しください。",
+      "loading": "受信トレイを読み込み中...",
+      "empty": "まだプロンプトはありません。接続されたシステムからのリクエストがここに表示されます。",
+      "source": "ソース",
+      "received": "受信",
+      "ack": "確認",
+      "dismiss": "却下"
+    }
   },
   "nav": {
+    "support": "サポート",
     "dashboard": "ダッシュボード",
     "timeline": "タイムライン",
     "reports": "レポート",
@@ -50,9 +99,13 @@
     "groupMonitor": "モニター",
     "groupInsights": "インサイト",
     "groupManage": "管理",
-    "groupSystem": "システム"
+    "groupSystem": "システム",
+    "tasks": "タスク"
   },
   "dashboard": {
+    "metricsError": "システムメトリクスの読み込みに失敗しました",
+    "processesError": "プロセスの読み込みに失敗しました",
+    "countScopeNote": "キャプチャとイベントは本日のアクティビティを示します。全期間の合計は 設定 › ストレージ を参照してください。",
     "title": "アクティビティサマリー",
     "realtime": "リアルタイム",
     "connecting": "接続中...",
@@ -66,6 +119,10 @@
     "idleTime": "アイドル時間",
     "captures": "キャプチャ数",
     "events": "イベント",
+    "capturePending": {
+      "title": "キャプチャしたアクティビティを分析中です",
+      "description": "ライブキャプチャの合計は確認できます。タイムライン分類と集中分析は処理後に表示されます。"
+    },
     "cpuMemory24h": "CPU / メモリ使用量 (24時間)",
     "appUsageTime": "アプリ使用時間",
     "recentProcesses": "最近のプロセス (Top 5)",
@@ -87,11 +144,11 @@
     "exportDigest": "エクスポート",
     "exportMarkdown": "Markdownでダウンロード",
     "todaySummary": {
-      "title": "Today at a Glance",
-      "activeTime": "Active Time",
-      "topApp": "Top App",
-      "nudges": "Nudges",
-      "regime": "Regime"
+      "title": "今日の概要",
+      "activeTime": "アクティブ時間",
+      "topApp": "上位アプリ",
+      "nudges": "ナッジ",
+      "regime": "レジーム"
     }
   },
   "updates": {
@@ -111,11 +168,15 @@
     "readyToInstall": "インストール準備完了",
     "error": "エラー",
     "statusUnavailable": "アップデート状況を取得できません",
+    "statusCheckFailed": "アップデート情報を取得できませんでした。ネットワークまたはサーバーの状態を確認して、もう一度お試しください。",
+    "actionFailed": "アップデート操作を完了できませんでした。もう一度お試しください。",
+    "technicalDetails": "技術的な詳細",
     "lastUpdateUnknown": "最終アップデート信号: 不明",
     "lastUpdateAge": "最終アップデート信号: {{seconds}}秒前",
     "staleActionBlocked": "ステータスが古いため、アップデートの承認は一時的にブロックされています。「今すぐ確認」をクリックして更新してください。",
     "streamIssue": "ライブアップデートストリームに一時的な問題が発生しました。ポーリングに切り替えます。",
     "reconnecting": "ライブアップデートストリームに再接続中 ({{count}}回目)...",
+    "streamRecovered": "ライブアップデートストリームの接続が復旧しました。操作や通知を重複させずに状態更新を継続します。",
     "currentVersion": "現在のバージョン",
     "latestVersion": "最新バージョン",
     "openRelease": "リリースノートを開く",
@@ -148,27 +209,45 @@
     "channelSaveFailed": "アップデートチャネルの保存に失敗しました",
     "releaseNotes": "リリースノート",
     "downloadSize": "ダウンロードサイズ: {{size}}",
-    "versionInfo": "Version Information",
-    "releaseName": "Release",
-    "downloadInProgress": "Downloading update...",
-    "rolledBack": "Rolled back",
-    "rolledBackTitle": "Previous version restored automatically",
-    "rolledBackReasonRepeatedStartupFailure": "The new version failed to start successfully twice in a row. Your previous working version has been restored.",
-    "rolledBackFromTo": "Rolled back: v{{fromVersion}} → v{{toVersion}}",
-    "rolledBackFromToWithDates": "Rolled back: v{{fromVersion}} ({{fromDate}}) → v{{toVersion}} ({{toDate}})",
-    "rolledBackAt": "Restored at {{timestamp}}",
-    "releaseDate": "Released {{date}}",
-    "releaseDateUnknown": "Release date unavailable",
-    "releasedAgoMinutes": "released {{count}} minute ago",
-    "releasedAgoMinutes_plural": "released {{count}} minutes ago",
-    "releasedAgoHours": "released {{count}} hour ago",
-    "releasedAgoHours_plural": "released {{count}} hours ago",
-    "releasedAgoDays": "released {{count}} day ago",
-    "releasedAgoDays_plural": "released {{count}} days ago",
-    "readyToInstallMsg": "Download complete. Ready to install.",
-    "installNow": "Install Now"
+    "versionInfo": "バージョン情報",
+    "aboutTitle": "情報",
+    "aboutBuildDate": "ビルド日",
+    "aboutCommit": "コミット",
+    "releaseName": "リリース",
+    "downloadInProgress": "アップデートをダウンロード中...",
+    "rolledBack": "ロールバック済み",
+    "rolledBackTitle": "以前のバージョンが自動的に復元されました",
+    "rolledBackReasonRepeatedStartupFailure": "新しいバージョンの起動が 2 回連続で失敗しました。以前の正常に動作していたバージョンに復元されました。",
+    "rolledBackFromTo": "ロールバック: v{{fromVersion}} → v{{toVersion}}",
+    "rolledBackFromToWithDates": "ロールバック: v{{fromVersion}} ({{fromDate}}) → v{{toVersion}} ({{toDate}})",
+    "rolledBackAt": "{{timestamp}} に復元",
+    "releaseDate": "リリース日: {{date}}",
+    "releaseDateUnknown": "リリース日は不明です",
+    "releasedAgoMinutes": "{{count}} 分前にリリース",
+    "releasedAgoMinutes_plural": "{{count}} 分前にリリース",
+    "releasedAgoHours": "{{count}} 時間前にリリース",
+    "releasedAgoHours_plural": "{{count}} 時間前にリリース",
+    "releasedAgoDays": "{{count}} 日前にリリース",
+    "releasedAgoDays_plural": "{{count}} 日前にリリース",
+    "readyToInstallMsg": "ダウンロードが完了しました。インストールの準備ができました。",
+    "installNow": "今すぐインストール"
+  },
+  "frameImage": {
+    "reauth": "このスクリーンショットを表示するには再認証が必要です。",
+    "reauthAction": "再認証",
+    "deleted": "保持ポリシーによりこのスクリーンショットは削除されました。",
+    "missing": "このフレームのスクリーンショットはキャプチャされていません。",
+    "unavailable": "スクリーンショットを一時的に利用できません。",
+    "retry": "再試行",
+    "short": "利用不可"
   },
   "timeline": {
+    "annotations": "メモ",
+    "addAnnotation": "メモを追加...",
+    "addAnnotationSubmit": "追加",
+    "deleteAnnotation": "メモを削除",
+    "annotationUpdateFailed": "メモを更新できませんでした。",
+    "tagUpdateFailed": "タグを更新できませんでした。",
     "title": "タイムライン",
     "captures": " 件のキャプチャ",
     "showing": " 件表示",
@@ -206,22 +285,24 @@
     "noSearchResults": "結果が見つかりません",
     "selectColor": "色を選択",
     "removeTag": "{{name}} タグを削除",
-    "select": "Select",
-    "cancelSelect": "Cancel",
-    "selectAll": "Select All",
-    "clearSelection": "Clear",
-    "selectedCount_one": "{{count}} selected",
-    "selectedCount_other": "{{count}} selected",
-    "batchTagged": "Tagged {{count}} frames",
-    "filters": "Filters",
-    "clearFilters": "Clear All",
-    "filterSummary": "Showing {{shown}} of {{total}} frames",
-    "tagSuggestions": "Tag suggestions",
+    "select": "選択",
+    "cancelSelect": "キャンセル",
+    "selectAll": "すべて選択",
+    "clearSelection": "クリア",
+    "selectedCount_one": "{{count}} 件選択中",
+    "selectedCount_other": "{{count}} 件選択中",
+    "batchTagged": "{{count}} 件のフレームにタグを付けました",
+    "filters": "フィルター",
+    "clearFilters": "すべてクリア",
+    "filterSummary": "{{total}} 件中 {{shown}} 件のフレームを表示",
+    "tagSuggestions": "タグの候補",
     "noActivity": "この日に記録されたアクティビティはありません"
   },
   "settings": {
+    "storageScopeNote": "保存されているすべてのデータの累計です（全期間）。",
     "title": "設定",
     "tabs": {
+      "integrations": "連携",
       "general": "一般",
       "privacy": "テレメトリ",
       "monitoring": "モニタリング",
@@ -229,10 +310,10 @@
       "dataStorage": "データ & ストレージ",
       "coaching": "コーチング",
       "focusAuto": "フォーカス自動",
-      "audio": "Audio",
-      "sync": "Sync",
-      "advanced": "Advanced",
-      "trackingSchedule": "Tracking Schedule"
+      "audio": "オーディオ",
+      "sync": "同期",
+      "advanced": "詳細設定",
+      "trackingSchedule": "トラッキングスケジュール"
     },
     "guidance": {
       "aiAutomation": {
@@ -253,144 +334,148 @@
         "footer": "保存後はExecution HistoryとExecution Policiesで、ランタイムが意図通り動作しているか確認してください。"
       },
       "monitoring": {
-        "title": "Monitoring guide",
-        "description": "Use this page to decide what Maekon captures and how often it samples activity.",
+        "title": "モニタリングガイド",
+        "description": "このページで、Maekon が何をキャプチャし、どのくらいの頻度でアクティビティをサンプリングするかを設定します。",
         "permissions": {
-          "title": "Resolve desktop access first",
-          "description": "Screen capture and accessibility status affect whether downstream timelines and insights are reliable."
+          "title": "先にデスクトップのアクセス権を解決する",
+          "description": "画面キャプチャとアクセシビリティの状態は、その後のタイムラインやインサイトの信頼性に影響します。"
         },
         "intervals": {
-          "title": "Tune intervals conservatively",
-          "description": "Shorter intervals create fresher metrics, but also more storage and runtime work."
+          "title": "間隔は控えめに調整する",
+          "description": "間隔を短くするとメトリクスは新しくなりますが、ストレージと実行時の負荷も増えます。"
         },
         "privacy": {
-          "title": "Use privacy mode for pauses",
-          "description": "Privacy mode pauses capture without forcing you to rewrite the rest of the monitoring setup."
+          "title": "一時停止にはプライバシーモードを使う",
+          "description": "プライバシーモードは、モニタリング設定の残りを変更せずにキャプチャを一時停止します。"
         }
       },
       "privacy": {
-        "title": "Privacy guide",
-        "description": "Use these controls to keep sensitive apps, titles, and identifiers out of captured context.",
+        "title": "プライバシーガイド",
+        "description": "これらの設定を使って、機密性の高いアプリ・タイトル・識別子をキャプチャ対象から除外します。",
         "automatic": {
-          "title": "Start with automatic exclusions",
-          "description": "Keep the sensitive-app detector enabled before adding manual app or title rules."
+          "title": "まず自動除外から始める",
+          "description": "手動でアプリやタイトルのルールを追加する前に、機密アプリ検出を有効にしておいてください。"
         },
         "pii": {
-          "title": "Choose the masking level",
-          "description": "Use Standard for everyday capture and Strict when exported diagnostics may include paths or keys."
+          "title": "マスキングレベルを選ぶ",
+          "description": "日常のキャプチャには標準を、エクスポートする診断にパスやキーが含まれる可能性がある場合は厳格を使用してください。"
         },
         "patterns": {
-          "title": "Use title patterns for sensitive workflows",
-          "description": "Window-title patterns catch private documents even when the app itself is normally safe."
+          "title": "機密性の高い作業にはタイトルパターンを使う",
+          "description": "ウィンドウタイトルのパターンを使うと、アプリ自体は通常安全でも、機密性の高いドキュメントを検出できます。"
         }
       },
       "notifications": {
-        "title": "Notification guide",
-        "description": "Use notifications when they create timely coaching value without becoming background noise.",
+        "title": "通知ガイド",
+        "description": "通知は、雑音にならずタイムリーなコーチング価値を生む場合に使用してください。",
         "permission": {
-          "title": "Confirm OS permission first",
-          "description": "If desktop notification permission is blocked, these thresholds will not produce visible reminders."
+          "title": "先に OS の権限を確認する",
+          "description": "デスクトップ通知の権限がブロックされていると、これらのしきい値を設定してもリマインダーは表示されません。"
         },
         "thresholds": {
-          "title": "Tune one threshold at a time",
-          "description": "Start with idle and long-session reminders before enabling resource warnings."
+          "title": "しきい値は一度に一つずつ調整する",
+          "description": "リソース警告を有効にする前に、アイドルと長時間セッションのリマインダーから始めてください。"
         },
         "usage": {
-          "title": "Keep high-usage alerts rare",
-          "description": "Reserve CPU or memory alerts for exceptional load so they remain actionable."
+          "title": "高負荷アラートは控えめにする",
+          "description": "CPU やメモリの警告は例外的な負荷のときだけに限定し、実用的な状態を保ってください。"
         }
       },
       "dataStorage": {
-        "title": "Data & storage guide",
-        "description": "Use this page to understand local footprint, export recent records, and set retention limits.",
+        "title": "データとストレージのガイド",
+        "description": "このページで、ローカルの使用量を把握し、最近の記録をエクスポートし、保持期間の上限を設定できます。",
         "review": {
-          "title": "Review the footprint",
-          "description": "Compare database, frame, event, and metric counts before changing caps."
+          "title": "使用量を確認する",
+          "description": "上限を変更する前に、データベース・フレーム・イベント・メトリクスの件数を比較してください。"
         },
         "export": {
-          "title": "Export before reducing retention",
-          "description": "Export metrics, events, or frame metadata before lowering storage or retention limits."
+          "title": "保持期間を短くする前にエクスポートする",
+          "description": "ストレージや保持期間の上限を下げる前に、メトリクス・イベント・フレームのメタデータをエクスポートしてください。"
         },
         "telemetry": {
-          "title": "Telemetry is separate",
-          "description": "Telemetry toggles control remote diagnostics, not the local records retained on this device."
+          "title": "テレメトリは別の設定です",
+          "description": "テレメトリの切り替えはリモート診断を制御するもので、この端末に保持されるローカル記録には影響しません。"
         }
       },
       "sync": {
-        "title": "Sync setup guide",
-        "description": "Sync needs matching configuration, a shared secret, and a transport that fits your devices.",
-        "enabledDescription": "Use this page to confirm the local device identity, discover peers, and run an explicit sync cycle.",
+        "title": "同期設定ガイド",
+        "description": "同期には、一致した設定・共有シークレット・端末に適した転送方式が必要です。",
+        "enabledDescription": "このページで、ローカル端末の ID を確認し、ピアを検出し、明示的な同期サイクルを実行できます。",
         "transport": {
-          "title": "Choose a transport deliberately",
-          "description": "LAN, file, and remote sync have different privacy and reachability trade-offs."
+          "title": "転送方式を慎重に選ぶ",
+          "description": "LAN・ファイル・リモートの各同期には、プライバシーと到達性のトレードオフがそれぞれあります。"
         },
         "passphrase": {
-          "title": "Protect the passphrase",
-          "description": "All devices must use the same secret, and losing it prevents decrypting shared state."
+          "title": "パスフレーズを保護する",
+          "description": "すべての端末が同じシークレットを使用する必要があり、失うと共有状態を復号できなくなります。"
         },
         "restart": {
-          "title": "Restart after config changes",
-          "description": "Sync configuration is read at startup, so restart after enabling or changing transport settings."
+          "title": "設定変更後は再起動する",
+          "description": "同期設定は起動時に読み込まれるため、転送方式の設定を有効化・変更した後は再起動してください。"
         },
         "device": {
-          "title": "Confirm this device",
-          "description": "Check the displayed name and truncated ID before syncing multiple machines."
+          "title": "この端末を確認する",
+          "description": "複数のマシンを同期する前に、表示名と短縮 ID を確認してください。"
         },
         "peers": {
-          "title": "Validate peer discovery",
-          "description": "No peers usually means transport, network, or passphrase setup still needs attention."
+          "title": "ピア検出を確認する",
+          "description": "ピアが見つからない場合は、通常、転送方式・ネットワーク・パスフレーズの設定に対応が必要です。"
         },
         "conflicts": {
-          "title": "Review applied vs skipped",
-          "description": "Skipped changes are useful signals when two devices have divergent state."
+          "title": "適用済みとスキップを確認する",
+          "description": "スキップされた変更は、2 台の端末の状態が食い違っているときに役立つシグナルになります。"
         }
       },
       "audio": {
-        "title": "Audio setup guide",
-        "description": "Use audio capture only when speech context is worth the added permission and storage surface.",
+        "title": "オーディオ設定ガイド",
+        "description": "追加の権限とストレージに見合う音声コンテキストが必要な場合にのみ、オーディオキャプチャを使用してください。",
         "provider": {
-          "title": "Choose local or cloud STT",
-          "description": "Local Whisper keeps audio processing on-device; cloud STT requires a provider key and network egress."
+          "title": "ローカルまたはクラウド STT を選ぶ",
+          "description": "ローカルの Whisper は音声処理を端末内で完結させます。クラウド STT にはプロバイダーのキーとネットワーク送信が必要です。"
         },
         "model": {
-          "title": "Download the right model",
-          "description": "Larger models improve transcription quality but increase disk and memory use."
+          "title": "適切なモデルをダウンロードする",
+          "description": "モデルが大きいほど文字起こしの品質は向上しますが、ディスクとメモリの使用量が増えます。"
         },
         "input": {
-          "title": "Pick an input mode",
-          "description": "Push-to-talk is predictable; voice activity needs sensitivity tuning for your room."
+          "title": "入力モードを選ぶ",
+          "description": "プッシュトゥトークは動作が予測しやすく、音声検出は環境に合わせた感度調整が必要です。"
+        },
+        "bystander": {
+          "title": "録音前に周囲へ知らせる",
+          "description": "オーディオを有効にする前に、収集範囲を周囲の参加者へ伝え、必要な場合は同意を得てください。"
         }
       },
       "advanced": {
-        "title": "Advanced settings guide",
-        "description": "These controls affect runtime behavior across capture, analysis, networking, and sync.",
+        "title": "詳細設定ガイド",
+        "description": "これらの設定は、キャプチャ・分析・ネットワーク・同期にわたる実行時の動作に影響します。",
         "runtime": {
-          "title": "Change runtime limits carefully",
-          "description": "Session, retry, and analysis intervals can affect responsiveness and resource use."
+          "title": "実行時の上限は慎重に変更する",
+          "description": "セッション・再試行・分析の間隔は、応答性やリソース使用量に影響します。"
         },
         "network": {
-          "title": "Keep endpoints explicit",
-          "description": "Server and gRPC endpoints should point at the intended environment before enabling remote flows."
+          "title": "エンドポイントを明示的に指定する",
+          "description": "リモート機能を有効にする前に、サーバーと gRPC のエンドポイントが目的の環境を指していることを確認してください。"
         },
         "sync": {
-          "title": "Pair sync settings with the sync page",
-          "description": "Enable sync here, then use the Sync page to verify device identity and peers."
+          "title": "同期設定は同期ページと組み合わせて使う",
+          "description": "ここで同期を有効にし、同期ページで端末 ID とピアを確認してください。"
         }
       },
       "trackingSchedule": {
-        "title": "Tracking schedule guide",
-        "description": "Use schedules when capture should follow predictable work windows instead of running all day.",
+        "title": "トラッキングスケジュールガイド",
+        "description": "一日中実行するのではなく、予測可能な作業時間帯に合わせてキャプチャしたい場合にスケジュールを使用します。",
         "windows": {
-          "title": "Add clear windows",
-          "description": "Use non-overlapping start and end times with labels that match the intended routine."
+          "title": "分かりやすい時間帯を追加する",
+          "description": "重複しない開始・終了時刻を設定し、意図したルーティンに合ったラベルを付けてください。"
         },
         "timezone": {
-          "title": "Confirm timezone",
-          "description": "Use Local for this machine or an explicit IANA zone when matching another location."
+          "title": "タイムゾーンを確認する",
+          "description": "このマシンには「ローカル」を、別の地域に合わせる場合は明示的な IANA タイムゾーンを使用してください。"
         },
         "status": {
-          "title": "Check active-now status",
-          "description": "The status pill confirms whether the saved schedule is currently allowing capture."
+          "title": "現在有効かどうかを確認する",
+          "description": "ステータスピルは、保存されたスケジュールが現在キャプチャを許可しているかどうかを示します。"
         }
       }
     },
@@ -419,6 +504,8 @@
     "exportFrames": "フレームをエクスポート",
     "exporting": "エクスポート中...",
     "language": "言語",
+    "appearanceTitle": "外観テーマ",
+    "appearanceDarkModeDesc": "ダッシュボード全体にダークカラーテーマを使用します。初回起動時はOSの設定に従います。",
     "korean": "한국어",
     "english": "English",
     "storageStats": "ストレージ状況",
@@ -536,6 +623,7 @@
     "piiStrict": "厳格 - + APIキー、IP、パス",
     "piiDesc": "収集データ内の個人情報をマスキングします",
     "excludedApps": "除外アプリ (カンマ区切り)",
+    "excludedAppsRetroactiveNote": "ここにアプリを追加すると、今後のキャプチャだけでなく、そのアプリについて既に記録された履歴（スクリーンショット・イベント・派生したAI要約や埋め込み）も削除されます。",
     "excludedAppsPlaceholder": "1Password, Discord, Slack",
     "excludedAppPatterns": "除外アプリパターン (カンマ区切り)",
     "excludedAppPatternsPlaceholder": "*銀行*, *ウォレット*, *crypto*",
@@ -576,9 +664,9 @@
     "updateChannel": "アップデートチャネル",
     "updateChannelDesc": "受け取るリリースを選択します",
     "updateChannelUnavailable": "このビルドでは Nightly は利用できません。Stable または Pre-release を選択してください。",
-    "channelStable": "Stable",
-    "channelPreRelease": "Pre-release (RC)",
-    "channelNightly": "Nightly",
+    "channelStable": "安定版",
+    "channelPreRelease": "プレリリース (RC)",
+    "channelNightly": "ナイトリー",
     "channelNightlyUnavailable": "Nightly (利用不可)",
     "updateCurrentVersion": "現在のバージョン",
     "updateLatestVersion": "最新バージョン",
@@ -591,6 +679,10 @@
     "saveSettings": "設定を保存",
     "savedFull": "設定を保存しました。一部の設定はアプリの再起動後に反映されます。",
     "exportDone": "データをエクスポートしました。",
+    "exportFailed": "エクスポートは完了していません",
+    "exportStorageRecovery": "ディスクの空き容量を確保するか、Maekon のローカルストレージを使用しているプログラムを閉じてから再試行してください。このエクスポートは完了として記録されていません。",
+    "exportGenericRecovery": "エラーを確認して再試行してください。このエクスポートは完了として記録されていません。",
+    "exportRetry": "エクスポートを再試行",
     "days": {
       "Mon": "月",
       "Tue": "火",
@@ -622,7 +714,7 @@
       "tierCloud": "クラウド",
       "tierOauth": "OAuth",
       "tierAws": "AWS",
-      "tierAggregator": "Aggregator"
+      "tierAggregator": "アグリゲーター"
     },
     "viewSetupGuide": "セットアップガイドを表示",
     "viewSetupGuideDesc": "初回起動時のセットアップガイドを再度開きます。",
@@ -680,7 +772,7 @@
     "bugReportPiiStandard": "Standard - メール、電話番号、クレジットカードをマスキング",
     "bugReportPiiStrict": "Strict - APIキー、IP、ファイルパスもマスキング",
     "bugReportIncludeLogs": "ランタイムログを含める",
-    "bugReportIncludeLogsDesc": "最近のネイティブランタイムログをレポートに添付します。",
+    "bugReportIncludeLogsDesc": "任意: 最近のネイティブランタイムログを確認してから含めます。ログはデフォルトで除外され、自動アップロードされません。",
     "bugReportGenerate": "レポート生成",
     "bugReportGenerateFailedTitle": "レポート生成に失敗",
     "bugReportGenerateFailed": "バグレポートを生成できませんでした。",
@@ -715,7 +807,7 @@
     "bugReportNoEntries": "エントリなし",
     "bugReportBack": "戻る",
     "bugReportNext": "次へ",
-    "bugReportShareDesc": "バグレポートの共有方法を選択してください。バグIDはレポートをチャネル間で関連付けるのに役立ちます。",
+    "bugReportShareDesc": "共有前にバンドルを確認してください。生の画面・OCR・ウィンドウ内容、プロンプト、秘密情報、顧客データ、完全なローカルパスは送信しないでください。自動アップロードはありません。",
     "bugReportOpenGitHub": "GitHubイシューを開く",
     "bugReportOpenGitHubDesc": "環境情報が入力済みのイシューテンプレート。",
     "bugReportOpenFailed": "GitHubイシューページを開けませんでした。",
@@ -730,74 +822,86 @@
     "bugReportExported": "バグレポートを正常にエクスポートしました。",
     "bugReportExportFailed": "バグレポートのエクスポートに失敗しました。",
     "bugReportEmailSupport": "サポートにメール",
-    "bugReportEmailSupportDesc": "サポートチーム宛ての入力済みメールを開きます。",
+    "bugReportEmailSupportDesc": "ローカルのメール下書きを開き、明示的に選択した場合のみ確認済みバンドルを添付します。",
     "autostart": {
-      "title": "Startup",
-      "description": "Automatically start Maekon when you sign in to your computer.",
-      "toggle": "Start Maekon at login",
-      "error": "Failed to update autostart: {{error}}",
-      "unsupported_snap_sandbox": "Use Snap's built-in autostart settings",
-      "unsupported_flatpak_sandbox": "Use Flatpak's built-in autostart settings",
-      "unsupported_headless_session": "Autostart requires a desktop session",
-      "unsupported_systemctl_unavailable": "systemctl not available — using XDG autostart fallback",
-      "unsupported_unsupported_platform": "Autostart not supported on this platform",
-      "unsupported_unknown": "Autostart unavailable in this environment"
+      "title": "起動",
+      "description": "コンピューターにサインインしたときに Maekon を自動的に起動します。",
+      "toggle": "ログイン時に Maekon を起動",
+      "error": "自動起動の更新に失敗しました: {{error}}",
+      "unsupported_snap_sandbox": "Snap の組み込み自動起動設定を使用してください",
+      "unsupported_flatpak_sandbox": "Flatpak の組み込み自動起動設定を使用してください",
+      "unsupported_headless_session": "自動起動にはデスクトップセッションが必要です",
+      "unsupported_systemctl_unavailable": "systemctl を利用できません — XDG 自動起動フォールバックを使用します",
+      "unsupported_unsupported_platform": "このプラットフォームでは自動起動がサポートされていません",
+      "unsupported_unknown": "この環境では自動起動を利用できません"
     },
     "account": {
-      "title": "Account",
-      "description": "Manage authentication state for this device.",
-      "signOutAllDevicesButton": "Sign out of all devices",
-      "signOutAllDevicesDescription": "Revoke all active sessions across every device signed in to this account. You will be signed out of this device too — irreversible.",
-      "confirmTitle": "Sign out of all devices?",
-      "confirmMessage": "This will revoke every active session for your account, including this device. You will need to sign in again. This action cannot be undone.",
-      "confirmAction": "Sign out everywhere",
-      "cancel": "Cancel",
-      "success": "Signed out of all devices.",
-      "error": "Sign-out failed: {{error}}"
+      "title": "アカウント",
+      "description": "この端末の認証状態を管理します。",
+      "signOutAllDevicesButton": "すべての端末からサインアウト",
+      "signOutAllDevicesDescription": "このアカウントにサインインしているすべての端末のアクティブなセッションを取り消します。この端末もサインアウトされます — 元に戻せません。",
+      "confirmTitle": "すべての端末からサインアウトしますか？",
+      "confirmMessage": "これにより、この端末を含むアカウントのすべてのアクティブなセッションが取り消されます。再度サインインが必要になります。この操作は元に戻せません。",
+      "confirmAction": "すべての端末からサインアウト",
+      "cancel": "キャンセル",
+      "success": "すべての端末からサインアウトしました。",
+      "error": "サインアウトに失敗しました: {{error}}"
     },
     "audio": {
-      "title": "Audio & Speech-to-Text",
-      "enable": "Enable audio capture and STT",
-      "model": "Whisper Model",
-      "status": "Model Status",
-      "not_installed": "Not installed",
-      "downloading": "Downloading...",
-      "ready": "Ready",
-      "cancel": "Cancel",
-      "download": "Download",
-      "redownload": "Re-download",
-      "reload": "Reload Engine",
-      "delete": "Delete",
-      "delete_confirm": "Delete the downloaded model? You can re-download it later.",
-      "language": "STT Language",
-      "input_mode": "Input Mode",
-      "ptt": "Push-to-Talk",
-      "vad": "Voice Activity",
-      "vad_sensitivity": "VAD Sensitivity",
-      "vad_sensitivity_hint": "Lower = more sensitive. Increase if background noise triggers false detections.",
-      "vad_silence": "Silence Duration (ms)",
-      "vad_silence_hint": "How long to wait in silence before ending an utterance.",
-      "stt_provider": "STT Provider",
-      "local": "Local (Whisper)",
-      "cloud": "Cloud (OpenAI)",
-      "api_key": "API Key",
-      "api_key_hint": "Your API key is stored locally and sent directly to the provider.",
-      "endpoint": "Endpoint URL",
-      "endpoint_hint": "OpenAI-compatible transcription endpoint.",
-      "cloud_timeout": "Timeout (sec)",
+      "title": "オーディオと音声認識",
+      "enable": "オーディオキャプチャと音声認識を有効化",
+      "model": "Whisper モデル",
+      "status": "モデルの状態",
+      "not_installed": "未インストール",
+      "downloading": "ダウンロード中...",
+      "ready": "準備完了",
+      "cancel": "キャンセル",
+      "download": "ダウンロード",
+      "redownload": "再ダウンロード",
+      "reload": "エンジンを再読み込み",
+      "delete": "削除",
+      "delete_confirm": "ダウンロードしたモデルを削除しますか？後で再ダウンロードできます。",
+      "actionErrorTitle": "モデル操作に失敗しました",
+      "downloadFailed": "モデルのダウンロードを開始できませんでした: {{error}}",
+      "cancelFailed": "ダウンロードをキャンセルできませんでした: {{error}}",
+      "deleteFailed": "モデルを削除できませんでした: {{error}}",
+      "reloadFailed": "音声認識エンジンを再読み込みできませんでした: {{error}}",
+      "language": "STT 言語",
+      "input_mode": "入力モード",
+      "ptt": "プッシュトゥトーク",
+      "vad": "音声検出",
+      "vad_sensitivity": "VAD 感度",
+      "vad_sensitivity_hint": "値が低いほど高感度になります。背景ノイズで誤検出が起こる場合は値を上げてください。",
+      "vad_silence": "無音時間 (ms)",
+      "vad_silence_hint": "発話の終了と判断するまでの無音待機時間。",
+      "stt_provider": "STT プロバイダー",
+      "local": "ローカル (Whisper)",
+      "cloud": "クラウド (OpenAI)",
+      "api_key": "API キー",
+      "api_key_hint": "API キーはローカルに保存され、プロバイダーに直接送信されます。",
+      "endpoint": "エンドポイント URL",
+      "endpoint_hint": "OpenAI 互換の文字起こしエンドポイント。",
+      "cloud_timeout": "タイムアウト (秒)",
       "notCompiledTitle": "このビルドでは利用できません",
       "notCompiledDescription": "このビルドは音声/音声認識サポートなしでコンパイルされています。このトグルを有効にしてモデルをダウンロードしても動作しません。"
     },
     "advanced": {
-      "aiSession": "AI Session",
-      "suggestion": "Suggestions",
-      "indicator": "Screen Indicator",
-      "analysis": "Analysis Pipeline",
-      "network": "Network & Server",
-      "coaching": "Coaching",
-      "integration": "Integration",
-      "sync": "Cross-Device Sync"
-    }
+      "aiSession": "AI セッション",
+      "suggestion": "提案",
+      "indicator": "画面インジケーター",
+      "analysis": "分析パイプライン",
+      "network": "ネットワークとサーバー",
+      "coaching": "コーチング",
+      "integration": "統合",
+      "sync": "クロスデバイス同期"
+    },
+    "permissionAutomationSandboxLabel": "自動化サンドボックス",
+    "permissionAutomationSandboxDescAvailable": "このデバイスでは、自動化アクションはプロセス外のプラットフォームサンドボックス内で実行されます。",
+    "permissionAutomationSandboxDescUnavailable": "このデバイスまたはビルドではプラットフォームサンドボックスを利用できません。自動化はフェイルクローズドで動作し、隔離なしで実行する代わりにアクションを拒否します。",
+    "permissionLinuxSessionLabel": "グラフィカルセッション",
+    "permissionLinuxSessionDescWayland": "Wayland セッションを検出しました。Wayland ではアクティブウィンドウ検出とトラッキングパネルは利用できず、キャプチャは縮小されたコンテキストで継続します。全機能を使うには X11 セッションでログインしてください。",
+    "permissionLinuxSessionDescX11": "X11 セッションを検出しました。アクティブウィンドウ検出とトラッキングパネルがサポートされます。",
+    "permissionLinuxSessionDescUnknown": "グラフィカルセッションの種類を判別できませんでした。アクティブウィンドウ検出が不安定になる可能性があります。"
   },
   "privacy": {
     "claims": {
@@ -918,6 +1022,8 @@
     "resumeCapture": "キャプチャを再開",
     "capturePaused": "キャプチャは一時停止中です",
     "captureRunning": "キャプチャは実行中です",
+    "captureConsentRequired": "同意が必要です",
+    "captureBlocked": "現在のプライバシーまたはスケジュール設定によりキャプチャはブロックされています。",
     "capturePauseUnavailable": "キャプチャの一時停止はデスクトップアプリで利用できます。",
     "currentData": "現在保存されているデータ",
     "eventsLabel": "イベント",
@@ -926,7 +1032,7 @@
     "storageSizeLabel": "ストレージサイズ",
     "dataRangeLabel": "データ範囲",
     "deleteByRangeTitle": "日付範囲で削除",
-    "deleteByRangeDesc": "特定期間のデータを選択的に削除します",
+    "deleteByRangeDesc": "特定期間のデータを選択的に削除します。その期間から生成されたAI活動要約・埋め込み・ローカル提案も併せて削除され、痕跡が残りません。",
     "startDate": "開始日",
     "endDate": "終了日",
     "dataTypesHint": "削除するデータの種類 (未選択の場合はすべて)",
@@ -1026,6 +1132,28 @@
           "dismiss": "閉じる"
         }
       },
+      "fullText": {
+        "label": "AI テキスト処理と外部プロバイダー",
+        "description": "AI 機能のために Maekon が全文を処理することを許可します。外部 AI プロバイダーを選択すると、最小化およびマスクされたテキストがこのデバイスの外へ送信される場合があります。",
+        "collectedTitle": "オンの場合、Maekon が処理する可能性がある項目:",
+        "collected": {
+          "chatText": "AI チャットに明示的に送信したテキスト",
+          "activeContext": "AI リクエストに含まれる、最小化およびマスクされたアクティブアプリのコンテキスト",
+          "providerResult": "Maekon セッションに返されるプロバイダーの結果"
+        },
+        "disclosure": "デフォルトではオフです。全文の AI 処理と、外部プロバイダーが設定されている場合に最小化およびマスクされたテキストをデバイス外へ送信することに同意する場合のみオンにしてください。プロバイダー設定とプライバシーフィルターは引き続き適用され、生のスクリーンショット、認証情報、除外アプリの内容は許可されません。"
+      },
+      "ocrProcessing": {
+        "label": "OCR テキスト処理",
+        "description": "すでに同意した画面キャプチャから Maekon がテキストを抽出することを許可します。外部 OCR プロバイダーを別途設定しない限り、処理はこのデバイス内で行われます。",
+        "collectedTitle": "オンの場合、ローカルで処理・保持される可能性がある項目:",
+        "collected": {
+          "screenPixels": "画面キャプチャの同意ですでに許可されたキャプチャのピクセル",
+          "extractedText": "ローカルのキャプチャおよびシーンコンテキストで使う抽出テキストとテキスト領域の座標",
+          "retention": "設定した保持期間に従ってローカルのキャプチャ記録とともに保存される OCR テキスト"
+        },
+        "disclosure": "この同意だけで生のスクリーンショットをデバイス外へ送信することは許可されません。外部 OCR にはプロバイダー設定も必要で、マスクなしの生画像送信には下の別個の最高機微度の同意が必要です。オフにすると、キャプチャ、シーン分析、プロバイダー経路で新しい OCR テキストがブロックされます。すでに保持された記録は、同意の撤回またはデータ削除で消去してください。"
+      },
       "unredactedExternalOcr": {
         "label": "マスクなし外部 OCR",
         "description": "最も機微度が高いため、デフォルトではオフです。生のスクリーンショットを外部 OCR プロバイダーへ送信することを明示的に許可する場合のみオンにしてください。",
@@ -1038,17 +1166,56 @@
         "disclosure": "この同意は、OCR 処理の同意およびマスクなし外部 OCR を許可する AI 設定に加えて必要です。この明示的な同意がない場合、設定が有効でも生の画面を外部 OCR に送信する処理はブロックされます。"
       },
       "withdraw": {
-        "label": "同意の撤回",
-        "description": "撤回すると、すべての収集が停止され、すでに収集されたデータの消去が要求されます。これは単にモニタリングをオフにするよりも強力な操作です。",
-        "button": "同意を撤回",
-        "confirmTitle": "同意を撤回しますか？",
-        "confirmMessage": "すべての収集が停止され、すでに収集されたデータの消去が要求されます。",
+        "label": "同意の撤回とデータ削除",
+        "description": "同意を撤回すると、すべての収集が停止され、このデバイス上でMaekonが管理する収集データが削除されます。単にモニタリングをオフにするよりも強い操作です。",
+        "button": "同意を撤回してデータを削除",
+        "confirmTitle": "同意を撤回してデータを削除しますか？",
+        "confirmMessage": "すべての収集が停止され、このデバイス上でMaekonが管理するデータが削除されます。",
         "confirmNote": "すでにディスクへエクスポートまたはバックアップしたファイルはアプリの外部に保存されており、この操作では削除されません。",
-        "confirmButton": "撤回して消去"
+        "confirmButton": "撤回してデータを削除"
+      },
+      "patternLearning": {
+        "label": "パターン学習・コーチング",
+        "description": "Maekon が繰り返しの作業パターンをローカルで学習し、フォーカスプレイブックと能動的コーチングに使用します。オフにするとパターン学習は停止し、導出済みの統計は通常の保持ポリシーに従って消えます。",
+        "collectedTitle": "この同意が許可するもの",
+        "collected": {
+          "habitStats": "ローカルの習慣・フォーカスパターン統計",
+          "playbookSignals": "活動から導出されたフォーカスプレイブック信号",
+          "coachingTriggers": "能動的コーチングトリガーの評価"
+        }
+      },
+      "crossDeviceSync": {
+        "label": "デバイス間同期",
+        "description": "ローカルネットワーク上で、自分がペアリングしたデバイスと Maekon データを同期できるようにします。オフにすると新しい同期セッションは停止し、ペアリング済みデバイスの既存コピーは残ります。",
+        "collectedTitle": "この同意が許可するもの",
+        "collected": {
+          "syncPayloads": "ペアリング済みデバイスへの暗号化された同期ペイロード",
+          "deviceIdentity": "ペアリングと転送認証に使うデバイス識別子"
+        }
+      },
+      "memoryGraphEnrichment": {
+        "label": "メモリグラフ拡充",
+        "description": "Maekon が活動間のつながりをローカルのメモリグラフとして導出し、コンテキスト想起を改善できるようにします。オフにすると新しい拡充は停止し、既存のエッジは通常の保持ポリシーに従って消えます。",
+        "collectedTitle": "この同意が許可するもの",
+        "collected": {
+          "memoryEdges": "活動・トピック・セッション間の導出リンク",
+          "derivedEntities": "リンクの基準となるローカル抽出エンティティ"
+        }
       }
     }
   },
   "search": {
+    "getHelp": "ヘルプを見る",
+    "clarificationTitle": "複数の履歴が一致しています",
+    "clarificationDescription": "1件を正解と推測せず、すべての結果を表示しています。アプリを選んで絞り込んでください。",
+    "clarificationIncompleteDescription": "1件を正解と推測しません。結果を選ぶ前に、情報源を絞るか検索語を具体化してください。",
+    "clarificationAllApps": "すべてのアプリ",
+    "clarificationAppLabel": "アプリで結果を絞り込む",
+    "clarificationSourceLabel": "情報源で結果を絞り込む",
+    "semanticEnableHint": "セマンティック検索はオフです — Settings → Advanced で有効にできます（再起動後に反映）。",
+    "enableAiFeatures": "AI機能を有効化",
+    "noResultsTryKeyword": "テキスト検索で一致がありません。Keyword モードでアクティビティ要約を関連度順に検索してみてください。",
+    "tryKeyword": "キーワード検索を試す",
     "title": "検索",
     "placeholder": "検索ワードを入力...",
     "results": "検索結果",
@@ -1066,14 +1233,14 @@
     "screenshot": "スクリーンショット",
     "event": "イベント",
     "importance": "重要度",
-    "semanticPlaceholder": "Describe what you're looking for...",
-    "semantic": "Semantic",
-    "textSearch": "Text",
-    "relevance": "Relevance",
-    "similarity": "Similarity",
-    "timeDecay": "Time decay",
-    "type": "Type",
-    "summary": "Summary",
+    "semanticPlaceholder": "探しているものを説明してください...",
+    "semantic": "セマンティック",
+    "textSearch": "テキスト",
+    "relevance": "関連度",
+    "similarity": "類似度",
+    "timeDecay": "時間減衰",
+    "type": "種類",
+    "summary": "要約",
     "semanticUnavailable": "セマンティック（利用不可）",
     "semanticUnavailableHint": "キーワード検索のみ — セマンティック検索にはこのビルドで埋め込み設定が必要です。",
     "keyword": "キーワード",
@@ -1108,10 +1275,28 @@
     "week": "7日間",
     "month": "30日間",
     "custom": "カスタム",
-    "from": "From",
-    "to": "To"
+    "from": "開始",
+    "to": "終了"
   },
   "reports": {
+    "exportTitle": "レポートデータのエクスポート",
+    "exportDescription": "選択した期間のアクティビティデータをダウンロードします。生成する前に範囲と形式を選択してください。",
+    "exportFrom": "開始日",
+    "exportTo": "終了日",
+    "exportFormat": "形式",
+    "exportSummary": "レポートサマリー",
+    "exportSummaryDesc": "このページのチャートのJSONスナップショット：日次・時間別アクティビティ、アプリ使用状況、生産性、合計。",
+    "exportSummaryButton": "JSONをダウンロード",
+    "exportMetrics": "システムメトリクス",
+    "exportMetricsDesc": "選択した期間のCPU、メモリ、ディスク、ネットワークのサンプル。",
+    "exportEvents": "アクティビティイベント",
+    "exportEventsDesc": "タイムスタンプとタイトル付きのウィンドウ・アプリ切り替えイベント。",
+    "exportFrames": "キャプチャ",
+    "exportFramesDesc": "キャプチャのメタデータとOCRで抽出したテキスト — スクリーンショット画像自体は含まれません。",
+    "exportDownload": "ダウンロード",
+    "exporting": "エクスポート中…",
+    "exportRedactionNote": "エクスポートには、選択した期間のアクティビティメタデータ（アプリ名、ウィンドウタイトル、キャプチャのOCR抽出テキスト）とシステムメトリクスが含まれます。スクリーンショット画像は含まれません。ファイルはブラウザのダウンロードに保存されます。",
+    "exportFailed": "エクスポートに失敗しました",
     "title": "アクティビティレポート",
     "week": "週間",
     "month": "月間",
@@ -1152,7 +1337,7 @@
     "capture": "キャプチャ",
     "noFrames": "この時刻のフレームはありません",
     "capturedOcr": "キャプチャされたOCR",
-    "imageUnavailable": "スクリーンショット画像を読み込めませんでした。保持ポリシーまたはフレームファイルのパスを確認してください。",
+    "imageUnavailable": "スクリーンショットを読み込めません。保持ポリシーにより削除されたか、再認証が必要な可能性があります。",
     "sceneElements": "{{count}}個の検出要素",
     "sceneUnavailable": "このフレームのシーン分析は利用できません。",
     "showOverlay": "シーンオーバーレイを表示",
@@ -1189,7 +1374,7 @@
     "totalFrames": "フレーム合計",
     "totalIdle": "アイドル合計",
     "apps": "アプリ数",
-    "scrubber": "Timeline scrubber"
+    "scrubber": "タイムラインスクラバー"
   },
   "backup": {
     "title": "バックアップ / 復元",
@@ -1214,7 +1399,12 @@
     "eventsRestored": "{{count}}件のイベントを復元しました",
     "framesRestored": "{{count}}件のフレームを復元しました",
     "errors": "エラー",
-    "moreErrors": "他 {{count}}件のエラー"
+    "moreErrors": "他 {{count}}件のエラー",
+    "fullExportTitle": "自分のすべてのデータをエクスポート（GDPR 第20条）",
+    "fullExportDescription": "このデバイスが保持するすべての個人データテーブル（アクティビティセグメントと要約、提案、コーチング、習慣ストリーク、メモリグラフ、フレーム注釈、AIチャット、集中指標、作業セッション、ダイジェスト）を機械可読なJSONアーカイブとしてダウンロードします。自由記述テキストはマスクされます。",
+    "exporting": "エクスポートを準備中…",
+    "fullExportButton": "全データエクスポートをダウンロード",
+    "fullExportFailed": "エクスポートに失敗しました"
   },
   "automation": {
     "title": "オートメーション",
@@ -1570,6 +1760,10 @@
     }
   },
   "auditLog": {
+    "exportTitle": "監査証跡のエクスポート",
+    "exportHint": "最新の監査エントリ（最大1000件）をJSONファイルとしてダウンロードします。証跡メタデータのみが含まれます。保存されたチェーンは上の整合性検証結果で確認してください。",
+    "exportButton": "監査エントリをエクスポート",
+    "exportFailed": "エクスポートに失敗しました",
     "title": "監査ログ",
     "entries": "監査エントリー",
     "details": "詳細",
@@ -1582,7 +1776,9 @@
     "chainLegacyCount": "{{count}} 件のレガシー（ハッシュチェーン導入前）エントリは除外されました。",
     "chainBroken": "整合性の破損を検出しました",
     "chainBrokenDetail": "最初の破損エントリ（seq {{seq}}）: {{reason}}",
-    "chainBrokenUnknown": "不明な理由でチェーン検証に失敗しました。"
+    "chainBrokenUnknown": "不明な理由でチェーン検証に失敗しました。",
+    "durableSourceNote": "整合性検証可能な永続監査ログに基づきます — 同意・プライバシー遷移イベントを含みます。",
+    "bufferSourceNote": "サマリーカードは本セッションのインメモリ自動化ランタイムバッファを反映しており、下の永続監査ログとは別のソースです。"
   },
   "widgets": {
     "title": "ウィジェット",
@@ -1637,8 +1833,22 @@
   },
   "emptyState": {
     "dashboard": {
-      "title": "データを収集中",
-      "description": "Maekonがバックグラウンドでアクティビティデータを収集しています。何かアプリを開いて作業を始めてください。通常1分以内に最初の指標が表示されます。"
+      "active": {
+        "title": "データを収集中",
+        "description": "Maekon がバックグラウンドで活動データを収集しています。アプリを開いてそのまま作業してください。最初の指標は通常 1 分以内に表示され、最初の recovery card は約 15 分以内に画面上部のトラッキングパネルに表示されます。"
+      },
+      "paused": {
+        "title": "アクティビティ収集は一時停止中です",
+        "description": "Maekonはアクティビティデータを収集していません。ダッシュボードの記録を始める準備ができたら収集を再開してください。"
+      },
+      "consentRequired": {
+        "title": "収集への同意が必要です",
+        "description": "Maekonはアクティビティデータを収集していません。収集を開始する前に権限を確認して同意してください。"
+      },
+      "unavailable": {
+        "title": "アクティビティ状態を確認できません",
+        "description": "Maekonは収集状態を確認できません。このダッシュボードを利用する前にデスクトップアプリの状態を確認してください。"
+      }
     },
     "timeline": {
       "title": "スクリーンショットキャプチャがオフです",
@@ -1750,13 +1960,13 @@
     "agentCheck": "Maekonエージェントが実行中であることを確認してください",
     "unknownFetchError": "メトリクスの取得中に不明なエラーが発生しました",
     "route": {
-      "title": "Something went wrong in this section",
-      "description": "The error has been reported. You can try again or go back to the dashboard.",
-      "tryAgain": "Try Again",
-      "goHome": "Go to Dashboard",
-      "recoveringTitle": "Recovering the app...",
-      "recoveringDescription": "This section has crashed repeatedly. Reloading the app to restore normal operation.",
-      "recovering": "Reloading..."
+      "title": "このセクションで問題が発生しました",
+      "description": "エラーが報告されました。もう一度お試しいただくか、ダッシュボードに戻ってください。",
+      "tryAgain": "もう一度試す",
+      "goHome": "ダッシュボードへ移動",
+      "recoveringTitle": "アプリを復旧しています...",
+      "recoveringDescription": "このセクションで繰り返しクラッシュが発生しました。正常な動作に戻すためにアプリを再読み込みしています。",
+      "recovering": "再読み込み中..."
     }
   },
   "sidebar": {
@@ -1786,7 +1996,7 @@
     "commands": "コマンド",
     "executionHistory": "実行履歴",
     "currentStatus": "現在のステータス",
-    "updateHistory": "アップデート履歴",
+    "updateChannel": "アップデートチャネル",
     "general": "一般",
     "notifications": "通知",
     "privacy": "プライバシー",
@@ -1847,25 +2057,25 @@
       "partially_available": "部分的に利用可能"
     },
     "cliReadiness": {
-      "not_detected": "CLI not detected",
-      "auth_required": "Sign-in required",
-      "auth_unsupported": "Plan unsupported",
-      "auth_stale": "Session refresh required",
-      "interactive_required": "Interactive sign-in required",
-      "auth_unverified": "Auth not verified",
-      "auth_ready": "Signed in; invocation unavailable",
-      "invocation_ready": "Ready to invoke",
-      "runtime_unsupported": "Runtime unsupported"
+      "not_detected": "CLI が検出されませんでした",
+      "auth_required": "サインインが必要です",
+      "auth_unsupported": "プランがサポートされていません",
+      "auth_stale": "セッションの更新が必要です",
+      "interactive_required": "対話的なサインインが必要です",
+      "auth_unverified": "認証が未確認です",
+      "auth_ready": "サインイン済み。呼び出しは利用できません",
+      "invocation_ready": "呼び出し可能です",
+      "runtime_unsupported": "ランタイムがサポートされていません"
     },
     "cliDependency": {
-      "ready": "Dependency ready",
-      "missing": "Dependency missing",
-      "stale_process_env": "Restart required",
-      "not_required": "No extra dependency"
+      "ready": "依存関係の準備完了",
+      "missing": "依存関係が不足しています",
+      "stale_process_env": "再起動が必要です",
+      "not_required": "追加の依存関係は不要です"
     },
     "cliDiscovery": {
-      "executablePath": "{{candidate}} at {{path}}",
-      "restartRequired": "Restart Maekon after updating PATH or user environment variables so the running app can see the new CLI settings."
+      "executablePath": "{{candidate}}（{{path}}）",
+      "restartRequired": "PATH やユーザー環境変数を更新した後は Maekon を再起動して、実行中のアプリが新しい CLI 設定を認識できるようにしてください。"
     },
     "maturity": {
       "stable": "安定",
@@ -1908,10 +2118,10 @@
             "unavailable": "Gemini CLIがインストールされていないか、PATHで見つかりません。"
           },
           "antigravity_cli": {
-            "available": "Antigravity CLI is installed and authenticated. Maekon can hand off to this provider-owned CLI surface where supported.",
-            "auth_required": "Antigravity CLI is installed but not authenticated yet. Run the provider-owned CLI sign-in flow first, then return to this panel.",
-            "partially_available": "Antigravity CLI was detected, but this surface is manual GUI-only. Maekon cannot invoke it through the headless subprocess adapter yet.",
-            "unavailable": "Antigravity CLI is not installed or not available on PATH."
+            "available": "Antigravity CLI はインストール済みで認証されています。サポートされている場合、Maekon はこのプロバイダー提供の CLI サーフェスに処理を引き継げます。",
+            "auth_required": "Antigravity CLI はインストールされていますが、まだ認証されていません。先にプロバイダー提供の CLI サインインフローを実行してから、このパネルに戻ってください。",
+            "partially_available": "Antigravity CLI は検出されましたが、このサーフェスは手動の GUI 専用です。Maekon はまだヘッドレスのサブプロセスアダプター経由で呼び出せません。",
+            "unavailable": "Antigravity CLI がインストールされていないか、PATH 上で利用できません。"
           }
         },
         "ollama": {
@@ -1964,7 +2174,12 @@
     "noOverrides": "この範囲にオーバーライドはありません",
     "noSegments": "この日付範囲にセグメントが見つかりません",
     "overridden": "オーバーライド済み",
-    "personalTime": "個人時間"
+    "personalTime": "個人時間",
+    "untilRemoved": "削除するまで（自動期限なし）",
+    "effectMarkAsNoise": "今後の再調整と再クラスタリング結果から除外されます。",
+    "effectReassignRegime": "今後の再クラスタリングで選択したレジームを使用します。",
+    "effectPersonalTime": "以後の分析でこの範囲を個人時間として扱います。",
+    "effectUnknown": "以後の再調整に適用されます。"
   },
   "coaching": {
     "title": "コーチング履歴",
@@ -1977,6 +2192,7 @@
     "goalsUpdated": "目標を更新しました",
     "settingsTitle": "コーチング目標",
     "regimeLabel": "レジームラベル",
+    "regimeLabelRequired": "レジームラベルを入力してください。",
     "targetMinutes": "目標（分）",
     "addGoal": "目標を追加",
     "remove": "削除",
@@ -2045,8 +2261,8 @@
       "missed": "<50%",
       "noData": "データなし"
     },
-    "noEventsHint": "Coaching nudges will appear here as you work.",
-    "noGoalsHint": "Goals will appear here once regime tracking is active.",
+    "noEventsHint": "作業を進めると、ここにコーチングのナッジが表示されます。",
+    "noGoalsHint": "レジームトラッキングが有効になると、ここに目標が表示されます。",
     "disabledBannerTitle": "コーチングはオフです",
     "disabledBannerDesc": "コーチングを有効にすると、プロアクティブなナッジと習慣トラッキングが使用できます。",
     "disabledBannerButton": "コーチングを有効にする",
@@ -2055,6 +2271,15 @@
     "regimeLabelPlaceholder": "例: ディープコーディング"
   },
   "onboarding": {
+    "step3Search": "見たものすべてを検索",
+    "aiFeatures": {
+      "optInHint": "任意: ローカル埋め込み、AIセマンティック検索、AI日次ダイジェストのナラティブを有効化します。すべてオンデバイスで処理され、Maekonを再起動すると反映されます。",
+      "enableButton": "AI機能を有効化",
+      "enabling": "有効化中…",
+      "enabled": "AI機能が有効になりました",
+      "enabledNote": "再起動後にローカル埋め込み、セマンティック検索、AI日次ダイジェストのナラティブが有効になります。",
+      "error": "AI機能を有効化できませんでした: {{error}}"
+    },
     "step1Title": "Maekonへようこそ",
     "step1Desc": "Maekonはデスクトップのアクティビティを監視し、生産性向上のためのインテリジェントな提案を提供します。",
     "step2Title": "権限",
@@ -2096,11 +2321,11 @@
     "step2SystemSettingsOpenFailed": "macOSシステム設定を開けませんでした。",
     "step2NotificationRequestFailed": "通知権限のリクエストに失敗しました。",
     "autostart": {
-      "title": "Start Maekon automatically?",
-      "body": "Maekon works best when running in the background. Want it to launch when you sign in to your computer?",
-      "enable_button": "Enable",
-      "not_now_button": "Not now",
-      "dismiss_button": "Don't ask again"
+      "title": "Maekon を自動的に起動しますか？",
+      "body": "Maekon はバックグラウンドで実行すると最も効果的です。コンピューターにサインインしたときに起動しますか？",
+      "enable_button": "有効にする",
+      "not_now_button": "今はしない",
+      "dismiss_button": "今後表示しない"
     },
     "consent": {
       "title": "モニタリングを開始",
@@ -2129,7 +2354,16 @@
       "monitoringMissingWarning": "モニタリングの同意がまだ付与されていません。コーチングを機能させるには、前のステップで同意を許可してください。",
       "error": "コーチングを有効にできませんでした: {{error}}"
     },
-    "stepIndicatorLabel": "ステップインジケーター"
+    "audio": {
+      "title": "音声はデフォルトでオフです",
+      "description": "セットアップ中はマイク収録を延期します。音声と音声認識の設定は後で設定画面から確認できます。",
+      "statusTitle": "音声を延期しました",
+      "statusDescription": "マイク収録と音声認識は無効のままです。音声デバイス、モデル、プロバイダーには接続しません。",
+      "localNote": "ローカル音声認識は、明示的に音声を有効にしてモデルをインストールするまでオフのままです。",
+      "egressNote": "クラウド音声認識は、設定でプロバイダーを選択して認証情報を構成するまでオフのままです。"
+    },
+    "stepIndicatorLabel": "ステップインジケーター",
+    "step4RecoveryCardHint": "作業を進めると、Maekon が役立てそうな瞬間を見つけます。画面の内容を根拠にした次のステップ提案 — 最初の recovery card — は、通常 15 分以内に画面上部の小さなトラッキングパネルに表示されます。"
   },
   "chat": {
     "title": "AIセッション",
@@ -2143,7 +2377,7 @@
     "copy": "コピー",
     "copied": "コピーしました",
     "advanced": "詳細設定",
-    "http_surface_label": "HTTP surface",
+    "http_surface_label": "HTTP サーフェス",
     "http_surface_help": "このセッションで使う direct HTTP provider surface を選択します。",
     "model_label": "モデル上書き",
     "model_placeholder": "空欄の場合は既定モデルを使用します",
@@ -2161,29 +2395,37 @@
     "invalid_response_format_json": "レスポンス形式は有効な JSON である必要があります。",
     "create_failed_title": "セッションを作成できません",
     "create_failed": "AIセッションの作成に失敗しました。",
+    "provider_not_configured": "{{provider}} は設定されていません。設定 → AI と自動化で認証情報を追加してから、もう一度お試しください。",
     "load_failed_title": "セッションを読み込めません",
     "load_failed": "AIセッションの読み込みに失敗しました。",
     "refresh_failed": "AIセッションの更新に失敗しました。",
     "send_failed": "メッセージの送信に失敗しました。",
+    "full_text_consent_required": "プライバシー → 同意で「AI テキスト処理と外部プロバイダー」をオンにしてから、もう一度お試しください。",
     "retry_failed": "セッションのリトライに失敗しました。",
     "delete_failed": "セッションの削除に失敗しました。",
     "copy_failed": "コンテンツのコピーに失敗しました。",
-    "searchSessions": "Search sessions...",
-    "exportMarkdown": "Export as Markdown",
-    "tokensToday": "Today: {{count}} tokens",
-    "renameSession": "Rename",
-    "audio_disabled": "Audio disabled in Settings",
-    "export_json": "Export JSON",
-    "exported": "Conversation exported",
-    "history": "History",
-    "mic_error": "Microphone not available",
-    "mic_tooltip": "Hold to speak",
-    "mic_vad_stop": "Click to stop listening",
-    "mic_vad_tooltip": "Click to toggle listening",
-    "model_needed": "Download model in Settings",
+    "searchSessions": "セッションを検索...",
+    "exportMarkdown": "Markdown形式でエクスポート",
+    "tokensToday": "本日: {{count}} トークン",
+    "renameSession": "名前を変更",
+    "audio_disabled": "設定でオーディオが無効になっています",
+    "export_json": "JSONをエクスポート",
+    "exported": "会話をエクスポートしました",
+    "history": "履歴",
+    "mic_error": "マイクを利用できません",
+    "mic_consent_required": "プライバシー設定でマイクへの同意を有効にしてください",
+    "mic_permission_hint": "マイクへのアクセスがブロックされている場合は、次で有効にしてください:",
+    "mic_permission_path_macos": "システム設定 › プライバシーとセキュリティ › マイク",
+    "mic_permission_path_windows": "設定 › プライバシーとセキュリティ › マイク",
+    "mic_permission_path_linux": "デスクトップのプライバシー設定（ディストリビューション/ポータルにより異なります）",
+    "mic_permission_path_generic": "システムのプライバシー設定",
+    "mic_tooltip": "長押しで話す",
+    "mic_vad_stop": "クリックして音声入力を停止",
+    "mic_vad_tooltip": "クリックして音声入力を切り替え",
+    "model_needed": "設定でモデルをダウンロードしてください",
     "request_suggestions": "AI提案を取得",
-    "read_only_notice": "This session has ended. History is read-only.",
-    "stt_error": "Transcription failed",
+    "read_only_notice": "このセッションは終了しました。履歴は読み取り専用です。",
+    "stt_error": "文字起こしに失敗しました",
     "mic_privacy_stopped": "マイクが停止しました — プライバシーゲートが有効です",
     "searchMessagesPlaceholder": "メッセージを検索...",
     "audio_not_compiled": "このビルドでは音声を利用できません"
@@ -2257,13 +2499,13 @@
     "explain": "説明",
     "noHistory": "まだ履歴がありません",
     "noSuggestions": "まだ提案がありません",
-    "loadError": "提案を読み込めませ��でした。",
+    "loadError": "提案を読み込めませんでした。",
     "refreshing": "提案を更新しています...",
     "retryLoad": "再試行",
     "retryPending": "更新中...",
     "openingInChat": "チャットで開いています...",
     "toastAccepted": "提案を承認しました",
-    "toastRejected": "提案を拒否しま���た",
+    "toastRejected": "提案を拒否しました",
     "toastSnoozed": "スヌーズしました",
     "feedbackFailed": "フィードバック失敗:",
     "feedbackAccepted": "承認済み",
@@ -2320,6 +2562,7 @@
     "suggestionsUnavailable": "提案を利用できません",
     "paused": "一時停止中",
     "capturing": "キャプチャ中",
+    "consentRequired": "同意が必要です",
     "resume": "再開",
     "pause": "一時停止",
     "collapse": "折りたたむ",
@@ -2345,8 +2588,8 @@
     "screenContextPaused": "画面コンテキスト一時停止",
     "localMode": "ローカルモード",
     "captureServicesReady": "キャプチャサービス準備完了",
-    "extractTasks": "現在のアプリからタスクを抽出",
-    "extractTasksMeta": "表示中の GUI コンテキストで提案を生成",
+    "extractTasks": "提案を確認",
+    "extractTasksMeta": "現在の画面を取得せず、保留中の提案を開く",
     "captureCurrentContextMeta": "現在の画面コンテキストを保存",
     "reviewCurrentWindow": "現在のウィンドウを確認",
     "reviewCurrentWindowMeta": "GUI、OCR、アクセシビリティを分析",
@@ -2359,7 +2602,9 @@
     "quitMaekon": "Maekon を終了",
     "chatOpened": "チャットを開きました",
     "quitRequested": "終了をリクエストしました",
-    "quitUnavailable": "終了できません"
+    "quitUnavailable": "終了できません",
+    "findNextStep": "次のステップを探す",
+    "findNextStepMeta": "現在の画面を読み取り、確認可能な次のステップを提案"
   },
   "trayDashboard": {
     "regionLabel": "トレイダッシュボード",
@@ -2426,7 +2671,37 @@
     "discoveredPeers": "発見されたピア",
     "noPeers": "まだピアが発見されていません。他のデバイスが同じネットワーク上で同期を有効にしていることを確認してください。",
     "lastSync": "最終",
-    "neverSynced": "未同期"
+    "neverSynced": "未同期",
+    "enableIntro": "パスフレーズを選択して同期を有効にしてください。パスフレーズはOSキーチェーンに保存され（設定ファイルには保存されません）、エンドツーエンド暗号化キーの導出に使用されます。同期するすべてのデバイスは同じパスフレーズを使用する必要があります。",
+    "passphraseLabel": "同期パスフレーズ",
+    "passphrasePlaceholder": "12文字以上",
+    "passphraseTooShort": "パスフレーズは{{count}}文字以上である必要があります。",
+    "transportLabel": "トランスポート",
+    "transportLan": "LAN — 同じWi-Fi/ネットワーク",
+    "transportFile": "共有フォルダ — Dropbox、iCloud、NAS",
+    "transportRemote": "リモート同期サーバー",
+    "enableButton": "同期を有効化",
+    "enableDone": "保存しました。同期を有効にするにはアプリを再起動してください。",
+    "envHint": "上級ユーザーは起動前にMAEKON_SYNC_PASSPHRASE環境変数を設定することもできます。",
+    "deliveryNoPeers": "変更内容がどのピアにも届きませんでした（すべてオフラインまたは到達不能）。次回の同期で再試行されます。",
+    "deliveredToPeers": "{{count}}台のピアに配信されました。",
+    "forgetPeer": "接続を解除",
+    "forgetPeerConfirm": "{{peerName}}の接続を解除しますか？信頼情報が削除され、再び同期するにはペアリングが必要です。",
+    "forgetPeerConfirmAction": "ピアの接続を解除",
+    "forgetPeerCancel": "キャンセル",
+    "forgetPeerSuccess": "{{peerName}}の接続を解除しました。",
+    "forgetPeerError": "ピアの接続を解除できませんでした。もう一度お試しください。",
+    "uploadRecoveryTitle": "アップロード復旧チェック",
+    "uploadRecoveryDescription": "中断したアップロードが、再試行の成功を確認するまで未送信のまま保たれることを合成ローカルデータで検証します。",
+    "uploadRecoveryInterrupted": "アップロードが中断されました。{{count}} 件は未送信のままローカルに残っています。",
+    "uploadRecoveryRetry": "安全に再試行",
+    "uploadRecoveryRecovered": "{{attempts}} 回の試行と {{reprimes}} 回の再投入後に復旧しました。成功後にのみ送信済みマーカーが記録されました。",
+    "uploadRecoveryPending": "保留",
+    "uploadRecoverySentMarkers": "送信済みマーカー",
+    "uploadRecoveryStorageId": "ストレージ ID",
+    "uploadRecoveryPreserved": "保持済み",
+    "uploadRecoveryMismatch": "不一致",
+    "uploadRecoveryError": "合成復旧ステップを完了できませんでした。"
   },
   "overlay": {
     "focusMode": "集中モード",
@@ -2453,32 +2728,32 @@
     "variableLabel": "テンプレート変数: {{name}}"
   },
   "trackingSchedule": {
-    "title": "Tracking Schedule",
-    "noWindows": "No windows configured.",
-    "addWindow": "Add window",
-    "startTime": "Start",
-    "endTime": "End",
-    "timezone": "Timezone",
-    "timezoneLocal": "Local",
-    "timezoneLabel": "Timezone",
-    "label": "Label",
-    "removeWindow": "Remove",
-    "save": "Save",
-    "activeNow": "Active now — ends {{time}}",
-    "validationHhmm": "Time must be HH:MM (00:00–23:59)",
-    "enabled": "Enabled",
-    "daysLabel": "Active days",
-    "mon": "Mon",
-    "tue": "Tue",
-    "wed": "Wed",
-    "thu": "Thu",
-    "fri": "Fri",
-    "sat": "Sat",
-    "sun": "Sun",
-    "saveError": "Failed to save."
+    "title": "トラッキングスケジュール",
+    "noWindows": "時間帯が設定されていません。",
+    "addWindow": "時間帯を追加",
+    "startTime": "開始",
+    "endTime": "終了",
+    "timezone": "タイムゾーン",
+    "timezoneLocal": "ローカル",
+    "timezoneLabel": "タイムゾーン",
+    "label": "ラベル",
+    "removeWindow": "削除",
+    "save": "保存",
+    "activeNow": "現在有効 — {{time}} に終了",
+    "validationHhmm": "時刻は HH:MM 形式で入力してください (00:00–23:59)",
+    "enabled": "有効",
+    "daysLabel": "有効な曜日",
+    "mon": "月",
+    "tue": "火",
+    "wed": "水",
+    "thu": "木",
+    "fri": "金",
+    "sat": "土",
+    "sun": "日",
+    "saveError": "保存に失敗しました。"
   },
   "stats": {
-    "guiInteractions": "GUI Interactions"
+    "guiInteractions": "GUI 操作"
   },
   "week": {
     "title": "週間ダイジェスト",
@@ -2553,6 +2828,10 @@
     "result": "結果"
   },
   "advancedTab": {
+    "aiFeaturesMaster": "AI機能を有効化",
+    "aiFeaturesMasterDescription": "ローカル埋め込み、AIセマンティック検索、AI日次ダイジェストのナラティブを一度に有効化します。すべてオンデバイスで処理されます。Maekonを再起動すると反映されます。",
+    "llmSummary": "AI日次ダイジェストのナラティブ",
+    "llmSummaryDescription": "オンデバイスLLMで1日を自然言語で要約します（埋め込みが必要）。再起動後に反映されます。",
     "maxConcurrentSessions": "最大同時セッション数",
     "idleTimeoutSeconds": "アイドルタイムアウト（秒）",
     "sessionTimeoutSeconds": "セッションタイムアウト（秒）",
@@ -2615,6 +2894,8 @@
     "columnSegment": "セグメント",
     "columnOriginal": "元の値",
     "columnAction": "アクション",
+    "columnLifecycle": "有効期間",
+    "columnEffect": "後続への影響",
     "columnCreated": "作成日時"
   },
   "presets": {
@@ -2680,7 +2961,204 @@
     }
   },
   "metrics": {
+    "notMeasured": "計測不可",
+    "withinBudget": "予算内",
+    "overBudget": "予算超過",
+    "selfUsageTitle": "エージェントのリソース使用量",
+    "selfUsageHint": "デスクトップエージェント自身のメモリとCPUを暫定予算と比較します。",
+    "selfUsageDesktopOnly": "デスクトップアプリで利用できます。",
+    "snapshotError": "リソース使用量の取得に失敗しました",
+    "selfRss": "メモリ (RSS)",
+    "selfCpu": "CPU",
+    "notMeasuredHint": "このプラットフォームではリソース使用量を計測できませんでした。",
     "cpuPercent": "CPU %",
     "memoryGb": "メモリ (GB)"
+  },
+  "reauth": {
+    "title": "本人確認",
+    "description": "キャプチャ履歴を表示するには再認証してください。",
+    "reason": "キャプチャ履歴の表示",
+    "useBiometric": "{{kind}}でロック解除",
+    "biometricGeneric": "生体認証",
+    "usePinInstead": "代わりにPINを使う",
+    "useBiometricInstead": "代わりに生体認証を使う",
+    "pinLabel": "PIN",
+    "pinPlaceholder": "PINを入力",
+    "unlock": "ロック解除",
+    "noMethodTitle": "再認証手段がありません",
+    "noMethodBody": "キャプチャ履歴を表示するには、プライバシー設定でPINを登録するか、再認証の要求をオフにしてください。",
+    "goToSettings": "設定を開く",
+    "cancel": "キャンセル",
+    "errors": {
+      "cancelled": "認証がキャンセルされました。",
+      "biometricUnavailable": "生体認証を利用できません。PINを入力してください。",
+      "failed": "認証に失敗しました。もう一度お試しください。"
+    },
+    "settings": {
+      "sectionTitle": "キャプチャ履歴の再認証",
+      "sectionDescription": "キャプチャ履歴（スクリーンショット）を表示する前に、生体認証またはPINによる再認証を要求します。",
+      "saveFailed": "設定の保存に失敗しました。",
+      "enableLabel": "再認証を要求する",
+      "enableHint": "ロック解除された端末に物理的にアクセスした人からキャプチャ履歴を保護します。",
+      "idleLabel": "無操作後に再要求（分）",
+      "pinSectionTitle": "アプリPIN（フォールバック）",
+      "pinRegistered": "PINが登録されています。",
+      "pinNotRegistered": "PINは登録されていません。",
+      "registerPin": "PINを設定",
+      "changePin": "PINを変更",
+      "removePin": "PINを削除",
+      "pinNewLabel": "新しいPIN",
+      "pinConfirmLabel": "PINの確認",
+      "pinMismatch": "PINが一致しません。",
+      "pinTooShort": "PINは4文字以上にしてください。",
+      "pinSaved": "PINを保存しました。",
+      "pinRemoved": "PINを削除しました。",
+      "save": "保存",
+      "cancel": "キャンセル",
+      "biometricAvailable": "この端末では{{kind}}が利用できます。",
+      "biometricUnavailable": "この端末では生体認証を利用できません。PINを使用してください。"
+    }
+  },
+  "durableTasks": {
+    "loading": "タスクを読み込み中…",
+    "loadError": "タスクを読み込めませんでした: {{error}}",
+    "suggestedHeading": "提案されたタスク",
+    "noSuggestions": "確認するタスクの提案はありません。",
+    "noTitle": "(タイトルなし)",
+    "confirm": "確定",
+    "dismiss": "却下",
+    "todosHeading": "ToDo",
+    "noTodos": "確定済みのToDoはまだありません。",
+    "state": {
+      "confirmed": "確定",
+      "inProgress": "進行中",
+      "waiting": "待機中",
+      "done": "完了",
+      "cancelled": "キャンセル"
+    }
+  },
+  "extensions": {
+    "loading": "拡張を読み込み中…",
+    "loadError": "拡張を読み込めませんでした: {{error}}",
+    "heading": "拡張",
+    "empty": "登録された拡張はありません。",
+    "summaryUnavailable": "遷移中 — 詳細を確認",
+    "unavailableReason": "利用不可: {{reason}}",
+    "install": "インストール",
+    "enable": "有効化",
+    "disable": "無効化",
+    "rollback": "{{version}} にロールバック",
+    "axis": {
+      "installation": "インストール",
+      "enablement": "有効化",
+      "authentication": "アカウント",
+      "grant": "権限付与",
+      "update": "更新",
+      "health": "正常性"
+    },
+    "axisValue": {
+      "not_installed": "未インストール",
+      "installing": "インストール中",
+      "installed": "インストール済み",
+      "install_failed": "インストール失敗",
+      "uninstalling": "アンインストール中",
+      "uninstalled": "アンインストール済み",
+      "disabled": "無効",
+      "enabled": "有効",
+      "not_required": "不要",
+      "unauthenticated": "未接続",
+      "authenticating": "接続中",
+      "authenticated": "接続済み",
+      "revoked": "取り消し済み",
+      "auth_error": "サインインエラー",
+      "not_requested": "未リクエスト",
+      "pending": "保留中",
+      "granted": "許可済み",
+      "denied": "拒否",
+      "expired": "期限切れ",
+      "current": "最新",
+      "update_available": "更新あり",
+      "staged": "適用待ち",
+      "activating": "有効化中",
+      "update_failed": "更新失敗",
+      "rollback_available": "ロールバック可能",
+      "unknown": "不明",
+      "healthy": "正常",
+      "degraded": "機能低下",
+      "unhealthy": "異常"
+    },
+    "summary": {
+      "discovered": "検出済み",
+      "installed": "インストール済み",
+      "enabled": "有効",
+      "authorizing": "承認中",
+      "ready": "準備完了",
+      "syncing": "同期中",
+      "degraded": "機能低下",
+      "stale": "古い状態",
+      "revoked": "取り消し済み",
+      "incompatible": "非互換"
+    }
+  },
+  "recovery": {
+    "title": "次のステップを探す",
+    "back": "戻る",
+    "retry": "再試行",
+    "loading": "現在の画面を読み取り中…",
+    "confirmedNotice": "To-Do に追加しました",
+    "conflictNotice": "項目が変更されたため更新しました",
+    "confirmFailedNotice": "このステップを確定できませんでした",
+    "dismissedNotice": "却下しました",
+    "missingPermission": "必要: {{permission}}",
+    "todosHeading": "確定した To-Do",
+    "noTodos": "確定した To-Do はまだありません。",
+    "source": {
+      "localScene": "現在の画面"
+    },
+    "lifecycle": {
+      "active": "ライブ",
+      "deleted": "ソース削除済み",
+      "revoked": "アクセス取り消し",
+      "expired": "保存期限切れ"
+    },
+    "card": {
+      "sourceLabel": "ソース",
+      "captured": "取得 {{when}}",
+      "nextStepLabel": "提案された次のステップ",
+      "editTitle": "次のステップを編集",
+      "editBody": "詳細を編集",
+      "untitled": "（無題のステップ）",
+      "confirm": "To-Do に追加",
+      "editing": "編集中",
+      "edit": "編集",
+      "dismiss": "却下"
+    },
+    "outcome": {
+      "errorTitle": "問題が発生しました",
+      "errorDetail": "リクエストを完了できませんでした。",
+      "consentTitle": "画面アクセスが必要",
+      "consentDetail": "現在の画面を読み取るには、記載の権限を許可してください。",
+      "throttledTitle": "一度に一つ",
+      "throttledDetail": "既にリクエストが実行中か、本日の上限に達しました。",
+      "noCandidateTitle": "次のステップは見つかりません",
+      "noCandidateDetail": "画面を確認しましたが、提案された操作はありません。",
+      "providerOfflineTitle": "アシスタントはオフライン",
+      "providerOfflineDetail": "提案プロバイダーは現在利用できません。",
+      "noContextTitle": "画面の情報が不足",
+      "noContextDetail": "次のステップを提案するには現在のコンテキストが不十分でした。"
+    }
+  },
+  "tasks": {
+    "heading": "タスクとリカバリ",
+    "subtitle": "提案された次のステップを確認し、確定した To-Do を管理します。"
+  },
+  "capturePermission": {
+    "bannerTitle": "画面キャプチャ停止 — 権限が取り消されました",
+    "bannerBody": "Maekon の実行中に画面収録の権限がオフになったため、キャプチャを直ちに停止しました。同意設定はそのまま維持されます。権限を再度有効にするとキャプチャが再開されます。",
+    "openSettings": "システム設定を開く",
+    "recheck": "権限を再確認",
+    "rechecking": "確認中…",
+    "revokedToast": "画面収録の権限が取り消されたため、キャプチャを停止しました。",
+    "restoredToast": "画面収録の権限が復元され、キャプチャを再開しました。"
   }
 }

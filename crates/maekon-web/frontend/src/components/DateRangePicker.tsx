@@ -2,6 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { interaction, motion } from '../styles/tokens'
 import { cn } from '../utils/cn'
+import {
+  formatLocalCalendarDate,
+  localCalendarDateFromValue,
+  localDayBoundaryIso,
+  shiftLocalCalendarDate,
+} from '../utils/localDate'
 
 interface DateRangePickerProps {
   onRangeChange: (from: string | undefined, to: string | undefined) => void
@@ -13,14 +19,7 @@ interface DateRangePickerProps {
 type PresetRange = 'today' | '7days' | '30days' | 'custom'
 
 function getToday() {
-  const now = new Date()
-  return now.toISOString().split('T')[0]
-}
-
-function getDaysAgo(days: number) {
-  const date = new Date()
-  date.setDate(date.getDate() - days)
-  return date.toISOString().split('T')[0]
+  return formatLocalCalendarDate(new Date())
 }
 
 function inferInitialPreset(initialFrom?: string, initialTo?: string): PresetRange {
@@ -29,18 +28,21 @@ function inferInitialPreset(initialFrom?: string, initialTo?: string): PresetRan
   }
 
   const today = getToday()
-  const weekStart = getDaysAgo(7)
-  const monthStart = getDaysAgo(30)
+  const weekStart = shiftLocalCalendarDate(today, -7)
+  const monthStart = shiftLocalCalendarDate(today, -30)
 
-  if (initialFrom === today && initialTo === today) {
+  const fromDate = localCalendarDateFromValue(initialFrom)
+  const toDate = localCalendarDateFromValue(initialTo)
+
+  if (fromDate === today && toDate === today) {
     return 'today'
   }
 
-  if (initialFrom === weekStart && initialTo === today) {
+  if (fromDate === weekStart && toDate === today) {
     return '7days'
   }
 
-  if (initialFrom === monthStart && initialTo === today) {
+  if (fromDate === monthStart && toDate === today) {
     return '30days'
   }
 
@@ -55,8 +57,8 @@ export default function DateRangePicker({
 }: DateRangePickerProps) {
   const { t } = useTranslation()
   const [preset, setPreset] = useState<PresetRange>(initialPreset ?? inferInitialPreset(initialFrom, initialTo))
-  const [customFrom, setCustomFrom] = useState(initialFrom || '')
-  const [customTo, setCustomTo] = useState(initialTo || '')
+  const [customFrom, setCustomFrom] = useState(() => localCalendarDateFromValue(initialFrom))
+  const [customTo, setCustomTo] = useState(() => localCalendarDateFromValue(initialTo))
 
   // Stable ref prevents callback identity changes from re-triggering the effect
   const onRangeChangeRef = useRef(onRangeChange)
@@ -65,24 +67,25 @@ export default function DateRangePicker({
   useEffect(() => {
     let from: string | undefined
     let to: string | undefined
+    const today = getToday()
 
     switch (preset) {
       case 'today':
-        from = `${getToday()}T00:00:00Z`
-        to = `${getToday()}T23:59:59Z`
+        from = localDayBoundaryIso(today, 'start')
+        to = localDayBoundaryIso(today, 'end')
         break
       case '7days':
-        from = `${getDaysAgo(7)}T00:00:00Z`
-        to = `${getToday()}T23:59:59Z`
+        from = localDayBoundaryIso(shiftLocalCalendarDate(today, -7), 'start')
+        to = localDayBoundaryIso(today, 'end')
         break
       case '30days':
-        from = `${getDaysAgo(30)}T00:00:00Z`
-        to = `${getToday()}T23:59:59Z`
+        from = localDayBoundaryIso(shiftLocalCalendarDate(today, -30), 'start')
+        to = localDayBoundaryIso(today, 'end')
         break
       case 'custom':
         if (customFrom && customTo) {
-          from = `${customFrom}T00:00:00Z`
-          to = `${customTo}T23:59:59Z`
+          from = localDayBoundaryIso(customFrom, 'start')
+          to = localDayBoundaryIso(customTo, 'end')
         }
         break
     }

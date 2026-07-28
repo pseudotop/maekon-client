@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-regime-goals"
+description = "Enables the update_regime_goals command without any pre-configured scope."
+commands.allow = ["update_regime_goals"]
+
+[[permission]]
+identifier = "deny-update-regime-goals"
+description = "Denies the update_regime_goals command without any pre-configured scope."
+commands.deny = ["update_regime_goals"]

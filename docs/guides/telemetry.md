@@ -2,9 +2,24 @@
 
 # Telemetry
 
-> **Default-on intent. Consent-gated export. Private by construction.**
+> **Configuration default: off. Effective export requires every runtime gate.**
 
-MAEKON's Rust client can ship distributed-trace spans and a small set of bounded, non-PII metrics to an OpenTelemetry collector for production triage. This document covers what is collected, how to enable or disable it, how to point it at your own collector, and how to wipe the identifier the collector sees.
+MAEKON's Rust client can ship distributed-trace spans and a small set of bounded, non-PII metrics to an OpenTelemetry collector for prerelease triage. This document covers what is collected, how to enable or disable it, how to point it at your own collector, and how to wipe the identifier the collector sees.
+
+## Four separate controls
+
+Do not collapse the following controls into a single “telemetry on/off” claim:
+
+1. **Configuration default** — persisted `telemetry.enabled` defaults to `false`.
+2. **Effective runtime state** — export is active only when the configuration is
+   enabled and valid **feature consent** exists.
+3. **Build capability** — the binary must include the `telemetry Cargo feature`;
+   default release builds omit it.
+4. **Diagnostic export consent** — a support bundle is a separate, locally
+   generated user action. Runtime logs default to excluded and are shared only
+   after the user reviews and explicitly sends the bundle.
+
+Changing one control does not imply that the others are enabled.
 
 ## What is collected
 
@@ -63,14 +78,20 @@ audited through the egress ledger with destination
 
 ## How to enable
 
-On fresh installs, `telemetry.enabled` defaults to `true`. Export still stays off until both gates are open:
+On fresh installs, `telemetry.enabled` defaults to `false`. To make the effective runtime state eligible for export, all three telemetry gates must be open:
 
-1. The user has granted the `telemetry` consent permission.
-2. The binary was built with the `telemetry` Cargo feature.
+1. The user changes the persisted configuration to `telemetry.enabled=true`.
+2. The user has granted valid feature consent for `telemetry`.
+3. The binary was built with the `telemetry` Cargo feature.
 
-Existing config files that already persist `"enabled": false` remain opted out during the default-on migration. To re-enable one of those installs, open Preferences → Privacy → Telemetry and toggle **Enable telemetry** on, or edit `config.json`.
+Existing config files that persist `"enabled": false` remain opted out. To request telemetry on an eligible build, open Preferences → Privacy → Telemetry and toggle **Enable telemetry** on, or edit `config.json`; this does not bypass feature consent or compile-time gating.
 
 Changes take effect within a few seconds — you do not need to restart the client. The first consent-approved activation creates the `telemetry_instance_id` file described above.
+
+Diagnostic bundle generation and sharing are not part of this toggle. The
+diagnostic request defaults `include_logs=false`; a user must separately choose
+the bundle contents, review the generated artifact, and send it through an
+explicit support path.
 
 Advanced users can edit `config.json` directly:
 

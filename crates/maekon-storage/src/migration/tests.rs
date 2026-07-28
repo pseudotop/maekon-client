@@ -483,7 +483,9 @@ fn migration_all_versions() {
         .unwrap();
     assert_eq!(count, 1);
 
-    // V18 - trigram FTS5 table
+    // V18 created `search_trigram`, but V45 (#8056) drops it as dead schema
+    // (superseded by the V41 `search_fts` CJK bigram shadow). At CURRENT_VERSION
+    // it must NOT exist.
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='search_trigram'",
@@ -491,7 +493,7 @@ fn migration_all_versions() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(count, 0, "search_trigram must be dropped by V45");
 
     // V19 - app_meta table
     let count: i64 = conn
@@ -514,6 +516,44 @@ fn migration_all_versions() {
             .unwrap();
         assert_eq!(count, 1, "table {table} should exist after migrations");
     }
+
+    // V47 - transcripts table + timestamp index (#8059).
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='transcripts'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "transcripts table should exist at CURRENT_VERSION"
+    );
+    let idx_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='index' AND name='idx_transcripts_timestamp'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        idx_count, 1,
+        "idx_transcripts_timestamp index should exist at CURRENT_VERSION"
+    );
+
+    // V48 - durable singleton Pomodoro state (#8218).
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pomodoro_state'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "pomodoro_state table should exist at CURRENT_VERSION"
+    );
 
     // Final version check
     let version: u32 = conn
@@ -592,7 +632,8 @@ fn backup_includes_uncheckpointed_wal_commits() {
     .unwrap();
 
     // Pre-migration backup (version 0 < CURRENT_VERSION).
-    let backup_path = backup_if_needed(&conn, 0).expect("backup should be created");
+    let backup_path =
+        backup_if_needed(&conn, 0, CURRENT_VERSION).expect("backup should be created");
 
     // Open the backup file independently and verify the WAL-resident row is
     // present (i.e. the WAL was checkpointed into the `.db` before the copy).
@@ -611,7 +652,7 @@ fn backup_includes_uncheckpointed_wal_commits() {
 #[test]
 fn backup_skipped_for_in_memory_db() {
     let conn = Connection::open_in_memory().unwrap();
-    let result = backup_if_needed(&conn, 0);
+    let result = backup_if_needed(&conn, 0, CURRENT_VERSION);
     assert!(result.is_none(), "in-memory DB should not produce backup");
 }
 
@@ -620,7 +661,7 @@ fn backup_skipped_when_already_current() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("current.db");
     let conn = Connection::open(&db_path).unwrap();
-    let result = backup_if_needed(&conn, CURRENT_VERSION);
+    let result = backup_if_needed(&conn, CURRENT_VERSION, CURRENT_VERSION);
     assert!(
         result.is_none(),
         "no backup needed when already at current version"

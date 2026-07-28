@@ -67,9 +67,12 @@ pub async fn wait_for_callback(
                     return Html(error_html(err, &desc));
                 }
 
-                // Validate state parameter (CSRF protection)
+                // Validate state parameter (CSRF protection). Compare in constant time so
+                // the comparison duration cannot leak how many leading bytes matched. The
+                // callback server is 127.0.0.1-only, so a timing side channel is unrealistic
+                // here — this is defense-in-depth hardening (#8047 E1).
                 let state = params.get("state").cloned().unwrap_or_default();
-                if state != expected {
+                if !constant_time_eq(state.as_bytes(), expected.as_bytes()) {
                     warn!("OAuth callback state mismatch");
                     if let Some(sender) = guard.take() {
                         if let Err(e) = sender.send(Err("state mismatch".into())) {
@@ -215,9 +218,53 @@ h1{{color:#ef4444;margin:0 0 .5rem}}p{{color:#6b7280}}</style></head>
     )
 }
 
+/// Constant-time byte-slice equality (#8047 E1).
+///
+/// Compares `a` and `b` without early-exit so that the time taken does not leak how
+/// many leading bytes matched — the standard defense against timing side channels on
+/// secret/token comparison. The length difference is folded into the accumulator
+/// (not an early `return`), and the loop always iterates over the longer of the two
+/// lengths, so a length mismatch is indistinguishable from a content mismatch in the
+/// timing profile. A new dependency is deliberately avoided here (`subtle` is not in
+/// this crate's tree); crates where `subtle` is already a dependency use it directly.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    // Fold the length difference in first so a mismatch cannot short-circuit.
+    let mut diff: u32 = (a.len() ^ b.len()) as u32;
+    let max_len = a.len().max(b.len());
+    for i in 0..max_len {
+        // Out-of-range indices read a fixed sentinel so both slices are accessed the
+        // same number of times regardless of which one is shorter.
+        let byte_a = a.get(i).copied().unwrap_or(0);
+        let byte_b = b.get(i).copied().unwrap_or(0);
+        diff |= (byte_a ^ byte_b) as u32;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn constant_time_eq_matches_for_equal_slices() {
+        assert!(constant_time_eq(b"state-token-abc", b"state-token-abc"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_unequal_same_length() {
+        assert!(!constant_time_eq(b"state-token-abc", b"state-token-xyz"));
+        // Differ only in the final byte — must still reject.
+        assert!(!constant_time_eq(b"aaaaaaaa", b"aaaaaaab"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_different_length() {
+        assert!(!constant_time_eq(b"short", b"short-suffix"));
+        // A prefix relationship must not compare equal.
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(!constant_time_eq(b"", b"x"));
+    }
 
     #[tokio::test]
     async fn check_port_available_on_unused_port() {

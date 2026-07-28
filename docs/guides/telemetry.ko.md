@@ -2,9 +2,20 @@
 
 # 텔레메트리 (Telemetry)
 
-> **Default-on intent. Consent-gated export. 기본적으로 프라이빗.**
+> **설정 기본값은 OFF. 실제 내보내기는 모든 런타임 게이트를 통과해야 함.**
 
-MAEKON Rust 클라이언트는 운영 트러블슈팅을 위해 분산 트레이스 span과, 소량의 바운디드(bounded)·비(非)PII 메트릭을 OpenTelemetry 콜렉터로 전송할 수 있다. 이 문서는 무엇을 수집하는지, 어떻게 켜고 끄는지, 자체 콜렉터로 보내는 방법, 그리고 콜렉터 쪽에 남는 식별자를 지우는 방법을 다룬다.
+MAEKON Rust 클라이언트는 prerelease 트러블슈팅을 위해 분산 트레이스 span과, 소량의 바운디드(bounded)·비(非)PII 메트릭을 OpenTelemetry 콜렉터로 전송할 수 있다. 이 문서는 무엇을 수집하는지, 어떻게 켜고 끄는지, 자체 콜렉터로 보내는 방법, 그리고 콜렉터 쪽에 남는 식별자를 지우는 방법을 다룬다.
+
+## 서로 다른 네 가지 제어
+
+다음 제어를 하나의 “텔레메트리 ON/OFF” 주장으로 합치지 않는다.
+
+1. **설정 기본값** — 저장되는 `telemetry.enabled`의 기본값은 `false`다.
+2. **유효 런타임 상태** — 설정이 활성화되고 유효한 **기능 동의**가 있을 때만 내보내기가 활성화될 수 있다.
+3. **빌드 기능** — 바이너리에 `telemetry Cargo feature`가 포함되어야 하며, 기본 release build에는 포함되지 않는다.
+4. **진단 내보내기 동의** — 지원 번들은 별도의 로컬 생성 사용자 액션이다. Runtime log는 기본 제외되며, 사용자가 검토하고 명시적으로 보낼 때만 공유된다.
+
+한 제어를 변경해도 다른 제어가 활성화되었다는 뜻은 아니다.
 
 ## 수집되는 것
 
@@ -46,14 +57,19 @@ client는 `feature_key`별 bounded in-memory queue에 sample을 보관한다. co
 
 ## 활성화 방법
 
-fresh install에서는 `telemetry.enabled` 기본값이 `true`다. 그래도 export는 두 gate가 모두 열릴 때만 동작한다.
+fresh install에서는 `telemetry.enabled` 설정 기본값이 `false`다. 유효 런타임 상태에서 내보내기가 가능하려면 다음 세 텔레메트리 gate가 모두 열려야 한다.
 
-1. 사용자가 `telemetry` consent permission을 승인해야 한다.
-2. 바이너리가 `telemetry` Cargo feature와 함께 빌드되어 있어야 한다.
+1. 사용자가 저장 설정을 `telemetry.enabled=true`로 변경해야 한다.
+2. 사용자가 `telemetry`에 유효한 기능 동의를 승인해야 한다.
+3. 바이너리가 `telemetry` Cargo feature와 함께 빌드되어 있어야 한다.
 
-이미 `"enabled": false`를 저장한 기존 config 파일은 default-on migration 이후에도 opt-out 상태로 유지된다. 그런 설치에서 다시 켜려면 설정 → 개인정보 → 텔레메트리에서 **텔레메트리 활성화**를 켜거나 `config.json`을 직접 편집한다.
+`"enabled": false`를 저장한 기존 config 파일은 opt-out 상태로 유지된다. 지원되는 build에서 텔레메트리를 요청하려면 설정 → 개인정보 → 텔레메트리에서 **텔레메트리 활성화**를 켜거나 `config.json`을 직접 편집한다. 이 변경은 기능 동의나 compile-time gate를 우회하지 않는다.
 
 변경은 몇 초 이내에 반영되며 클라이언트를 재시작할 필요가 없다. consent gate를 통과한 최초 activation 때 위에서 설명한 `telemetry_instance_id` 파일이 생성된다.
+
+진단 번들 생성과 공유는 이 toggle에 포함되지 않는다. 진단 요청은
+`include_logs=false`가 기본이며, 사용자가 번들 내용을 별도로 선택하고 생성된
+artifact를 검토한 뒤 명시적인 지원 경로로 보내야 한다.
 
 고급 사용자는 `config.json`을 직접 편집해도 된다:
 

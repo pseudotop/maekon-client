@@ -9,8 +9,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { CalendarRange, MessageSquareOff, TrendingDown, TrendingUp } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { fetchCurrentDigest } from '../api/client'
-import type { WeeklyDigest } from '../api/contracts'
+import { fetchCurrentDigest, fetchSummary } from '../api/client'
+import type { DailySummary, WeeklyDigest } from '../api/contracts'
+import CaptureProcessingStatus, { hasCapturedActivity } from '../components/CaptureProcessingStatus'
 import { Card, CardContent, CardTitle, Skeleton } from '../components/ui'
 import { colors, iconSize, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
@@ -99,6 +100,10 @@ export default function DashboardWeek() {
     queryKey: ['dashboard-week-current'],
     queryFn: fetchCurrentDigest,
   })
+  const { data: rawTodaySummary } = useQuery<DailySummary>({
+    queryKey: ['dashboard-week-raw-today-summary'],
+    queryFn: () => fetchSummary(),
+  })
 
   if (isLoading) {
     return (
@@ -127,6 +132,10 @@ export default function DashboardWeek() {
     )
   }
 
+  const rawTrackedHours = (rawTodaySummary?.total_active_secs ?? 0) / 3600
+  const trackedHours = Math.max(digest.total_tracked_hours, rawTrackedHours)
+  const analysisPending = digest.total_tracked_hours === 0 && hasCapturedActivity(rawTodaySummary)
+
   return (
     <div className="space-y-4 p-4">
       <div className="flex items-center gap-2">
@@ -138,8 +147,10 @@ export default function DashboardWeek() {
         )}
       </div>
 
+      {analysisPending && <CaptureProcessingStatus summary={rawTodaySummary} />}
+
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        <StatTile label={t('week.totalTracked', 'Tracked')} value={`${digest.total_tracked_hours.toFixed(1)}h`} />
+        <StatTile label={t('week.totalTracked', 'Tracked')} value={`${trackedHours.toFixed(1)}h`} />
         <StatTile label={t('week.deepWork', 'Deep work')} value={`${digest.deep_work_hours.toFixed(1)}h`} />
         <StatTile
           label={t('week.communication', 'Communication')}

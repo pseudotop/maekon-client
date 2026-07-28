@@ -67,6 +67,21 @@ describe('ClaimsSection', () => {
     expect(screen.getByRole('button', { name: en.privacy.claims.retract.button })).toBeInTheDocument()
   })
 
+  it('keeps compact metadata and action columns on one line', async () => {
+    fetchClaimsSpy.mockResolvedValue(SAMPLE)
+
+    renderWithProviders(<ClaimsSection />)
+
+    await screen.findByText('morning deep-work blocks')
+    expect(screen.getByRole('table')).toHaveClass('min-w-[52rem]')
+    expect(screen.getByRole('columnheader', { name: en.privacy.claims.col.kind })).toHaveClass('whitespace-nowrap')
+    expect(screen.getByRole('columnheader', { name: en.privacy.claims.col.status })).toHaveClass('whitespace-nowrap')
+    expect(screen.getByText('digest_highlight').closest('td')).toHaveClass('whitespace-nowrap')
+    expect(screen.getByRole('button', { name: en.privacy.claims.retract.button }).closest('td')).toHaveClass(
+      'whitespace-nowrap',
+    )
+  })
+
   it('shows the empty state when there are no claims', async () => {
     fetchClaimsSpy.mockResolvedValue({ claims: [], total: 0 })
 

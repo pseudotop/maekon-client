@@ -1,0 +1,6 @@
+{
+  "identifier": "webdriver-test",
+  "description": "Test-only WebdriverIO capabilities for the main window",
+  "windows": ["main"],
+  "permissions": ["wdio:default", "wdio-webdriver:default"]
+}

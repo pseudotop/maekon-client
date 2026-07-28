@@ -56,6 +56,7 @@ pub mod bootstrap_preflight;
 pub mod bootstrap_runtime;
 pub mod breaker_registry;
 pub mod bridge_cli;
+pub mod capture_scale;
 pub mod capture_services;
 pub mod cli_subscription_bridge;
 pub mod codex_approval_policy;
@@ -74,6 +75,7 @@ pub mod feedback_sink;
 pub mod focus_auto;
 pub mod focus_mode;
 pub mod focus_probe_adapter;
+pub mod inflight_registry;
 #[cfg(feature = "server")]
 pub mod integration_insight_source;
 pub mod integration_policy;
@@ -100,6 +102,18 @@ pub mod provider_adapters;
 #[cfg(feature = "analysis")]
 pub mod provider_runtime_context;
 pub mod provider_secret_backend;
+#[cfg(all(debug_assertions, feature = "audio"))]
+pub(crate) mod qc_audio_fixture;
+#[cfg(debug_assertions)]
+pub(crate) mod qc_fixture_cli;
+#[cfg(debug_assertions)]
+mod qc_sync_peer;
+#[cfg(debug_assertions)]
+// QC upload spool needs maekon-network's BatchUploader — only present when the
+// `analysis` feature (default-on) links maekon-network (#8685 no-default build).
+#[cfg(feature = "analysis")]
+mod qc_upload_spool;
+pub mod reauth;
 pub mod runtime_bridges;
 pub mod runtime_state;
 pub mod scheduler;
@@ -113,6 +127,7 @@ pub mod session_manager;
 pub mod setup;
 pub mod shortcut_registry;
 pub mod skill_loader;
+pub mod skill_pack_resolver;
 pub mod storage_runtime;
 pub mod subprocess_provider;
 pub mod suggestion_manager;
@@ -659,6 +674,153 @@ pub fn run() {
         ) {
             std::process::exit(run_debug_pointer_capture_cli_command(command));
         }
+
+        #[cfg(feature = "analysis")]
+        {
+            if crate::qc_upload_spool::prepare_command_requested(
+                args.iter().skip(1).map(String::as_str),
+            ) {
+                match crate::qc_upload_spool::run_prepare_from_env() {
+                    Ok(report) => {
+                        println!("{report}");
+                        std::process::exit(0);
+                    }
+                    Err(error) => {
+                        eprintln!("debug QC upload-spool preparation failed: {error:#}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+
+            if crate::qc_upload_spool::verify_command_requested(
+                args.iter().skip(1).map(String::as_str),
+            ) {
+                match crate::qc_upload_spool::run_verify_from_env() {
+                    Ok(report) => {
+                        println!("{report}");
+                        std::process::exit(0);
+                    }
+                    Err(error) => {
+                        eprintln!("debug QC upload-spool verification failed: {error:#}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+        }
+
+        if crate::qc_fixture_cli::command_requested(args.iter().skip(1).map(String::as_str)) {
+            match crate::qc_fixture_cli::run_from_env() {
+                Ok(report) => {
+                    println!("{report}");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("debug QC fixture seed failed: {error:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        if crate::qc_fixture_cli::suggestion_command_requested(
+            args.iter().skip(1).map(String::as_str),
+        ) {
+            match crate::qc_fixture_cli::run_suggestion_from_env() {
+                Ok(report) => {
+                    println!("{report}");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("debug QC suggestion fixture seed failed: {error:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        if crate::qc_fixture_cli::action_suggestion_command_requested(
+            args.iter().skip(1).map(String::as_str),
+        ) {
+            match crate::qc_fixture_cli::run_action_suggestion_from_env() {
+                Ok(report) => {
+                    println!("{report}");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("debug QC action suggestion fixture seed failed: {error:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        if crate::qc_fixture_cli::claims_command_requested(args.iter().skip(1).map(String::as_str))
+        {
+            match crate::qc_fixture_cli::run_claims_from_env() {
+                Ok(report) => {
+                    println!("{report}");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("debug QC claims fixture seed failed: {error:#}");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        if crate::qc_fixture_cli::audio_command_requested(args.iter().skip(1).map(String::as_str)) {
+            match crate::qc_fixture_cli::run_audio_from_env() {
+                Ok(report) => {
+                    println!("{report}");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("debug QC audio fixture seed failed: {error:#}");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        if crate::qc_fixture_cli::sync_peer_command_requested(
+            args.iter().skip(1).map(String::as_str),
+        ) {
+            match crate::qc_fixture_cli::run_sync_peer_from_env() {
+                Ok(report) => {
+                    println!("{report}");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("debug QC sync-peer fixture seed failed: {error:#}");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        if crate::qc_fixture_cli::legacy_migration_prepare_command_requested(
+            args.iter().skip(1).map(String::as_str),
+        ) {
+            match crate::qc_fixture_cli::run_legacy_migration_prepare_from_env() {
+                Ok(report) => {
+                    println!("{report}");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("debug QC legacy migration preparation failed: {error:#}");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        if crate::qc_fixture_cli::legacy_migration_verify_command_requested(
+            args.iter().skip(1).map(String::as_str),
+        ) {
+            match crate::qc_fixture_cli::run_legacy_migration_verify_from_env() {
+                Ok(report) => {
+                    println!("{report}");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("debug QC legacy migration verification failed: {error:#}");
+                    std::process::exit(2);
+                }
+            }
+        }
     }
 
     // Windows DLL search order hardening (Spec Section 9.2):
@@ -817,9 +979,13 @@ pub fn run() {
             // Order matters per spec §5.2 mitigation #1: show() → unminimize() → set_focus().
             // Reverse order can leave window unfocused on Linux/X11.
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+                tracing::info!(
+                    window_label = window.label(),
+                    "single-instance activation callback restoring main window"
+                );
+                crate::window_state::show_restore_and_focus_main_window(&window);
+            } else {
+                tracing::warn!("single-instance activation callback found no main window");
             }
             // _args, _cwd reserved for future CLI command extension (NG3).
         }));
@@ -842,15 +1008,14 @@ pub fn run() {
         // slot stays empty and the command fails immediately.
         .manage(commands::auth::TokenManagerState::empty());
 
-    // WebDriver server plugin — for E2E tests (MUST never be included in production builds)
+    // WebdriverIO plugins — test-only and excluded from production builds.
+    // The service supplies TAURI_WEBDRIVER_PORT and owns app lifecycle.
     #[cfg(feature = "webdriver")]
     {
-        let port = std::env::var("TAURI_WEBDRIVER_PORT")
-            .ok()
-            .and_then(|p| p.parse::<u16>().ok())
-            .unwrap_or(4445);
-        info!("WebDriver plugin enabled on port {port}");
-        builder = builder.plugin(tauri_plugin_webdriver::init_with_port(port));
+        info!("WebdriverIO test plugins enabled");
+        builder = builder
+            .plugin(tauri_plugin_wdio::init())
+            .plugin(tauri_plugin_wdio_webdriver::init());
     }
 
     let app = builder
@@ -915,12 +1080,15 @@ pub fn run() {
             commands::analysis::reload_embedding_model,
             commands::coaching::dismiss_coaching_message,
             commands::coaching::submit_coaching_feedback,
+            commands::coaching::debug_set_overlay_interactive,
             commands::coaching::toggle_suggestions_panel,
+            commands::coaching::get_suggestions_panel_open,
             commands::coaching::toggle_automation_confirm,
             commands::coaching::get_coaching_history,
             commands::coaching::get_goal_progress,
             commands::coaching::update_regime_goals,
             commands::coaching::get_habit_streaks,
+            commands::shortcuts::get_global_shortcut_status,
             commands::capture_status::get_capture_status,
             commands::capture_status::toggle_capture_pause,
             commands::capture_status::set_indicator_visible,
@@ -947,17 +1115,22 @@ pub fn run() {
             commands::capture::poll_ax_focus_observer,
             commands::capture::stop_ax_focus_observer,
             commands::capture::analyze_current_scene,
+            commands::suggestions::queries::get_pending_suggestion_count,
             commands::suggestions::queries::get_pending_suggestions,
             commands::suggestions::queries::get_suggestion_history,
             commands::suggestions::feedback::submit_suggestion_feedback,
             commands::suggestions::replay::record_suggestion_replay_event,
             commands::suggestions::chat_suggestions::request_chat_suggestions,
+            commands::suggestions::current_context::request_current_context_suggestions,
             commands::suggestions::chat_suggestions::explain_suggestion_in_chat,
             commands::suggestions::queries::get_suggestion_stats,
             commands::suggestions::queries::get_suggestion_daily_stats,
             commands::sync::get_sync_status,
             commands::sync::trigger_sync_cycle,
             commands::sync::discover_sync_peers,
+            commands::sync::forget_sync_peer,
+            commands::qc_upload_spool::get_qc_upload_spool_status,
+            commands::qc_upload_spool::run_qc_upload_spool_step,
             commands::automation::confirm_automation_command,
             commands::automation::run_suggestion_action,
             commands::detection::toggle_detection_overlay,
@@ -987,6 +1160,26 @@ pub fn run() {
             commands::consent::set_consent,
             commands::consent::withdraw_consent,
             commands::consent::take_microphone_upgrade_notice,
+            commands::extension::list_extensions,
+            commands::extension::install_extension,
+            commands::extension::set_extension_enablement,
+            commands::extension::update_extension,
+            commands::extension::rollback_extension,
+            commands::extension::uninstall_extension,
+            commands::extension::activate_skill_pack,
+            commands::extension::clear_skill_pack_activation,
+            commands::task::list_task_candidates,
+            commands::task::list_todos,
+            commands::task::confirm_task_candidate,
+            commands::task::dismiss_task_candidate,
+            commands::task::transition_todo,
+            commands::task::delete_todo,
+            commands::reauth::get_capture_reauth_status,
+            commands::reauth::authenticate_capture_history,
+            commands::reauth::register_capture_reauth_pin,
+            commands::reauth::clear_capture_reauth_pin,
+            commands::reauth::lock_capture_reauth,
+            commands::reauth::set_capture_reauth_config,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("error while building Maekon: {error}"));

@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import type { AppSettings } from '../../api/client'
 import { Card, CardTitle, GuidancePanel, Input } from '../../components/ui'
-import { colors, typography } from '../../styles/tokens'
+import { colors, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useLoadedFormData, useSettingsFormContext } from '../settings/SettingsFormContext'
 import ToggleRow from './ToggleRow'
@@ -21,6 +21,7 @@ function NumberField({
   onChange,
   min,
   max,
+  step,
 }: {
   id: string
   label: string
@@ -28,6 +29,7 @@ function NumberField({
   onChange: (v: number) => void
   min?: number
   max?: number
+  step?: number
 }) {
   return (
     <div>
@@ -38,6 +40,7 @@ function NumberField({
         value={value}
         min={min}
         max={max}
+        step={step}
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full"
       />
@@ -58,6 +61,30 @@ export default function AdvancedTab() {
         return { ...prev, [section]: { ...sectionData, [field]: value } }
       }
       return prev
+    })
+  }
+
+  // G2a (#8059): the three config flags that make up the discoverable "AI
+  // features" bundle — local embedding, the on-device AI daily-digest
+  // narrative, and semantic search (which needs embedding wired). The master
+  // toggle flips all three atomically (on → all on; off → all off); the
+  // individual power-user toggles below stay in sync. Checkbox has no
+  // indeterminate state, so the master reads ON only when all three are on.
+  const aiFeaturesAllOn =
+    formData.analysis.enabled && formData.analysis.embedding_enabled && formData.analysis.llm_summary_enabled
+
+  const handleEnableAiFeatures = (value: boolean) => {
+    form.setFormData((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        analysis: {
+          ...prev.analysis,
+          enabled: value,
+          embedding_enabled: value,
+          llm_summary_enabled: value,
+        },
+      }
     })
   }
 
@@ -167,6 +194,7 @@ export default function AdvancedTab() {
             onChange={(v) => handleChange('indicator', 'border_opacity', v)}
             min={0}
             max={1}
+            step={0.1}
           />
         </div>
       </Card>
@@ -175,6 +203,18 @@ export default function AdvancedTab() {
       <Card variant="default" padding="lg">
         <CardTitle sticky>{t('settings.advanced.analysis', 'Analysis Pipeline')}</CardTitle>
         <div className="space-y-4">
+          {/* G2a (#8059): master "Enable AI features" toggle — flips analysis,
+              embedding, and llm_summary together so the built-but-hidden AI
+              features (semantic search, AI daily-digest narrative) are
+              discoverable in one click. Everything runs on-device. */}
+          <div className={cn('rounded-lg border border-brand-signal/40 bg-brand-signal/5 p-4', motion.colors)}>
+            <ToggleRow
+              label={t('advancedTab.aiFeaturesMaster')}
+              description={t('advancedTab.aiFeaturesMasterDescription')}
+              checked={aiFeaturesAllOn}
+              onChange={handleEnableAiFeatures}
+            />
+          </div>
           <ToggleRow
             label={t('advancedTab.enableAnalysis')}
             description={t('advancedTab.enableAnalysisDescription')}
@@ -196,6 +236,7 @@ export default function AdvancedTab() {
               onChange={(v) => handleChange('analysis', 'min_confidence', v)}
               min={0}
               max={1}
+              step={0.1}
             />
             <NumberField
               id="analysis-max-suggestions"
@@ -219,6 +260,12 @@ export default function AdvancedTab() {
             description={t('advancedTab.embeddingDescription')}
             checked={formData.analysis.embedding_enabled}
             onChange={(v) => handleChange('analysis', 'embedding_enabled', v)}
+          />
+          <ToggleRow
+            label={t('advancedTab.llmSummary')}
+            description={t('advancedTab.llmSummaryDescription')}
+            checked={formData.analysis.llm_summary_enabled}
+            onChange={(v) => handleChange('analysis', 'llm_summary_enabled', v)}
           />
           <ToggleRow
             label={t('advancedTab.guiIntelligence')}

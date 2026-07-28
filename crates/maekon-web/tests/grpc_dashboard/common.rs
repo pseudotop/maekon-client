@@ -4,8 +4,9 @@
 // this file as its own test target (mirrors the existing `tests/support/`
 // pattern already used by this same test binary for `FailingStorage`).
 
+use std::collections::HashSet;
 use std::net::TcpListener;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use maekon_storage::sqlite::SqliteStorage;
@@ -14,6 +15,8 @@ use maekon_web::storage_port::WebStorage;
 
 pub(crate) const TEST_LOCAL_AUTH_TOKEN: &str = "grpc-test-local-auth-token";
 
+static USED_TEST_PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+
 type AuthedDashboardClient = DashboardServiceClient<
     tonic::service::interceptor::InterceptedService<
         tonic::transport::Channel,
@@ -21,13 +24,27 @@ type AuthedDashboardClient = DashboardServiceClient<
     >,
 >;
 
-/// Pick a free ephemeral port by binding + immediately dropping a listener.
-/// Tiny race window between drop + server bind, acceptable for test use.
+/// Pick a free ephemeral port without reusing one inside this test process.
+///
+/// The listener must still be dropped before the production server can bind,
+/// but retaining the selected port in `USED_TEST_PORTS` closes the common
+/// parallel-test race where another test receives the same just-released port
+/// and the client connects to the wrong dashboard server.
 pub(crate) fn pick_free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    let port = listener.local_addr().expect("local_addr").port();
-    drop(listener);
-    port
+    let used_ports = USED_TEST_PORTS.get_or_init(|| Mutex::new(HashSet::new()));
+
+    for _ in 0..128 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        let inserted = used_ports.lock().expect("used test port lock").insert(port);
+        drop(listener);
+
+        if inserted {
+            return port;
+        }
+    }
+
+    panic!("failed to allocate a unique ephemeral port after 128 attempts");
 }
 
 /// Poll until the server accepts TCP connections (up to `timeout`).

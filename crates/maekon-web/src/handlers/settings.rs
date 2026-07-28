@@ -116,6 +116,38 @@ mod tests {
         assert!(json.contains("frame_count"));
     }
 
+    /// #9146: save-response parity — the value a save persists into the config
+    /// must come back byte-identical from the settings assembler. The old
+    /// Display-based assembly returned lowercase "strict", which matched no
+    /// `<select>` option in the UI and rendered as "Off" after a successful
+    /// save while `config.json` correctly held Strict.
+    #[test]
+    fn pii_level_save_response_round_trips_canonical_token() {
+        let mut app_config = AppConfig::default_config();
+        let mut settings = AppSettings::default();
+        settings.privacy.pii_filter_level = "Strict".to_string();
+
+        settings_service::apply_settings_to_config(&mut app_config, &settings).unwrap();
+        assert_eq!(
+            app_config.privacy.pii_filter_level,
+            maekon_core::config::PiiFilterLevel::Strict
+        );
+
+        let assembled = settings_assembler::config_to_settings(
+            &app_config,
+            maekon_core::config::CredentialBackendKind::Unavailable,
+        );
+        assert_eq!(assembled.privacy.pii_filter_level, "Strict");
+
+        // The parser accepts the assembled token back (full UI round trip).
+        let mut second_config = AppConfig::default_config();
+        settings_service::apply_settings_to_config(&mut second_config, &assembled).unwrap();
+        assert_eq!(
+            second_config.privacy.pii_filter_level,
+            maekon_core::config::PiiFilterLevel::Strict
+        );
+    }
+
     #[test]
     fn apply_settings_to_config_validates_remote_ai_requirements() {
         let mut app_config = AppConfig::default_config();
@@ -146,6 +178,27 @@ mod tests {
             matches!(err, maekon_core::error::CoreError::Config { .. }),
             "missing API key must return CoreError::Config, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn apply_settings_to_config_wires_llm_summary_enabled() {
+        // #8059 G2a: the new flat `analysis.llm_summary_enabled` contract field
+        // must map onto the nested `analysis.embedding.llm_summary_enabled`
+        // config (write path). This mirrors the existing `embedding_enabled`
+        // mapping so the AdvancedTab "Enable AI features" master toggle can
+        // actually turn the AI daily-digest narrative on end-to-end.
+        let mut app_config = AppConfig::default_config();
+        let mut settings = AppSettings::default();
+
+        // Flip away from the config defaults to prove the write is real.
+        settings.analysis.embedding_enabled = true;
+        settings.analysis.llm_summary_enabled = true;
+        settings_service::apply_settings_to_config(&mut app_config, &settings).unwrap();
+        assert!(app_config.analysis.embedding.llm_summary_enabled);
+
+        settings.analysis.llm_summary_enabled = false;
+        settings_service::apply_settings_to_config(&mut app_config, &settings).unwrap();
+        assert!(!app_config.analysis.embedding.llm_summary_enabled);
     }
 
     #[test]

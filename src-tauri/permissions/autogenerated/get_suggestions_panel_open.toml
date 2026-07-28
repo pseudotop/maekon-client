@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-suggestions-panel-open"
+description = "Enables the get_suggestions_panel_open command without any pre-configured scope."
+commands.allow = ["get_suggestions_panel_open"]
+
+[[permission]]
+identifier = "deny-get-suggestions-panel-open"
+description = "Denies the get_suggestions_panel_open command without any pre-configured scope."
+commands.deny = ["get_suggestions_panel_open"]

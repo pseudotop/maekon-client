@@ -52,6 +52,16 @@ pub fn mask_phone_numbers(text: &str) -> String {
     let mut masked = String::with_capacity(text.len());
     let mut i = 0;
     while i < len {
+        // A dotted-quad IPv4 must not be masked as a phone now that '.' is a phone
+        // separator (#8041): copy it verbatim and skip so it survives at Standard
+        // (IP masking is Strict-only). Card (>=13 digits) already excludes IPv4.
+        if chars[i].is_ascii_digit() {
+            if let Some((ip_end, _)) = try_parse_ipv4(&chars, i, len) {
+                masked.extend(&chars[i..ip_end]);
+                i = ip_end;
+                continue;
+            }
+        }
         if (chars[i] == '+' || chars[i].is_ascii_digit()) && is_phone_number_start(&chars, i) {
             if let Some(end) = find_phone_number_end(&chars, i, len) {
                 masked.push_str("[PHONE]");
@@ -83,6 +93,7 @@ fn find_phone_number_end(chars: &[char], start: usize, len: usize) -> Option<usi
     let mut i = start;
     let mut digit_count = 0usize;
     let mut separator_count = 0usize;
+    let mut dot_used = false;
     // Index just past the last DIGIT consumed — the match ends here so a trailing
     // separator is never absorbed into [PHONE] (review4 V7: prevents merging with
     // the following token and the adjacent-phone residual leak).
@@ -98,14 +109,18 @@ fn find_phone_number_end(chars: &[char], start: usize, len: usize) -> Option<usi
             digit_count += 1;
             i += 1;
             last_digit_end = i;
-        } else if c == '-' || c == ' ' {
+        } else if c == '-' || c == ' ' || c == '.' {
             // A separator is internal only when it sits between digit groups AND we
             // do not yet hold a complete (>=9 digit) number. Once 9+ digits are
-            // accumulated, treat the separator as a boundary so two space/dash-
-            // adjacent numbers do not merge into one match. '.' is intentionally NOT
-            // a separator (avoids swallowing IPv4 octets / version strings).
+            // accumulated, treat the separator as a boundary so two space/dash/dot-
+            // adjacent numbers do not merge into one match. '.' is a separator
+            // (#8041 — `555.123.4567` was leaking); dotted-quad IPv4 is excluded
+            // up-front by the IPv4 guard, so '.' here never eats an IP octet.
             if digit_count >= 9 || i + 1 >= len || !chars[i + 1].is_ascii_digit() {
                 break;
+            }
+            if c == '.' {
+                dot_used = true;
             }
             separator_count += 1;
             i += 1;
@@ -116,8 +131,11 @@ fn find_phone_number_end(chars: &[char], start: usize, len: usize) -> Option<usi
 
     // E.164 caps a phone at 15 digits. Separator-bearing numbers need >=9 digits;
     // separator-less runs need >=10 (review4 V14) to avoid masking short numeric IDs.
-    let valid = (separator_count >= 1 && (9..=15).contains(&digit_count))
-        || (separator_count == 0 && (10..=15).contains(&digit_count));
+    // A dot-bearing number needs >=2 separators: a single dot is a decimal point
+    // (`3.141592653`), not a dot-grouped phone (`555.123.4567` has two). (#8041)
+    let valid = ((separator_count >= 1 && (9..=15).contains(&digit_count))
+        || (separator_count == 0 && (10..=15).contains(&digit_count)))
+        && !(dot_used && separator_count < 2);
     if valid {
         Some(last_digit_end)
     } else {
@@ -140,10 +158,12 @@ pub fn mask_credit_cards(text: &str) -> String {
                 if chars[i].is_ascii_digit() {
                     digit_count += 1;
                     i += 1;
-                } else if (chars[i] == ' ' || chars[i] == '-')
+                } else if (chars[i] == ' ' || chars[i] == '-' || chars[i] == '.')
                     && i + 1 < len
                     && chars[i + 1].is_ascii_digit()
                 {
+                    // '.' is a group separator (#8041 — `4111.1111.1111.1111` leaked).
+                    // Card=13-19 digits, IPv4<=12, so '.' never masks an IP as a card.
                     i += 1;
                 } else {
                     break;
@@ -209,7 +229,16 @@ pub fn mask_korean_id(text: &str) -> String {
     result
 }
 
-/// Mask US Social Security Numbers (SSN): `\d{3}-\d{2}-\d{4}` → `[SSN]`
+/// Mask US Social Security Numbers (SSN) → `[SSN]`.
+///
+/// Before #8041 this required literal dashes (`\d{3}-\d{2}-\d{4}`), so the two
+/// most common variants slipped through EVERY level: an unseparated 9-digit run
+/// (`123456789`) and dot/space grouping (`123.45.6789`, `123 45 6789`). The
+/// generalized matcher masks 3-2-4 grouping with a single CONSISTENT separator
+/// `-`/`.`/space, plus an unseparated run of EXACTLY 9 digits. FP suppression
+/// (caller + [`ssn_match_len`]): reject a preceding digit, a trailing
+/// digit/decimal continuation (`123456789.5`, `123456789012`), and a leading
+/// decimal point (`3.141592653`).
 pub fn mask_ssn(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
@@ -217,28 +246,16 @@ pub fn mask_ssn(text: &str) -> String {
     let mut i = 0;
 
     while i < len {
-        // SSN pattern: exactly 3 digits, dash, 2 digits, dash, 4 digits
-        if i + 10 < len
-            && chars[i].is_ascii_digit()
-            && chars[i + 1].is_ascii_digit()
-            && chars[i + 2].is_ascii_digit()
-            && chars[i + 3] == '-'
-            && chars[i + 4].is_ascii_digit()
-            && chars[i + 5].is_ascii_digit()
-            && chars[i + 6] == '-'
-            && chars[i + 7].is_ascii_digit()
-            && chars[i + 8].is_ascii_digit()
-            && chars[i + 9].is_ascii_digit()
-            && chars[i + 10].is_ascii_digit()
-        {
-            // Ensure not preceded by a digit (avoid matching inside longer numbers)
+        if chars[i].is_ascii_digit() {
+            // A start glued to a preceding digit is the interior of a longer
+            // number, never the start of an SSN.
             let preceded_by_digit = i > 0 && chars[i - 1].is_ascii_digit();
-            // Ensure not followed by a digit
-            let followed_by_digit = i + 11 < len && chars[i + 11].is_ascii_digit();
-            if !preceded_by_digit && !followed_by_digit {
-                result.push_str("[SSN]");
-                i += 11;
-                continue;
+            if !preceded_by_digit {
+                if let Some(consumed) = ssn_match_len(&chars, i, len) {
+                    result.push_str("[SSN]");
+                    i += consumed;
+                    continue;
+                }
             }
         }
         result.push(chars[i]);
@@ -248,28 +265,55 @@ pub fn mask_ssn(text: &str) -> String {
     result
 }
 
+/// Recognize an SSN form at `start` and return the number of chars it consumes.
+/// The caller has already guaranteed `chars[start]` is a digit not preceded by a
+/// digit.
+fn ssn_match_len(chars: &[char], start: usize, len: usize) -> Option<usize> {
+    let is_digit = |idx: usize| idx < len && chars[idx].is_ascii_digit();
+    // A following digit — or a separator then a digit — means this is the head of a
+    // longer structured number (phone / card / version / decimal), not a bare SSN.
+    let extends = |idx: usize| {
+        is_digit(idx) || (idx < len && matches!(chars[idx], '-' | '.' | ' ') && is_digit(idx + 1))
+    };
+
+    // (a) 3-2-4 grouping, single CONSISTENT sep `-`/`.`/space (seps at 3 and 6).
+    if start + 11 <= len {
+        let sep = chars[start + 3];
+        if matches!(sep, '-' | '.' | ' ')
+            && chars[start + 6] == sep
+            && [0, 1, 2, 4, 5, 7, 8, 9, 10]
+                .iter()
+                .all(|&k| is_digit(start + k))
+            && !extends(start + 11)
+            // A matching `-`/`.` right before means this is the tail of a longer
+            // separated run (`12-123-45-6789`); skip. Space is a word boundary.
+            && !(start > 0 && matches!(sep, '-' | '.') && chars[start - 1] == sep)
+        {
+            return Some(11);
+        }
+    }
+
+    // (b) unseparated run of EXACTLY 9 digits.
+    if start + 9 <= len
+        && (0..9).all(|k| is_digit(start + k))
+        // A leading decimal point makes this a fractional part (e.g. the 9-digit
+        // mantissa of `3.141592653`), not an SSN.
+        && !(start > 0 && chars[start - 1] == '.')
+        && !extends(start + 9)
+    {
+        return Some(9);
+    }
+
+    None
+}
+
 pub fn mask_api_keys(text: &str) -> String {
-    // 15 known key prefixes (case-sensitive). A token is a key when >=8 chars
-    // follow the prefix before a terminator. (review4 V5: single O(N) left-to-right
-    // pass — the previous per-prefix scan rebuilt the whole tail with format! on
-    // every match, giving O(N^2) on inputs dense in key-like tokens.)
-    const PREFIXES: [&str; 15] = [
-        "sk-",
-        "pk-",
-        "sk_",
-        "pk_",
-        "api_",
-        "key_",
-        "token_",
-        "secret_",
-        "AKIA",
-        "ghp_",
-        "gho_",
-        "ghs_",
-        "github_pat_",
-        "xoxb-",
-        "xoxp-",
-    ];
+    // Known key prefixes (case-sensitive). A token is a key when >=8 chars follow
+    // the prefix before a terminator. (review4 V5: single O(N) left-to-right pass —
+    // the previous per-prefix scan rebuilt the whole tail with format! on every
+    // match, giving O(N^2).) The prefix list is the shared SSOT in `maekon-core`
+    // (#8041) so it cannot drift from the clipboard secret redactor.
+    let prefixes = maekon_core::secret_redaction::SECRET_TOKEN_PREFIXES;
     let is_terminator =
         |c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == ';';
 
@@ -280,7 +324,7 @@ pub fn mask_api_keys(text: &str) -> String {
     while i < len {
         // Match the longest prefix starting at i (prefixes are pure ASCII).
         let mut matched_prefix_len = 0usize;
-        for prefix in PREFIXES {
+        for prefix in prefixes {
             let plen = prefix.len(); // ASCII => char count == byte len
             if plen > matched_prefix_len
                 && i + plen <= len
@@ -315,6 +359,15 @@ pub fn mask_api_keys(text: &str) -> String {
 
     // Mask PEM private key blocks: "-----BEGIN * PRIVATE KEY-----"
     mask_private_key_blocks(&result)
+}
+
+/// Entropy fallback (#8041): mask prefix-less high-entropy secrets that the
+/// prefix/Bearer/PEM matchers in [`mask_api_keys`] miss (Bearer-less JWTs, Google/
+/// npm/GitLab tokens, DB-connection-string passwords, on-screen passwords), reusing
+/// the shared clipboard heuristic as the SSOT. The caller runs it LAST so it never
+/// clobbers an earlier marker; see `sanitize_title_with_level` + `maekon-core`.
+pub fn mask_high_entropy_secrets(text: &str) -> String {
+    maekon_core::secret_redaction::redact_secrets_with_marker(text, "[API_KEY]")
 }
 
 fn mask_bearer_tokens(text: &str) -> String {

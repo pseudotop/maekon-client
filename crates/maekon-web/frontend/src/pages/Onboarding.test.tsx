@@ -157,19 +157,20 @@ describe('Onboarding', () => {
     expect(mockInvoke).not.toHaveBeenCalledWith('set_consent', expect.anything())
   })
 
-  // #5707: StepCoaching tests — index 4 of 6 (after Features step).
-  // Intro(0)→Permissions(1)→Consent(2)→Features(3)→Coaching(4).
+  // #5707: StepCoaching tests — index 5 of 7 (after the default-off Audio step).
+  // Intro(0)→Permissions(1)→Consent(2)→Features(3)→Audio(4)→Coaching(5).
   // IS_TAURI=false means PermissionsStep auto-readies; Next is never blocked.
 
   function gotoCoachingStep() {
-    // From step 0, click Next four times to reach step 4.
+    // From step 0, click Next five times to reach step 5.
     fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 0→1
     fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 1→2
     fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 2→3
     fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 3→4
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 4→5
   }
 
-  it('renders StepCoaching at index 4 with the Enable button', async () => {
+  it('renders StepCoaching at index 5 with the Enable button', async () => {
     mockInvoke.mockResolvedValue(undefined)
 
     renderWithProviders(<Onboarding onComplete={vi.fn()} />)
@@ -269,5 +270,79 @@ describe('Onboarding', () => {
 
     // get_consent must not have been called (no auto-grant).
     expect(mockInvoke).not.toHaveBeenCalledWith('get_consent')
+  })
+
+  // #8059 G2b: StepFeatures (index 3) discoverability + AI-features opt-in.
+  // Intro(0)→Permissions(1)→Consent(2)→Features(3). IS_TAURI=false auto-readies
+  // the Permissions step, so Next is never blocked.
+  function gotoFeaturesStep() {
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 0→1
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 1→2
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 2→3
+  }
+
+  it('shows an explicit default-off audio defer step without writing settings', () => {
+    mockInvoke.mockResolvedValue(undefined)
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoFeaturesStep()
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })) // 3→4
+
+    expect(screen.getByTestId('onboarding-audio-deferred')).toBeInTheDocument()
+    expect(screen.getByText(en.onboarding.audio.statusTitle)).toBeInTheDocument()
+    expect(screen.getByText(en.onboarding.audio.egressNote)).toBeInTheDocument()
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
+    expect(mockInvoke).not.toHaveBeenCalledWith('set_consent', expect.anything())
+  })
+
+  it('StepFeatures lists a Search feature and shows the AI-features opt-in button (not pre-enabled)', () => {
+    mockInvoke.mockResolvedValue(undefined)
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoFeaturesStep()
+
+    // The new fourth feature (Search) must be listed.
+    expect(screen.getByText(en.onboarding.step3Search)).toBeInTheDocument()
+    // Opt-in button present; confirmed state not yet shown.
+    expect(screen.getByTestId('onboarding-aifeatures-enable')).toBeInTheDocument()
+    expect(screen.queryByTestId('onboarding-aifeatures-enabled')).not.toBeInTheDocument()
+  })
+
+  it('clicking Enable AI features → fetchSettings → updateSettings flips the analysis trio true, then confirms', async () => {
+    mockInvoke.mockResolvedValue(undefined)
+    mockFetchSettings.mockResolvedValue({
+      analysis: { enabled: false, embedding_enabled: false, llm_summary_enabled: false, interval_secs: 60 },
+    })
+    mockUpdateSettings.mockResolvedValue({
+      analysis: { enabled: true, embedding_enabled: true, llm_summary_enabled: true, interval_secs: 60 },
+    })
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoFeaturesStep()
+
+    fireEvent.click(screen.getByTestId('onboarding-aifeatures-enable'))
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          analysis: expect.objectContaining({
+            enabled: true,
+            embedding_enabled: true,
+            llm_summary_enabled: true,
+          }),
+        }),
+      )
+      expect(screen.getByTestId('onboarding-aifeatures-enabled')).toBeInTheDocument()
+    })
+  })
+
+  it('default-off guard: AI-features opt-in is NOT auto-enabled — updateSettings is not called if the user skips', () => {
+    mockInvoke.mockResolvedValue(undefined)
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoFeaturesStep()
+
+    // No settings write may fire without an explicit click.
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
 })

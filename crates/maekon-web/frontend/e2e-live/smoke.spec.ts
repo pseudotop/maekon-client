@@ -13,8 +13,10 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { expect, test } from '@playwright/test'
+import { fileURLToPath } from 'node:url'
+import { expect, type Page, test } from '@playwright/test'
 import { DEFAULT_WEB_PORT } from '../src/constants'
+import { requireLiveAuthToken } from './live-auth'
 
 const port = Number(process.env.MAEKON_PORT || DEFAULT_WEB_PORT)
 const API_BASE = `http://127.0.0.1:${port}/api`
@@ -25,11 +27,36 @@ const API_BASE = `http://127.0.0.1:${port}/api`
 
 /** Read the workspace version from Cargo.toml (single source of truth) */
 function getCargoVersion(): string {
-  const cargoPath = path.resolve(__dirname, '../../../../Cargo.toml')
+  const cargoPath = path.resolve(fileURLToPath(new URL('../../../../Cargo.toml', import.meta.url)))
   const content = fs.readFileSync(cargoPath, 'utf-8')
   const match = content.match(/^\s*version\s*=\s*"([^"]+)"/m)
   if (!match) throw new Error('Cannot read version from Cargo.toml')
   return match[1]
+}
+
+async function authenticatedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  headers.set('x-local-auth', requireLiveAuthToken())
+  return fetch(url, { ...init, headers })
+}
+
+async function authenticatePage(page: Page): Promise<void> {
+  await page.context().addCookies([
+    {
+      name: 'maekon_local_auth',
+      value: requireLiveAuthToken(),
+      domain: '127.0.0.1',
+      path: '/api',
+      httpOnly: false,
+      secure: false,
+      sameSite: 'Strict',
+    },
+  ])
+}
+
+async function openAuthenticatedPage(page: Page, route: string): Promise<void> {
+  await authenticatePage(page)
+  await page.goto(route)
 }
 
 // ---------------------------------------------------------------------------
@@ -37,33 +64,34 @@ function getCargoVersion(): string {
 // ---------------------------------------------------------------------------
 
 test.describe('Backend Health', () => {
-  test('API is reachable', async ({ request }) => {
-    const res = await request.get(`${API_BASE}/settings`)
-    expect(res.ok()).toBeTruthy()
+  test('API is reachable', async () => {
+    const res = await authenticatedFetch(`${API_BASE}/settings`)
+    expect(res.ok).toBeTruthy()
     const body = await res.json()
     expect(body).toHaveProperty('web_port')
   })
 
-  test('SSE stream connects', async ({ request }) => {
-    const res = await request.get(`${API_BASE}/stream`, {
+  test('SSE stream connects', async () => {
+    const res = await authenticatedFetch(`${API_BASE}/stream`, {
       headers: { Accept: 'text/event-stream' },
-      timeout: 5000,
+      signal: AbortSignal.timeout(5000),
     })
-    // SSE endpoint should respond with 200
-    expect(res.status()).toBe(200)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/event-stream')
+    await res.body?.cancel()
   })
 
-  test('metrics endpoint returns data', async ({ request }) => {
-    const res = await request.get(`${API_BASE}/stats/summary`)
-    expect(res.ok()).toBeTruthy()
+  test('metrics endpoint returns data', async () => {
+    const res = await authenticatedFetch(`${API_BASE}/stats/summary`)
+    expect(res.ok).toBeTruthy()
     const body = await res.json()
     expect(body).toHaveProperty('date')
     expect(body).toHaveProperty('cpu_avg')
   })
 
-  test('update status endpoint works', async ({ request }) => {
-    const res = await request.get(`${API_BASE}/update/status`)
-    expect(res.ok()).toBeTruthy()
+  test('update status endpoint works', async () => {
+    const res = await authenticatedFetch(`${API_BASE}/update/status`)
+    expect(res.ok).toBeTruthy()
     const body = await res.json()
     expect(body).toHaveProperty('phase')
   })
@@ -80,9 +108,9 @@ test.describe('Frontend Rendering', () => {
       if (msg.type() === 'error') consoleErrors.push(msg.text())
     })
 
-    await page.goto('/')
+    await openAuthenticatedPage(page, '/')
     // Wait for the page to actually render content
-    await page.waitForLoadState('networkidle')
+    await page.waitForLoadState('domcontentloaded')
 
     // Should have some visible content (not a blank page)
     const body = await page.locator('body').textContent()
@@ -102,8 +130,9 @@ test.describe('Frontend Rendering', () => {
       }
     })
 
-    await page.goto('/')
-    await page.waitForLoadState('networkidle')
+    await openAuthenticatedPage(page, '/')
+    await page.waitForLoadState('domcontentloaded')
+    await page.waitForTimeout(500)
 
     expect(cspViolations).toEqual([])
   })
@@ -121,6 +150,7 @@ test.describe('Frontend Rendering', () => {
       '/updates',
     ]
 
+    await authenticatePage(page)
     for (const route of routes) {
       await page.goto(route)
       await page.waitForLoadState('domcontentloaded')
@@ -138,7 +168,7 @@ test.describe('Frontend Rendering', () => {
 
 test.describe('StatusBar', () => {
   test('shows Connected (not Offline)', async ({ page }) => {
-    await page.goto('/')
+    await openAuthenticatedPage(page, '/')
     // Wait for SSE to establish
     await page.waitForTimeout(2000)
 
@@ -154,8 +184,8 @@ test.describe('StatusBar', () => {
   test('shows correct version from Cargo.toml', async ({ page }) => {
     const expectedVersion = getCargoVersion()
 
-    await page.goto('/')
-    await page.waitForLoadState('networkidle')
+    await openAuthenticatedPage(page, '/')
+    await page.waitForLoadState('domcontentloaded')
 
     const statusBar = page.locator('.app-shell-statusbar')
     const text = await statusBar.textContent()
@@ -165,7 +195,7 @@ test.describe('StatusBar', () => {
   })
 
   test('shows CPU and memory metrics (not --)', async ({ page }) => {
-    await page.goto('/')
+    await openAuthenticatedPage(page, '/')
     // Wait for metrics to arrive via SSE
     await page.waitForTimeout(3000)
 
@@ -181,8 +211,8 @@ test.describe('StatusBar', () => {
   })
 
   test('shows automation status', async ({ page }) => {
-    await page.goto('/')
-    await page.waitForLoadState('networkidle')
+    await openAuthenticatedPage(page, '/')
+    await page.waitForLoadState('domcontentloaded')
 
     const statusBar = page.locator('.app-shell-statusbar')
     const text = await statusBar.textContent()
@@ -198,8 +228,8 @@ test.describe('StatusBar', () => {
 
 test.describe('Updates Page', () => {
   test('renders update status', async ({ page }) => {
-    await page.goto('/updates')
-    await page.waitForLoadState('networkidle')
+    await openAuthenticatedPage(page, '/updates')
+    await page.waitForLoadState('domcontentloaded')
 
     // Should display some update-related content
     const content = await page.content()
@@ -214,19 +244,17 @@ test.describe('Updates Page', () => {
 
 test.describe('Navigation', () => {
   test('sidebar navigation works for all pages', async ({ page }) => {
-    await page.goto('/')
-    await page.waitForLoadState('networkidle')
+    await openAuthenticatedPage(page, '/')
+    await page.waitForLoadState('domcontentloaded')
 
-    // ActivityBar should be visible
-    const nav = page.locator('nav[role="navigation"]')
-    await expect(nav).toBeVisible()
+    const navigation = page.getByRole('navigation')
+    await expect(navigation).toBeVisible()
+    const navItems = navigation.locator('button[data-testid^="nav-"]')
+    const navItemCount = await navItems.count()
+    expect(navItemCount).toBeGreaterThanOrEqual(5)
 
-    // Click through each nav item and verify URL changes
-    const navItems = await nav.locator('button').all()
-    expect(navItems.length).toBeGreaterThanOrEqual(5)
-
-    for (const item of navItems) {
-      await item.click()
+    for (let index = 0; index < navItemCount; index += 1) {
+      await navItems.nth(index).click()
       await page.waitForLoadState('domcontentloaded')
       // Page should not crash
       const html = await page.content()
@@ -240,8 +268,8 @@ test.describe('Navigation', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('API Contract', () => {
-  test('settings endpoint returns expected shape', async ({ request }) => {
-    const res = await request.get(`${API_BASE}/settings`)
+  test('settings endpoint returns expected shape', async () => {
+    const res = await authenticatedFetch(`${API_BASE}/settings`)
     const body = await res.json()
 
     // Key fields that the frontend depends on
@@ -253,16 +281,16 @@ test.describe('API Contract', () => {
     expect(body).toHaveProperty('schedule')
   })
 
-  test('processes endpoint returns array', async ({ request }) => {
-    const res = await request.get(`${API_BASE}/processes`)
-    expect(res.ok()).toBeTruthy()
+  test('processes endpoint returns array', async () => {
+    const res = await authenticatedFetch(`${API_BASE}/processes`)
+    expect(res.ok).toBeTruthy()
     const body = await res.json()
     expect(Array.isArray(body)).toBe(true)
   })
 
-  test('tags endpoint returns array', async ({ request }) => {
-    const res = await request.get(`${API_BASE}/tags`)
-    expect(res.ok()).toBeTruthy()
+  test('tags endpoint returns array', async () => {
+    const res = await authenticatedFetch(`${API_BASE}/tags`)
+    expect(res.ok).toBeTruthy()
     const body = await res.json()
     expect(Array.isArray(body)).toBe(true)
   })

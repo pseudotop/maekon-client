@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,35 +10,36 @@ function fail(message) {
 }
 
 const packageJson = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8'))
+const workspaceConfig = readFileSync(resolve(rootDir, 'pnpm-workspace.yaml'), 'utf8')
+
+function readTopLevelMap(source, key) {
+  const result = {}
+  const lines = source.split(/\r?\n/)
+  const headerIndex = lines.findIndex((line) => line === `${key}:`)
+  if (headerIndex < 0) return result
+
+  for (const line of lines.slice(headerIndex + 1)) {
+    if (!line.trim() || line.trimStart().startsWith('#')) continue
+    if (!line.startsWith('  ')) break
+
+    const match = line.match(/^  (?:(['"])(.*?)\1|([^:]+)):\s*(.*?)\s*$/)
+    if (!match) continue
+    const entryKey = (match[2] || match[3]).trim()
+    const rawValue = match[4]
+    result[entryKey] = rawValue === 'true' ? true : rawValue === 'false' ? false : rawValue
+  }
+
+  return result
+}
 
 if (packageJson.pnpm && Object.keys(packageJson.pnpm).length > 0) {
   fail('pnpm settings must live in pnpm-workspace.yaml for pnpm 11.')
 }
 
-const configResult = spawnSync('pnpm', ['config', 'get', 'overrides', '--json'], {
-  cwd: rootDir,
-  encoding: 'utf8',
-})
-
-if (configResult.status !== 0) {
-  fail(configResult.stderr?.trim() || configResult.error?.message || 'Failed to read pnpm overrides.')
-}
-
-if (configResult.stderr.includes('package.json is no longer read by pnpm')) {
-  fail(configResult.stderr.trim())
-}
-
-const rawOverrides = configResult.stdout.trim()
-
-if (!rawOverrides) {
-  fail('pnpm overrides are not configured for this project.')
-}
-
-let overrides
-try {
-  overrides = JSON.parse(rawOverrides)
-} catch (error) {
-  fail(`pnpm overrides are not valid JSON: ${error.message}`)
+// CLI 출력 형식은 pnpm 10 부버전마다 달라지므로 workspace SSOT를 직접 검증한다.
+const overrides = readTopLevelMap(workspaceConfig, 'overrides')
+if (Object.keys(overrides).length === 0) {
+  fail('pnpm overrides are not configured in pnpm-workspace.yaml.')
 }
 
 const expectedOverrides = {
@@ -49,7 +49,7 @@ const expectedOverrides = {
   'js-yaml': '4.2.0',
   ws: '8.21.0',
   'cheerio>undici': '7.28.0',
-  'minimatch@10.2.5>brace-expansion': '5.0.6',
+  'minimatch@10.2.5>brace-expansion': '5.0.7',
   'webdriver>undici': '6.27.0',
 }
 
@@ -59,20 +59,9 @@ for (const [packageName, expectedVersion] of Object.entries(expectedOverrides)) 
   }
 }
 
-const allowBuildsResult = spawnSync('pnpm', ['config', 'get', 'allowBuilds', '--json'], {
-  cwd: rootDir,
-  encoding: 'utf8',
-})
-
-if (allowBuildsResult.status !== 0) {
-  fail(allowBuildsResult.stderr?.trim() || allowBuildsResult.error?.message || 'Failed to read pnpm allowBuilds.')
-}
-
-let allowBuilds
-try {
-  allowBuilds = JSON.parse(allowBuildsResult.stdout.trim())
-} catch (error) {
-  fail(`pnpm allowBuilds are not valid JSON: ${error.message}`)
+const allowBuilds = readTopLevelMap(workspaceConfig, 'allowBuilds')
+if (Object.keys(allowBuilds).length === 0) {
+  fail('pnpm allowBuilds are not configured in pnpm-workspace.yaml.')
 }
 
 const expectedBuildApprovals = {

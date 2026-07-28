@@ -120,7 +120,10 @@ export function useSSE(options: UseSSEOptions = {}): UseSSEResult {
       return
     }
 
-    const eventSource = new EventSource(streamUrl, { withCredentials: true })
+    // Query auth covers cross-origin Tauri streams; EventSource's default
+    // same-origin credentials mode still carries the browser cookie. Enabling
+    // credentialed CORS here makes the Tauri response unreadable (#8202).
+    const eventSource = new EventSource(streamUrl)
     if (connectToken !== connectTokenRef.current) {
       eventSource.close()
       return

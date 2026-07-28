@@ -390,7 +390,7 @@ mod tests {
                 name: "file-save".to_string(),
                 description: "saves the file".to_string(),
             }],
-            active_skill_body: None,
+            active_skill: None,
         };
         let result = provider
             .interpret_intent_with_skills(&screen_ctx(), "save file", &skill_ctx)
@@ -410,7 +410,7 @@ mod tests {
                 name: "file-save".to_string(),
                 description: "saves the file".to_string(),
             }],
-            active_skill_body: None,
+            active_skill: None,
         };
         // Fallback (rule matcher) invoked; it drops skills (only interpret_intent called).
         let result = provider

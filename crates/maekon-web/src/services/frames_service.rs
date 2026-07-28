@@ -89,12 +89,29 @@ impl FramesQueryService {
         })
     }
 
+    /// Stream a frame's screenshot bytes, or a structured unavailable reason.
+    ///
+    /// #8077-A: an `<img>` `onError` carries no HTTP status, so the frontend
+    /// re-fetches this endpoint to read the failure. We therefore return
+    /// distinct, machine-readable `code`s (via `ApiError::Coded`) so the UI can
+    /// render a truthful reason + recovery action instead of a raw broken-image
+    /// glyph. The re-auth gate (`require_capture_reauth`) still returns
+    /// `403 auth.reauth_required` ahead of this handler and passes through
+    /// unchanged.
+    ///
+    /// Codes: `frames.image_missing` (never captured / metadata-only frame),
+    /// `frames.image_deleted` (row present but file gone — retention/erasure),
+    /// `frames.image_load_failure` (present but unreadable — decryption/IO).
     pub async fn get_frame_image(&self, frame_id: i64) -> Response {
         let file_path = match self.ctx.storage.get_frame_file_path(frame_id).await {
             Ok(Some(path)) => path,
             Ok(None) => {
-                return ApiError::NotFound(format!("frame {frame_id} has no image"))
-                    .into_response();
+                return ApiError::Coded {
+                    status: StatusCode::NOT_FOUND.as_u16(),
+                    code: "frames.image_missing".to_string(),
+                    message: format!("frame {frame_id} has no captured image"),
+                }
+                .into_response();
             }
             Err(error) => return ApiError::Internal(error.to_string()).into_response(),
         };
@@ -108,16 +125,24 @@ impl FramesQueryService {
             match frame_storage.load_frame(Path::new(&file_path)).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    return ApiError::Internal(format!("frame load failure: {error}"))
-                        .into_response();
+                    return ApiError::Coded {
+                        status: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                        code: "frames.image_load_failure".to_string(),
+                        message: format!("frame load failure: {error}"),
+                    }
+                    .into_response();
                 }
             }
         } else {
             match tokio::fs::read(&full_path).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    return ApiError::Internal(format!("file read failure: {error}"))
-                        .into_response();
+                    return ApiError::Coded {
+                        status: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                        code: "frames.image_load_failure".to_string(),
+                        message: format!("file read failure: {error}"),
+                    }
+                    .into_response();
                 }
             }
         };
@@ -146,9 +171,14 @@ fn resolve_frame_image_path(
                 }
                 Ok(canonical)
             }
-            Err(_) => Err(ApiError::NotFound(format!(
-                "Image file not found: {file_path}"
-            ))),
+            // The row references a file that is gone from disk — retention
+            // pruning or a GDPR erasure removed it. Distinct `deleted` code so
+            // the UI can say "removed by retention" rather than a generic 404.
+            Err(_) => Err(ApiError::Coded {
+                status: StatusCode::NOT_FOUND.as_u16(),
+                code: "frames.image_deleted".to_string(),
+                message: format!("Image file not found: {file_path}"),
+            }),
         };
     }
 

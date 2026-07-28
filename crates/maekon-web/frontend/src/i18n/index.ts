@@ -23,9 +23,20 @@ i18n
     resources,
     fallbackLng: 'en',
     supportedLngs: ['ko', 'en', 'ja', 'zh-CN', 'es'],
+    // #8058 P2-5: map a region-suffixed OS language to its supported base
+    // (e.g. 'ko-KR' -> 'ko', 'ja-JP' -> 'ja', 'en-US' -> 'en') while keeping the
+    // explicit region code 'zh-CN' an exact match. Without this, navigator values
+    // like 'ko-KR' miss `supportedLngs` and fall through to the English fallback,
+    // defeating OS-language detection.
+    nonExplicitSupportedLngs: true,
 
     detection: {
-      order: ['localStorage'],
+      // Explicit user choice (localStorage) always wins; on first run — before any
+      // choice is stored — fall back to the OS/browser language via 'navigator'
+      // (#8058 P2-5). Previously only 'localStorage' was consulted, so a fresh
+      // install was pinned to English regardless of OS locale, inconsistent with
+      // the theme surface which already honors OS `prefers-color-scheme`.
+      order: ['localStorage', 'navigator'],
       lookupLocalStorage: 'maekon-language',
       caches: ['localStorage'],
     },

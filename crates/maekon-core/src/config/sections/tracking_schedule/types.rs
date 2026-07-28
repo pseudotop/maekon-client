@@ -1,10 +1,10 @@
 //! `TrackingScheduleConfig` and `TrackingWindow` — configuration types for
-//! wall-clock mute windows (Phase 9 PR-A).
+//! wall-clock allowed windows (Phase 9 PR-A).
 //!
 //! Tracking schedule configuration — privacy-hardening feature (Phase 9 PR-A).
 //!
 //! Allows users to configure wall-clock windows during which telemetry/capture
-//! is muted. A window is specified as a start/end HH:MM pair on selected days
+//! is allowed. A window is specified as a start/end HH:MM pair on selected days
 //! of the week. Overnight wrap (end < start) is supported when the resulting
 //! window spans <= 16 hours (windows spanning > 16 hours are rejected as likely
 //! config errors — see validation comments below).
@@ -15,11 +15,11 @@ use crate::config::enums::Weekday;
 
 // ── TrackingScheduleConfig ──────────────────────────────────────────
 
-/// Top-level config section controlling tracking schedule muting.
+/// Top-level config section controlling tracking schedule allowed windows.
 ///
 /// When `enabled` is true and `windows` is non-empty, telemetry/capture is
-/// suppressed outside (or during, depending on configuration) the configured
-/// windows. `timezone` is an IANA timezone name or the special value `"Local"`
+/// suppressed outside the configured windows. `timezone` is an IANA timezone
+/// name or the special value `"Local"`
 /// meaning the system local timezone.
 ///
 /// Default: disabled, no windows, timezone `"Local"`.
@@ -29,8 +29,8 @@ pub struct TrackingScheduleConfig {
     /// Master switch; false = schedule is ignored and tracking always runs.
     #[serde(default)]
     pub enabled: bool,
-    /// Wall-clock windows during which tracking is allowed (or muted, per
-    /// interpretation in A.5). Empty vec means no windows configured.
+    /// Wall-clock windows during which tracking is allowed. Empty vec means no
+    /// schedule restriction is configured.
     #[serde(default)]
     pub windows: Vec<TrackingWindow>,
     /// IANA timezone name used for window matching, or `"Local"` for the

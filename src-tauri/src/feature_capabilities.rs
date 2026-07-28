@@ -106,6 +106,19 @@ pub struct FeatureCapabilitySnapshot {
     /// so telemetry/consumers can observe the gap explicitly instead of a
     /// silently-empty active-window signal.
     pub active_window_available: bool,
+    /// PLATFORM/BUILD-capability flag (#8686 AC3): whether the out-of-process
+    /// automation sandbox can actually enforce isolation on this host + build
+    /// (`maekon_automation::sandbox::native_sandbox_available()` — the same
+    /// probes the fail-closed factory uses). The Monitoring settings tab reads
+    /// this so per-OS surfaces state containment honestly instead of implying
+    /// it everywhere.
+    pub automation_sandbox_available: bool,
+    /// PLATFORM flag (#8686 AC3): the Linux graphical session type —
+    /// `Some("wayland")` / `Some("x11")` / `Some("unknown")` on Linux, `None`
+    /// elsewhere. Lets the permission matrix distinguish the Wayland
+    /// degradation (no dependable active-window path, tracking panel
+    /// unsupported) from a healthy X11 session.
+    pub linux_session_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -164,6 +177,27 @@ fn platform_capability_flags() -> (bool, bool, bool) {
     )
 }
 
+/// Linux graphical session type for the permission matrix (#8686 AC3).
+/// Env-sniff mirrors `magic_overlay::window`'s Wayland gate: `WAYLAND_DISPLAY`
+/// wins over `DISPLAY` (XWayland sets both).
+fn linux_session_type() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let kind = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            "wayland"
+        } else if std::env::var_os("DISPLAY").is_some() {
+            "x11"
+        } else {
+            "unknown"
+        };
+        Some(kind.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 pub async fn build_feature_capability_snapshot(
     secret_backend: &SecretBackendCapabilities,
 ) -> FeatureCapabilitySnapshot {
@@ -192,6 +226,9 @@ async fn build_feature_capability_snapshot_with_probes(
                 ocr_available,
                 power_status_available,
                 active_window_available,
+                automation_sandbox_available: maekon_automation::sandbox::native_sandbox_available(
+                ),
+                linux_session_type: linux_session_type(),
             };
         }
     };
@@ -224,6 +261,8 @@ async fn build_feature_capability_snapshot_with_probes(
         ocr_available,
         power_status_available,
         active_window_available,
+        automation_sandbox_available: maekon_automation::sandbox::native_sandbox_available(),
+        linux_session_type: linux_session_type(),
     }
 }
 
@@ -1385,6 +1424,8 @@ mod tests {
             ocr_available: false,
             power_status_available: false,
             active_window_available: false,
+            automation_sandbox_available: false,
+            linux_session_type: None,
         };
 
         let diagnostics = provider_cli_diagnostics_from_snapshot(&snapshot);

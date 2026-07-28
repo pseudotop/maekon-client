@@ -149,7 +149,7 @@ pub(super) struct PlatformEgressPolicy {
     /// is injected; when `None`, the legacy behavior (config.upload_enabled alone)
     /// is preserved.
     consent_manager: Option<Arc<dyn ConsentManagerPort>>,
-    /// Runtime config binding for tracking-schedule mute windows. When missing,
+    /// Runtime config binding for tracking-schedule allowed windows. When missing,
     /// legacy `upload_enabled` + telemetry-consent behavior is preserved.
     config_manager: Option<ConfigManager>,
 }
@@ -176,7 +176,7 @@ impl PlatformEgressPolicy {
     }
 
     /// Bind runtime config so off-device batch egress honors tracking-schedule
-    /// mute windows on the same snapshot authority as capture/audio gates.
+    /// allowed windows on the same snapshot authority as capture/audio gates.
     pub(super) fn with_config_manager(mut self, config_manager: Option<ConfigManager>) -> Self {
         self.config_manager = config_manager;
         self
@@ -200,16 +200,19 @@ impl PlatformEgressPolicy {
         ConsentGate::from_ref(self.consent_manager.as_ref()).may_upload_telemetry()
     }
 
-    fn tracking_schedule_muted(&self) -> bool {
-        self.config_manager.as_ref().is_some_and(|cm| {
-            let snapshot = cm.snapshot();
-            super::schedule::tracking_schedule_active(snapshot.as_ref())
-        })
+    fn tracking_schedule_allowed(&self) -> bool {
+        self.config_manager
+            .as_ref()
+            .map(|cm| {
+                let snapshot = cm.snapshot();
+                super::schedule::tracking_schedule_allows_capture(snapshot.as_ref())
+            })
+            .unwrap_or(true)
     }
 
     /// Whether server upload of collected events is enabled, read LIVE from
     /// the shared `ConfigManager` snapshot on every call (#7698 S3) — mirrors
-    /// `tracking_schedule_muted()`'s live-snapshot pattern exactly, instead of
+    /// `tracking_schedule_allowed()`'s live-snapshot pattern exactly, instead of
     /// the `enabled` field frozen once at `PlatformEgressPolicy::new()` and
     /// never revisited for the rest of the scheduler session.
     ///
@@ -225,11 +228,11 @@ impl PlatformEgressPolicy {
     }
 
     /// Whether egress is active = upload setting AND telemetry consent AND
-    /// no active tracking-schedule mute window. All three terms are read
+    /// an allowed tracking-schedule state. All three terms are read
     /// LIVE on every call (fail-closed: any one flipping false immediately
     /// stops egress on the very next event, no scheduler restart required).
     pub(super) fn is_enabled(&self) -> bool {
-        self.upload_enabled_live() && self.telemetry_consented() && !self.tracking_schedule_muted()
+        self.upload_enabled_live() && self.telemetry_consented() && self.tracking_schedule_allowed()
     }
 
     /// Consent snapshot string at the egress moment (for egress_ledger.consent_state, #4803).
@@ -244,7 +247,7 @@ impl PlatformEgressPolicy {
             "upload_enabled={};telemetry={};tracking_schedule_muted={}",
             self.upload_enabled_live(),
             self.telemetry_consented(),
-            self.tracking_schedule_muted()
+            !self.tracking_schedule_allowed()
         )
     }
 
@@ -317,7 +320,7 @@ impl PlatformEgressPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maekon_core::config::PiiFilterLevel;
+    use maekon_core::config::{PiiFilterLevel, TrackingScheduleConfig, TrackingWindow, Weekday};
     use maekon_core::consent::ConsentManager;
     use maekon_core::models::event::{
         ClipboardContentType, ClipboardEvent, ContextEvent, FileAccessEvent, FileEventType,
@@ -327,7 +330,7 @@ mod tests {
 
     /// A `ConsentManager` with `telemetry` granted (`Valid` status) — the
     /// standard fixture for a test that wants to isolate a DIFFERENT gating
-    /// dimension (upload_enabled live-read, tracking-schedule mute, PII
+    /// dimension (upload_enabled live-read, tracking-schedule allowed state, PII
     /// floor, …) from the telemetry-consent dimension itself. #7728 made
     /// "no ConsentManager installed" fail-closed for telemetry, so any test
     /// that previously relied on that default (`is_none_or` → `true`) to
@@ -503,7 +506,7 @@ mod tests {
 
     /// #7698 S3 regression: `is_enabled()` must read `monitor.upload_enabled`
     /// LIVE from the shared `ConfigManager` snapshot, exactly like
-    /// `tracking_schedule_muted()` already does — NOT the value frozen once
+    /// `tracking_schedule_allowed()` already does — NOT the value frozen once
     /// at `PlatformEgressPolicy::new()`. Before this fix, flipping
     /// `upload_enabled` to `false` in the live config after construction had
     /// NO effect on `is_enabled()` for the rest of the scheduler session
@@ -586,6 +589,83 @@ mod tests {
         let policy_off = PlatformEgressPolicy::new(&config_off)
             .with_consent_manager(Some(granted_telemetry_consent_manager()));
         assert!(!policy_off.is_enabled());
+    }
+
+    #[test]
+    fn egress_uses_tracking_schedule_as_an_allowed_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cm = ConfigManager::with_path(dir.path().join("config.json"))
+            .expect("ConfigManager::with_path");
+        cm.update_with(|cfg| {
+            cfg.monitor.upload_enabled = true;
+            cfg.tracking_schedule = TrackingScheduleConfig {
+                enabled: true,
+                windows: vec![
+                    TrackingWindow {
+                        start: "00:00".to_string(),
+                        end: "23:59".to_string(),
+                        days_of_week: vec![
+                            Weekday::Mon,
+                            Weekday::Tue,
+                            Weekday::Wed,
+                            Weekday::Thu,
+                            Weekday::Fri,
+                            Weekday::Sat,
+                            Weekday::Sun,
+                        ],
+                        label: "all-day allowed".to_string(),
+                    },
+                    TrackingWindow {
+                        start: "23:59".to_string(),
+                        end: "00:01".to_string(),
+                        days_of_week: vec![
+                            Weekday::Mon,
+                            Weekday::Tue,
+                            Weekday::Wed,
+                            Weekday::Thu,
+                            Weekday::Fri,
+                            Weekday::Sat,
+                            Weekday::Sun,
+                        ],
+                        label: "midnight bridge".to_string(),
+                    },
+                ],
+                timezone: "Local".to_string(),
+            };
+            Ok(())
+        })
+        .expect("configure allowed window");
+
+        let policy = PlatformEgressPolicy::new(&SchedulerConfig {
+            upload_enabled: true,
+            ..Default::default()
+        })
+        .with_config_manager(Some(cm.clone()))
+        .with_consent_manager(Some(granted_telemetry_consent_manager()));
+
+        assert!(
+            policy.is_enabled(),
+            "active allowed window must permit egress"
+        );
+
+        cm.update_with(|cfg| {
+            for window in &mut cfg.tracking_schedule.windows {
+                window.days_of_week.clear();
+            }
+            Ok(())
+        })
+        .expect("move outside allowed window");
+
+        assert!(
+            !policy.is_enabled(),
+            "outside every configured allowed window must block egress"
+        );
+        assert!(
+            policy
+                .consent_state_snapshot()
+                .contains("tracking_schedule_muted=true"),
+            "the stable audit field must report the derived muted state"
+        );
     }
 
     // --- #5992: AllowFiltered + PiiFilterLevel::Off must apply a Basic floor ---

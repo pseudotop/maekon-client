@@ -91,6 +91,69 @@ pub struct DeletedRangeCounts {
     pub metrics_deleted: u64,
     pub process_snapshots_deleted: u64,
     pub idle_periods_deleted: u64,
+    /// #8045 B1: derived-data cascade counts. A range delete now also removes
+    /// the LLM summaries (`activity_segments`), embeddings (`embedding_vectors`),
+    /// and local suggestions overlapping the window that are derived from the
+    /// deleted events/frames — otherwise sensitive content survived in the
+    /// derived tables. Not part of the frozen `DeleteResult` HTTP contract; used
+    /// for the deletion-summary message and audit/log evidence only.
+    pub activity_segments_deleted: u64,
+    pub embedding_vectors_deleted: u64,
+    pub local_suggestions_deleted: u64,
+    /// #8059: voice transcripts (V47) removed for the window. A range delete
+    /// that clears events/frames content also removes the speech transcripts
+    /// recorded in that period (voice-activity content), keeping the "meetings
+    /// stay on your machine" data under the same erasure discipline. Local-only
+    /// table — no sync tombstone. Like the derived-data counts above, this is
+    /// audit/message-only and NOT part of the frozen `DeleteResult` HTTP contract.
+    pub transcripts_deleted: u64,
+}
+
+impl DeletedRangeCounts {
+    /// Total rows removed across primary + derived tables. Used to build the
+    /// user-facing "N records were deleted" message so the count reflects the
+    /// derived-data cascade (#8045 B1) and the voice-transcript cascade (#8059).
+    pub fn total(&self) -> u64 {
+        self.events_deleted
+            + self.frames_deleted
+            + self.metrics_deleted
+            + self.process_snapshots_deleted
+            + self.idle_periods_deleted
+            + self.activity_segments_deleted
+            + self.embedding_vectors_deleted
+            + self.local_suggestions_deleted
+            + self.transcripts_deleted
+    }
+}
+
+/// Row counts removed by a retroactive per-app deletion (#8045 B2 — Recall
+/// parity). When an app (or app pattern) is newly added to the exclusion list,
+/// its already-recorded history is purged: frame metadata + files, events, and
+/// the derived LLM summaries (`activity_segments`) + embeddings
+/// (`embedding_vectors`) attributable to that app.
+///
+/// `local_suggestions` is deliberately NOT included: it carries no reliable
+/// per-app identifier (the app context lives in a separate feedback table and
+/// the `payload` holds signal metrics, not app names), so a substring match
+/// would over-delete unrelated suggestions. It is a short-lived, regenerated
+/// cache covered by the time-range and full-wipe deletion primitives instead.
+#[derive(Debug, Clone, Default)]
+pub struct AppDeletionCounts {
+    pub events_deleted: u64,
+    pub frames_deleted: u64,
+    pub activity_segments_deleted: u64,
+    pub embedding_vectors_deleted: u64,
+}
+
+impl AppDeletionCounts {
+    /// Total rows removed across the matched tables (excludes on-disk frame
+    /// files, which the caller deletes best-effort from the returned paths).
+    pub fn total(&self) -> u64 {
+        self.events_deleted
+            + self.frames_deleted
+            + self.activity_segments_deleted
+            + self.embedding_vectors_deleted
+    }
 }
 
 #[derive(Debug, Clone)]

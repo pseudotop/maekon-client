@@ -45,6 +45,8 @@ export interface GoalPayload {
 export interface CaptureStatePayload {
   paused: boolean
   indicator_visible: boolean
+  consent_granted: boolean
+  permitted: boolean
 }
 
 export interface PointerContextPayload {

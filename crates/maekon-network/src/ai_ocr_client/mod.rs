@@ -141,10 +141,14 @@ impl RemoteOcrProvider {
             CredentialSource::ApiKey(config.api_key.clone())
         };
         // #6892: redirect=none — prevents provider 30x responses from leaking the api-key header + screen/prompt body.
-        let http_client = crate::outbound::hardened_client_builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
+        // #8045 C3: https_only backstop derived from the target endpoint (loopback
+        // local OCR like Ollama keeps cleartext; remote providers are HTTPS-only).
+        let http_client = crate::outbound::hardened_client_builder(
+            crate::outbound::TransportPolicy::for_endpoint(&config.endpoint),
+        )
+        .timeout(std::time::Duration::from_secs(config.timeout_secs))
+        .build()
+        .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
         let supports_model = provider_specs::resolved_surface_supports_model_selection(
             config.provider_type,
             config.surface_id.as_deref(),
@@ -264,10 +268,14 @@ impl RemoteOcrProvider {
     ) -> Result<Self, crate::error::NetworkError> {
         use crate::error::NetworkError;
         // #6892: redirect=none — prevents provider 30x responses from leaking the api-key header + screen/prompt body.
-        let http_client = crate::outbound::hardened_client_builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
+        // #8045 C3: https_only backstop derived from the target endpoint (loopback
+        // local OCR like Ollama keeps cleartext; remote providers are HTTPS-only).
+        let http_client = crate::outbound::hardened_client_builder(
+            crate::outbound::TransportPolicy::for_endpoint(&config.endpoint),
+        )
+        .timeout(std::time::Duration::from_secs(config.timeout_secs))
+        .build()
+        .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
         let supports_model = provider_specs::resolved_surface_supports_model_selection(
             config.provider_type,
             config.surface_id.as_deref(),

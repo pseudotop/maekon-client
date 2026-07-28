@@ -45,9 +45,9 @@ const RANGE_PRESETS: RangePreset[] = ['24h', '7d', '30d', 'all']
 const KIND_FILTERS: KindFilter[] = ['all', 'semantic', 'episodic', 'procedural', 'reflective']
 const STATUS_FILTERS: StatusFilter[] = ['active_superseded', 'active', 'superseded', 'retracted', 'all']
 
-const HEADER_CELL = cn('py-2 pr-4', typography.weight.medium)
-const HEADER_CELL_RIGHT = cn('py-2 pr-4 text-right', typography.weight.medium)
-const MONO_CELL = cn('py-2 pr-4 text-content-secondary text-xs', typography.family.mono)
+const HEADER_CELL = cn('whitespace-nowrap py-2 pr-4', typography.weight.medium)
+const HEADER_CELL_RIGHT = cn('whitespace-nowrap py-2 pr-4 text-right', typography.weight.medium)
+const MONO_CELL = cn('whitespace-nowrap py-2 pr-4 text-content-secondary text-xs', typography.family.mono)
 
 /** Milliseconds per preset window; `all` has no window. */
 const RANGE_WINDOW_MS: Record<Exclude<RangePreset, 'all'>, number> = {
@@ -201,7 +201,7 @@ export default function ClaimsSection() {
             {t('privacy.claims.count', { shown: claims.length, total })}
           </p>
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
+            <table className="w-full min-w-[52rem] text-left text-sm">
               <thead>
                 <tr className="border-muted border-b text-content-secondary text-xs">
                   <th className={HEADER_CELL}>{t('privacy.claims.col.time')}</th>
@@ -250,24 +250,26 @@ function ClaimRow({ claim, onRetract }: { claim: Claim; onRetract: () => void })
       <td className="whitespace-nowrap py-2 pr-4 text-content-secondary">
         {formatDateTime(new Date(claim.created_at * 1000).toISOString())}
       </td>
-      <td className="py-2 pr-4 text-content">{kindLabelKey ? t(kindLabelKey) : claim.kind}</td>
+      <td className="whitespace-nowrap py-2 pr-4 text-content">{kindLabelKey ? t(kindLabelKey) : claim.kind}</td>
       <td className="py-2 pr-4 text-content">{claim.text}</td>
       {/* Raw provenance source string, shown verbatim in mono. */}
       <td className={MONO_CELL}>{claim.source}</td>
-      <td className="py-2 pr-4 text-right text-content-secondary">{formatPercent(claim.confidence * 100, 0)}</td>
-      <td className="py-2 pr-4 text-right text-content-secondary">
+      <td className="whitespace-nowrap py-2 pr-4 text-right text-content-secondary">
+        {formatPercent(claim.confidence * 100, 0)}
+      </td>
+      <td className="whitespace-nowrap py-2 pr-4 text-right text-content-secondary">
         {claim.evidence_count > 0 ? (
           <span title={claim.evidence_segment_ids.join(', ')}>{claim.evidence_count}</span>
         ) : (
           '—'
         )}
       </td>
-      <td className="py-2 pr-4">
+      <td className="whitespace-nowrap py-2 pr-4">
         <Badge color={statusBadgeColor(claim.status)} size="sm">
           {t(`privacy.claims.status.${claim.status}`)}
         </Badge>
       </td>
-      <td className="py-2 pr-4 text-right">
+      <td className="whitespace-nowrap py-2 pr-4 text-right">
         {isRetracted ? (
           <span className="text-content-tertiary text-xs">{t('privacy.claims.retractedLabel')}</span>
         ) : (

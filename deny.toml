@@ -11,10 +11,12 @@ allow = [
   "MIT",
   "MPL-2.0",          # webpki-roots@0.26.x (TLS root CA bundle); file-level copyleft — permissible unmodified
   "NCSA",
+  "0BSD",             # alignment with about.toml `accepted` (no crate uses it today)
   "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",
   "Unicode-3.0",
+  "Unicode-DFS-2016", # alignment with about.toml `accepted` (no crate uses it today)
   "Zlib",
   "bzip2-1.0.6",    # libbz2-rs-sys (zip crate transitive dep)
   "Unlicense",      # whisper-rs / whisper-rs-sys (오디오 STT, OSI approved + FSF Free)
@@ -113,13 +115,15 @@ yanked = "deny"
 # (C) unsound (NOT unmaintained) — surfaced by cargo-audit on the 2nd-pass
 #     maekon-client audit (2026-06-25), governed by `unsound = "warn"` above; no
 #     first-party code change is reachable (we never call memmap2 directly):
-#   RUSTSEC-2026-0186  memmap2 0.9.10    xcap 0.9.6 (libwayshot-xcap, Linux screen
-#                                        capture) + xkbcommon -> enigo 0.6 (input).
-#     The mmap views back framebuffer/shm + xkb keymap fds owned by the same
-#     process/compositor session, so the unsound aliasing window (a concurrently
-#     truncated/mutated mapping) is narrow and not directly attacker-controlled.
-#     No fixed memmap2 release exists yet (informational/unsound, not a patched
-#     CVE); track xcap/libwayshot-xcap + xkbcommon for a memmap2 >= 0.9.11 bump.
+#   RUSTSEC-2026-0186  memmap2            RESOLVED 2026-07-11: bumped 0.9.10 ->
+#                                        0.9.11 (the fixed release) via
+#                                        `cargo update -p memmap2 --precise 0.9.11`.
+#     Was reachable only transitively through xcap 0.9.6 (libwayshot-xcap, Linux
+#     screen capture) + xkbcommon -> enigo 0.6 (Linux input); never called from
+#     first-party code. memmap2 0.9.11 closes the unsound aliasing advisory, so
+#     this warning should no longer surface in `cargo audit` / `cargo deny`. Entry
+#     retained for audit trail; remove once the informational-warning baseline in
+#     this file is re-counted.
 #     (rand 0.7.3 / RUSTSEC-2026-0097 is the build-time-only path already listed
 #     under (A) above.)
 #   RUSTSEC-2026-0202  cxx 1.0.194       usearch 2.25.3 -> maekon-analysis (vector

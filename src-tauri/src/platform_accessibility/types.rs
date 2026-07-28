@@ -35,14 +35,20 @@ pub(super) fn parse_accessibility_lines(raw: &str) -> Result<Vec<AccessibilityNo
             continue;
         }
 
+        let role = trim_to_option(parts[1]);
         let label = parts[2].trim();
-        if label.is_empty() {
+        // A focused Windows surface can be a valid structural node (for
+        // example, ControlType.Pane) without an accessible name or automation
+        // id. Keep role-only nodes so scene analysis does not discard the
+        // entire accessibility subtree. Lines with neither role nor label are
+        // still non-actionable and remain fail-closed.
+        if role.is_none() && label.is_empty() {
             continue;
         }
 
         nodes.push(AccessibilityNode {
             app_name: trim_to_option(parts[0]),
-            role: trim_to_option(parts[1]),
+            role,
             label: label.to_string(),
             bounds: ElementBounds {
                 x,

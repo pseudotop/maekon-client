@@ -269,6 +269,9 @@ jobs:
       - name: Verify HTTP interface manifest
         run: ./scripts/verify-http-interface-manifest.sh
 
+      - name: Verify Tauri IPC command manifests
+        run: node ./scripts/validate-ipc-command-manifests.mjs
+
       - name: Verify HTTP OpenAPI snapshot sync
         run: ./scripts/verify-http-openapi-sync.sh
 

@@ -4,9 +4,8 @@ use super::{DebugPointerCaptureCliCommand, DebugPointerCaptureRuntimeCliCommand}
 use image::GenericImageView;
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 const SIGNAL_SCAN_STRIDE_PX: u32 = 2;
 const EDGE_SIGNAL_MIN_PIXELS: u64 = 64;
@@ -45,6 +44,35 @@ struct OverlayProbeTimingContract {
     emit_attempts: u32,
     emit_interval: Duration,
     settle_after_last_emit: Duration,
+}
+
+/// Restores every UI surface temporarily activated by the runtime overlay
+/// probe, including early-return and unwind paths.
+struct OverlayProbeCleanup {
+    app_handle: AppHandle,
+    overlay: crate::magic_overlay::MagicOverlayHandle,
+    overlay_existed: bool,
+    overlay_was_visible: bool,
+    last_click_count: u32,
+}
+
+impl Drop for OverlayProbeCleanup {
+    fn drop(&mut self) {
+        self.overlay.emit_pointer_context(
+            crate::magic_overlay::OverlayPointerContextPayload::hidden(self.last_click_count),
+        );
+
+        if let Some(state) = self
+            .app_handle
+            .try_state::<crate::runtime_state::AppState>()
+        {
+            crate::commands::capture_status::emit_current_capture_status(&self.app_handle, &state);
+            crate::magic_overlay::reconcile_capture_indicator(&self.app_handle);
+        }
+
+        self.overlay
+            .restore_window_after_probe(self.overlay_existed, self.overlay_was_visible);
+    }
 }
 
 fn overlay_probe_timing_contract() -> OverlayProbeTimingContract {
@@ -248,10 +276,13 @@ fn run_pointer_overlay_capture_probe(
         });
     };
 
-    state.capture_paused.store(false, Ordering::Relaxed);
-    state.indicator_visible.store(true, Ordering::Relaxed);
-    let capture_state = json!({ "paused": false, "indicator_visible": true });
-    let _ = app_handle.emit("overlay:capture-state-changed", &capture_state);
+    // The visual probe must not mutate the real capture/indicator atomics. The
+    // old path left both flags enabled after the command returned, which kept
+    // the full-screen transparent WebView and animated border alive for the
+    // rest of the session and made a no-consent profile look like it was
+    // recording.
+    let overlay_existed = overlay.window_exists();
+    let overlay_was_visible = overlay.window_is_visible();
     if let Err(error) = overlay.ensure_window() {
         return json!({
             "ok": false,
@@ -260,6 +291,13 @@ fn run_pointer_overlay_capture_probe(
             "output_dir": output_dir,
         });
     }
+    let _cleanup = OverlayProbeCleanup {
+        app_handle: app_handle.clone(),
+        overlay: overlay.clone(),
+        overlay_existed,
+        overlay_was_visible,
+        last_click_count: OVERLAY_PROBE_POINTER_EMIT_ATTEMPTS,
+    };
     overlay.show_passive_tracking_surface();
 
     let (pointer_x, pointer_y) = current_global_pointer_position().unwrap_or((960, 540));

@@ -1,37 +1,59 @@
 /**
  * WebdriverIO configuration for Tauri E2E tests.
  *
- * Tests the actual Tauri desktop app (WKWebView on macOS)
- * via the embedded tauri-plugin-webdriver W3C server.
+ * Tests the actual Tauri desktop app through the official WebdriverIO Tauri
+ * service and its cross-platform embedded provider.
  *
  * Prerequisites:
  *   cargo build -p maekon-app --features webdriver
  */
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { startApp, stopApp } from './app-launcher.js'
+import { findBinary, prepareE2eEnvironment } from './app-launcher.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEBDRIVER_PORT = parseInt(process.env.TAURI_WEBDRIVER_PORT ?? '4445', 10)
+const APP_BINARY = findBinary()
+const APP_ENV = prepareE2eEnvironment()
 
 export const config = {
   runner: 'local',
 
-  // Connect directly to the embedded WebDriver server (no intermediary)
-  hostname: '127.0.0.1',
-  port: WEBDRIVER_PORT,
-  path: '/',
-
-  specs: [`${__dirname}/**/*.spec.ts`],
+  // Every spec mutates or observes the same desktop process and profile. Group
+  // the files into one worker so WebdriverIO cannot create parallel sessions.
+  specs: [[`${__dirname}/**/*.spec.ts`]],
 
   maxInstances: 1,
+  maxInstancesPerCapability: 1,
 
   capabilities: [
     {
-      // W3C WebDriver capabilities — no browser needed
-      browserName: 'wry',
-      'wry:options': {},
+      browserName: 'tauri',
+      'tauri:options': {
+        application: APP_BINARY,
+      },
+      'wdio:maxInstances': 1,
     },
+  ],
+
+  services: [
+    [
+      '@wdio/tauri-service',
+      {
+        appBinaryPath: APP_BINARY,
+        driverProvider: 'embedded',
+        embeddedPort: WEBDRIVER_PORT,
+        env: APP_ENV,
+        startTimeout: 60000,
+        statusPollTimeout: 5000,
+        captureBackendLogs: true,
+        // The app's privacy-filtered frontend bridge is canonical. WebView2
+        // console capture in service 1.1.0 rejects nullable source positions.
+        captureFrontendLogs: false,
+        backendLogLevel: 'warn',
+        frontendLogLevel: 'warn',
+      },
+    ],
   ],
 
   logLevel: 'warn',
@@ -47,12 +69,9 @@ export const config = {
 
   reporters: ['spec'],
 
-  // App lifecycle management
-  onPrepare: async () => {
-    await startApp(WEBDRIVER_PORT)
-  },
-
-  onComplete: () => {
-    stopApp()
+  before: async () => {
+    const { ensureShellReady, switchToMainWindow } = await import('./helpers.js')
+    await switchToMainWindow()
+    await ensureShellReady()
   },
 }

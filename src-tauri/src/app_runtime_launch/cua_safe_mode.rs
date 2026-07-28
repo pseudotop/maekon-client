@@ -15,8 +15,12 @@ fn cua_safe_mode_enabled_from(value: Option<&str>) -> bool {
 
 pub(super) fn initial_capture_flags(show_indicator: bool, cua_safe_mode: bool) -> (bool, bool) {
     let capture_paused = cua_safe_mode;
-    let indicator_visible = show_indicator;
+    let indicator_visible = show_indicator && !cua_safe_mode;
     (capture_paused, indicator_visible)
+}
+
+pub(crate) fn precreate_auxiliary_webviews(cua_safe_mode: bool) -> bool {
+    !cua_safe_mode
 }
 
 #[cfg(test)]
@@ -51,9 +55,15 @@ mod tests {
     }
 
     #[test]
-    fn cua_safe_mode_starts_paused_but_keeps_indicator_available() {
-        assert_eq!(initial_capture_flags(true, true), (true, true));
+    fn cua_safe_mode_starts_paused_with_deferred_indicator() {
+        assert_eq!(initial_capture_flags(true, true), (true, false));
         assert_eq!(initial_capture_flags(false, true), (true, false));
         assert_eq!(initial_capture_flags(true, false), (false, true));
+    }
+
+    #[test]
+    fn cua_safe_mode_defers_auxiliary_webviews_until_requested() {
+        assert!(!precreate_auxiliary_webviews(true));
+        assert!(precreate_auxiliary_webviews(false));
     }
 }

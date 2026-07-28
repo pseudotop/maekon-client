@@ -30,6 +30,17 @@ describe('provider surface defaults', () => {
     ).toBe('provider_surface.anthropic.subprocess_cli')
   })
 
+  it('uses subprocess surface for the backend snake_case subscription CLI value', () => {
+    expect(
+      deriveDefaultProviderSurfaceId(
+        DEFAULT_PROVIDER_SURFACE_CATALOG,
+        'provider_subscription_cli',
+        'llm_api',
+        'OpenAi',
+      ),
+    ).toBe('provider_surface.openai.subprocess_cli')
+  })
+
   it('keeps direct OCR surfaces available in subscription cli mode', () => {
     expect(
       deriveDefaultProviderSurfaceId(DEFAULT_PROVIDER_SURFACE_CATALOG, 'ProviderSubscriptionCli', 'ocr_api', 'OpenAi'),

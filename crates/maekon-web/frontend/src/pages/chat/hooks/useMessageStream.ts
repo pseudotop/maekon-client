@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { applyStreamMessage, finalizeThinkingMessage } from '../messageStreamState'
 import type { ChatMessage, OutboundMessage } from '../types'
 import { now } from '../utils'
 
-export function useMessageStream(activeId: string | null) {
+export function useMessageStream(activeId: string | null, onTurnCompleted?: (completedAt: string) => void) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sending, setSending] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -42,21 +43,11 @@ export function useMessageStream(activeId: string | null) {
     ;(async () => {
       const { listen } = await import('@tauri-apps/api/event')
       unlisten = await listen<OutboundMessage>(`ai-session:${activeId}`, ({ payload: p }) => {
+        if (p.type === 'result' && p.done) {
+          setSending(false)
+          onTurnCompleted?.(now())
+        }
         setMessages((prev) => {
-          const finalizeThinking = (items: ChatMessage[]) => {
-            const lastItem = items[items.length - 1]
-            if (lastItem?.thinking && !lastItem.thinking.done) {
-              return [...items.slice(0, -1), { ...lastItem, thinking: { ...lastItem.thinking, done: true } }]
-            }
-            return items
-          }
-          const appendStream = (items: ChatMessage[], c: string, done: boolean, extra?: Partial<ChatMessage>) => {
-            const base = finalizeThinking(items)
-            const lastItem = base[base.length - 1]
-            if (lastItem?.role === 'assistant' && lastItem.streaming)
-              return [...base.slice(0, -1), { ...lastItem, content: lastItem.content + c, streaming: !done, ...extra }]
-            return [...base, { role: 'assistant' as const, content: c, timestamp: now(), streaming: !done, ...extra }]
-          }
           const appendThinking = (items: ChatMessage[], c: string, done: boolean) => {
             const lastItem = items[items.length - 1]
             if (lastItem?.thinking && !lastItem.thinking.done) {
@@ -83,7 +74,7 @@ export function useMessageStream(activeId: string | null) {
             items: ChatMessage[],
             payload: Extract<OutboundMessage, { type: 'tool_call_delta' }>,
           ) => {
-            const base = finalizeThinking(items)
+            const base = finalizeThinkingMessage(items)
             let existingIndex = -1
             for (let index = base.length - 1; index >= 0; index -= 1) {
               const current = base[index]?.tool_call_delta
@@ -136,18 +127,19 @@ export function useMessageStream(activeId: string | null) {
             ]
           }
           if (p.type === 'thinking') return appendThinking(prev, p.content, p.done)
-          if (p.type === 'text') return appendStream(prev, p.content, p.done)
+          if (p.type === 'text') return applyStreamMessage(prev, { content: p.content, done: p.done, kind: 'delta' })
           if (p.type === 'result') {
-            if (p.done) setSending(false)
-            return appendStream(prev, p.content, p.done, {
-              usage: p.usage,
-              streaming: !p.done,
+            return applyStreamMessage(prev, {
+              content: p.content,
+              done: p.done,
+              kind: 'result',
+              extra: { usage: p.usage, streaming: !p.done },
             })
           }
           if (p.type === 'tool_call_delta') return appendToolCallDelta(prev, p)
           if (p.type === 'tool_use')
             return [
-              ...finalizeThinking(prev),
+              ...finalizeThinkingMessage(prev),
               {
                 role: 'system',
                 content: `Tool: ${p.tool} [${p.status}]`,
@@ -163,7 +155,7 @@ export function useMessageStream(activeId: string | null) {
           if (p.type === 'error') {
             setSending(false)
             return [
-              ...finalizeThinking(prev),
+              ...finalizeThinkingMessage(prev),
               {
                 role: 'system',
                 content: p.message,
@@ -180,7 +172,7 @@ export function useMessageStream(activeId: string | null) {
     return () => {
       unlisten?.()
     }
-  }, [activeId])
+  }, [activeId, onTurnCompleted])
 
   return { messages, setMessages, sending, setSending, scrollRef, handleScroll }
 }

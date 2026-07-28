@@ -30,7 +30,7 @@ impl ExportQueryService {
             .storage
             .list_metric_exports(&from.to_rfc3339(), &to.to_rfc3339())
             .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?
+            .map_err(ApiError::from)?
             .into_iter()
             .map(assemble_metric_export_record)
             .collect();
@@ -45,7 +45,7 @@ impl ExportQueryService {
             .storage
             .list_event_exports(&from.to_rfc3339(), &to.to_rfc3339())
             .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?
+            .map_err(ApiError::from)?
             .into_iter()
             .map(|row| assemble_event_export_record(row, &self.ctx.pii_sanitizer))
             .collect::<Result<Vec<_>, _>>()?;
@@ -60,7 +60,7 @@ impl ExportQueryService {
             .storage
             .list_frame_exports(&from.to_rfc3339(), &to.to_rfc3339())
             .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?
+            .map_err(ApiError::from)?
             .into_iter()
             .map(|row| assemble_frame_export_record(row, &self.ctx.pii_sanitizer))
             .collect::<Result<Vec<_>, _>>()?;
@@ -76,7 +76,7 @@ impl ExportQueryService {
             .storage
             .list_work_sessions(&from.to_rfc3339(), &to.to_rfc3339(), 1000)
             .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
+            .map_err(ApiError::from)?;
 
         let ical = sessions_to_ical(&sessions);
         let now = Utc::now().format("%Y%m%d_%H%M%S");
@@ -103,7 +103,7 @@ impl ExportQueryService {
             .storage
             .list_work_sessions(&from.to_rfc3339(), &to.to_rfc3339(), 1000)
             .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
+            .map_err(ApiError::from)?;
 
         let csv = sessions_to_toggl_csv(&sessions);
         let now = Utc::now().format("%Y%m%d_%H%M%S");

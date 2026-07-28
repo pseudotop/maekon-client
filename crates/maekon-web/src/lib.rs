@@ -56,6 +56,9 @@ pub mod grpc;
 pub mod handlers;
 #[cfg(feature = "grpc-dashboard")]
 pub mod proto;
+#[cfg(debug_assertions)]
+mod qc_stream_recovery;
+pub mod reauth_gate;
 pub mod required_deps;
 pub mod routes;
 pub mod runtime_bindings;
@@ -291,8 +294,30 @@ impl WebServer {
         if let Some(model_catalog_client) = analysis.model_catalog_client {
             self.state.analysis.model_catalog_client = Some(model_catalog_client);
         }
+        // #8059: semantic-search query-side components. Applied only when the
+        // composition root built them (analysis.embedding.enabled + a real
+        // provider) — leaving `None` preserves the honest "semantic unavailable"
+        // capabilities signal.
+        if let Some(vector_store) = analysis.vector_store {
+            self.state.analysis.vector_store = Some(vector_store);
+        }
+        if let Some(embedding_provider) = analysis.embedding_provider {
+            self.state.analysis.embedding_provider = Some(embedding_provider);
+        }
+        if let Some(adaptive_search) = analysis.adaptive_search {
+            self.state.analysis.adaptive_search = Some(adaptive_search);
+        }
         if let Some(session_manager) = session.session_manager {
             self.state.session.manager = Some(session_manager);
+        }
+        if let Some(pomodoro_store) = session.pomodoro_store {
+            self.state.session.pomodoro_store = Some(pomodoro_store);
+        }
+        // #8044: replace the default (disabled) re-auth gate with the shared one
+        // from the composition root so the middleware and the Tauri command read
+        // the SAME gate instance.
+        if let Some(reauth_gate) = session.reauth_gate {
+            self.state.auth.reauth_gate = reauth_gate;
         }
         self
     }
@@ -367,7 +392,14 @@ impl WebServer {
         // the LAST .route_layer is the OUTERMOST (runs first), so require_loopback_client
         // stays outermost — a non-loopback client gets 403 (unchanged) before the token
         // is ever inspected; a loopback client then faces the token gate.
+        // #8044: capture-history surfaces additionally require a fresh biometric/PIN
+        // re-auth — the INNERMOST layer (first here runs last), so it runs only after
+        // loopback + token pass. See `reauth_gate::require_capture_reauth`.
         let internal_api = routes::api_routes()
+            .route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                crate::reauth_gate::require_capture_reauth,
+            ))
             .route_layer(middleware::from_fn_with_state(
                 state.clone(),
                 require_local_auth,
@@ -615,6 +647,18 @@ fn read_local_auth_query(uri: &axum::http::Uri) -> Option<String> {
     })
 }
 
+/// Whether the `?local_auth=<token>` query-param auth channel is permitted for this
+/// request. It is deliberately limited to the two GET EventSource (SSE) endpoints
+/// below, because `EventSource` cannot set request headers and a query-param token is
+/// easy to leak by copy/sharing a URL — so every other route must present the token
+/// via header or cookie.
+///
+/// #8047 E7 — Intentional exclusion: the GUI-events SSE stream is NOT listed here and
+/// must NOT be added until a real consumer ships. It currently has no client consumer,
+/// so leaving it out keeps it fail-closed (header/cookie auth only) rather than opening
+/// a query-param token surface for an endpoint nobody yet reads. When a GUI-events
+/// consumer does ship, re-evaluate whether query-param auth is genuinely required (it is
+/// only needed for a cross-origin `EventSource`); prefer header/cookie auth otherwise.
 fn local_auth_query_allowed(method: &axum::http::Method, uri: &axum::http::Uri) -> bool {
     if method != axum::http::Method::GET {
         return false;
@@ -1604,5 +1648,183 @@ mod tests {
         assert_eq!(wrong.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         server.abort();
+    }
+
+    // ── #8059: semantic-search production wiring ─────────────────────────────
+
+    /// The composition-root plumbing under test: `with_runtime_bindings` must
+    /// transfer the three semantic-search query-side components
+    /// (`embedding_provider` / `adaptive_search` / `vector_store`) into
+    /// `AnalysisState` (same Arc — Port Instance Sharing), so that a user with
+    /// `analysis.embedding.enabled` gets `semantic_available = true` AND the
+    /// `mode=semantic`/`mode=hybrid` paths reach the wired providers instead of
+    /// the honest-degrade "not configured" boundary.
+    ///
+    /// Fails before this issue's `with_runtime_bindings` extension: the three
+    /// `analysis.*` fields were only ever assigned under `#[cfg(test)]` in
+    /// handler/service tests, never through the production binding path, so
+    /// `capabilities.semantic_available` was unconditionally `false` in prod.
+    #[tokio::test]
+    async fn runtime_bindings_wire_semantic_search_components_into_analysis_state() {
+        use async_trait::async_trait;
+        use axum::extract::State;
+        use maekon_core::error::CoreError;
+        use maekon_core::models::embedding::{EmbeddingMetadata, SearchFilters, SearchResult};
+        use maekon_core::ports::adaptive_search::AdaptiveSearchPort;
+        use maekon_core::ports::embedding_provider::EmbeddingProvider;
+        use maekon_core::ports::vector_store::VectorStore;
+
+        struct StubEmbedding;
+        #[async_trait]
+        impl EmbeddingProvider for StubEmbedding {
+            async fn embed(&self, _text: &str) -> Result<Vec<f32>, CoreError> {
+                Ok(vec![0.0_f32; 4])
+            }
+            fn dimensions(&self) -> usize {
+                4
+            }
+            fn model_id(&self) -> &str {
+                "test-wiring"
+            }
+        }
+
+        struct StubAdaptive;
+        #[async_trait]
+        impl AdaptiveSearchPort for StubAdaptive {
+            async fn search(
+                &self,
+                _q: &[f32],
+                _limit: usize,
+                _decay: f32,
+                _filters: &SearchFilters,
+            ) -> Result<Vec<SearchResult>, CoreError> {
+                Ok(Vec::new())
+            }
+            async fn refresh_count(&self) -> Result<(), CoreError> {
+                Ok(())
+            }
+        }
+
+        struct StubVectorStore;
+        #[async_trait]
+        impl VectorStore for StubVectorStore {
+            async fn store(&self, _v: Vec<f32>, _m: EmbeddingMetadata) -> Result<(), CoreError> {
+                Ok(())
+            }
+            async fn search(
+                &self,
+                _q: &[f32],
+                _limit: usize,
+                _decay: f32,
+            ) -> Result<Vec<SearchResult>, CoreError> {
+                Ok(Vec::new())
+            }
+            async fn search_filtered(
+                &self,
+                _q: &[f32],
+                _limit: usize,
+                _decay: f32,
+                _f: &SearchFilters,
+            ) -> Result<Vec<SearchResult>, CoreError> {
+                Ok(Vec::new())
+            }
+            async fn enforce_retention(&self, _days: u32) -> Result<u64, CoreError> {
+                Ok(0)
+            }
+            async fn mark_stale(&self, _id: &str) -> Result<u64, CoreError> {
+                Ok(0)
+            }
+            async fn update_vector(
+                &self,
+                _id: i64,
+                _v: Vec<f32>,
+                _m: &str,
+            ) -> Result<u64, CoreError> {
+                Ok(0)
+            }
+            async fn get_current_model_id(&self) -> Result<Option<String>, CoreError> {
+                Ok(None)
+            }
+            async fn get_stale_vectors(
+                &self,
+                _limit: usize,
+            ) -> Result<Vec<(i64, String)>, CoreError> {
+                Ok(vec![])
+            }
+        }
+
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
+        let (event_tx, _) = broadcast::channel(8);
+        let embedding_provider: Arc<dyn EmbeddingProvider> = Arc::new(StubEmbedding);
+        let adaptive_search: Arc<dyn AdaptiveSearchPort> = Arc::new(StubAdaptive);
+        let vector_store: Arc<dyn VectorStore> = Arc::new(StubVectorStore);
+
+        let server = WebServer::new(storage, event_tx, WebConfig::default()).with_runtime_bindings(
+            WebServerRuntimeBindings {
+                analysis: AnalysisRuntimeBindings {
+                    embedding_provider: Some(embedding_provider.clone()),
+                    adaptive_search: Some(adaptive_search.clone()),
+                    vector_store: Some(vector_store.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        // Plumbing: each Arc lands in AnalysisState as the SAME instance.
+        let applied_ep = server
+            .state
+            .analysis
+            .embedding_provider
+            .clone()
+            .expect("embedding_provider must be wired");
+        assert!(Arc::ptr_eq(&applied_ep, &embedding_provider));
+        let applied_as = server
+            .state
+            .analysis
+            .adaptive_search
+            .clone()
+            .expect("adaptive_search must be wired");
+        assert!(Arc::ptr_eq(&applied_as, &adaptive_search));
+        let applied_vs = server
+            .state
+            .analysis
+            .vector_store
+            .clone()
+            .expect("vector_store must be wired");
+        assert!(Arc::ptr_eq(&applied_vs, &vector_store));
+
+        // Capabilities flips true through the production binding path.
+        let capabilities = crate::handlers::semantic_search::semantic_search_capabilities(State(
+            server.state.clone(),
+        ))
+        .await
+        .0;
+        assert!(
+            capabilities.semantic_available,
+            "semantic_available must be true once all three components are wired"
+        );
+
+        // mode=semantic + mode=hybrid execute against the wired providers
+        // (empty stub results ⇒ Ok(empty)), not the SemanticNotConfigured boundary.
+        let semantic = crate::services::semantic_search_service::execute(
+            &server.state,
+            "auth module",
+            10,
+            "semantic",
+        )
+        .await
+        .expect("semantic mode must execute against the wired adaptive search");
+        assert!(semantic.is_empty());
+
+        let hybrid = crate::services::semantic_search_service::execute(
+            &server.state,
+            "auth module",
+            10,
+            "hybrid",
+        )
+        .await
+        .expect("hybrid mode must execute against the wired adaptive search");
+        assert!(hybrid.is_empty());
     }
 }

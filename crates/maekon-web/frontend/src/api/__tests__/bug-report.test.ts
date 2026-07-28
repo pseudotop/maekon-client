@@ -10,6 +10,7 @@ import type { BugReportBundle } from '../contracts'
 const legacySupportAddress = 'support@' + 'oneshim.dev'
 const legacyReportName = 'oneshim' + '-report-bug_123.json'
 const providerSecretFixture = 'sk_' + 'live_abc123'
+const commonSecretFixture = 'ghp_' + 'abcdefghijklmnopqrstuvwxyz'
 
 const bundle = {
   bug_id: 'bug_123',
@@ -57,20 +58,23 @@ describe('bug report links', () => {
         },
         runtime_logs: {
           generated_at: '2026-05-25T16:30:00Z',
-          log_dir: '[USER]/Library/Logs/com.maekon.app',
-          log_file: '[USER]/Library/Logs/com.maekon.app/maekon.log',
-          line_count: 2,
-          recent_text: `provider failed for alice@example.com\nendpoint token ${providerSecretFixture}`,
+          log_dir: '/Users/alice/Library/Logs/com.maekon.app',
+          log_file: '/Users/alice/Library/Logs/com.maekon.app/maekon.log',
+          line_count: 3,
+          recent_text: `provider failed for alice@example.com\nendpoint token ${providerSecretFixture}\nopened /Users/alice/private/customer.txt with ${commonSecretFixture}`,
         },
       },
       'text',
     )
 
-    expect(text).toContain('--- Runtime Logs (2) ---')
+    expect(text).toContain('--- Runtime Logs (3) ---')
     expect(text).toContain('provider failed for [EMAIL]')
     expect(text).toContain('endpoint token [PROVIDER_SECRET]')
+    expect(text).toContain('opened [LOCAL_PATH] with [SECRET]')
     expect(text).not.toContain('alice@example.com')
     expect(text).not.toContain(providerSecretFixture)
+    expect(text).not.toContain('/Users/alice')
+    expect(text).not.toContain(commonSecretFixture)
   })
 
   it('includes sanitized provider CLI diagnostics in clipboard text and issue URLs', () => {

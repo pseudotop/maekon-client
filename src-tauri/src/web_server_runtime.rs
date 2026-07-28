@@ -20,7 +20,6 @@ use maekon_core::ports::runtime_log_provider::RuntimeLogProvider;
 use maekon_core::ports::secret_store::{SecretStore, SecretStoreSet};
 use maekon_core::ports::system_info_provider::SystemInfoProvider;
 use maekon_monitor::system_info::SysInfoProvider;
-use maekon_storage::frame_storage::FrameFileStorage;
 use maekon_storage::sqlite::SqliteStorage;
 use maekon_web::update_control::UpdateControl;
 use maekon_web::{
@@ -96,6 +95,10 @@ pub(crate) struct WebServerLaunchContext<'a> {
     /// E20-41 (#4833): the per-session local-API auth token the WebServer's
     /// `require_local_auth` gate validates on every `/api` request.
     local_auth_token: Arc<str>,
+    /// #8044: the shared capture-history re-auth gate. The SAME `Arc` is
+    /// registered as Tauri managed state (`ReauthRuntimeState`) so the biometric/
+    /// PIN command and the web `require_capture_reauth` middleware read one gate.
+    reauth_gate: Arc<maekon_core::reauth::CaptureReauthGate>,
 }
 
 impl<'a> WebServerLaunchContext<'a> {
@@ -105,6 +108,7 @@ impl<'a> WebServerLaunchContext<'a> {
         event_tx: broadcast::Sender<RealtimeEvent>,
         web_port_state: Arc<AtomicU16>,
         local_auth_token: Arc<str>,
+        reauth_gate: Arc<maekon_core::reauth::CaptureReauthGate>,
     ) -> Self {
         Self {
             runtime_handle,
@@ -112,6 +116,7 @@ impl<'a> WebServerLaunchContext<'a> {
             event_tx,
             web_port_state,
             local_auth_token,
+            reauth_gate,
         }
     }
 }
@@ -455,6 +460,13 @@ pub(crate) struct WebServerRuntimeBuilder<'a> {
     coaching_engine: Option<Arc<dyn maekon_core::ports::coaching::CoachingPort>>,
     session_manager: Option<Arc<dyn maekon_core::ports::conversation_session::SessionManager>>,
     frame_storage: Option<Arc<dyn FrameStoragePort>>,
+    // #8059: semantic-search query-side components. `None` unless the user
+    // enabled `analysis.embedding.enabled` and a real embedding provider was
+    // built (see `embedding_setup::build_web_search_components`). All three
+    // `None` = honest degrade (`semantic_available = false`).
+    embedding_provider: Option<Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>>,
+    vector_store: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
+    adaptive_search: Option<Arc<dyn maekon_core::ports::adaptive_search::AdaptiveSearchPort>>,
     /// Task 7.1: pre-built LiveExternalConfig Arc shared with the external gRPC server.
     /// Populated before `build_and_spawn` when `grpc-dashboard-external` is active so the
     /// web server's `DiagnosticsState` can serve `GET /api/external-grpc/live-config`.
@@ -484,6 +496,9 @@ impl<'a> WebServerRuntimeBuilder<'a> {
             coaching_engine: None,
             session_manager: None,
             frame_storage: None,
+            embedding_provider: None,
+            vector_store: None,
+            adaptive_search: None,
             #[cfg(feature = "grpc-dashboard-external")]
             external_grpc_live: None,
             #[cfg(feature = "grpc-dashboard-external")]
@@ -561,6 +576,38 @@ impl<'a> WebServerRuntimeBuilder<'a> {
         self
     }
 
+    /// #8059: wire the semantic-search query-side embedding provider (built from
+    /// the same config + credential resolution as the scheduler ingestion
+    /// pipeline). Only called when a real provider exists — leaving it `None`
+    /// keeps `/api/semantic-search/capabilities` honestly reporting unavailable.
+    pub(crate) fn with_embedding_provider(
+        mut self,
+        provider: Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>,
+    ) -> Self {
+        self.embedding_provider = Some(provider);
+        self
+    }
+
+    /// #8059: wire the backing vector store for semantic/hybrid search (same
+    /// SQLite-backed store the scheduler embedding pipeline writes into).
+    pub(crate) fn with_vector_store(
+        mut self,
+        store: Arc<dyn maekon_core::ports::vector_store::VectorStore>,
+    ) -> Self {
+        self.vector_store = Some(store);
+        self
+    }
+
+    /// #8059: wire the adaptive search coordinator (IVF/brute-force auto-select)
+    /// over the vector store.
+    pub(crate) fn with_adaptive_search(
+        mut self,
+        adaptive: Arc<dyn maekon_core::ports::adaptive_search::AdaptiveSearchPort>,
+    ) -> Self {
+        self.adaptive_search = Some(adaptive);
+        self
+    }
+
     pub(crate) fn with_session_manager(
         mut self,
         manager: Arc<dyn maekon_core::ports::conversation_session::SessionManager>,
@@ -622,20 +669,20 @@ impl<'a> WebServerRuntimeBuilder<'a> {
         let (bound_port_tx, bound_port_rx) = tokio::sync::oneshot::channel::<u16>();
         let (startup_error_tx, startup_error_rx) = tokio::sync::oneshot::channel::<String>();
 
-        let automation_frame_storage = match self.launch_context.runtime_handle.block_on(async {
-            FrameFileStorage::new(
-                self.data_dir.to_path_buf(),
-                self.config.storage.max_storage_mb,
-                self.config.storage.retention_days,
-            )
-            .await
-        }) {
-            Ok(storage) => Some(Arc::new(storage)),
-            Err(err) => {
-                warn!(error = %err, "frame storage init failure, falling back to NoOp");
-                None
-            }
-        };
+        // #8045: share the SAME encrypted frame-storage handle the capture writer
+        // uses (`SharedCaptureServices::build` → `FrameFileStorage::with_encryption`,
+        // capture_services.rs) with the automation OCR element-finder, instead of
+        // building a SECOND keyless `FrameFileStorage` over the same frames dir.
+        // The keyless reader fed AES-256-GCM ciphertext to the WebP decoder on
+        // every default (encrypted) install, so AI automation element-finding
+        // (`LatestFrameOcrElementFinder::load_latest_frame`) was silently broken.
+        // The port is read-path only for automation (`load_latest_frame`); `None`
+        // (capture degraded / storage init failed upstream) correctly yields a
+        // NoOpElementFinder. Mirrors #8039, which likewise removed a keyless
+        // `FrameFileStorage::new` fallback in the capture wiring. The same handle
+        // is still forwarded to `build_runtime_bindings` below (Port Instance
+        // Sharing — one encrypted store, not two).
+        let automation_frame_storage = self.frame_storage.clone();
 
         let automation_build = {
             let builder = AutomationControllerBuilder::new(
@@ -645,6 +692,9 @@ impl<'a> WebServerRuntimeBuilder<'a> {
                 web_audit_logger.clone(),
                 automation_frame_storage,
             );
+            // #8588: share the SAME SqliteStorage Arc backing the Extension
+            // registry and Skill Pack catalog (Port Instance Sharing).
+            let builder = builder.with_skill_pack_storage(self.storage.clone());
             let builder = self.support_context.configure_automation_builder(builder);
             builder.build()
         };
@@ -672,9 +722,18 @@ impl<'a> WebServerRuntimeBuilder<'a> {
             recluster_requested: self.recluster_requested,
             coaching_engine: self.coaching_engine,
             model_catalog_client: provider_model_catalog_client(),
+            // #8059: semantic-search query-side components (None = honest degrade).
+            embedding_provider: self.embedding_provider,
+            vector_store: self.vector_store,
+            adaptive_search: self.adaptive_search,
         };
         runtime_bindings.session = SessionRuntimeBindings {
             session_manager: self.session_manager,
+            pomodoro_store: Some(self.storage.clone()
+                as Arc<dyn maekon_core::ports::pomodoro_store::PomodoroStorePort>),
+            // #8044: inject the shared re-auth gate so the web middleware and the
+            // Tauri command read one instance.
+            reauth_gate: Some(self.launch_context.reauth_gate.clone()),
         };
 
         // #7738 D-2: assemble the VERIFIED-unconditional dependency set as ONE
@@ -752,6 +811,11 @@ impl<'a> WebServerRuntimeBuilder<'a> {
             frame_storage = runtime_bindings.core.frame_storage.is_some(),
             session_manager = runtime_bindings.session.session_manager.is_some(),
             erasure_requested = runtime_bindings.core.erasure_requested.is_some(),
+            // #8059: semantic-search reachability (built once at startup; a
+            // config flip needs an app restart to appear — see build_web_search_components).
+            semantic_embedding_provider = runtime_bindings.analysis.embedding_provider.is_some(),
+            semantic_vector_store = runtime_bindings.analysis.vector_store.is_some(),
+            semantic_adaptive_search = runtime_bindings.analysis.adaptive_search.is_some(),
             "WebServer wiring: conditional dependency map (None is correct when disabled/degraded)"
         );
 

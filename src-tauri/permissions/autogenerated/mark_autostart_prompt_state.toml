@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mark-autostart-prompt-state"
+description = "Enables the mark_autostart_prompt_state command without any pre-configured scope."
+commands.allow = ["mark_autostart_prompt_state"]
+
+[[permission]]
+identifier = "deny-mark-autostart-prompt-state"
+description = "Denies the mark_autostart_prompt_state command without any pre-configured scope."
+commands.deny = ["mark_autostart_prompt_state"]

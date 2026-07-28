@@ -115,6 +115,10 @@ impl SchedulerStorage for SqliteStorage {
         SqliteStorage::enforce_all_retention(self).map_err(Into::into)
     }
 
+    fn enforce_audit_retention(&self) -> Result<u64, CoreError> {
+        SqliteStorage::enforce_audit_retention(self).map_err(Into::into)
+    }
+
     fn gc_sync_tombstones(&self, data_retention_days: u32) -> Result<usize, CoreError> {
         SqliteStorage::gc_sync_tombstones(self, data_retention_days).map_err(Into::into)
     }

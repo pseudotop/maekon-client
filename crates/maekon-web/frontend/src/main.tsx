@@ -8,6 +8,13 @@ import { AppBrowserRouter } from './router/future'
 import './i18n' // i18n initialize
 import './index.css'
 
+// Vite removes this branch and chunk from normal production builds. The
+// private/native E2E build opts in so @wdio/tauri-service can expose its
+// execute, mock, and sanitized log-forwarding APIs.
+if (import.meta.env.VITE_WDIO_TAURI === '1') {
+  void import('@wdio/tauri-plugin')
+}
+
 installFrontendLogBridge('main')
 
 const queryClient = new QueryClient({

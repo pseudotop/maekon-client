@@ -8,13 +8,14 @@ use maekon_automation::sandbox::create_platform_sandbox;
 use maekon_core::config::{AiAccessMode, AiProviderConfig, AppConfig};
 use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::skill_loader::SkillLoader;
+use maekon_core::ports::skill_pack_registry::ActiveSkillResolverPort;
 // C1: provider port imports move to 'analysis' — BYOK/OAuth adapters available
 // without 'server' transport feature.
+use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::llm_provider::LlmCallHealth;
 #[cfg(feature = "analysis")]
 use maekon_core::ports::{oauth::OAuthPort, secret_store::SecretStoreSet};
 use maekon_monitor::process::ProcessTracker;
-use maekon_storage::frame_storage::FrameFileStorage;
 use maekon_web::AiRuntimeStatus;
 use tokio::runtime::Handle;
 use tokio::sync::RwLock;
@@ -38,7 +39,7 @@ pub(crate) struct AutomationControllerBuilder<'a> {
     data_dir: &'a Path,
     _runtime_handle: &'a Handle,
     audit_logger: Arc<RwLock<AuditLogger>>,
-    frame_storage: Option<Arc<FrameFileStorage>>,
+    frame_storage: Option<Arc<dyn FrameStoragePort>>,
     app_handle: Option<tauri::AppHandle>,
     cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     consent_manager: Option<Arc<dyn ConsentManagerPort>>,
@@ -58,6 +59,10 @@ pub(crate) struct AutomationControllerBuilder<'a> {
     /// the decider's `verdict_for`. `None` for standalone construction, where the
     /// controller builds its own persistent client.
     policy_client: Option<Arc<PolicyClient>>,
+    /// Durable storage used to build the trusted Skill Pack resolver (#8588).
+    /// `None` leaves the planner with no skill activation path at all — the
+    /// fail-closed default.
+    skill_pack_storage: Option<Arc<maekon_storage::sqlite::SqliteStorage>>,
 }
 
 impl<'a> AutomationControllerBuilder<'a> {
@@ -66,7 +71,7 @@ impl<'a> AutomationControllerBuilder<'a> {
         data_dir: &'a Path,
         runtime_handle: &'a Handle,
         audit_logger: Arc<RwLock<AuditLogger>>,
-        frame_storage: Option<Arc<FrameFileStorage>>,
+        frame_storage: Option<Arc<dyn FrameStoragePort>>,
     ) -> Self {
         Self {
             config,
@@ -83,7 +88,19 @@ impl<'a> AutomationControllerBuilder<'a> {
             oauth_port: None,
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
             policy_client: None,
+            skill_pack_storage: None,
         }
+    }
+
+    /// Inject the shared `SqliteStorage` handle backing the Extension registry
+    /// and Skill Pack catalog (#8588, Port Instance Sharing — the SAME Arc the
+    /// composition root uses, never a second connection).
+    pub(crate) fn with_skill_pack_storage(
+        mut self,
+        storage: Arc<maekon_storage::sqlite::SqliteStorage>,
+    ) -> Self {
+        self.skill_pack_storage = Some(storage);
+        self
     }
 
     /// Inject the single shared `Arc<PolicyClient>` from the composition root
@@ -157,6 +174,22 @@ impl<'a> AutomationControllerBuilder<'a> {
         );
         let skill_loader = discover_skill_loader();
 
+        // #8588: the trusted Skill Pack resolver. Requires BOTH a storage handle
+        // (registry + catalog truth) and a body source; absent either one the
+        // planner simply never activates a skill body.
+        let skill_resolver: Option<Arc<dyn ActiveSkillResolverPort>> =
+            match (self.skill_pack_storage.as_ref(), skill_loader.as_ref()) {
+                (Some(storage), Some(loader)) => Some(Arc::new(
+                    crate::skill_pack_resolver::RegistryActiveSkillResolver::new(
+                        storage.clone(),
+                        storage.clone(),
+                        storage.clone(),
+                        loader.clone(),
+                    ),
+                )),
+                _ => None,
+            };
+
         // Create the per-call LLM health handle shared between the provider
         // instance and the status assembly path.  The handle is created here so
         // the builder controls lifetime and can forward it to the web runtime
@@ -183,6 +216,7 @@ impl<'a> AutomationControllerBuilder<'a> {
                 self.breaker_registry.clone(),
                 Some(llm_call_health.clone()),
                 self.config.automation.min_llm_confidence,
+                skill_resolver.clone(),
             )
         });
 
@@ -197,6 +231,7 @@ impl<'a> AutomationControllerBuilder<'a> {
             self.breaker_registry.clone(),
             Some(llm_call_health.clone()),
             self.config.automation.min_llm_confidence,
+            skill_resolver,
         );
 
         match runtime {

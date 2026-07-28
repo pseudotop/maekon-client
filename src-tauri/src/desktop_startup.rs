@@ -48,12 +48,7 @@ impl DesktopStartupCoordinator {
 
             crate::window_state::restore_main_window_state(&window);
 
-            if let Err(e) = window.show() {
-                debug!("window show failed: {e}");
-            }
-            if let Err(e) = window.set_focus() {
-                debug!("set_focus failed: {e}");
-            }
+            crate::window_state::show_restore_and_focus_main_window(&window);
             debug_assert!(
                 window.is_visible().unwrap_or(false),
                 "main window must be visible after desktop startup"
@@ -71,12 +66,8 @@ mod tests {
         let startup_src = include_str!("desktop_startup.rs");
 
         assert!(
-            startup_src.contains("window.show()"),
-            "desktop startup must call window.show()"
-        );
-        assert!(
-            startup_src.contains("window.set_focus()"),
-            "desktop startup must call window.set_focus() after show()"
+            startup_src.contains("show_restore_and_focus_main_window"),
+            "desktop startup must use the shared restore and focus path"
         );
     }
 }

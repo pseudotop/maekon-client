@@ -43,9 +43,6 @@ audit-as-crates-io = false
 [policy.tauri]
 audit-as-crates-io = false
 
-[policy.tauri-plugin-webdriver]
-audit-as-crates-io = false
-
 [policy.tauri-runtime]
 audit-as-crates-io = false
 
@@ -77,12 +74,13 @@ follow-up: Complete aes-gcm 0.10.3..0.11.0 targeted diff audit, including Nonce/
 """
 
 [[exemptions.anyhow]]
-version = "1.0.103"
+version = "1.0.104"
 criteria = "safe-to-deploy"
 notes = """
 reason: #7200 public-dependabot-ssot (#125 cargo-minor-patch queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-12-31
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 1.0.103->1.0.104, disposition unchanged
 """
 
 [[exemptions.arc-swap]]
@@ -110,6 +108,33 @@ notes = """
 reason: e31-upgrade-baseline (GTK4/WebKitGTK 6 migration dependency without manual audit)
 review-by: 2026-10-23
 follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
+"""
+
+[[exemptions.async-trait]]
+version = "0.1.91"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.atk]]
+version = "0.18.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.atk-sys]]
+version = "0.18.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
 """
 
 [[exemptions.audio-core]]
@@ -148,13 +173,59 @@ review-by: 2026-10-31
 follow-up: Complete rubato/audioadapter sample conversion and buffer-safety hand audit before promoting this dependency group beyond routine public export. category:public-dependabot-major
 """
 
+[[exemptions.aws-lc-rs]]
+version = "1.17.3"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: Complete the aws-lc-rs 1.17.3 targeted diff audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
+"""
+
+[[exemptions.aws-lc-sys]]
+version = "0.43.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: Complete the aws-lc-sys 0.43.0 native-code targeted audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
+"""
+
+[[exemptions.bs58]]
+version = "0.5.1"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
 [[exemptions.bytes]]
-version = "1.12.0"
+version = "1.12.1"
 criteria = "safe-to-deploy"
 notes = """
 reason: #6605 public-dependabot-ssot (Dependabot queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-12-31
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 1.12.0->1.12.1, disposition unchanged
+"""
+
+[[exemptions.cairo-rs]]
+version = "0.18.5"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.cairo-sys-rs]]
+version = "0.18.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only native E2E dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 native dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
 """
 
 [[exemptions.cc]]
@@ -184,6 +255,33 @@ review-by: 2026-10-01
 follow-up: triage per supply-chain/cycle15-triage-groups.md
 """
 
+[[exemptions.clap]]
+version = "4.6.4"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.clap_builder]]
+version = "4.6.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.clap_derive]]
+version = "4.6.4"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
 [[exemptions.cmake]]
 version = "0.1.58"
 criteria = "safe-to-deploy"
@@ -194,12 +292,13 @@ follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pa
 """
 
 [[exemptions.cmov]]
-version = "0.5.3"
+version = "0.5.4"
 criteria = "safe-to-deploy"
 notes = """
 reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
 review-by: 2026-10-01
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:no-publisher
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 0.5.3->0.5.4, disposition unchanged
 """
 
 [[exemptions.colored]]
@@ -328,6 +427,15 @@ review-by: 2026-10-09
 follow-up: triage per supply-chain/cycle15-triage-groups.md
 """
 
+[[exemptions.crossbeam-epoch]]
+version = "0.9.20"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (version not yet covered by the local 0.9.18 audit)
+review-by: 2026-10-31
+follow-up: Complete the crossbeam-epoch 0.9.18->0.9.20 targeted diff audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
+"""
+
 [[exemptions.ctr]]
 version = "0.10.0"
 criteria = "safe-to-deploy"
@@ -335,6 +443,15 @@ notes = """
 reason: #7200 public-dependabot-ssot (#126 aes-gcm-major queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-10-31
 follow-up: Complete RustCrypto block-mode targeted diff audit or replace with explicit trusted-publisher decision before promoting this dependency group beyond routine public export. category:public-dependabot-major
+"""
+
+[[exemptions.curve25519-dalek]]
+version = "5.0.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
 """
 
 [[exemptions.dlopen2]]
@@ -371,6 +488,24 @@ notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-10-09
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+"""
+
+[[exemptions.ed25519]]
+version = "3.0.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.ed25519-dalek]]
+version = "3.0.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
 """
 
 [[exemptions.embed_plist]]
@@ -419,21 +554,23 @@ follow-up: triage per supply-chain/cycle15-triage-groups.md
 """
 
 [[exemptions.fast_image_resize]]
-version = "6.0.0"
+version = "6.1.0"
 criteria = "safe-to-deploy"
 notes = """
 reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
 review-by: 2026-10-09
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 6.0.0->6.1.0, disposition unchanged
 """
 
 [[exemptions.fastembed]]
-version = "5.17.2"
+version = "5.17.3"
 criteria = "safe-to-deploy"
 notes = """
 reason: #6605 public-dependabot-ssot (Dependabot queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-12-31
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 5.17.2->5.17.3, disposition unchanged
 """
 
 [[exemptions.fastrand]]
@@ -443,6 +580,15 @@ notes = """
 reason: #7200 public-dependabot-ssot (#125 cargo-minor-patch queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-12-31
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
+"""
+
+[[exemptions.fiat-crypto]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: Complete the fiat-crypto 0.3.0 generated-arithmetic audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
 """
 
 [[exemptions.field-offset]]
@@ -488,6 +634,51 @@ notes = """
 reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
 review-by: 2026-10-16
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
+"""
+
+[[exemptions.futures-core]]
+version = "0.3.33"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.gdk]]
+version = "0.18.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.gdk-pixbuf]]
+version = "0.18.5"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.gdk-pixbuf-sys]]
+version = "0.18.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.gdk-sys]]
+version = "0.18.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
 """
 
 [[exemptions.gdk4]]
@@ -562,6 +753,24 @@ review-by: 2026-10-31
 follow-up: Complete RustCrypto GHASH/polyval targeted diff audit or replace with explicit trusted-publisher decision before promoting this dependency group beyond routine public export. category:public-dependabot-major
 """
 
+[[exemptions.gio]]
+version = "0.18.4"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.gio-sys]]
+version = "0.18.1"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
 [[exemptions.gl]]
 version = "0.14.0"
 criteria = "safe-to-deploy"
@@ -580,6 +789,33 @@ review-by: 2026-10-16
 follow-up: triage per supply-chain/cycle15-triage-groups.md
 """
 
+[[exemptions.glib]]
+version = "0.18.5"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.glib-macros]]
+version = "0.18.5"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 proc-macro dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.glib-sys]]
+version = "0.18.1"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
 [[exemptions.globset]]
 version = "0.4.18"
 criteria = "safe-to-deploy"
@@ -587,6 +823,15 @@ notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-10-16
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+"""
+
+[[exemptions.gobject-sys]]
+version = "0.18.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
 """
 
 [[exemptions.graphene-rs]]
@@ -623,6 +868,33 @@ notes = """
 reason: e31-upgrade-baseline (GTK4/WebKitGTK 6 migration dependency without manual audit)
 review-by: 2026-10-23
 follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
+"""
+
+[[exemptions.gtk]]
+version = "0.18.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.gtk-sys]]
+version = "0.18.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.gtk3-macros]]
+version = "0.18.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 proc-macro dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
 """
 
 [[exemptions.gtk4]]
@@ -688,6 +960,24 @@ review-by: 2026-12-31
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
 """
 
+[[exemptions.http-body]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.http-body-util]]
+version = "0.1.4"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
 [[exemptions.hybrid-array]]
 version = "0.4.10"
 criteria = "safe-to-deploy"
@@ -740,6 +1030,24 @@ notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-10-24
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+"""
+
+[[exemptions.javascriptcore-rs]]
+version = "1.1.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only WebKit dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 WebKit dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.javascriptcore-rs-sys]]
+version = "1.1.1"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only WebKit FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 WebKit dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
 """
 
 [[exemptions.javascriptcore6]]
@@ -886,6 +1194,15 @@ review-by: 2026-10-24
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
 """
 
+[[exemptions.libc]]
+version = "0.2.189"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
 [[exemptions.libloading]]
 version = "0.8.9"
 criteria = "safe-to-deploy"
@@ -914,9 +1231,12 @@ follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pa
 """
 
 [[exemptions.lru]]
-version = "0.18.0"
+version = "0.18.1"
 criteria = "safe-to-deploy"
-notes = "cycle22-grace-F-SC-C22-01 review-by:2026-10-31"
+notes = """
+cycle22-grace-F-SC-C22-01 review-by:2026-10-31
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 0.18.0->0.18.1, disposition unchanged
+"""
 
 [[exemptions.lru-slab]]
 version = "0.1.2"
@@ -928,12 +1248,13 @@ follow-up: E31 post-migration supply-chain hand audit; local patched upstream cr
 """
 
 [[exemptions.lz4_flex]]
-version = "0.13.1"
+version = "0.14.0"
 criteria = "safe-to-deploy"
 notes = """
 reason: #6605 public-dependabot-ssot (Dependabot queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-12-31
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
+refreshed: 2026-07-27 #8685 rc.7 lockfile drift — version pin 0.13.1->0.14.0, disposition unchanged
 """
 
 [[exemptions.mac-notification-sys]]
@@ -982,12 +1303,22 @@ follow-up: E31 post-migration supply-chain hand audit; local patched upstream cr
 """
 
 [[exemptions.mdns-sd]]
-version = "0.20.1"
+version = "0.20.2"
 criteria = "safe-to-deploy"
 notes = """
 reason: #7200 public-dependabot-ssot (#125 cargo-minor-patch queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-11-20
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 0.20.1->0.20.2, disposition unchanged
+"""
+
+[[exemptions.memmap2]]
+version = "0.9.11"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
 """
 
 [[exemptions.minimal-lexical]]
@@ -1108,6 +1439,24 @@ notes = """
 reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
 review-by: 2026-11-08
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
+"""
+
+[[exemptions.pango]]
+version = "0.18.3"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.pango-sys]]
+version = "0.18.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only GTK3 FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 GTK3 dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
 """
 
 [[exemptions.plotters]]
@@ -1245,6 +1594,15 @@ review-by: 2026-11-08
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
 """
 
+[[exemptions.rand]]
+version = "0.10.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
 [[exemptions.rand_hc]]
 version = "0.2.0"
 criteria = "safe-to-deploy"
@@ -1310,30 +1668,52 @@ follow-up: Complete rubato 0.15.0..3.0.0 resampler behavior, buffer shape, and t
 """
 
 [[exemptions.rust-embed]]
-version = "8.11.0"
+version = "8.12.0"
 criteria = "safe-to-deploy"
 notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-11-16
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 8.11.0->8.12.0, disposition unchanged
 """
 
 [[exemptions.rust-embed-impl]]
-version = "8.11.0"
+version = "8.12.0"
 criteria = "safe-to-deploy"
 notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-11-16
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 8.11.0->8.12.0, disposition unchanged
 """
 
 [[exemptions.rust-embed-utils]]
-version = "8.11.0"
+version = "8.12.0"
 criteria = "safe-to-deploy"
 notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-11-16
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 8.11.0->8.12.0, disposition unchanged
+"""
+
+[[exemptions.rustls]]
+version = "0.23.42"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.rustls-pki-types]]
+version = "1.15.1"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+refreshed: 2026-07-27 #8685 rc.7 lockfile drift — version pin 1.15.0->1.15.1, disposition unchanged
 """
 
 [[exemptions.rustls-platform-verifier]]
@@ -1422,22 +1802,60 @@ review-by: 2026-11-16
 follow-up: triage per supply-chain/cycle15-triage-groups.md
 """
 
+[[exemptions.serde]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.serde_core]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.serde_derive]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
 [[exemptions.serde_json]]
-version = "1.0.150"
+version = "1.0.151"
 criteria = "safe-to-deploy"
 notes = """
 reason: e31-upgrade-baseline (lockfile refresh dependency without manual audit)
 review-by: 2026-11-20
 follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 1.0.150->1.0.151, disposition unchanged
 """
 
 [[exemptions.serde_with]]
-version = "3.18.0"
+version = "3.21.0"
 criteria = "safe-to-deploy"
 notes = """
 reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
 review-by: 2026-11-16
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:no-publisher
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 3.18.0->3.21.0, disposition unchanged
+"""
+
+[[exemptions.serde_with_macros]]
+version = "3.21.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
 """
 
 [[exemptions.serial_test]]
@@ -1474,6 +1892,15 @@ notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-11-16
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+"""
+
+[[exemptions.signature]]
+version = "3.0.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
 """
 
 [[exemptions.simd-adler32]]
@@ -1530,13 +1957,32 @@ review-by: 2026-11-01
 follow-up: Re-review by 2026-11-01 with targeted hand-audit or per-crate publisher-trust authorization before promoting this dependency group beyond routine public export. category:small-maintainer-or-other
 """
 
+[[exemptions.soup3]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only WebKit dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 WebKit dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.soup3-sys]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only WebKit FFI dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 WebKit dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
 [[exemptions.spin]]
-version = "0.9.8"
+version = "0.9.9"
 criteria = "safe-to-deploy"
 notes = """
 reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
 review-by: 2026-11-16
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:expert-concurrency-unsafe
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 0.9.8->0.9.9, disposition unchanged
 """
 
 [[exemptions.sqlite-wasm-rs]]
@@ -1566,6 +2012,15 @@ review-by: 2026-11-23
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:no-publisher
 """
 
+[[exemptions.syn]]
+version = "3.0.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
 [[exemptions.sysinfo]]
 version = "0.38.4"
 criteria = "safe-to-deploy"
@@ -1593,6 +2048,15 @@ review-by: 2026-11-23
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
 """
 
+[[exemptions.system-deps]]
+version = "6.2.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only native E2E dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 native dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
 [[exemptions.tar]]
 version = "0.4.45"
 criteria = "safe-to-deploy"
@@ -1600,6 +2064,51 @@ notes = """
 reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
 review-by: 2026-11-23
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
+"""
+
+[[exemptions.target-lexicon]]
+version = "0.12.16"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only native E2E dependency without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of the tauri-plugin-wdio 1.2.0 native dependency graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.tauri-plugin-dialog]]
+version = "2.7.2"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: Complete the tauri-plugin-dialog 2.7.2 targeted diff audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
+"""
+
+[[exemptions.tauri-plugin-single-instance]]
+version = "2.4.3"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: Complete the tauri-plugin-single-instance 2.4.3 targeted diff audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
+"""
+
+[[exemptions.tauri-plugin-wdio]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only Tauri plugin without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of tauri-plugin-wdio 1.2.0 and its native transitive graph or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
+"""
+
+[[exemptions.tauri-plugin-wdio-webdriver]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc.7 WDIO harness dependency grace (test-only WebDriver launcher without manual audit in this pass)
+review-by: 2026-10-31
+follow-up: Complete a targeted hand-audit of tauri-plugin-wdio-webdriver 1.2.0 and its process-launch boundary or remove the WDIO feature path before promoting beyond rc.7. category:wdio-test-harness
 """
 
 [[exemptions.tempfile]]
@@ -1636,6 +2145,24 @@ notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-11-23
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+"""
+
+[[exemptions.thiserror]]
+version = "2.0.19"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: Complete the thiserror 2.0.19 targeted diff audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
+"""
+
+[[exemptions.thiserror-impl]]
+version = "2.0.19"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: Complete the thiserror-impl 2.0.19 proc-macro targeted diff audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
 """
 
 [[exemptions.time]]
@@ -1714,6 +2241,33 @@ review-by: 2026-11-06
 follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
 """
 
+[[exemptions.tokio]]
+version = "1.53.1"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.tokio-stream]]
+version = "0.1.19"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
+
+[[exemptions.tokio-tungstenite]]
+version = "0.30.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (version not yet covered by the local 0.29.0 audit)
+review-by: 2026-10-31
+follow-up: Complete the tokio-tungstenite 0.29.0->0.30.0 targeted diff audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
+"""
+
 [[exemptions.tracing-appender]]
 version = "0.2.5"
 criteria = "safe-to-deploy"
@@ -1732,6 +2286,15 @@ review-by: 2026-11-23
 follow-up: complete tracing-opentelemetry 0.32->0.33 delta audit or remove crate from build chain
 """
 
+[[exemptions.tungstenite]]
+version = "0.30.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: #8685 rc7-lockfile-drift grace (version not yet covered by the local 0.29.0 audit)
+review-by: 2026-10-31
+follow-up: Complete the tungstenite 0.29.0->0.30.0 targeted diff audit or replace this exemption with a trusted registry audit before promotion beyond rc.7. category:registry-import-lag
+"""
+
 [[exemptions.twox-hash]]
 version = "2.1.2"
 criteria = "safe-to-deploy"
@@ -1745,6 +2308,15 @@ follow-up: triage per supply-chain/cycle15-triage-groups.md
 version = "1.2.1"
 criteria = "safe-to-deploy"
 notes = "cycle22-grace-F-SC-C22-06 review-by:2026-11-23"
+
+[[exemptions.ulid]]
+version = "3.0.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: rc7-lockfile-drift grace (release not yet covered by registry imports)
+review-by: 2026-10-31
+follow-up: #8685 rc.7 release-gate supply-chain sweep 2026-07-24 — prior release was covered by imported registry audits (mozilla/google/isrg 등); the bumped release awaits upstream audit or the next triage cycle. category:registry-import-lag
+"""
 
 [[exemptions.unit-prefix]]
 version = "0.5.2"
@@ -1774,12 +2346,13 @@ follow-up: E31 post-migration supply-chain hand audit; local patched upstream cr
 """
 
 [[exemptions.usearch]]
-version = "2.25.3"
+version = "2.26.0"
 criteria = "safe-to-deploy"
 notes = """
 reason: #6605 public-dependabot-ssot (Dependabot queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-12-31
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 2.25.3->2.26.0, disposition unchanged
 """
 
 [[exemptions.uuid]]
@@ -1792,12 +2365,13 @@ follow-up: Complete targeted diff audit or replace with explicit publisher trust
 """
 
 [[exemptions.uuid]]
-version = "1.23.4"
+version = "1.24.0"
 criteria = "safe-to-deploy"
 notes = """
 reason: #7200 public-dependabot-ssot (#125 cargo-minor-patch queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-12-31
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 1.23.4->1.24.0, disposition unchanged
 """
 
 [[exemptions.version-compare]]
@@ -2448,6 +3022,16 @@ review-by: 2026-12-31
 follow-up: triage per supply-chain/cycle15-triage-groups.md
 """
 
+[[exemptions.x11rb]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
+review-by: 2026-12-31
+follow-up: triage per supply-chain/cycle15-triage-groups.md
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 0.13.2->0.14.0, disposition unchanged
+"""
+
 [[exemptions.x11rb-protocol]]
 version = "0.13.2"
 criteria = "safe-to-deploy"
@@ -2455,6 +3039,16 @@ notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
 review-by: 2026-12-31
 follow-up: triage per supply-chain/cycle15-triage-groups.md
+"""
+
+[[exemptions.x11rb-protocol]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = """
+reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
+review-by: 2026-12-31
+follow-up: triage per supply-chain/cycle15-triage-groups.md
+refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 0.13.2->0.14.0, disposition unchanged
 """
 
 [[exemptions.xcap]]

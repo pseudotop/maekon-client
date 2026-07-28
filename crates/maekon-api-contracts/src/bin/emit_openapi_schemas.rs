@@ -35,6 +35,7 @@ fn main() {
     generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderDiscoveredModel>();
     generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderModelsResponse>();
     generator.subschema_for::<maekon_api_contracts::annotations::CreateAnnotationRequest>();
+    generator.subschema_for::<maekon_api_contracts::audit_export::AuditExportEntryDto>();
     generator.subschema_for::<maekon_api_contracts::audit_export::AuditExportQuery>();
     generator.subschema_for::<maekon_api_contracts::automation::AutomationStatusDto>();
     generator.subschema_for::<maekon_api_contracts::automation::AuditEntryDto>();

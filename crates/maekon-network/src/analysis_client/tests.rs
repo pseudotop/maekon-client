@@ -158,7 +158,7 @@ mod tests {
         let config = ExternalApiEndpoint {
             endpoint: "https://api.anthropic.com/v1/messages".to_string(),
             api_key: "test-key".to_string(),
-            model: Some("claude-sonnet-4-20250514".to_string()),
+            model: Some("claude-sonnet-5".to_string()),
             timeout_secs: 30,
             provider_type: AiProviderType::Anthropic,
             surface_id: None,
@@ -167,7 +167,7 @@ mod tests {
         let client = AnalysisClient::new(&config, CircuitBreakerRegistry::new());
         let body = client.build_request_body_pub("ctx", "sys");
 
-        assert_eq!(body["model"], "claude-sonnet-4-20250514");
+        assert_eq!(body["model"], "claude-sonnet-5");
         assert_eq!(body["system"], "sys");
         assert_eq!(body["max_tokens"], 1024);
         assert!(body["messages"].is_array());

@@ -336,7 +336,7 @@ fn load_corrupt_file_falls_back_to_defaults() {
 }
 
 /// Finding #5 — a corrupt config must fall back FAIL-CLOSED for privacy: it must
-/// NOT silently re-enable the fresh-install default-on telemetry/capture intent
+/// NOT silently re-enable any telemetry/capture intent
 /// over an unrecoverable user opt-out, and the reset must be surfaced to the UI.
 #[test]
 fn load_corrupt_file_falls_back_fail_closed_and_signals_reset() {
@@ -350,7 +350,7 @@ fn load_corrupt_file_falls_back_fail_closed_and_signals_reset() {
     let manager = ConfigManager::with_paths(config_path.clone(), None).unwrap();
     let config = manager.get();
 
-    // Telemetry/capture must be OFF, NOT the fresh-install default-on intent.
+    // Telemetry/capture must remain OFF after corrupt-config recovery.
     assert!(
         !config.telemetry.enabled,
         "corrupt config must NOT yield telemetry-enabled (fail-closed)"
@@ -703,24 +703,20 @@ fn deserialises_legacy_config_json_without_new_telemetry_fields() {
     assert_eq!(cfg.telemetry.service_name, "maekon-client");
 }
 
-/// #5056 — fresh install uses the default-on telemetry intent.
-///
-/// Export is still fail-closed by the consent gate and compile-time feature
-/// gate; this flag only means a valid telemetry consent can activate the
-/// exporter unless the user or MDM policy opts out.
+/// #8094 — fresh installs require an explicit telemetry opt-in.
 #[test]
-fn telemetry_enabled_defaults_to_true() {
+fn telemetry_enabled_defaults_to_false() {
     let cfg = crate::config::AppConfig::default_config();
     assert!(
-        cfg.telemetry.enabled,
-        "fresh installs should default to telemetry intent on; consent still gates export"
+        !cfg.telemetry.enabled,
+        "fresh installs must default to telemetry intent off"
     );
 }
 
-/// #5056 — an older sparse config with no telemetry.enabled key should pick up
-/// the new default-on intent when loaded.
+/// #8094 — a sparse legacy config with no telemetry.enabled key must remain
+/// fail-closed when migrated.
 #[test]
-fn legacy_config_without_telemetry_enabled_uses_default_on() {
+fn legacy_config_without_telemetry_enabled_uses_default_off() {
     let tmp = TempDir::new().unwrap();
     let cfg_path = tmp.path().join("config.json");
 
@@ -737,15 +733,15 @@ fn legacy_config_without_telemetry_enabled_uses_default_on() {
         ConfigManager::with_paths(cfg_path.clone(), None).expect("legacy JSON must deserialise");
     let cfg = mgr.get();
     assert!(
-        cfg.telemetry.enabled,
-        "missing telemetry.enabled should use the default-on intent"
+        !cfg.telemetry.enabled,
+        "missing telemetry.enabled must use the fail-closed default"
     );
     assert_eq!(cfg.schema_version, crate::config::AppConfig::SCHEMA_VERSION);
 
     let on_disk = persistence::load_from_file(&cfg_path).expect("migrated config must persist");
     assert!(
-        on_disk.telemetry.enabled,
-        "migrated on-disk config should persist the default-on intent"
+        !on_disk.telemetry.enabled,
+        "migrated on-disk config must persist the fail-closed default"
     );
     assert_eq!(
         on_disk.schema_version,
@@ -754,7 +750,7 @@ fn legacy_config_without_telemetry_enabled_uses_default_on() {
     );
 }
 
-/// #5056 — a persisted explicit false remains an opt-out after the default-on
+/// #8094 — a persisted explicit false remains an opt-out after the v3
 /// migration. This is intentionally conservative for older saved files because
 /// the legacy schema cannot distinguish a user opt-out from the old seed value.
 #[test]
@@ -1043,16 +1039,19 @@ mod managed_policy {
     }
 
     #[test]
-    fn managed_telemetry_off_beats_fresh_default_on() {
+    fn managed_telemetry_off_clamps_explicit_opt_in() {
         let dir = TempDir::new().unwrap();
         let cfg_path = dir.path().join("config.json");
+        let mut existing = crate::config::AppConfig::default_config();
+        existing.telemetry.enabled = true;
+        fs::write(&cfg_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
         let managed_path = write_managed_telemetry_enabled(dir.path(), false);
 
         let mgr = ConfigManager::with_paths(cfg_path.clone(), Some(managed_path)).unwrap();
 
         assert!(
             !mgr.get().telemetry.enabled,
-            "managed telemetry.enabled=false must override the fresh default-on intent"
+            "managed telemetry.enabled=false must override an explicit opt-in"
         );
         let on_disk = persistence::load_from_file(&cfg_path).unwrap();
         assert!(

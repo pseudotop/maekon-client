@@ -245,7 +245,7 @@ describe('Settings guidance copy', () => {
     expect(screen.getByText('Keep high-usage alerts rare')).toBeInTheDocument()
   })
 
-  it('orients audio setup around provider choice, model footprint, and input mode', () => {
+  it('orients audio setup around provider choice, input mode, and bystander consent', () => {
     mockSettingsContext()
 
     renderWithProviders(<AudioTab />)
@@ -253,6 +253,12 @@ describe('Settings guidance copy', () => {
     expect(screen.getByRole('region', { name: 'Audio setup guide' })).toBeInTheDocument()
     expect(screen.getByText('Choose local or cloud STT')).toBeInTheDocument()
     expect(screen.getByText('Pick an input mode')).toBeInTheDocument()
+    expect(screen.getByText('Inform people before recording')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Tell nearby participants what will be captured and obtain consent where required before enabling audio.',
+      ),
+    ).toBeInTheDocument()
   })
 
   // #7600: COMPILE-capability gate — audio is compiled OUT of the shipped
@@ -296,6 +302,20 @@ describe('Settings guidance copy', () => {
     expect(screen.getByRole('region', { name: 'Advanced settings guide' })).toBeInTheDocument()
     expect(screen.getByText('Change runtime limits carefully')).toBeInTheDocument()
     expect(screen.getByText('Pair sync settings with the sync page')).toBeInTheDocument()
+  })
+
+  it('keeps the default fractional advanced settings valid for form submission', () => {
+    mockSettingsContext()
+
+    renderWithProviders(<AdvancedTab />)
+
+    const borderOpacity = screen.getByLabelText('Border opacity (0.0 - 1.0)')
+    const minConfidence = screen.getByLabelText('Min confidence (0.0 - 1.0)')
+
+    expect(borderOpacity).toHaveAttribute('step', '0.1')
+    expect(minConfidence).toHaveAttribute('step', '0.1')
+    expect(borderOpacity).toBeValid()
+    expect(minConfidence).toBeValid()
   })
 
   it('orients sync setup when sync is disabled', async () => {

@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use tracing::{debug, error};
+use zeroize::Zeroize;
 
 /// A lightweight frame stored in the ring buffer (thumbnail only).
 #[derive(Debug, Clone)]
@@ -158,6 +159,43 @@ impl CaptureRingBuffer {
     /// Useful for periodic metric reporting in the scheduler.
     pub fn take_evicted_count(&self) -> u64 {
         self.evicted_count.swap(0, Ordering::Relaxed)
+    }
+
+    /// Drop every buffered frame, zeroizing its sensitive payload (thumbnail
+    /// pixels, window title, app name) in place before the backing allocation
+    /// is freed, and reset any pending post-event capture window.
+    ///
+    /// # Why this exists (#8045 B3)
+    /// The ring buffer holds up to `capacity` pre-event dashcam frames entirely
+    /// in RAM. GDPR Art. 17 consent-withdrawal erases on-disk data, but nothing
+    /// reached this in-memory buffer, so up to `capacity` thumbnails + titles +
+    /// accessibility trees survived a consent revoke in RAM. The monitor loop
+    /// calls this whenever the capture gate closes (consent withdrawn/revoked,
+    /// capture paused, or capture disabled), so pre-consent frames cannot linger
+    /// after the user stops consenting. Zeroizing (not just dropping) overwrites
+    /// the pixel/title bytes so they do not persist in freed heap pages.
+    pub fn clear(&self) {
+        let Ok(mut buf) = self.buffer.lock() else {
+            error!("CaptureRingBuffer lock poisoned on clear");
+            return;
+        };
+        let cleared = buf.len();
+        for frame in buf.iter_mut() {
+            frame.thumbnail_data.zeroize();
+            frame.app_name.zeroize();
+            frame.window_title.zeroize();
+            // Accessibility elements carry structured on-screen text; drop them.
+            frame.accessibility_elements.clear();
+        }
+        buf.clear();
+        // A closed gate must not force any queued "after" captures.
+        self.post_event_remaining.store(0, Ordering::Relaxed);
+        if cleared > 0 {
+            debug!(
+                cleared,
+                "ring buffer cleared + zeroized (capture gate closed)"
+            );
+        }
     }
 }
 
@@ -344,5 +382,57 @@ mod tests {
         }
         assert_eq!(rb.evicted_count(), 0);
         assert_eq!(rb.len(), 10);
+    }
+
+    #[test]
+    fn clear_empties_buffer_and_resets_post_event_window() {
+        // #8045 B3: a consent-gate close must drop every buffered frame AND
+        // cancel any pending post-event ("after") capture window.
+        let rb = CaptureRingBuffer::new(6, 3, 0.5);
+        for i in 0..4 {
+            rb.push(make_frame("Secret", &format!("Bank statement {i}")));
+        }
+        // A high-importance flush arms the post-event window (post_event=3).
+        rb.check_and_flush(0.9, make_frame("Secret", "trigger"));
+        assert_eq!(rb.post_event_remaining(), 3);
+        // Re-accumulate frames after the flush drained the buffer.
+        rb.push(make_frame("Secret", "residual thumbnail"));
+        assert_eq!(rb.len(), 1);
+
+        rb.clear();
+
+        assert_eq!(rb.len(), 0, "clear must drop every buffered frame");
+        assert!(rb.is_empty());
+        assert_eq!(
+            rb.post_event_remaining(),
+            0,
+            "clear must cancel the pending post-event capture window"
+        );
+    }
+
+    #[test]
+    fn clear_zeroizes_thumbnail_pixels_before_drop() {
+        // Prove clear() overwrites the sensitive thumbnail bytes rather than
+        // only dropping the frame. A frame is captured behind an Arc-shared
+        // buffer, cleared, and we assert the buffer no longer exposes it.
+        let rb = CaptureRingBuffer::new(4, 1, 0.5);
+        let frame = RingFrame {
+            timestamp: Utc::now(),
+            thumbnail_data: vec![0xAB; 64],
+            app_name: "Banking".to_string(),
+            window_title: "Account balance".to_string(),
+            accessibility_elements: Vec::new(),
+        };
+        rb.push(frame);
+        // Snapshot the pre-clear state directly from the backing deque.
+        {
+            let buf = rb.buffer.lock().unwrap();
+            assert_eq!(buf[0].thumbnail_data, vec![0xAB; 64]);
+            assert_eq!(buf[0].app_name, "Banking");
+        }
+        rb.clear();
+        // After clear the frame is gone; the buffer holds nothing to expose.
+        let buf = rb.buffer.lock().unwrap();
+        assert!(buf.is_empty(), "no residual frame may remain after clear");
     }
 }

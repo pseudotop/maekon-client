@@ -592,6 +592,7 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
             min_confidence,
             max_suggestions,
             embedding_enabled,
+            llm_summary_enabled,
             gui_intelligence_enabled,
             text_intelligence_enabled,
             auto_tuner_enabled,
@@ -601,6 +602,7 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
         config.analysis.min_confidence = *min_confidence;
         config.analysis.max_suggestions = *max_suggestions as usize;
         config.analysis.embedding.enabled = *embedding_enabled;
+        config.analysis.embedding.llm_summary_enabled = *llm_summary_enabled;
         config.analysis.gui_intelligence.enabled = *gui_intelligence_enabled;
         config.analysis.text_intelligence.enabled = *text_intelligence_enabled;
         config.analysis.tiered_memory.auto_tuning.enabled = *auto_tuner_enabled;
@@ -624,11 +626,21 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
     }
 
     // Coaching
-    // Note: coaching.tone, coaching.overlay_mode are display-only, not
-    // persisted — read-only on the wire (serialized by the assembler for
-    // display) but not written back here. They require enum parsing
-    // (CoachingTone, OverlayMode) and are managed via the dedicated
-    // CoachingGoalsTab, not the Advanced tab.
+    // Note: coaching.tone, coaching.overlay_mode, and regime_goals are
+    // display-only, not persisted here — read-only on the wire (serialized by
+    // the assembler for display) but not written back. tone/overlay_mode
+    // require enum parsing (CoachingTone, OverlayMode).
+    //
+    // #8083/#8052: regime_goals is owned EXCLUSIVELY by the dedicated coaching
+    // goals endpoint (Tauri `update_regime_goals` / REST `PUT /api/coaching/goals`),
+    // which is its single writer. Writing it back from the settings payload let a
+    // stale, goal-less Advanced-tab form clobber goals just added via that
+    // endpoint — both in config here AND, via the `apply_config` hot-reload in
+    // `settings_update_flow`, the live engine tracker. That was the QC CJ-03-01
+    // "goal disappears after Save Settings" regression. Preserving the existing
+    // config value (this function starts from a clone of the current config)
+    // keeps goals intact; the same preserved value flows into `apply_config`, so
+    // the engine tracker is re-seeded with the CORRECT goals, not the stale set.
     {
         let CoachingSettings {
             enabled,
@@ -637,7 +649,7 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
             overlay_mode: _display_only_overlay_mode,
             quiet_hours,
             profiles,
-            regime_goals,
+            regime_goals: _dedicated_endpoint_owned_regime_goals,
         } = &settings.coaching;
         config.coaching.enabled = *enabled;
         config.coaching.locale = locale.clone();
@@ -660,7 +672,7 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
                 )
             })
             .collect();
-        config.coaching.regime_goals = regime_goals.clone();
+        // regime_goals intentionally NOT written here — see the note above.
     }
 
     // Integration
