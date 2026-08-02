@@ -46,7 +46,7 @@ const expectedOverrides = {
   'serialize-javascript': '7.0.5',
   '@babel/core': '7.29.6',
   'form-data': '4.0.6',
-  'js-yaml': '4.2.0',
+  'js-yaml': '4.3.0',
   ws: '8.21.0',
   'cheerio>undici': '7.28.0',
   'minimatch@10.2.5>brace-expansion': '5.0.7',
