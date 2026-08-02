@@ -5,7 +5,10 @@
 //! validates them with the pure functions in `maekon_core::models::task`).
 //! Deletion and content-clearing are explicit child-first `DELETE`/`UPDATE`
 //! statements inside each transaction — the connection runs with `PRAGMA
-//! foreign_keys` OFF, so FK cascade is inert (ADR-028 Amendment B3).
+//! foreign_keys` — #9735 CORRECTED: it is ON (compile-time default), so the
+//! `ON DELETE` declarations DO cascade. The explicit child-first deletes here
+//! are redundant with the engine, not a substitute for it. ADR-028 B3 has been
+//! amended; do not reason from the old claim.
 //!
 // OOS-TBD: ADR-013 file split — command port, query port, and row helpers can
 // move into a `task_store_impl/` directory module if this file keeps growing.

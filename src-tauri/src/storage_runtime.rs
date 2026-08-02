@@ -45,7 +45,14 @@ pub(crate) fn resolve_shared_master_key(
 ) -> std::result::Result<EncryptionKey, maekon_storage::error::StorageError> {
     let registry_path = data_dir.join(MASTER_KEY_KEYCHAIN_REGISTRY_FILE);
     match KeychainOps::new(registry_path) {
-        Ok(keychain) => EncryptionKey::load_or_create_sealed(data_dir, &keychain),
+        Ok(keychain) => {
+            // #9588: log BEFORE the first keychain touch so a bounded-timeout
+            // stall (pending OS ACL prompt) is attributable in the boot log —
+            // the original hang left no line between oauth-registry warns and
+            // silence.
+            tracing::info!("#9588: resolving master key via OS keychain (bounded keychain ops)");
+            EncryptionKey::load_or_create_sealed(data_dir, &keychain)
+        }
         Err(e) => {
             tracing::warn!(
                 "#8040: keychain registry init failed ({e}); using the plaintext key-file \

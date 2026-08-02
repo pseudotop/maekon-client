@@ -3,7 +3,15 @@ import { useTranslation } from 'react-i18next'
 import { CapturePermissionNotice } from './components/CapturePermissionNotice'
 import { DevToolbar } from './components/DevToolbar'
 import { MicrophoneUpgradeNotice } from './components/MicrophoneUpgradeNotice'
-import { ActivityBar, CommandPalette, ShortcutsHelp, SidePanel, StatusBar, TitleBar } from './components/shell'
+import {
+  ActivityBar,
+  CommandPalette,
+  ShortcutsHelp,
+  SidePanel,
+  StatusBar,
+  SyntheticDataBadge,
+  TitleBar,
+} from './components/shell'
 import { ToastContainer } from './components/ui'
 import { ShellLayoutProvider } from './contexts/ShellLayoutContext'
 import { useCommandPalette } from './hooks/useCommandPalette'
@@ -74,6 +82,15 @@ function AppShell() {
         </a>
 
         <TitleBar onSearchOpen={openPalette} />
+
+        {/*
+          #9611 WD-02.3: the synthetic-data label lives HERE, above the router
+          and outside <main>, so no route change, modal, or route-level error
+          boundary can unmount it. A viewer looking at a screenshot of any
+          screen in a demo session must be able to tell the data is not real —
+          not only on the one page that fetched it.
+        */}
+        <SyntheticDataBadge />
 
         <ActivityBar onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed} />
 

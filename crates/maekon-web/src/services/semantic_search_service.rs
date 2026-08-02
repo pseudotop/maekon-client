@@ -58,6 +58,7 @@ use maekon_api_contracts::search::SemanticSearchResult;
 use maekon_core::config::PiiFilterLevel;
 use maekon_core::error::CoreError;
 use maekon_core::models::embedding::{SearchFilters, SearchResult};
+use maekon_core::models::memory_graph::{EdgeProjection, EdgeType};
 use maekon_core::models::storage_records::SegmentDetailRecord;
 use maekon_core::ports::adaptive_search::AdaptiveSearchPort;
 use maekon_core::ports::embedding_provider::EmbeddingProvider;
@@ -302,6 +303,99 @@ impl SearchExecutionError {
 /// longer folds into `CoreError::ServiceUnavailable` -- see
 /// [`SearchExecutionError::SemanticNotConfigured`].
 pub async fn execute(
+    state: &AppState,
+    query: &str,
+    limit: usize,
+    mode: &str,
+) -> Result<Vec<SemanticSearchResult>, SearchExecutionError> {
+    let mut results = execute_inner(state, query, limit, mode).await?;
+    apply_memory_graph_rerank(state, &mut results).await;
+    Ok(results)
+}
+
+/// ADR-032 Mode A: re-rank `results` with the bounded memory-graph edge
+/// projection. Strictly generator-adjacent — endpoints are consumed inside
+/// this ranking computation and disclosed nowhere; an empty projection (the
+/// fail-closed off state) leaves the ranking bit-identical. A projection
+/// STORAGE error must not break search (ranking is an enhancement), so it is
+/// warn-logged and skipped — degradation in the consumer, not masking inside
+/// the helper.
+async fn apply_memory_graph_rerank(state: &AppState, results: &mut [SemanticSearchResult]) {
+    if results.is_empty() {
+        return;
+    }
+    let Some(projection_port) = state.analysis.memory_graph_projection.as_ref() else {
+        return;
+    };
+    let now_secs = chrono::Utc::now().timestamp();
+    match projection_port.project_edges_for_ranking(now_secs).await {
+        Ok(projection) if !projection.edges.is_empty() => {
+            let evidence_matches = rerank_with_edge_projection(&projection, results);
+            // Join-coverage observability (ADR-032 Known Follow-up 2): how
+            // many selected claims/edges actually landed on a result.
+            debug!(
+                claims_selected = projection.claims_selected,
+                edges_projected = projection.edges.len(),
+                evidence_matches,
+                "ADR-032 Mode A re-rank applied"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!(
+                err.code = %e.code(),
+                "ADR-032 Mode A projection failed; ranking unchanged: {e}"
+            );
+        }
+    }
+}
+
+/// Mode A boost weight per unit of summed `Evidence`-edge confidence.
+const MEMORY_GRAPH_BOOST_WEIGHT: f32 = 0.25;
+/// Upper bound on the multiplicative Mode A boost factor.
+const MEMORY_GRAPH_MAX_BOOST_FACTOR: f32 = 2.0;
+
+/// Pure Mode A ranking step: boost results whose `segment_id` is the target
+/// of a projected `Evidence` edge (`dst_id → segment_id` join per ADR-032
+/// Known Follow-up 2), then stable-sort by score.
+///
+/// The boost is multiplicative (`1 + 0.25·Σconfidence`, capped ×2.0) so it is
+/// scale-independent across the RRF and cosine score paths, and the sort is
+/// stable so equal-score results keep their prior deterministic order.
+/// Returns how many results were boosted (join-coverage measurement).
+pub(crate) fn rerank_with_edge_projection(
+    projection: &EdgeProjection,
+    results: &mut [SemanticSearchResult],
+) -> usize {
+    let mut boost_by_segment: HashMap<&str, f32> = HashMap::new();
+    for edge in &projection.edges {
+        if edge.edge_type == EdgeType::Evidence {
+            *boost_by_segment.entry(edge.dst_id.as_str()).or_default() +=
+                edge.confidence.clamp(0.0, 1.0);
+        }
+    }
+    if boost_by_segment.is_empty() {
+        return 0;
+    }
+    let mut evidence_matches = 0usize;
+    for result in results.iter_mut() {
+        if let Some(sum) = boost_by_segment.get(result.segment_id.as_str()) {
+            evidence_matches += 1;
+            let factor = (1.0 + MEMORY_GRAPH_BOOST_WEIGHT * sum).min(MEMORY_GRAPH_MAX_BOOST_FACTOR);
+            result.score *= factor;
+        }
+    }
+    if evidence_matches > 0 {
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    evidence_matches
+}
+
+async fn execute_inner(
     state: &AppState,
     query: &str,
     limit: usize,
@@ -1280,5 +1374,106 @@ mod tests {
             "keyword mode must return FTS BM25 relevance order (double-mention \
              first), excluding the non-matching python segment"
         );
+    }
+
+    // ── ADR-032 Mode A re-rank unit tests ────────────────────────────────────
+
+    use maekon_core::models::memory_graph::ProjectedEdge;
+
+    fn make_semantic_result(id: &str, score: f32) -> SemanticSearchResult {
+        SemanticSearchResult {
+            segment_id: id.to_string(),
+            content_type: "segment_summary".to_string(),
+            content_label: None,
+            original_text: format!("text-{id}"),
+            score,
+            similarity: score,
+            time_decay: 1.0,
+            timestamp: "2026-07-29T00:00:00Z".to_string(),
+            segment_start: None,
+            segment_end: None,
+            duration_secs: None,
+            llm_summary: None,
+            dominant_category: None,
+            regime_label: None,
+        }
+    }
+
+    fn evidence_edge(dst: &str, confidence: f32) -> ProjectedEdge {
+        ProjectedEdge {
+            src_id: "clm_src".to_string(),
+            dst_id: dst.to_string(),
+            edge_type: EdgeType::Evidence,
+            confidence,
+        }
+    }
+
+    #[test]
+    fn empty_projection_leaves_ranking_bit_identical() {
+        let mut results = vec![
+            make_semantic_result("seg_a", 0.9),
+            make_semantic_result("seg_b", 0.5),
+        ];
+        let matched = rerank_with_edge_projection(&EdgeProjection::default(), &mut results);
+        assert_eq!(matched, 0);
+        assert_eq!(results[0].score, 0.9);
+        assert_eq!(results[1].score, 0.5);
+    }
+
+    #[test]
+    fn evidence_boost_reorders_matching_segment() {
+        let mut results = vec![
+            make_semantic_result("seg_top", 0.6),
+            make_semantic_result("seg_boosted", 0.5),
+        ];
+        let projection = EdgeProjection {
+            edges: vec![evidence_edge("seg_boosted", 1.0)],
+            claims_selected: 1,
+        };
+        let matched = rerank_with_edge_projection(&projection, &mut results);
+        assert_eq!(matched, 1);
+        // 0.5 × (1 + 0.25·1.0) = 0.625 > 0.6 — the evidence-backed segment
+        // overtakes the previously-top result.
+        assert_eq!(results[0].segment_id, "seg_boosted");
+        assert!((results[0].score - 0.625).abs() < 1e-6);
+        assert_eq!(results[1].score, 0.6);
+    }
+
+    #[test]
+    fn non_evidence_edges_never_influence_ranking() {
+        let mut results = vec![
+            make_semantic_result("seg_top", 0.6),
+            make_semantic_result("seg_b", 0.5),
+        ];
+        let projection = EdgeProjection {
+            edges: vec![ProjectedEdge {
+                src_id: "clm_src".to_string(),
+                dst_id: "seg_b".to_string(),
+                edge_type: EdgeType::Contradicts,
+                confidence: 1.0,
+            }],
+            claims_selected: 1,
+        };
+        let matched = rerank_with_edge_projection(&projection, &mut results);
+        assert_eq!(matched, 0);
+        assert_eq!(results[0].segment_id, "seg_top");
+        assert_eq!(results[1].score, 0.5);
+    }
+
+    #[test]
+    fn boost_factor_is_capped_and_confidence_clamped() {
+        let mut results = vec![make_semantic_result("seg_a", 1.0)];
+        let projection = EdgeProjection {
+            // 40 edges × confidence 1.0 (and one absurd 99.0 clamped to 1.0):
+            // uncapped factor would be 1 + 0.25·41 = 11.25; the cap holds ×2.
+            edges: (0..40)
+                .map(|_| evidence_edge("seg_a", 1.0))
+                .chain(std::iter::once(evidence_edge("seg_a", 99.0)))
+                .collect(),
+            claims_selected: 1,
+        };
+        let matched = rerank_with_edge_projection(&projection, &mut results);
+        assert_eq!(matched, 1);
+        assert!((results[0].score - 2.0).abs() < 1e-6);
     }
 }

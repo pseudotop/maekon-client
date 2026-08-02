@@ -40,6 +40,7 @@ pub mod file_transport;
 pub mod frame_storage;
 pub mod integration_state_store;
 pub mod keychain;
+pub(crate) mod keychain_guard;
 pub mod lan_pin_store_adapter;
 pub mod migration;
 pub mod process_env_projection;

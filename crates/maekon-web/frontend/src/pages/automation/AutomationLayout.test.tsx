@@ -21,7 +21,8 @@ describe('AutomationLayout', () => {
       llm_source: 'local',
       ocr_fallback_reason: null,
       llm_fallback_reason: null,
-      external_data_policy: 'strict',
+      // #9495: real ExternalDataPolicy wire token, not the invalid 'strict'.
+      external_data_policy: 'PiiFilterStrict',
       pending_audit_entries: 0,
     })
     vi.mocked(fetchAutomationStats).mockResolvedValue({

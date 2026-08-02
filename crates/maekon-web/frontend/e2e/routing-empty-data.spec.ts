@@ -81,14 +81,14 @@ test.describe('Sub-pathname routing redirects survive empty data', () => {
     await mockStaticJson(page, '**/api/automation/status**', {
       enabled: false,
       sandbox_enabled: false,
-      sandbox_profile: 'balanced',
-      ocr_provider: 'local',
-      llm_provider: 'local',
+      sandbox_profile: 'Standard',
+      ocr_provider: 'Local',
+      llm_provider: 'Local',
       ocr_source: 'local',
       llm_source: 'local',
       ocr_fallback_reason: null,
       llm_fallback_reason: null,
-      external_data_policy: 'disabled',
+      external_data_policy: 'PiiFilterStrict',
       pending_audit_entries: 0,
     })
     // fallback automation/stats already reports all-zero totals, which together
@@ -227,14 +227,14 @@ test.describe('Empty state CTA navigation', () => {
     await mockStaticJson(page, '**/api/automation/status**', {
       enabled: false,
       sandbox_enabled: false,
-      sandbox_profile: 'balanced',
-      ocr_provider: 'local',
-      llm_provider: 'local',
+      sandbox_profile: 'Standard',
+      ocr_provider: 'Local',
+      llm_provider: 'Local',
       ocr_source: 'local',
       llm_source: 'local',
       ocr_fallback_reason: null,
       llm_fallback_reason: null,
-      external_data_policy: 'disabled',
+      external_data_policy: 'PiiFilterStrict',
       pending_audit_entries: 0,
     })
 

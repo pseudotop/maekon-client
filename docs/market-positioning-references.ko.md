@@ -38,6 +38,24 @@ DeepMind는 AI Pointer의 4가지 design principle을 명시한다 (broader 카�
 
 Maekon은 이 원칙들을 work-signal layer의 **목표 경험**으로 채택하되, 아래 4 운영 축에서 차별화한다.
 
+## OpenHuman (tinyhumansai) — 최근접 local-first 비교 대상 (2026-07-29 스캔)
+
+**제품**: OpenHuman — Tauri+Rust+SQLite local-first "개인 AI 슈퍼 인텔리전스" (2026-05 출시, GPL-3.0). Maekon과 스택·카테고리가 가장 근접한 비교 대상이며, 컨텍스트 획득 축은 정반대다(OpenHuman은 100+ OAuth 커넥터의 20분 pull 루프로 **계정을 읽고**, Maekon은 패시브 로컬 캡처로 **행동을 관찰한다**).
+
+**신호 품질 판정 (지표 인용 전 필독)**:
+
+- 스타/트렌딩 지표는 커뮤니티 검증이 아니다. 전수 검증(2026-07-29): 관련 Hacker News 제출 전체(메인테이너 Show HN + 런칭 당일 서드파티 포함 5건)가 2~4포인트·코멘트 합계 ~1건으로 사망; 인덱싱된 Reddit 스레드 0; 메인테이너 외 유기적 X 반응 0. 영문 "커버리지" 대부분은 트렌딩 순위를 메아리치는 SEO 콘텐츠 팜이다. 성장은 비영어권 채널 + 트렌딩→SEO→스타 증폭 루프로 설명된다. **스타 수·트렌딩 순위·Product Hunt 순위를 수요/제품 증거로 인용하지 말 것.**
+- 유효 증거 = hands-on 리뷰 2건뿐: 요즘IT(직접 사용; yozm.wishket.com/magazine/detail/3870)와 OpenAIToolsHub(14일 셀프호스팅). 두 리뷰의 수렴점: 단일 최고 호평 속성은 **inspectable memory vault**("볼트를 열어 에이전트가 아는 것을 정확히 볼 수 있다 — 아무도 못 하는 것"); 일관된 미달은 안정성과 속도.
+- 이슈 트래커의 실사용자 신호(최근 트래픽 ~83%는 코어팀 작업 티켓; 최다 반응 커뮤니티 이슈 기준): 1위 불만은 **"local-first" 제품의 강제 온라인 계정**; 사용자 코드 감사 2건이 무동의 자사 백엔드 phone-home과 호스팅 애그리게이터(Composio) 경유 OAuth 핸드셰이크를 적발했다. 해당 스레드 인용: *"'local-first'와 'connected to your tools'는 반대 방향으로 당기는데, 마케팅 카피가 그 이음새를 항상 발라 덮는다."*
+
+**Maekon에 검증되는 것** (이미 내린 결정의 외부 증거):
+
+1. **볼트 베팅** — ADR-033의 사용자 소유 마크다운 미러는 hands-on 리뷰어가 가장 호평하는 속성에 착지한다 — 근거는 스타 수가 아니라 실사용 신호다.
+2. **계정 불요** — OpenHuman 커뮤니티의 최대 불만이 정확히 Maekon이 거부한 축이다: Maekon의 standalone 성공 경로는 온라인 계정·OAuth 폭·애그리게이터 중개를 요구하지 않는다(MK-EXT-01: first-party read-only 커넥터만).
+3. **Egress 정직성** — OpenHuman의 신뢰 붕괴는 사용자 감사가 적발한 침묵 phone-home에서 왔다; Maekon의 egress ledger + receipt-only/비-PII 텔레메트리 + ADR-033 §3.4 클라우드-경로 ledger 기록이 선제적 공개 답이다. 감사당하기를 기다리지 말고 공개 표면에 명시할 것.
+
+Source pointers: github.com/tinyhumansai/openhuman (신뢰 발견은 이슈 #1977, #2020, #2422).
+
 ## Maekon의 4 차별화 축
 
 | 축 | DeepMind AI Pointer | OpenAI Codex Chronicle | **Maekon** |

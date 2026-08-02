@@ -16,6 +16,16 @@ pub enum StorageError {
     #[error("secret store error: {0}")]
     SecretStore(String),
 
+    /// #9588: an OS keychain op did not complete within its bound — the item
+    /// may EXIST but could not be read (e.g. a pending macOS ACL consent
+    /// prompt, or a wedged keychain short-circuit). Distinct from
+    /// [`StorageError::SecretStore`] so callers can refuse fallbacks that are
+    /// destructive when the store is merely unreachable: master-key
+    /// resolution must fail closed on this variant, never regenerate
+    /// (review #9593 B1).
+    #[error("secret store timeout: {0}")]
+    SecretStoreTimeout(String),
+
     #[error("{resource_type} not found: {id}")]
     NotFound { resource_type: String, id: String },
 
@@ -44,6 +54,10 @@ impl From<StorageError> for CoreError {
             StorageError::SecretStore(msg) => CoreError::SecretStoreError {
                 code: maekon_core::error_codes::SecretCode::Failed,
                 message: msg,
+            },
+            StorageError::SecretStoreTimeout(msg) => CoreError::SecretStoreError {
+                code: maekon_core::error_codes::SecretCode::Failed,
+                message: format!("timeout: {msg}"),
             },
             StorageError::NotFound { resource_type, id } => CoreError::NotFound {
                 code: maekon_core::error_codes::NotFoundCode::ResourceMissing,

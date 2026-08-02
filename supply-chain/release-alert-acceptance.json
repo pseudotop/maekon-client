@@ -21,6 +21,14 @@
       "accepted_until": "2026-08-15",
       "accepted_at": "2026-07-27",
       "reason": "The advisory is limited to React Router RSC-mode server actions. Maekon ships a client-only BrowserRouter/Routes SPA and has no RSC server router, loaders, actions, or hydration path. react-router-dom 7.18.1 closes the other published router advisories; the advisory's stated fixed line (8.3.0) is not published on npm yet. Re-triage immediately when a fixed release becomes available and no later than 2026-08-15."
+    },
+    {
+      "advisory": "GHSA-wrw7-89jp-8q8g",
+      "package": "glib",
+      "manifest": "Cargo.lock",
+      "accepted_until": "2026-08-15",
+      "accepted_at": "2026-07-28",
+      "reason": "glib 0.18.5 is reachable only through the optional webdriver feature and tauri-plugin-wdio-webdriver 1.2.0; the exact Linux release feature graph excludes the plugin, WebKit2GTK, and glib 0.18.x. Upstream 1.2.0 is the latest published plugin and its Linux backend still fixes webkit2gtk 2.0/GTK3, so no compatible patched release exists. scripts/check-webdriver-security-isolation.sh fails closed if this dependency enters a shipped graph or escapes the reviewed plugin path. Re-triage immediately when upstream publishes a GTK4/WebKitGTK 6-compatible backend and no later than 2026-08-15."
     }
   ],
   "codeql": []

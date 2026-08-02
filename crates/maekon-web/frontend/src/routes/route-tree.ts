@@ -7,12 +7,14 @@ import {
   Clock,
   FileText,
   Gauge,
+  Home,
   Image,
   Info,
   LayoutDashboard,
   LifeBuoy,
   Lightbulb,
   ListChecks,
+  LogIn,
   MessageCircle,
   MessageSquare,
   Monitor,
@@ -83,6 +85,8 @@ const Policies = lazy(() => import('../pages/policies'))
 const Playbooks = lazy(() => import('../pages/Playbooks'))
 const TasksPage = lazy(() => import('../pages/tasks/TasksPage'))
 const SupportPage = lazy(() => import('../pages/support/SupportPage'))
+const LoginPage = lazy(() => import('../pages/auth/LoginPage'))
+const ContextHomePage = lazy(() => import('../pages/home/ContextHomePage'))
 
 // --- Lazy imports: Settings sub-routes ---
 const GeneralTab = lazy(() => import('../pages/setting-tabs/GeneralTab'))
@@ -404,6 +408,40 @@ export const routeTree: RouteNode[] = [
     icon: LifeBuoy,
     component: SupportPage,
     bottom: true,
+  },
+  // #9603 WD-02.1: the connected-mode sign-in screen. Deliberately neither
+  // `group` nor `bottom`, so it claims no slot on the 48px ActivityBar rail —
+  // signing in is optional in a local-first product and does not deserve
+  // permanent nav chrome, least of all in the default build where connected
+  // mode is not compiled in at all. It is still a first-class destination:
+  // `icon` is what makes CommandPalette list it (buildNavigationItems skips
+  // iconless nodes), so it is reachable by name rather than only by deep link.
+  //
+  // It renders inside the AppShell like every other route; the page's own
+  // four-state render is what handles "this build has no connected mode".
+  {
+    path: '/login',
+    labelKey: 'nav.signIn',
+    icon: LogIn,
+    component: LoginPage,
+  },
+  // #9611 WD-02.3: where a signed-in operator lands — their own mail threads,
+  // messenger history and projects, from the single #9625 typed IPC call.
+  //
+  // A sibling of `/`, not a replacement for it. `/` is the local-first activity
+  // dashboard that works with no account at all; this route only has content
+  // once connected mode is compiled in AND signed in. Redirecting `/` here would
+  // make the default build's landing page an error state, so the two coexist and
+  // sign-in is what moves you between them.
+  //
+  // Like `/login`: no `group` and no `bottom`, so it claims no slot on the 48px
+  // rail — but it carries an `icon` so CommandPalette lists it and it is
+  // reachable by name rather than only as a post-login redirect target.
+  {
+    path: '/home',
+    labelKey: 'nav.contextHome',
+    icon: Home,
+    component: ContextHomePage,
   },
 ]
 

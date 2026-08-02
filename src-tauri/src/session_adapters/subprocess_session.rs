@@ -1423,6 +1423,7 @@ mod tests {
         };
 
         let message = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "Summarize this".to_string(),
             attachments: vec![],
@@ -1533,6 +1534,7 @@ mod tests {
 
     fn basic_session_message(content: &str) -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: content.to_string(),
             attachments: vec![],

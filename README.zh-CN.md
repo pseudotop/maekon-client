@@ -244,17 +244,17 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
 ```
 
 ### 发布产物
@@ -286,11 +286,13 @@ Maekon 是应用显示名称。当前发布文件名会有意保留 `maekon-*`
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `MAEKON_EMAIL` | 登录邮箱（仅联网模式） | （独立模式下可选） |
-| `MAEKON_PASSWORD` | 登录密码（仅联网模式） | （独立模式下可选） |
 | `MAEKON_TESSDATA` | Tesseract 数据路径 | （可选） |
 | `MAEKON_DISABLE_TRAY` | 跳过系统托盘初始化（仅用于无头 CI/远程 GUI 冒烟测试） | `0` |
 | `RUST_LOG` | 日志级别 | `info` |
+
+登录凭据不从环境变量读取。请在 **设置 → 常规 → Account** 中登录（需要使用
+`--features server` 构建）。服务器 URL 在
+**设置 → Advanced → Network & Server** 中配置。
 
 ### 配置文件
 

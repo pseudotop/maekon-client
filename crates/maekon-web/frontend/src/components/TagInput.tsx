@@ -5,7 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { createTag, fetchTags, type Tag } from '../api/client'
+import { createTag, fetchTags, TAGS_QUERY_KEY, type Tag } from '../api/client'
 import { elevation, iconSize, motion } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import { getRandomTagColor, TAG_COLORS, TagBadge } from './TagBadge'
@@ -42,7 +42,7 @@ export function TagInput({
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   const { data: allTags = [] } = useQuery({
-    queryKey: ['tags'],
+    queryKey: TAGS_QUERY_KEY,
     queryFn: fetchTags,
   })
 
@@ -62,7 +62,13 @@ export function TagInput({
     return notSelected && matchesSearch
   })
 
-  const exactMatch = allTags.find((tag) => tag.name.toLowerCase() === inputValue.toLowerCase())
+  // Exact comparison, matching the database: `tags.name` is UNIQUE and SQLite
+  // compares TEXT as BINARY, so "Work" and "work" are distinct rows. A
+  // case-insensitive check here suppressed "create new" for names the server
+  // accepts — and contradicted the rename guard in TagManagementCard, which
+  // allows exactly those. The filter above stays case-insensitive: that is a
+  // search affordance, not a uniqueness decision.
+  const exactMatch = allTags.find((tag) => tag.name === inputValue.trim())
   const canCreateNew = inputValue.trim() && !exactMatch
 
   useEffect(() => {

@@ -36,6 +36,15 @@ pub async fn get_tray_geometry(_app: AppHandle) -> Result<TrayGeometrySnapshot, 
     }
 }
 
+/// #9634: production quit for UI surfaces — NOT debug-gated. The tracking
+/// panel's quit button must work in release builds; `simulate_tray_action`
+/// below stays QC-only.
+#[command]
+pub async fn request_app_quit(app: AppHandle) -> Result<(), IpcError> {
+    crate::tray::request_app_quit(&app);
+    Ok(())
+}
+
 #[command]
 pub async fn simulate_tray_action(
     app: AppHandle,

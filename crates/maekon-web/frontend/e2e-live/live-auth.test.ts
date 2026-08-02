@@ -23,7 +23,7 @@ describe('live E2E local authentication', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
-  it('resolves the token through bounded Tauri WebDriver IPC and closes the session', async () => {
+  it('reads the injected token synchronously without nested Tauri IPC and closes the session', async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(response({ sessionId: 'session-1' }))
@@ -39,6 +39,17 @@ describe('live E2E local authentication', () => {
 
     expect(token).toBe('webdriver-token-123456')
     expect(fetchImpl).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4555/session', expect.any(Object))
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'http://127.0.0.1:4555/session/session-1/execute/sync',
+      expect.objectContaining({
+        body: JSON.stringify({
+          script: 'return window.__MAEKON_LOCAL_AUTH__ ?? null;',
+          args: [],
+        }),
+      }),
+    )
+    expect(String(fetchImpl.mock.calls[3]?.[1]?.body)).not.toContain('__TAURI_INTERNALS__.invoke')
     expect(fetchImpl).toHaveBeenNthCalledWith(5, 'http://127.0.0.1:4555/session/session-1', { method: 'DELETE' })
   })
 

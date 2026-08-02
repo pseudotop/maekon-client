@@ -61,6 +61,8 @@ pub mod hnsw_adapter;
 pub mod kmeans_adapter;
 pub mod llm_segment_summarizer;
 pub mod llm_work_type_refiner;
+pub mod memory_graph_projection;
+pub mod memory_vault_writer;
 pub mod param_resolver;
 mod pattern_miner;
 mod prompts;

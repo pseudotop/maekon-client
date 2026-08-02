@@ -23,7 +23,7 @@
     "allow-get-pending-suggestion-count",
     "allow-toggle-suggestions-panel",
     "allow-show-main-window",
-    "allow-simulate-tray-action",
+    "allow-request-app-quit",
     "allow-toggle-capture-pause",
     "allow-set-indicator-visible"
   ]

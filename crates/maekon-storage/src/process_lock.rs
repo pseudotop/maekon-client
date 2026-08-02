@@ -83,7 +83,18 @@ impl ProcessLock {
     /// a builder bundle that is borrowed/cloned but never moved into long-lived
     /// state) would release the lock when that local drops at the end of startup,
     /// silently defeating the guarantee — exactly the regression caught for #6864.
+    ///
+    /// On Windows there is no `_file` field, so the guard carries nothing: there is
+    /// no fd to leak and no resource to release. Clippy's `forget_non_drop` rightly
+    /// flags `mem::forget` on such a type (#9972: it broke the weekly Windows lint
+    /// gate).
+    ///
+    /// Note `drop(self)` is NOT the fix — that just trades the lint for
+    /// `drop_non_drop` (verified: both fire on a fieldless struct). The Windows arm
+    /// must simply *consume* the guard and do nothing, which is exactly the no-op
+    /// documented in `try_acquire`.
     pub fn hold_for_process_lifetime(self) {
+        #[cfg(unix)]
         std::mem::forget(self);
     }
 }

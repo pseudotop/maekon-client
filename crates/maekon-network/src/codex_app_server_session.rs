@@ -975,6 +975,7 @@ done"#,
                 .unwrap();
 
         let msg = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],
@@ -1053,6 +1054,7 @@ done"#,
     /// Build a `SessionMessage` carrying `content` as a user turn.
     fn user_msg(content: &str) -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: content.to_string(),
             attachments: vec![],
@@ -1441,6 +1443,7 @@ done"#,
                 .unwrap();
 
         let msg = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],

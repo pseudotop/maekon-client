@@ -295,6 +295,8 @@ mod tests {
                 access_token: "old_jwt".to_string(),
                 refresh_token: Some("ref_tok".to_string()),
                 expires_at: Utc::now() + Duration::hours(1),
+                identifier: None,
+                organization_id: None,
             });
         }
 
@@ -544,6 +546,8 @@ mod tests {
                 access_token: "old_jwt".to_string(),
                 refresh_token: Some("ref_tok".to_string()),
                 expires_at: Utc::now() + Duration::minutes(1),
+                identifier: None,
+                organization_id: None,
             });
         }
 
@@ -595,6 +599,8 @@ mod tests {
                 access_token: "old_jwt".to_string(),
                 refresh_token: Some("ref_tok".to_string()),
                 expires_at: Utc::now() + Duration::hours(1),
+                identifier: None,
+                organization_id: None,
             });
         }
 
@@ -634,6 +640,8 @@ mod tests {
                 access_token: "old_jwt".to_string(),
                 refresh_token: Some("ref_tok".to_string()),
                 expires_at: Utc::now() + Duration::hours(1),
+                identifier: None,
+                organization_id: None,
             });
         }
 
@@ -734,6 +742,8 @@ mod tests {
                 access_token: "old_jwt".to_string(),
                 refresh_token: Some("ref_tok".to_string()),
                 expires_at: Utc::now() + Duration::hours(1),
+                identifier: None,
+                organization_id: None,
             });
         }
         tm.refresh().await.unwrap_err()

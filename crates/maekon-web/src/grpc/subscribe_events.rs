@@ -60,6 +60,7 @@ pub async fn subscribe_events(
     max_concurrent_streams: usize,
     pii_sanitizer: Option<Arc<dyn PiiSanitizer>>,
     ai_runtime_status_snapshot: Option<maekon_api_contracts::stream::AiRuntimeStatus>,
+    burst_capacity: u32,
 ) -> Result<Response<SubscribeEventsStream>, Status> {
     let (load_policy, streaming_enabled) = (
         streaming_source.load_policy(),
@@ -129,7 +130,12 @@ pub async fn subscribe_events(
 
     // Step 3: per-stream state
     let mut rx = event_tx.subscribe();
-    let mut rate_limiter = EventRateLimiter::new();
+    // #9638: honor the configured burst capacity (refill rate stays the
+    // built-in default — only the burst knob is exposed in config today).
+    let mut rate_limiter = EventRateLimiter::with_rate(
+        burst_capacity,
+        crate::grpc::rate_limiter::DEFAULT_TOKENS_PER_SEC,
+    );
     let mut rate_limit_drops = DropAccumulator::new("rate_limit");
     let mut channel_lag_drops = DropAccumulator::new("channel_lag");
     let mut hint_emitter = HintEmitter::new();

@@ -402,6 +402,65 @@ async fn update_settings_persists_coaching_profiles_and_quiet_hours() {
 /// disappear. `regime_goals` is now display-only in the settings write path
 /// (owned solely by the goals endpoint), so the saved config must retain the
 /// goal even though the incoming settings payload carries none.
+/// #9785: the handoff allowlist survives a Settings save, through the real flow.
+///
+/// Same shape as the `regime_goals` test below, and for the same reason: the
+/// Settings form has no field for `server.allowed_handoff_hosts`, so a save that
+/// round-tripped it as absent would wipe it. What makes this one matter is what
+/// the value decides — where the app may send the user's browser. A silent reset
+/// to empty turns handoff off entirely with nothing in the logs to explain it.
+///
+/// Deliberately routed through `ConfigManager` + `SettingsCommandService` rather
+/// than calling `apply_settings_to_config` directly: the direct call only proves
+/// that one function is innocent, and the clobber could equally arrive from the
+/// flow around it (#9785 review).
+#[tokio::test]
+async fn update_settings_preserves_the_configured_handoff_allowlist() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("config.json");
+    let config_manager = ConfigManager::with_path(config_path).expect("config manager");
+
+    // A distribution (or a self-hosting user) configured its Console.
+    config_manager
+        .update_with(|config| {
+            config.server.allowed_handoff_hosts = vec![
+                "console.example.com".to_string(),
+                "preview.example.com".to_string(),
+            ];
+            Ok(())
+        })
+        .expect("seed the allowlist the config file owns");
+
+    let state = test_state_with_config_manager(config_manager.clone(), None);
+    let context = test_context_from_state(&state);
+
+    // A Settings form that knows nothing about the allowlist, changing a field
+    // it does own so the network block is genuinely written.
+    let mut settings = AppSettings::default();
+    settings.network.server_base_url = "https://api.example.com".to_string();
+
+    crate::services::settings_web_service::SettingsCommandService::new(context)
+        .update_settings(&settings)
+        .await
+        .expect("settings update should succeed");
+
+    let saved = config_manager.get();
+    // The field the form owns was written — so this does not pass by the save
+    // being a no-op.
+    assert_eq!(
+        saved.server.base_url, "https://api.example.com",
+        "the form-owned field must still apply"
+    );
+    assert_eq!(
+        saved.server.allowed_handoff_hosts,
+        vec![
+            "console.example.com".to_string(),
+            "preview.example.com".to_string()
+        ],
+        "a Settings save must not clobber the handoff allowlist the config file owns",
+    );
+}
+
 #[tokio::test]
 async fn update_settings_preserves_regime_goals_owned_by_goals_endpoint() {
     let temp_dir = TempDir::new().expect("temp dir");

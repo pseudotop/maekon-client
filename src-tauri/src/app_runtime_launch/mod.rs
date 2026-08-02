@@ -4,6 +4,8 @@ use tauri::AppHandle;
 use tracing::info;
 
 mod audio_wiring;
+#[cfg(feature = "server")]
+mod auth_wiring;
 mod capture_wiring;
 mod coaching_wiring;
 mod cua_safe_mode;
@@ -18,7 +20,9 @@ mod state_wiring;
 mod suggestion_wiring;
 mod web_server_wiring;
 
-use self::capture_wiring::build_capture_wiring;
+#[cfg(feature = "server")]
+use self::auth_wiring::install_shared_token_manager;
+use self::capture_wiring::{build_capture_reauth_gate, build_capture_wiring};
 use self::coaching_wiring::build_coaching_wiring;
 pub(crate) use self::cua_safe_mode::{cua_safe_mode_enabled, precreate_auxiliary_webviews};
 pub(crate) use self::launch_result::AppRuntimeLaunchResult;
@@ -84,14 +88,8 @@ impl AppRuntimeLaunchBuilder {
 
         ensure_installation_id(&config_manager, &mut config);
 
-        // #8044: create the ONE capture-history re-auth gate from config, shared
-        // (same Arc) between the web `require_capture_reauth` middleware and the
-        // Tauri biometric/PIN command (registered as ReauthRuntimeState in setup).
-        // Default-on for privacy; `is_satisfied()` is a pass-through when disabled.
-        let reauth_gate = Arc::new(maekon_core::reauth::CaptureReauthGate::new(
-            config.privacy.reauth.enabled,
-            config.privacy.reauth.effective_idle_timeout(),
-        ));
+        // #8044: the ONE capture-history re-auth gate — see capture_wiring.rs.
+        let reauth_gate = build_capture_reauth_gate(&config);
 
         #[cfg(feature = "server")]
         let server_context = ServerLaunchContext::from_bootstrap(server);
@@ -142,10 +140,19 @@ impl AppRuntimeLaunchBuilder {
         // One FocusAnalyzer instance is shared by scheduler loops and Tauri
         // consent commands. This lets a runtime own-field revoke clear unfinished
         // workflow-pattern state in the same object immediately.
+        // #9671 review B2: this injected instance OVERWRITES the one the
+        // support builder constructs, so the notification master-switch gate
+        // must be applied HERE — a raw TauriNotifier at this site silently
+        // bypassed notification.enabled for every focus-analyzer toast.
+        let focus_notifier: Arc<dyn maekon_core::ports::notifier::DesktopNotifier> =
+            Arc::new(crate::agent_runtime_support::GatedNotifier::new(
+                Arc::new(TauriNotifier::new(self.app_handle.clone())),
+                config_manager.clone(),
+            ));
         let focus_analyzer = Arc::new(
             maekon_analysis::focus_analyzer::FocusAnalyzer::with_defaults(
                 sqlite_storage.clone(),
-                Arc::new(TauriNotifier::new(self.app_handle.clone())),
+                focus_notifier,
             ),
         );
 
@@ -155,6 +162,7 @@ impl AppRuntimeLaunchBuilder {
             &sqlite_storage,
             &capture_consent_manager,
             &shared_capture_services,
+            &config_manager,
         );
 
         #[cfg(feature = "server")]
@@ -191,6 +199,14 @@ impl AppRuntimeLaunchBuilder {
         let (regime_manager_arc, regime_classifier_arc, regime_storage) =
             build_regime_wiring(&config, &handle, sqlite_storage.clone());
 
+        // #9459: the ONE ONESHIM login session — built, keychain-restored and
+        // registered in the `TokenManagerState` IPC slot here (see
+        // auth_wiring.rs), BEFORE both of its consumers below, so one sign-in is
+        // observed by every upload/REST/SSE transport.
+        #[cfg(feature = "server")]
+        let shared_token_manager =
+            install_shared_token_manager(&self.app_handle, &config, &handle, &data_dir_path);
+
         // OSS builds keep on-device suggestions; `server` only adds network
         // transport. The composite feedback sink over the shared regime
         // classifier is built inside build_suggestion_wiring (its sole
@@ -202,6 +218,8 @@ impl AppRuntimeLaunchBuilder {
             &config,
             sqlite_storage.clone(),
             regime_classifier_arc.clone(),
+            #[cfg(feature = "server")]
+            shared_token_manager.clone(),
         );
         #[cfg(feature = "local-suggestions")]
         let suggestion_manager = suggestion_wiring.manager.clone();
@@ -286,6 +304,9 @@ impl AppRuntimeLaunchBuilder {
             let builder = builder
                 .with_shared_suggestion_queue(suggestion_wiring.shared_queue.clone())
                 .with_shared_scorer(suggestion_wiring.shared_scorer.clone());
+            // #9459: the SAME Arc the suggestion wiring and the IPC slot hold.
+            #[cfg(feature = "server")]
+            let builder = builder.with_shared_token_manager(shared_token_manager.clone());
             #[cfg(feature = "local-suggestions")]
             let builder = if let Some(ref mgr) = suggestion_manager {
                 builder.with_suggestion_manager(mgr.clone())

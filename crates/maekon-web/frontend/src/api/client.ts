@@ -583,6 +583,16 @@ export function downloadBlob(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url)
 }
 
+/**
+ * Shared react-query cache key for the tag list.
+ *
+ * Four surfaces read it — the search facet, the timeline filter, the frame tag
+ * picker, and the settings management card, which also invalidates it after a
+ * rename or delete. Declaring the key inline in each caller is how a renamed
+ * tag ends up stale on one surface but not another; keep it here.
+ */
+export const TAGS_QUERY_KEY = ['tags'] as const
+
 export async function fetchTags(): Promise<Tag[]> {
   const res = await fetchWithRetry(`${BASE_URL}/tags`)
   if (!res.ok) throw new Error('Tag query failed')
@@ -1288,6 +1298,17 @@ export async function openDesktopPermissionSettings(permissionKind: DesktopPermi
 // ── Consent (GDPR) IPC (Tauri invoke) ────────────────────────
 // Production consent read/write (src-tauri/src/commands/consent.rs). Like the other
 // IPC wrappers, kept as a thin wrapper; the caller handles errors via isIpcError/errorMessageFromInvoke.
+
+/**
+ * Shared react-query cache key for the consent snapshot.
+ *
+ * Two surfaces observe it — Privacy → Data Controls (which also invalidates it
+ * after a grant) and the Advanced settings tab's read-only disclosure. They must
+ * agree on the key AND on the fetch options, because react-query takes fetch
+ * behaviour from the most recently mounted observer of a key; declaring the key
+ * inline in each caller made that behaviour mount-order dependent.
+ */
+export const CONSENT_QUERY_KEY = ['consent'] as const
 
 /** Reads and returns the current consent snapshot (status + originally granted permissions). */
 export async function getConsent(): Promise<ConsentSnapshot> {

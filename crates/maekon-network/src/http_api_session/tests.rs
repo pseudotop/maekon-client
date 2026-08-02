@@ -314,6 +314,7 @@ fn history_truncation_no_op_when_under_limit() {
 #[test]
 fn chat_message_from_session_message() {
     let session_msg = SessionMessage {
+        screen_derived: false,
         role: maekon_core::models::ai_session::MessageRole::User,
         content: "test question".to_string(),
         attachments: vec![],
@@ -579,6 +580,7 @@ fn google_file_content_blocks() {
 #[test]
 fn render_message_content_omits_native_attachment_manifest_entries() {
     let message = SessionMessage {
+        screen_derived: false,
         role: maekon_core::models::ai_session::MessageRole::User,
         content: "Summarize these attachments".to_string(),
         attachments: vec![
@@ -1114,6 +1116,7 @@ mod http_status_mapping {
         );
 
         let msg = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],
@@ -1204,6 +1207,7 @@ mod http_status_mapping {
 
     fn test_user_message() -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],
@@ -1427,6 +1431,7 @@ mod streaming_history {
 
     fn test_user_message() -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],

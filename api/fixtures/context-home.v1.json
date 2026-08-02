@@ -1,0 +1,99 @@
+{
+  "actor": {
+    "actor_id": "wd-brk-024",
+    "organization_id": "org-wd-brokerage"
+  },
+  "as_of": "2026-07-14T03:00:00Z",
+  "contract_version": "context-home.v1",
+  "mail": {
+    "items": [
+      {
+        "channel_kind": "mail",
+        "has_external_participants": true,
+        "last_message_at": "2026-07-14T02:40:00Z",
+        "last_message_preview": "요청주신 일정 기준으로 견적서 회신드립니다.",
+        "last_message_sender_id": "wd-cp-contact-01",
+        "last_message_sender_kind": "external_counterparty_contact",
+        "message_count": 6,
+        "participant_count": 3,
+        "participants": [
+          {
+            "affiliation_id": "org-wd-brokerage",
+            "affiliation_label": "IT기획부",
+            "display_label": "김세연",
+            "kind": "internal_member",
+            "participant_id": "wd-brk-024",
+            "role_label": "차장"
+          },
+          {
+            "affiliation_id": "wd-cp-01",
+            "affiliation_label": "합성 외주 개발사",
+            "display_label": "박외주",
+            "kind": "external_counterparty_contact",
+            "participant_id": "wd-cp-contact-01",
+            "role_label": "PM"
+          }
+        ],
+        "project_id": "wd-proj-01",
+        "project_label": "차세대 WBS 고도화",
+        "subject": "차세대 WBS 외주 견적 회신",
+        "thread_id": "wd-thread-mail-01"
+      }
+    ],
+    "next_cursor": "2026-07-14T02:40:00+00:00|wd-thread-mail-01",
+    "status": "ready",
+    "truncated": true,
+    "unavailable_reason": null
+  },
+  "messenger": {
+    "items": [
+      {
+        "channel_kind": "messenger",
+        "has_external_participants": false,
+        "last_message_at": "2026-07-14T01:05:00Z",
+        "last_message_preview": "내일 오전까지 후보 정리해서 공유드릴게요.",
+        "last_message_sender_id": "wd-brk-024",
+        "last_message_sender_kind": "internal_member",
+        "message_count": 12,
+        "participant_count": 2,
+        "participants": [
+          {
+            "affiliation_id": "org-wd-brokerage",
+            "affiliation_label": "IT기획부",
+            "display_label": "김세연",
+            "kind": "internal_member",
+            "participant_id": "wd-brk-024",
+            "role_label": "차장"
+          }
+        ],
+        "project_id": "wd-proj-01",
+        "project_label": "차세대 WBS 고도화",
+        "subject": "배정 확정 전 확인",
+        "thread_id": "wd-thread-msgr-01"
+      }
+    ],
+    "next_cursor": null,
+    "status": "ready",
+    "truncated": false,
+    "unavailable_reason": null
+  },
+  "projects": {
+    "items": [],
+    "next_cursor": null,
+    "status": "unavailable",
+    "truncated": false,
+    "unavailable_reason": "backend_unavailable"
+  },
+  "provenance": {
+    "seed_namespaces": [
+      "wd-brokerage"
+    ],
+    "seed_revisions": [
+      "wd-01.2"
+    ],
+    "synthetic_only": true
+  },
+  "snapshot_id": "00000000000000000000000000000000",
+  "synthetic": true,
+  "timezone": "Asia/Seoul"
+}

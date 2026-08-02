@@ -35,6 +35,7 @@ mod skill_pack_registry_impl;
 mod tags;
 mod task_store_impl;
 mod transcript_storage_impl;
+mod vault_mirror_state_impl;
 pub mod vector_index_impl;
 pub mod vector_store_impl;
 mod web_storage_impl;
@@ -1351,6 +1352,23 @@ fn configure_connection(conn: &Connection, is_disk: bool) -> Result<(), StorageE
         )
         .map_err(|e| StorageError::Internal(format!("Failed to apply PRAGMA settings: {e}")))?;
     }
+
+    // #9735: state FK enforcement explicitly instead of inheriting it.
+    //
+    // It has always been ON here — `libsqlite3-sys` builds the bundled
+    // amalgamation with `-DSQLITE_DEFAULT_FOREIGN_KEYS=1` — but nothing in this
+    // workspace said so, so a dozen comments (and ADR-028 B3) concluded the
+    // opposite from "no connection sets the PRAGMA" and code reasoned from it.
+    // That cost real rows: `activity_segments` inserts carrying a
+    // not-yet-checkpointed `regime_id` were rejected by the very FK a comment
+    // promised could not block them.
+    //
+    // Writing it here makes the semantic this codebase reasons about a property
+    // of this codebase, not of a transitive dependency's `cc` flag — swapping
+    // `rusqlite` can no longer flip it silently.
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(|e| StorageError::Internal(format!("Failed to enable foreign keys: {e}")))?;
+
     Ok(())
 }
 

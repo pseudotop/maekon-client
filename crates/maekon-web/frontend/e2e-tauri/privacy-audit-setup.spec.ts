@@ -6,10 +6,6 @@ type SettingsSnapshot = {
   privacy: { pii_filter_level: string }
 }
 
-function configPiiToken(value: string): string {
-  return value.length > 0 ? `${value[0].toUpperCase()}${value.slice(1).toLowerCase()}` : value
-}
-
 describe('J2: Privacy & Settings Persistence', () => {
   /**
    * @tc_id T110
@@ -34,11 +30,11 @@ describe('J2: Privacy & Settings Persistence', () => {
 
     // Verify the change is persisted
     const after = await fetchApiJson<SettingsSnapshot>('/settings')
-    expect(after.privacy.pii_filter_level).toBe('strict')
+    expect(after.privacy.pii_filter_level).toBe('Strict')
 
     // Restore the original value
-    if (originalLevel && originalLevel !== 'strict') {
-      const restore = { privacy: { pii_filter_level: configPiiToken(originalLevel) } }
+    if (originalLevel && originalLevel !== 'Strict') {
+      const restore = { privacy: { pii_filter_level: originalLevel } }
       await invokeIpc('update_setting', { configJson: JSON.stringify(restore) })
     }
   })

@@ -746,6 +746,27 @@ impl<'a> WebServerRuntimeBuilder<'a> {
             // so the digest export endpoint can render accumulated claims.
             memory_graph: self.storage.clone()
                 as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
+            // ADR-032 Mode A: bounded, fail-closed edge projection over the SAME
+            // SqliteStorage Arc (Port Instance Sharing). Unconditional: an absent
+            // consent manager is the contract's "consent authority unavailable"
+            // case (permanent empty projection), never a bypass.
+            memory_graph_projection: Arc::new(
+                maekon_analysis::memory_graph_projection::BoundedMemoryGraphProjection::new(
+                    self.storage.clone()
+                        as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
+                    self.support_context.consent_manager.clone(),
+                    self.support_context.config_manager.clone(),
+                ),
+            )
+                as Arc<dyn maekon_core::ports::memory_graph_projection::MemoryGraphProjectionPort>,
+            // ADR-033: vault mirror writer over the same SqliteStorage Arc
+            // (stateless — see vault_wiring; instances interchangeable). The
+            // web erase orchestrator's Art.17 Phase-3 depends on it.
+            memory_vault_writer: crate::vault_wiring::build_vault_writer(
+                self.storage.clone(),
+                self.support_context.consent_manager.clone(),
+                self.support_context.config_manager.clone(),
+            ),
             // #7600: share the same SqliteStorage Arc as the AuditChainVerifierPort
             // so GET /audit/verify reaches the real ADR-072 hash-chain verification
             // (Port Instance Sharing) — mirrors verify_audit_log (the desktop IPC

@@ -136,6 +136,11 @@ pub(crate) struct AgentRuntimeBundle {
     /// WorkType refiner, enrichment) clone this one Arc, so adapters targeting
     /// the same endpoint converge on a single breaker (iter-011 consolidation).
     breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    /// #9459: the ONE shared `TokenManager` from the composition root, forwarded
+    /// to `AgentSupportContextBuilder` so the server transports built inside
+    /// `run()` authenticate with the same session the login IPC writes to.
+    #[cfg(feature = "server")]
+    shared_token_manager: Option<Arc<maekon_network::auth::TokenManager>>,
 }
 
 impl AgentRuntimeBundle {
@@ -156,7 +161,10 @@ impl AgentRuntimeBundle {
             self.focus_storage.clone(),
         )
         .with_storage(self.storage.clone())
-        .with_app_handle(self.app_handle.clone());
+        .with_app_handle(self.app_handle.clone())
+        // #9639 review I1: the notification config watcher needs a real exit
+        // signal — sender-drop is unreachable in this app.
+        .with_shutdown_rx(shutdown_rx.clone());
         if let Some(ref capture_services) = self.shared_capture_services {
             builder = builder.with_shared_capture_services(capture_services.clone());
         }
@@ -175,6 +183,13 @@ impl AgentRuntimeBundle {
         // support context so its `ContextAnalyzer` analysis provider converges on
         // the same breaker as every other adapter built in this runtime.
         builder = builder.with_breaker_registry(self.breaker_registry.clone());
+        // #9459: same rationale, applied to the login session — the support
+        // context's server transports must authenticate with the composition
+        // root's manager, not a second one built inside `build()`.
+        #[cfg(feature = "server")]
+        {
+            builder = builder.with_shared_token_manager(self.shared_token_manager.clone());
+        }
         // Clone before the move into Scheduler::with_config_manager below.
         builder = builder.with_config_manager(self.config_manager.clone());
         builder = builder.with_offline_mode(self.offline_mode);
@@ -212,8 +227,17 @@ impl AgentRuntimeBundle {
         // or an unconditional concrete value built right here — see
         // `scheduler::required_deps` for the per-field verified-unconditional
         // source citations.
+        // ADR-033: vault mirror writer over the same shared SqliteStorage Arc
+        // (stateless — see vault_wiring). Built before the deps literal so the
+        // config_manager move below stays intact.
+        let memory_vault_writer = crate::vault_wiring::build_vault_writer(
+            Arc::clone(&self.sqlite_storage_concrete),
+            self.consent_manager.clone(),
+            self.config_manager.clone(),
+        );
         let scheduler_deps = crate::scheduler::SchedulerRequiredDeps {
             frame_storage: support.frame_storage,
+            memory_vault_writer,
             notification_manager: support.notification_manager,
             focus_analyzer: support.focus_analyzer,
             config_manager: self.config_manager,
@@ -742,7 +766,22 @@ impl AgentRuntimeBundle {
             regime_manager: None,
             regime_classifier: None,
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
+            #[cfg(feature = "server")]
+            shared_token_manager: None,
         }
+    }
+
+    /// #9459: forward the composition root's single shared `TokenManager` to the
+    /// support-context builder, so the transports built inside `run()` share the
+    /// session the login IPC writes through `TokenManagerState`. `None` keeps the
+    /// pre-#9459 behavior of a locally-constructed manager.
+    #[cfg(feature = "server")]
+    pub(crate) fn with_shared_token_manager(
+        mut self,
+        manager: Option<Arc<maekon_network::auth::TokenManager>>,
+    ) -> Self {
+        self.shared_token_manager = manager;
+        self
     }
 
     /// Inject the single shared workspace-wide circuit-breaker registry from the

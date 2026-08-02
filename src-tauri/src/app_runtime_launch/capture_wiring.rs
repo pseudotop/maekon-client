@@ -86,6 +86,7 @@ pub(super) fn install_erasure_wiring(
     sqlite_storage: &Arc<maekon_storage::sqlite::SqliteStorage>,
     consent_manager: &Arc<dyn ConsentManagerPort>,
     shared_capture_services: &Arc<SharedCaptureServices>,
+    config_manager: &maekon_core::config_manager::ConfigManager,
 ) {
     sqlite_storage.set_deletion_flag(consent_manager.deletion_flag());
     // #4928 round-3 (FIX B): install the erase-window blocking signal `erasing`
@@ -98,10 +99,37 @@ pub(super) fn install_erasure_wiring(
     // it can no longer silently skip because the composition root degraded to
     // `None` on a capture-services build failure.
     let retry_frame_storage = Some(shared_capture_services.frame_storage.clone());
+    // ADR-033 Phase-3 participates in the crash-recovery retry: a crash
+    // between phases re-runs vault erasure here on the next launch.
+    let retry_vault_writer = Some(crate::vault_wiring::build_vault_writer(
+        sqlite_storage.clone(),
+        Some(consent_manager.clone()),
+        config_manager.clone(),
+    ));
     handle.block_on(crate::commands::consent::retry_pending_local_erase(
         sqlite_storage.clone(),
         retry_frame_storage,
+        retry_vault_writer,
     ));
+}
+
+/// #8044: the ONE capture-history re-auth gate, built from config.
+///
+/// The same `Arc` is shared between the web `require_capture_reauth` middleware
+/// and the Tauri biometric/PIN command (registered as `ReauthRuntimeState` in
+/// `setup.rs`) — two gates would let one surface be satisfied while the other
+/// stays locked. Default-on for privacy; `is_satisfied()` is a pass-through
+/// when disabled.
+///
+/// Lives here rather than in the composition root because it is capture-history
+/// wiring, and `mod.rs` is held to the ADR-013 composition-root budget (#9738).
+pub(super) fn build_capture_reauth_gate(
+    config: &maekon_core::config::AppConfig,
+) -> Arc<maekon_core::reauth::CaptureReauthGate> {
+    Arc::new(maekon_core::reauth::CaptureReauthGate::new(
+        config.privacy.reauth.enabled,
+        config.privacy.reauth.effective_idle_timeout(),
+    ))
 }
 
 #[cfg(test)]

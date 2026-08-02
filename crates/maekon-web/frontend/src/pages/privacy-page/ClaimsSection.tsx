@@ -231,6 +231,7 @@ export default function ClaimsSection() {
         note={t('privacy.claims.retract.confirmNote')}
         confirmText={t('privacy.claims.retract.confirmButton')}
         isDangerous
+        confirmDisabled={retractMutation.isPending}
         onConfirm={() => {
           if (pendingRetract) retractMutation.mutate(pendingRetract.claim_id)
         }}

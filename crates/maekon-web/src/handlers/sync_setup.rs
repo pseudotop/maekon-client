@@ -12,10 +12,11 @@
 //! startup), so the response carries `restart_required`.
 
 use axum::{extract::State, Json};
+use maekon_core::bounded_op::{run_keychain_bounded, DEFAULT_KEYCHAIN_OP_TIMEOUT};
 use maekon_core::config::{
     SyncTransportKind, MIN_SYNC_PASSPHRASE_LEN, SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT,
-    SYNC_PASSPHRASE_KEYCHAIN_SERVICE,
 };
+use maekon_core::config_manager::keychain_service_name;
 
 use crate::error::ApiError;
 use crate::services::web_contexts::ConfigWebContext;
@@ -36,14 +37,22 @@ fn parse_transport(raw: &str) -> Result<SyncTransportKind, ApiError> {
 /// blocking OS I/O).
 async fn keychain_store_passphrase(passphrase: String) -> Result<(), ApiError> {
     tokio::task::spawn_blocking(move || {
-        let entry = keyring::Entry::new(
-            SYNC_PASSPHRASE_KEYCHAIN_SERVICE,
-            SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT,
+        // Bounded write (#9588): a pending OS ACL prompt turns into an explicit
+        // API error instead of wedging this request task indefinitely. Service
+        // name follows the flavored app identity.
+        run_keychain_bounded(
+            "sync-passphrase-write",
+            DEFAULT_KEYCHAIN_OP_TIMEOUT,
+            move || {
+                let entry =
+                    keyring::Entry::new(&keychain_service_name(), SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT)
+                        .map_err(|e| format!("open keychain entry: {e}"))?;
+                entry
+                    .set_password(&passphrase)
+                    .map_err(|e| format!("write keychain entry: {e}"))
+            },
         )
-        .map_err(|e| format!("open keychain entry: {e}"))?;
-        entry
-            .set_password(&passphrase)
-            .map_err(|e| format!("write keychain entry: {e}"))
+        .map_err(|e| e.to_string())?
     })
     .await
     .map_err(|e| ApiError::Internal(format!("keychain task join failed: {e}")))?
@@ -53,12 +62,13 @@ async fn keychain_store_passphrase(passphrase: String) -> Result<(), ApiError> {
 /// Whether a non-empty passphrase is present in the keychain (off the reactor).
 async fn keychain_passphrase_present() -> bool {
     tokio::task::spawn_blocking(|| {
-        keyring::Entry::new(
-            SYNC_PASSPHRASE_KEYCHAIN_SERVICE,
-            SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT,
-        )
-        .and_then(|entry| entry.get_password())
-        .map(|value| !value.is_empty())
+        // Bounded read (#9588): absence and timeout both report "not present".
+        run_keychain_bounded("sync-passphrase-probe", DEFAULT_KEYCHAIN_OP_TIMEOUT, || {
+            keyring::Entry::new(&keychain_service_name(), SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT)
+                .and_then(|entry| entry.get_password())
+                .map(|value| !value.is_empty())
+                .unwrap_or(false)
+        })
         .unwrap_or(false)
     })
     .await

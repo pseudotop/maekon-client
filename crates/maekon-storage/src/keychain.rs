@@ -2,9 +2,11 @@
 //!
 //! Hybrid approach: `keyring` crate for OS keychain storage,
 //! JSON file as enumeration cache for `delete_namespace`/list.
+// OOS-TBD: ADR-013 file split — registry (KeychainRegistry + locks) vs
+// keyring ops vs async adapter are natural module seams once this grows again.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::StorageError;
@@ -17,12 +19,22 @@ use tracing::warn;
 
 /// Keys that OAuth flows are known to store.
 /// `delete_namespace` always tries these in addition to registry contents.
+///
+/// This list is the *registry-loss* safety net: when the enumeration cache no
+/// longer names a namespace (last-writer-wins across the several live
+/// `KeychainOps` instances), it is all `delete_namespace` has to go on. Every
+/// key any flow persists must therefore appear here — a missing one survives
+/// logout in the OS keychain indefinitely. `identifier` / `organization_id`
+/// come from the #9459 ONESHIM login session (`oneshim/auth/default`) and are
+/// PII, so their omission was a privacy leak, not just stale data.
 const KNOWN_OAUTH_KEYS: &[&str] = &[
     "access_token",
     "refresh_token",
     "scopes",
     "expires_at",
     "id_token",
+    "identifier",
+    "organization_id",
 ];
 
 /// JSON enumeration cache — tracks which namespace/key combinations exist
@@ -185,6 +197,122 @@ impl KeychainRegistry {
     }
 }
 
+/// #9493: process-global per-registry-file locks. Several independent
+/// `KeychainOps` instances live in one process (provider runtime, automation
+/// builder, server runtime context, session wiring, auth wiring); each used to
+/// hold a boot-time in-memory registry copy and save it whole-file, so the
+/// last writer erased every other instance's registrations. Every registry
+/// mutation now runs reload → apply-one-op → save under this per-path lock —
+/// the shared file is the merge point, and same-process instances can no
+/// longer interleave between reload and save. Bounded: one entry per distinct
+/// registry path (production has exactly one). Paths are used as configured
+/// (not canonicalized) — all in-process instances receive the same
+/// config-derived path, and the file may not exist yet on first use.
+static REGISTRY_FILE_LOCKS: std::sync::OnceLock<
+    parking_lot::Mutex<HashMap<PathBuf, Arc<parking_lot::Mutex<()>>>>,
+> = std::sync::OnceLock::new();
+
+fn registry_file_lock(path: &Path) -> Arc<parking_lot::Mutex<()>> {
+    REGISTRY_FILE_LOCKS
+        .get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+        .lock()
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
+        .clone()
+}
+
+/// #9523: cross-process advisory lock for the registry file. The in-process
+/// `REGISTRY_FILE_LOCKS` map cannot reach a second process — `maekon-app auth
+/// revoke` / `maekon-app secret ...` run as their own short-lived process
+/// while the GUI app may be live on the same registry — so every registry
+/// mutation additionally holds an exclusive SQLite transaction on a sibling
+/// `<registry stem>.lock.db`. SQLite's file locking is the one battle-tested
+/// cross-platform advisory lock already in the dependency tree (rusqlite is a
+/// direct dependency; no new supply-chain surface). The lock db never holds
+/// data — only its OS-level file lock matters.
+///
+/// Best-effort by policy: if the lock db cannot be opened or the busy timeout
+/// expires, we warn and proceed WITHOUT the cross-process guard. The registry
+/// is an enumeration cache whose loss is self-healing (`KNOWN_OAUTH_KEYS`
+/// sweep), and wedging a revoke behind an unremovable stale lock would be
+/// worse than a transient cross-process enumeration race.
+struct RegistryXprocLock {
+    conn: rusqlite::Connection,
+}
+
+impl RegistryXprocLock {
+    fn acquire(registry_path: &Path, busy_timeout: std::time::Duration) -> Option<Self> {
+        let lock_path = registry_path.with_extension("lock.db");
+        // Review nit (#9529): pre-create the lock file owner-only so it
+        // matches the directory's permission posture. It only ever holds an
+        // empty SQLite header (no inventory, no secrets), so failure here is
+        // non-fatal — SQLite reuses the file whatever its mode.
+        if !lock_path.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                let _ = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&lock_path);
+            }
+            #[cfg(windows)]
+            {
+                if std::fs::File::create(&lock_path).is_ok() {
+                    if let Err(e) = crate::encryption::set_owner_only_dacl(&lock_path) {
+                        warn!("keychain registry lock db: failed to set owner-only DACL: {e}");
+                    }
+                }
+            }
+        }
+        let conn = match rusqlite::Connection::open(&lock_path) {
+            Ok(conn) => conn,
+            Err(e) => {
+                warn!("keychain registry xproc lock db open failed: {e}");
+                return None;
+            }
+        };
+        if let Err(e) = conn.busy_timeout(busy_timeout) {
+            warn!("keychain registry xproc lock busy_timeout failed: {e}");
+            return None;
+        }
+        // BEGIN IMMEDIATE takes the RESERVED lock — exclusive against every
+        // other writer connection, in this process or any other.
+        match conn.execute_batch("BEGIN IMMEDIATE") {
+            Ok(()) => Some(Self { conn }),
+            Err(e) => {
+                warn!("keychain registry xproc lock acquire failed (proceeding unguarded): {e}");
+                None
+            }
+        }
+    }
+}
+
+impl Drop for RegistryXprocLock {
+    fn drop(&mut self) {
+        if let Err(e) = self.conn.execute_batch("COMMIT") {
+            warn!("keychain registry xproc lock release failed: {e}");
+        }
+    }
+}
+
+/// One registry mutation, applied against a fresh reload of the file.
+enum RegistryOp<'a> {
+    Add {
+        namespace: &'a str,
+        key: &'a str,
+    },
+    Remove {
+        namespace: &'a str,
+        key: &'a str,
+    },
+    RemoveMany {
+        namespace: &'a str,
+        keys: &'a BTreeSet<String>,
+    },
+}
+
 /// Sync core — all keyring and registry operations.
 /// Used directly by CLI (no tokio needed), wrapped by KeychainSecretStore for async port.
 pub struct KeychainOps {
@@ -210,38 +338,65 @@ impl KeychainOps {
         }
         let registry = KeychainRegistry::load_or_default(&registry_path);
         Ok(Self {
-            service_name: "maekon".into(),
+            // #9588: service name = flavored app identity; pre-scoping items
+            // stay reachable via `retrieve_sync`'s legacy read-through. See
+            // `keychain_service_name` docs for scope and non-goals.
+            service_name: maekon_core::config_manager::keychain_service_name(),
             registry: parking_lot::Mutex::new(registry),
             registry_path,
         })
     }
 
-    fn entry(&self, namespace: &str, key: &str) -> Result<keyring::Entry, StorageError> {
-        let user = format!("{namespace}.{key}");
-        keyring::Entry::new(&self.service_name, &user)
-            .map_err(|e| StorageError::SecretStore(format!("keyring entry creation: {e}")))
+    /// #9493 core: reload the registry file, apply ONE mutation, save, and
+    /// refresh this instance's cache — all under the process-global per-path
+    /// lock, so a concurrent instance's mutation can never interleave between
+    /// our reload and our save. Lock order (always this way): file lock →
+    /// `self.registry`. Save failure is best-effort like before (the OS
+    /// keychain stays authoritative; `KNOWN_OAUTH_KEYS` remains the sweep
+    /// safety net), but the cache is refreshed regardless so this instance is
+    /// never staler than what it just read.
+    fn registry_apply(&self, op: RegistryOp<'_>) {
+        let file_lock = registry_file_lock(&self.registry_path);
+        let _file_guard = file_lock.lock();
+        // #9523: cross-process guard on top of the in-process one. Held (via
+        // Drop) through save so a concurrent CLI process cannot interleave
+        // between our reload and our save. Best-effort — None proceeds
+        // unguarded (see RegistryXprocLock docs). Blocking up to the busy
+        // timeout is fine here: this fn always runs on a blocking thread
+        // (spawn_blocking) or in the pre-runtime sync CLI.
+        let _xproc_guard =
+            RegistryXprocLock::acquire(&self.registry_path, std::time::Duration::from_secs(5));
+        let mut disk = KeychainRegistry::load_or_default(&self.registry_path);
+        match op {
+            RegistryOp::Add { namespace, key } => disk.add_key(namespace, key),
+            RegistryOp::Remove { namespace, key } => disk.remove_key(namespace, key),
+            RegistryOp::RemoveMany { namespace, keys } => {
+                for key in keys {
+                    disk.remove_key(namespace, key);
+                }
+            }
+        }
+        if let Err(e) = disk.save(&self.registry_path) {
+            warn!("Failed to persist keychain registry: {e}");
+        }
+        *self.registry.lock() = disk;
     }
 
-    fn map_keyring_err(e: keyring::Error) -> StorageError {
-        StorageError::SecretStore(format!("keychain: {e}"))
+    /// Keychain account for a namespace/key pair. The service half of every
+    /// entry is `self.service_name`; all keyring touches route through the
+    /// bounded primitives in `keychain_guard` (#9588 — a pending macOS ACL
+    /// prompt degrades into an explicit error instead of hanging boot).
+    fn user(namespace: &str, key: &str) -> String {
+        format!("{namespace}.{key}")
     }
 
     pub fn store_sync(&self, namespace: &str, key: &str, value: &str) -> Result<(), StorageError> {
-        // 1. Write to keychain
-        self.entry(namespace, key)?
-            .set_password(value)
-            .map_err(Self::map_keyring_err)?;
-        // 2. Update registry cache
-        let mut reg = self.registry.lock();
-        reg.add_key(namespace, key);
-        // 3. Persist registry (best-effort — the keychain already holds the
-        //    authoritative value). If this save fails, the registry may miss
-        //    the key on next boot, but `delete_namespace` compensates via
-        //    KNOWN_OAUTH_KEYS fallback, so OAuth credentials are still cleaned
-        //    up correctly.
-        if let Err(e) = reg.save(&self.registry_path) {
-            warn!("Failed to persist keychain registry: {e}");
-        }
+        // 1. Write to keychain (bounded, #9588)
+        crate::keychain_guard::set_bounded(&self.service_name, &Self::user(namespace, key), value)?;
+        // 2. Registry: reload-apply-save under the per-path lock (#9493) —
+        //    best-effort like before (the keychain already holds the
+        //    authoritative value; KNOWN_OAUTH_KEYS covers a lost save).
+        self.registry_apply(RegistryOp::Add { namespace, key });
         Ok(())
     }
 
@@ -250,33 +405,38 @@ impl KeychainOps {
         namespace: &str,
         key: &str,
     ) -> Result<Option<String>, StorageError> {
-        match self.entry(namespace, key)?.get_password() {
-            Ok(val) => Ok(Some(val)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(Self::map_keyring_err(e)),
+        // #9588 review I4 + re-review N1: master-key-namespace-only legacy
+        // read-through keeps pre-scoping flavored profiles' databases
+        // decryptable (policy + namespace gate in `keychain_guard`).
+        let (value, migrated) = crate::keychain_guard::get_bounded_for_namespace(
+            &self.service_name,
+            namespace,
+            &Self::user(namespace, key),
+        )?;
+        if migrated {
+            self.registry_apply(RegistryOp::Add { namespace, key });
         }
+        Ok(value)
     }
 
     pub fn delete_sync(&self, namespace: &str, key: &str) -> Result<(), StorageError> {
-        match self.entry(namespace, key)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(e) => return Err(Self::map_keyring_err(e)),
-        }
-        let mut reg = self.registry.lock();
-        reg.remove_key(namespace, key);
-        if let Err(e) = reg.save(&self.registry_path) {
-            warn!("Failed to persist keychain registry: {e}");
-        }
+        crate::keychain_guard::delete_bounded(&self.service_name, &Self::user(namespace, key))?;
+        self.registry_apply(RegistryOp::Remove { namespace, key });
         Ok(())
     }
 
     pub fn delete_namespace_sync(&self, namespace: &str) -> Result<(), StorageError> {
-        // Build key set = registry keys ∪ KNOWN_OAUTH_KEYS
-        let registry_keys = {
-            let reg = self.registry.lock();
-            reg.keys_for(namespace)
+        // Build key set = fresh-disk registry keys ∪ this instance's cached
+        // keys ∪ KNOWN_OAUTH_KEYS. The disk reload (#9493) sees registrations
+        // made by OTHER instances; the cache union is safe-biased (an extra
+        // key only costs a tolerated NoEntry delete, a missing key survives
+        // logout in the OS keychain).
+        let mut all_keys: BTreeSet<String> = {
+            let file_lock = registry_file_lock(&self.registry_path);
+            let _file_guard = file_lock.lock();
+            KeychainRegistry::load_or_default(&self.registry_path).keys_for(namespace)
         };
-        let mut all_keys: BTreeSet<String> = registry_keys;
+        all_keys.append(&mut self.registry.lock().keys_for(namespace));
         for k in KNOWN_OAUTH_KEYS {
             all_keys.insert((*k).to_owned());
         }
@@ -284,30 +444,24 @@ impl KeychainOps {
         let mut errors = Vec::new();
         let mut failed_keys = BTreeSet::new();
         for key in &all_keys {
-            match self.entry(namespace, key) {
-                Ok(entry) => match entry.delete_credential() {
-                    Ok(()) | Err(keyring::Error::NoEntry) => {}
-                    Err(e) => {
-                        failed_keys.insert(key.clone());
-                        errors.push(format!("{key}: {e}"));
-                    }
-                },
-                Err(e) => {
-                    failed_keys.insert(key.clone());
-                    errors.push(format!("{key}: {e}"));
-                }
+            // Bounded delete (#9588): NoEntry is tolerated inside; a timeout
+            // (pending ACL prompt) records the key as failed so the registry
+            // keeps naming it for a later retry.
+            if let Err(e) = crate::keychain_guard::delete_bounded(
+                &self.service_name,
+                &Self::user(namespace, key),
+            ) {
+                failed_keys.insert(key.clone());
+                errors.push(format!("{key}: {e}"));
             }
         }
 
         let deleted_keys: BTreeSet<String> = all_keys.difference(&failed_keys).cloned().collect();
 
-        let mut reg = self.registry.lock();
-        for key in deleted_keys {
-            reg.remove_key(namespace, &key);
-        }
-        if let Err(e) = reg.save(&self.registry_path) {
-            warn!("Failed to persist keychain registry: {e}");
-        }
+        self.registry_apply(RegistryOp::RemoveMany {
+            namespace,
+            keys: &deleted_keys,
+        });
 
         if errors.is_empty() {
             Ok(())
@@ -320,7 +474,14 @@ impl KeychainOps {
     }
 
     pub fn all_namespaces(&self) -> Vec<String> {
-        self.registry.lock().all_namespaces()
+        // #9493: enumerate from a fresh reload, not the boot-time cache —
+        // another instance may have registered namespaces since construction.
+        let file_lock = registry_file_lock(&self.registry_path);
+        let _file_guard = file_lock.lock();
+        let disk = KeychainRegistry::load_or_default(&self.registry_path);
+        let namespaces = disk.all_namespaces();
+        *self.registry.lock() = disk;
+        namespaces
     }
 
     /// Probe a namespace: check which known keys exist in the keychain.
@@ -437,6 +598,37 @@ impl SecretStore for KeychainSecretStore {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// #9459: `delete_namespace` falls back to `KNOWN_OAUTH_KEYS` whenever the
+    /// registry has lost a namespace, so every key the ONESHIM login session
+    /// persists must be listed there. A key missing from the fallback survives
+    /// logout in the OS keychain forever — for `identifier` / `organization_id`
+    /// that is retained PII, not merely a stale token.
+    ///
+    /// Asserted against the port constants rather than literals so renaming a
+    /// persisted key without extending the fallback fails here.
+    #[test]
+    fn known_oauth_keys_cover_every_persisted_oneshim_session_key() {
+        use maekon_core::ports::secret_store::{
+            ONESHIM_ACCESS_TOKEN_SECRET_KEY, ONESHIM_EXPIRES_AT_SECRET_KEY,
+            ONESHIM_IDENTIFIER_SECRET_KEY, ONESHIM_ORGANIZATION_ID_SECRET_KEY,
+            ONESHIM_REFRESH_TOKEN_SECRET_KEY,
+        };
+        for key in [
+            ONESHIM_ACCESS_TOKEN_SECRET_KEY,
+            ONESHIM_REFRESH_TOKEN_SECRET_KEY,
+            ONESHIM_EXPIRES_AT_SECRET_KEY,
+            ONESHIM_IDENTIFIER_SECRET_KEY,
+            ONESHIM_ORGANIZATION_ID_SECRET_KEY,
+        ] {
+            assert!(
+                KNOWN_OAUTH_KEYS.contains(&key),
+                "KNOWN_OAUTH_KEYS must list '{key}': it is the only key set \
+                 delete_namespace can fall back on once the registry has lost \
+                 the namespace"
+            );
+        }
+    }
 
     #[test]
     fn registry_add_key_idempotent() {
@@ -660,6 +852,142 @@ mod tests {
             ops.delete_namespace_sync(ns).unwrap();
             assert_eq!(ops.retrieve_sync(ns, "access_token").unwrap(), None);
             assert_eq!(ops.retrieve_sync(ns, "refresh_token").unwrap(), None);
+        }
+    }
+
+    /// #9493 regression: multiple `KeychainOps` instances over the SAME
+    /// registry file (the real process has 5+) must not erase each other's
+    /// registrations. These exercise `registry_apply` directly — the registry
+    /// mutation seam — so no OS keychain access is needed (un-ignored).
+    mod registry_last_writer_wins {
+        use super::*;
+
+        fn two_instances() -> (KeychainOps, KeychainOps, TempDir) {
+            let dir = TempDir::new().expect("temp dir");
+            let path = dir.path().join("registry.json");
+            let a = KeychainOps::new(path.clone()).expect("instance a");
+            // B is constructed while the file is still empty — the boot-time
+            // stale copy that used to clobber A's later registrations.
+            let b = KeychainOps::new(path).expect("instance b");
+            (a, b, dir)
+        }
+
+        #[test]
+        fn interleaved_saves_preserve_each_others_registrations() {
+            let (a, b, dir) = two_instances();
+            a.registry_apply(RegistryOp::Add {
+                namespace: "oneshim",
+                key: "access_token",
+            });
+            // Pre-fix: B's save wrote its empty boot copy + its own key,
+            // erasing the oneshim namespace A just registered.
+            b.registry_apply(RegistryOp::Add {
+                namespace: "openai",
+                key: "refresh_token",
+            });
+
+            let disk = KeychainRegistry::load_or_default(&dir.path().join("registry.json"));
+            assert!(
+                disk.keys_for("oneshim").contains("access_token"),
+                "instance B's save must not erase instance A's registration"
+            );
+            assert!(disk.keys_for("openai").contains("refresh_token"));
+            // B's cache refreshed from the merged file — it can now enumerate
+            // A's namespace too (delete_namespace inventory depends on this).
+            assert!(b
+                .registry
+                .lock()
+                .keys_for("oneshim")
+                .contains("access_token"));
+        }
+
+        #[test]
+        fn remove_only_removes_its_target_and_does_not_resurrect() {
+            let (a, b, dir) = two_instances();
+            a.registry_apply(RegistryOp::Add {
+                namespace: "oneshim",
+                key: "access_token",
+            });
+            b.registry_apply(RegistryOp::Add {
+                namespace: "openai",
+                key: "refresh_token",
+            });
+            // A removes its own key based on a reload — B's entry survives,
+            // and A's removal is not resurrected by B's stale cache later.
+            a.registry_apply(RegistryOp::Remove {
+                namespace: "oneshim",
+                key: "access_token",
+            });
+
+            let path = dir.path().join("registry.json");
+            let disk = KeychainRegistry::load_or_default(&path);
+            assert!(
+                disk.keys_for("oneshim").is_empty(),
+                "removed key must stay removed"
+            );
+            assert!(
+                disk.keys_for("openai").contains("refresh_token"),
+                "the other instance's registration must survive the removal save"
+            );
+
+            let removed: BTreeSet<String> = ["refresh_token".to_owned()].into();
+            b.registry_apply(RegistryOp::RemoveMany {
+                namespace: "openai",
+                keys: &removed,
+            });
+            let disk = KeychainRegistry::load_or_default(&path);
+            assert!(
+                disk.all_namespaces().is_empty(),
+                "RemoveMany must clear its namespace without resurrecting oneshim"
+            );
+        }
+
+        /// #9523: the cross-process lock contract. SQLite locks are held per
+        /// CONNECTION, so two connections in one test exercise exactly what
+        /// two processes would — a second `BEGIN IMMEDIATE` must not succeed
+        /// while the first transaction is open, and must succeed after it
+        /// drops.
+        #[test]
+        fn xproc_lock_excludes_a_second_holder_until_released() {
+            let dir = TempDir::new().expect("temp dir");
+            let path = dir.path().join("registry.json");
+
+            let first = RegistryXprocLock::acquire(&path, std::time::Duration::from_secs(5))
+                .expect("first holder must acquire");
+            // Short timeout: the second holder must give up while the first
+            // transaction is still open (best-effort None, never a deadlock).
+            let contended =
+                RegistryXprocLock::acquire(&path, std::time::Duration::from_millis(150));
+            assert!(
+                contended.is_none(),
+                "second holder must not acquire while the first transaction is open"
+            );
+
+            drop(first);
+            let after = RegistryXprocLock::acquire(&path, std::time::Duration::from_secs(5));
+            assert!(
+                after.is_some(),
+                "lock must be re-acquirable after the first holder drops"
+            );
+        }
+
+        /// #9523: the uncontended happy path — registry_apply works with the
+        /// xproc guard wired in, and the lock db appears beside the registry.
+        #[test]
+        fn registry_apply_succeeds_with_xproc_lock_in_path() {
+            let dir = TempDir::new().expect("temp dir");
+            let path = dir.path().join("registry.json");
+            let ops = KeychainOps::new(path.clone()).expect("instance");
+            ops.registry_apply(RegistryOp::Add {
+                namespace: "oneshim",
+                key: "access_token",
+            });
+            let disk = KeychainRegistry::load_or_default(&path);
+            assert!(disk.keys_for("oneshim").contains("access_token"));
+            assert!(
+                path.with_extension("lock.db").exists(),
+                "xproc lock db must be created beside the registry"
+            );
         }
     }
 }

@@ -243,6 +243,70 @@ MAEKON_TARGET_HARD_LIMIT_MB=6144 \
 Connected mode is preview-only and intentionally gated behind explicit server/auth configuration.
 Use standalone mode as the default Global Alpha path unless your environment has validated connected mode.
 
+`server` is deliberately **not** a default feature: the OSS build is a
+self-contained local-first product and every feature works without an account.
+To run a build that can sign in to a ONESHIM server, ask for the feature
+explicitly:
+
+```bash
+# Connected mode. Add `grpc` instead of `server` for the gRPC transport
+# (`grpc` implies `server`).
+./scripts/cargo-cache.sh run -p maekon-app --features server
+```
+
+Rebuild the dashboard bundle (`./scripts/build-frontend.sh`) whenever the
+frontend changed since your last run: `crates/maekon-web/frontend/dist` is
+git-ignored and is embedded into the binary at compile time, so a stale `dist/`
+silently ships a stale dashboard. See the from-source prerequisites above.
+
+Then open **Sign in** from the command palette (or navigate to `/login`) and
+enter identifier / password / organization ID. In a build without `--features
+server` the same screen states that connected mode is not included rather than
+offering a form that could never submit — no feature is withheld from you for
+declining to sign in.
+
+Both feature combinations are gated in CI: `.github/workflows/ci.yml` runs
+clippy and `cargo test --locked --workspace` for `--features server` and
+`--features grpc` on top of the default-feature matrix.
+
+#### Building a login-capable macOS `.app`
+
+The commands above run the binary from a source checkout. If you need an
+installable bundle that can sign in — a demo machine, connected-mode QC —
+`--features` has to reach the bundler too. Pass it through
+`MAEKON_DEV_BUNDLE_FEATURES`:
+
+```bash
+# Login-capable debug bundle
+MAEKON_DEV_BUNDLE_FEATURES=server ./scripts/build-macos-dev-bundle.sh
+
+# Default bundle — no sign-in compiled in (unchanged behaviour)
+./scripts/build-macos-dev-bundle.sh
+```
+
+The script reports what it actually produced, and fails if the artifact does
+not match the features you asked for:
+
+```
+Capability: server=on
+Login: AVAILABLE — Sign in (/login) and Settings > General > Account render the form.
+OK: artifact capabilities match the requested feature set.
+```
+
+You can re-check any bundle later without rebuilding it. This reads a marker
+compiled into the binary by `src-tauri/src/build_capabilities.rs`, so it
+reports what the artifact *is*, not what the build was asked for:
+
+```bash
+./scripts/verify-bundle-capabilities.sh "target/debug/bundle/macos/Maekon Dev.app"
+```
+
+> Before #9659 the bundle script did not forward `--features` at all, so this
+> was the only documented `.app` route and it silently produced a build in
+> which sign-in was not compiled — indistinguishable from a login-capable one
+> until someone tried to log in. If you are preparing a demo, run the check
+> above on the artifact you are about to install.
+
 For headless CI/remote debug sessions where macOS tray bootstrap can fail due missing WindowServer:
 ```bash
 MAEKON_DISABLE_TRAY=1 ./scripts/cargo-cache.sh run -p maekon-app -- --offline --gui
@@ -297,17 +361,17 @@ Full install guide:
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
 ```
 
 ### Release Assets
@@ -343,15 +407,36 @@ identifiers for this release line.
 
 | Variable | Description | Default |
 |------|------|--------|
-| `MAEKON_EMAIL` | Login email (connected mode only) | (optional in standalone) |
-| `MAEKON_PASSWORD` | Login password (connected mode only) | (optional in standalone) |
 | `MAEKON_TESSDATA` | Tesseract data path | (optional) |
 | `MAEKON_DISABLE_TRAY` | Skip system tray initialization (headless CI/remote GUI smoke only) | `0` |
 | `RUST_LOG` | Log level | `info` |
 
+Sign-in credentials are not read from the environment. Sign in from the
+**Sign in** screen (`/login`, reachable from the command palette) or from
+**Settings → General → Account** — both render the same form, and both require a
+build with `--features server`. The server URL is configured under
+**Settings → Advanced → Network & Server**.
+
 ### Config File
 
-`~/.config/maekon/config.json` (Linux) / `~/Library/Application Support/com.maekon.app/config.json` (macOS) / `%APPDATA%\maekon\agent\config.json` (Windows):
+| Platform | Path |
+|---|---|
+| Linux | `~/.config/maekon/config.json` |
+| macOS | `~/Library/Application Support/maekon/config.json` |
+| Windows | `%APPDATA%\maekon\config.json` |
+
+The `maekon` segment is the app directory name. It gains a suffix when
+`MAEKON_APP_FLAVOR` is set — and **debug builds set `MAEKON_APP_FLAVOR=dev`
+themselves** (`src-tauri/src/lib.rs`, `configure_runtime_flavor`) so a locally
+built client never opens the released app's profile. A debug build on macOS
+therefore reads `~/Library/Application Support/maekon-dev/config.json`.
+
+> Earlier revisions of this README named
+> `~/Library/Application Support/com.maekon.app/`. That was never a real path:
+> `com.maekon.app` is the macOS bundle identifier, while the data directory
+> comes from `APP_DIR_NAME = "maekon"`
+> (`crates/maekon-core/src/config_manager/path_resolution.rs`). The Windows
+> entry likewise carried a spurious `\agent` segment.
 
 ```json
 {

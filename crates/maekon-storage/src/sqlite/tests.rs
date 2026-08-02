@@ -2092,3 +2092,33 @@ fn storage_event_id_diverges_when_title_is_redacted() {
         "title redaction changes the derived id — producers must capture the id BEFORE egress filtering"
     );
 }
+
+#[test]
+fn vault_mirror_state_is_erased_by_gdpr_delete_all_data() {
+    // #9465/ADR-033 §1.4 regression guard (fail-before/pass-after at the
+    // hash-state layer): an erase-surviving vault_mirror_state row would make
+    // the next mirror cycle see "hash matches" and silently skip regenerating
+    // files Art.17 Phase-3 just deleted. The table must be in ALL_TABLES.
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "INSERT INTO vault_mirror_state (file_name, content_hash, updated_at)
+             VALUES ('claims.md', 'h1', 1), ('daily/2026-07-29.md', 'h2', 2)",
+            [],
+        )
+        .expect("seed vault hashes");
+    }
+
+    storage.delete_all_data().expect("delete_all_data");
+
+    let remaining: i64 = {
+        let conn = storage.conn.test_lock();
+        conn.query_row("SELECT COUNT(*) FROM vault_mirror_state", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        remaining, 0,
+        "vault_mirror_state must be emptied by GDPR delete_all_data (ADR-033 §1.4)"
+    );
+}

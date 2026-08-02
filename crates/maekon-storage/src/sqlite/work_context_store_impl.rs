@@ -2,9 +2,11 @@
 //!
 //! The adapter merely applies an already-decided merge outcome inside a
 //! transaction; the merge rules themselves are owned by
-//! `maekon_core::models::work_context::merge_decide`. The cleanup order is
-//! enforced by the application (`foreign_keys` PRAGMA off) — revoke/erase
-//! delete child rows explicitly first.
+//! `maekon_core::models::work_context::merge_decide`. Revoke/erase delete child
+//! rows explicitly first. #9735: that used to be attributed to the
+//! `foreign_keys` PRAGMA being off — it is ON. The explicit ordering is kept as
+//! a belt-and-suspenders measure, redundant with the engine rather than a
+//! substitute for it.
 //!
 //! Cursor advancement is a compare-and-swap (ADR-030 revision I4). The
 //! `cursor_revision` token prevents two overlapping ingests from overwriting
@@ -789,8 +791,10 @@ impl WorkContextStorePort for SqliteStorage {
             )
             .map_err(StorageError::from)?;
 
-            // 2. Clear the content plane (raw/projection) (§8/§12). Children first —
-            //    foreign_keys is off, so delete in explicit order.
+            // 2. Clear the content plane (raw/projection) (§8/§12). Children
+            //    first. (#9735: not because foreign_keys is off — it is on. The
+            //    explicit order is correct regardless and survives a table
+            //    added without a declared FK.)
             tx.execute(
                 "DELETE FROM work_context_raw_blobs
                   WHERE install_id = ?1 AND source_object_key IN (

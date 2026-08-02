@@ -66,6 +66,18 @@
 //! is not a meaningful action. The exclusion is header-marker-based (any of
 //! the first 5 lines containing `@generated`), not path-based, so it holds
 //! for any future generated-code location using the same convention.
+//!
+//! ## Bump protocol (#9636)
+//!
+//! NEVER hand-edit a cap to the file's exact current LOC. That erases the
+//! designed 5% headroom; by 2026-07 the practice had left 28/92 entries at
+//! zero margin, where any unrelated one-line edit broke CI (#9539 was the
+//! first firing). When this gate fails on legitimate growth, run
+//! `python3 scripts/regen-adr013-loc-baseline.py` — it recomputes EVERY
+//! entry at `ceil(loc * 1.05)`, restoring headroom for the grown file and
+//! ratcheting shrunken files down in the same pass. A cap raise in the diff
+//! is then a deliberate, reviewable event — and the right moment to ask
+//! whether the file wants an actual ADR-003 split instead.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

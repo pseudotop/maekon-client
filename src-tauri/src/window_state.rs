@@ -171,7 +171,9 @@ pub(crate) fn show_restore_and_focus_main_window<R: Runtime>(window: &WebviewWin
 }
 
 #[cfg(target_os = "windows")]
-fn windows_webview_handle<R: Runtime>(window: &WebviewWindow<R>) -> Option<*mut core::ffi::c_void> {
+pub(crate) fn windows_webview_handle<R: Runtime>(
+    window: &WebviewWindow<R>,
+) -> Option<*mut core::ffi::c_void> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let handle = window.window_handle().ok()?;

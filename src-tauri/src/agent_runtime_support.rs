@@ -1,3 +1,5 @@
+// OOS-TBD: ADR-013 file split — baselined past the 900-line giant
+// threshold while growing for #9688; split per ADR-003 when next touched.
 use anyhow::Result;
 use maekon_analysis::focus_analyzer::FocusAnalyzer;
 use maekon_core::config::AppConfig;
@@ -152,6 +154,11 @@ pub(crate) struct AgentSupportContextBuilder<'a> {
     /// ConfigManager shared with the composition root. When set, the BatchUploader
     /// suppression predicate uses `snapshot()` to gate uploads outside allowed windows.
     config_manager: Option<ConfigManager>,
+    /// Runtime shutdown signal, used to terminate the notification config
+    /// watcher. Sender-drop cannot serve as its exit condition: the app keeps
+    /// `ConfigManager` clones alive for the whole process (Tauri managed state
+    /// among them), so the watcher must be told to stop.
+    shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
     /// Shared consent authority from capture wiring. External AI guards must use
     /// this instance instead of reloading consent from disk.
     consent_manager: Option<Arc<dyn ConsentManagerPort>>,
@@ -170,6 +177,13 @@ pub(crate) struct AgentSupportContextBuilder<'a> {
     /// Only meaningful in `analysis` builds; ignored otherwise.
     #[cfg(feature = "analysis")]
     provider_secret_stores: Option<maekon_core::ports::secret_store::SecretStoreSet>,
+    /// #9459: the ONE shared `TokenManager` from the composition root — already
+    /// keychain-restored and registered in the `TokenManagerState` IPC slot.
+    /// `build_server_transports` adopts it so the upload/REST/SSE transports and
+    /// the login command operate on a single session. `None` (standalone use, or
+    /// a failed construction upstream) keeps the pre-#9459 local construction.
+    #[cfg(feature = "server")]
+    shared_token_manager: Option<Arc<TokenManager>>,
 }
 
 impl<'a> AgentSupportContextBuilder<'a> {
@@ -191,12 +205,27 @@ impl<'a> AgentSupportContextBuilder<'a> {
             few_shot_storage: None,
             analysis_health_flag: None,
             config_manager: None,
+            shutdown_rx: None,
             consent_manager: None,
             offline_mode: false,
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
             #[cfg(feature = "analysis")]
             provider_secret_stores: None,
+            #[cfg(feature = "server")]
+            shared_token_manager: None,
         }
+    }
+
+    /// #9459: inject the composition root's single shared `TokenManager` so the
+    /// server transports built in [`build`] reuse the session the login IPC
+    /// writes to, instead of constructing a second one that never sees a bearer
+    /// token. `None` preserves the pre-#9459 local construction.
+    ///
+    /// [`build`]: AgentSupportContextBuilder::build
+    #[cfg(feature = "server")]
+    pub(crate) fn with_shared_token_manager(mut self, manager: Option<Arc<TokenManager>>) -> Self {
+        self.shared_token_manager = manager;
+        self
     }
 
     /// Inject the single shared workspace-wide circuit-breaker registry from the
@@ -265,6 +294,11 @@ impl<'a> AgentSupportContextBuilder<'a> {
     /// per CONS-PI13 — not a deep-clone of all 37 config sections).
     pub(crate) fn with_config_manager(mut self, mgr: ConfigManager) -> Self {
         self.config_manager = Some(mgr);
+        self
+    }
+
+    pub(crate) fn with_shutdown_rx(mut self, rx: tokio::sync::watch::Receiver<bool>) -> Self {
+        self.shutdown_rx = Some(rx);
         self
     }
 
@@ -387,6 +421,9 @@ impl<'a> AgentSupportContextBuilder<'a> {
         // Extract config_manager before any later borrows of `self` to avoid
         // partial-move conflicts (build_context_analyzer borrows self below).
         let config_manager = self.config_manager.take();
+        // #9639: keep a handle for the notification master-switch gate below
+        // (config_manager itself is consumed by the transport wiring).
+        let notifier_config_manager = config_manager.clone();
         #[cfg(feature = "server")]
         let (batch_sink_opt, api_client_opt, sse_client_opt, feature_perf_sink_opt) =
             server_transport_ports_for_mode(
@@ -394,6 +431,7 @@ impl<'a> AgentSupportContextBuilder<'a> {
                 self.config,
                 &session_id,
                 config_manager,
+                self.shared_token_manager.take(),
             )?;
         #[cfg(not(feature = "server"))]
         let (batch_sink_opt, api_client_opt, feature_perf_sink_opt) =
@@ -404,16 +442,36 @@ impl<'a> AgentSupportContextBuilder<'a> {
                 config_manager,
             )?;
 
-        let notifier: Arc<dyn maekon_core::ports::notifier::DesktopNotifier> =
+        let raw_notifier: Arc<dyn maekon_core::ports::notifier::DesktopNotifier> =
             if let Some(handle) = self.app_handle.clone() {
                 Arc::new(TauriNotifier::new(handle))
             } else {
                 Arc::new(LogOnlyNotifier)
             };
+        // #9639: every injected-notifier consumer goes through the
+        // notification.enabled master switch (see GatedNotifier). Without a
+        // config manager (minimal/test wiring) the raw notifier stands.
+        let notifier: Arc<dyn maekon_core::ports::notifier::DesktopNotifier> =
+            match notifier_config_manager.clone() {
+                Some(mgr) => Arc::new(GatedNotifier::new(raw_notifier, mgr)),
+                None => raw_notifier,
+            };
         let notification_manager = Arc::new(NotificationManager::new(
             self.config.notification.clone(),
             notifier.clone(),
         ));
+        // #9639 follow-up: without this the manager keeps its BOOT config, so
+        // enabling notifications after launch stayed invisible until a restart.
+        // The watcher exits on the runtime shutdown signal — see
+        // `spawn_notification_config_watcher` for why sender-drop cannot be its
+        // exit condition here.
+        if let Some(mgr) = notifier_config_manager {
+            crate::notification_manager::spawn_notification_config_watcher(
+                notification_manager.clone(),
+                mgr,
+                self.shutdown_rx.clone(),
+            );
+        }
         let focus_analyzer = Arc::new(FocusAnalyzer::with_defaults(
             self.focus_storage.clone(),
             notifier.clone(),
@@ -614,12 +672,13 @@ fn server_transport_ports_for_mode(
     config: &AppConfig,
     session_id: &str,
     config_manager: Option<ConfigManager>,
+    shared_token_manager: Option<Arc<TokenManager>>,
 ) -> Result<ServerTransportPorts> {
     if offline_mode {
         return Ok((None, None, None, None));
     }
 
-    build_server_transports(config, session_id, config_manager)
+    build_server_transports(config, session_id, config_manager, shared_token_manager)
 }
 
 #[cfg(not(feature = "server"))]
@@ -677,15 +736,25 @@ fn build_server_transports(
     config: &AppConfig,
     session_id: &str,
     config_manager: Option<ConfigManager>,
+    shared_token_manager: Option<Arc<TokenManager>>,
 ) -> Result<ServerTransportPorts> {
-    let token_manager = Arc::new(
-        TokenManager::new_with_tls(
-            &config.server.base_url,
-            &config.tls,
-            Some(config.request_timeout()),
-        )
-        .map_err(|e| anyhow::anyhow!("failed to build TLS-aware TokenManager: {e}"))?,
-    );
+    // #9459: adopt the composition root's shared session when present. Building
+    // a second manager here is what used to strand the login token: the IPC
+    // `TokenManagerState` slot held one manager while every transport below
+    // authenticated with another that no one ever signed in. The local
+    // construction survives only as the fallback for a `None` upstream (a
+    // `[tls]` config error there) and for standalone/test use.
+    let token_manager = match shared_token_manager {
+        Some(manager) => manager,
+        None => Arc::new(
+            TokenManager::new_with_tls(
+                &config.server.base_url,
+                &config.tls,
+                Some(config.request_timeout()),
+            )
+            .map_err(|e| anyhow::anyhow!("failed to build TLS-aware TokenManager: {e}"))?,
+        ),
+    };
 
     // #5069: clone the shared TokenManager for the feature-perf sink BEFORE the
     // transport branches consume it (the non-grpc branch moves it into the SSE
@@ -799,6 +868,89 @@ impl TauriNotifier {
     }
 }
 
+/// #9639: master-switch gate in front of ANY injected notifier.
+///
+/// `NotificationManager` honors `notification.enabled`, but four focus-
+/// analyzer toasts (and any future direct consumer of the injected
+/// `DesktopNotifier`) called the port directly and bypassed the switch —
+/// turning notifications OFF in settings did not silence them. Gating at the
+/// composition root covers every consumer without touching adapter crates.
+/// NOTE: the launch path constructs its own FocusAnalyzer and overwrites the
+/// support builder's instance, so it wraps its notifier with this gate too
+/// (#9671 review B2) — a new injection site must do the same.
+///
+/// Suppression returns an ERROR (`service.unavailable`), not `Ok(())`
+/// (#9671 review I2): every caller treats `Ok` as "shown" and commits state
+/// on it (cooldown stamps, `mark_suggestion_shown_by_id`) — a silent `Ok`
+/// would record deliveries that never happened. Two consequences of routing
+/// a PERMANENT setting through the transient-failure paths (#9671 re-review
+/// N1/N2, both accepted): callers other than `NotificationManager` log the
+/// suppression at `warn!`, and the pattern-detected toast takes its
+/// retry branch once per pattern before the save-dedup path re-applies the
+/// cooldown — bounded, not a hot loop. The live-config read makes
+/// OFF take effect immediately; ON-after-boot additionally depends on each
+/// caller's own config handling (NotificationManager keeps a boot snapshot).
+pub(crate) struct GatedNotifier {
+    inner: Arc<dyn maekon_core::ports::notifier::DesktopNotifier>,
+    config_manager: maekon_core::config_manager::ConfigManager,
+}
+
+impl GatedNotifier {
+    pub fn new(
+        inner: Arc<dyn maekon_core::ports::notifier::DesktopNotifier>,
+        config_manager: maekon_core::config_manager::ConfigManager,
+    ) -> Self {
+        Self {
+            inner,
+            config_manager,
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        // snapshot() = Arc borrow, no deep clone (this runs per notification).
+        self.config_manager.snapshot().notification.enabled
+    }
+
+    fn suppressed() -> maekon_core::error::CoreError {
+        maekon_core::error::CoreError::ServiceUnavailable {
+            code: maekon_core::error_codes::ServiceCode::Unavailable,
+            message: "notifications disabled by user setting (notification.enabled=false)"
+                .to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl maekon_core::ports::notifier::DesktopNotifier for GatedNotifier {
+    async fn show_suggestion(
+        &self,
+        suggestion: &maekon_core::models::suggestion::Suggestion,
+    ) -> Result<(), maekon_core::error::CoreError> {
+        if !self.enabled() {
+            return Err(Self::suppressed());
+        }
+        self.inner.show_suggestion(suggestion).await
+    }
+
+    async fn show_notification(
+        &self,
+        title: &str,
+        body: &str,
+    ) -> Result<(), maekon_core::error::CoreError> {
+        if !self.enabled() {
+            return Err(Self::suppressed());
+        }
+        self.inner.show_notification(title, body).await
+    }
+
+    async fn show_error(&self, message: &str) -> Result<(), maekon_core::error::CoreError> {
+        if !self.enabled() {
+            return Err(Self::suppressed());
+        }
+        self.inner.show_error(message).await
+    }
+}
+
 #[async_trait::async_trait]
 impl maekon_core::ports::notifier::DesktopNotifier for TauriNotifier {
     async fn show_suggestion(
@@ -812,12 +964,12 @@ impl maekon_core::ports::notifier::DesktopNotifier for TauriNotifier {
             maekon_core::models::suggestion::Priority::Low => "Maekon - Info",
         };
         let body = suggestion.content.chars().take(200).collect::<String>();
-        if let Err(e) = tauri_plugin_notification::NotificationExt::notification(&self.app_handle)
-            .builder()
-            .title(title)
-            .body(&body)
-            .show()
-        {
+        if let Err(e) = crate::windows_notification_activation::show_actionable_notification(
+            &self.app_handle,
+            title,
+            &body,
+            crate::windows_notification_activation::DEFAULT_NOTIFICATION_ROUTE,
+        ) {
             tracing::warn!("native notification failed, suppressing: {e}");
         }
         Ok(())
@@ -828,24 +980,24 @@ impl maekon_core::ports::notifier::DesktopNotifier for TauriNotifier {
         title: &str,
         body: &str,
     ) -> Result<(), maekon_core::error::CoreError> {
-        if let Err(e) = tauri_plugin_notification::NotificationExt::notification(&self.app_handle)
-            .builder()
-            .title(title)
-            .body(body)
-            .show()
-        {
+        if let Err(e) = crate::windows_notification_activation::show_actionable_notification(
+            &self.app_handle,
+            title,
+            body,
+            crate::windows_notification_activation::DEFAULT_NOTIFICATION_ROUTE,
+        ) {
             tracing::warn!("native notification failed, suppressing: {e}");
         }
         Ok(())
     }
 
     async fn show_error(&self, message: &str) -> Result<(), maekon_core::error::CoreError> {
-        if let Err(e) = tauri_plugin_notification::NotificationExt::notification(&self.app_handle)
-            .builder()
-            .title("Maekon - Error")
-            .body(message)
-            .show()
-        {
+        if let Err(e) = crate::windows_notification_activation::show_actionable_notification(
+            &self.app_handle,
+            "Maekon - Error",
+            message,
+            "/audit/entries",
+        ) {
             tracing::warn!("native error notification failed, suppressing: {e}");
         }
         Ok(())
@@ -888,146 +1040,4 @@ impl maekon_core::ports::notifier::DesktopNotifier for LogOnlyNotifier {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generate_session_id_format() {
-        let id = generate_session_id();
-        assert!(id.starts_with("sess_"));
-        assert!(id.len() > 20);
-    }
-
-    #[test]
-    fn tauri_notifier_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<TauriNotifier>();
-        assert_send_sync::<LogOnlyNotifier>();
-    }
-
-    #[test]
-    fn offline_mode_disables_server_transport_wiring() {
-        let config = AppConfig::default_config();
-        let ports =
-            server_transport_ports_for_mode(true, &config, "sess_test_offline", None).unwrap();
-
-        assert!(ports.0.is_none());
-        assert!(ports.1.is_none());
-        assert!(ports.2.is_none());
-        #[cfg(feature = "server")]
-        assert!(ports.3.is_none());
-    }
-
-    /// #7668 regression: with `use_grpc_context=false` (the shipped default),
-    /// `select_sse_client` must pick the REST `SseStreamClient`, not the
-    /// gRPC-only `GrpcSseAdapter`. Proven end-to-end: log in against a stub
-    /// REST server, then confirm the *selected* client's `connect()` actually
-    /// delivers a suggestion pushed over the REST SSE endpoint.
-    ///
-    /// Before the fix, `GrpcSseAdapter` was selected unconditionally in the
-    /// `--features grpc` build. Its `connect()` calls
-    /// `UnifiedClient::subscribe_suggestions`, which returns
-    /// `Err(CoreError::Network { .. "Suggestion streaming is available only
-    /// in gRPC mode. Set use_grpc_context=true." .. })` immediately — no
-    /// request would ever reach the stub server below, so this test would
-    /// time out waiting on `rx.recv()` and fail (fails-before evidence).
-    #[cfg(feature = "grpc")]
-    #[tokio::test]
-    async fn grpc_disabled_selects_rest_sse_client_and_delivers_suggestion() {
-        use maekon_core::config::TlsConfig;
-        use maekon_core::ports::api_client::SseEvent;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let base = format!("http://127.0.0.1:{}", addr.port());
-
-        // Stub server: 1) respond to the login POST with a valid token, 2)
-        // respond to the SSE GET with a single `suggestion` event. Mirrors the
-        // stub-server pattern in maekon-network::sse_client::tests.
-        let server_task = tokio::spawn(async move {
-            // login (POST /api/v1/auth/tokens)
-            if let Ok((mut socket, _)) = listener.accept().await {
-                let mut buf = [0u8; 2048];
-                let _ = socket.read(&mut buf).await;
-                let body = r#"{"access_token":"tok","refresh_token":"ref","expires_in":3600}"#;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
-                let _ = socket.flush().await;
-            }
-            // SSE stream (GET /user_context/sessions/stream) → one suggestion event
-            if let Ok((mut socket, _)) = listener.accept().await {
-                let mut buf = [0u8; 2048];
-                let _ = socket.read(&mut buf).await;
-                let suggestion_json = r#"{"suggestion_id":"sug_7668","suggestion_type":"WORK_GUIDANCE","content":"REST-SSE fallback delivered","priority":"HIGH","confidence_score":0.9,"relevance_score":0.9,"is_actionable":true,"created_at":"2026-01-28T10:00:00Z"}"#;
-                let sse_body = format!("event: suggestion\ndata: {suggestion_json}\n\n");
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse_body}"
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
-                let _ = socket.flush().await;
-            }
-        });
-
-        let tls = TlsConfig {
-            enabled: false,
-            allow_self_signed: false,
-        };
-        let token_manager = Arc::new(
-            TokenManager::new_with_tls(&base, &tls, None)
-                .expect("TokenManager must build for a loopback http base_url"),
-        );
-        // Runtime-built password fixture — a string literal at the `login()`
-        // call site trips CodeQL `rust/hard-coded-cryptographic-value`;
-        // mirrors `maekon_network::sse_client::tests::primary_password`.
-        let password = String::from_utf8(vec![b'x'; 16]).expect("password fixture must be UTF-8");
-        token_manager
-            .login("user@example.com", &password)
-            .await
-            .expect("login against the stub REST server must succeed");
-
-        // A minimal UnifiedClient — required by `select_sse_client`'s signature
-        // even though the REST branch never touches it. Construction performs
-        // no network I/O.
-        let unified = Arc::new(
-            UnifiedClient::new(GrpcConfig::default(), token_manager.clone())
-                .expect("UnifiedClient must build without network I/O"),
-        );
-
-        let sse_client = select_sse_client(
-            false, // use_grpc_context — the shipped default
-            &unified,
-            &base,
-            token_manager.clone(),
-            30,
-            &tls,
-        )
-        .expect("select_sse_client must build the REST fallback when use_grpc_context is false");
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<SseEvent>(8);
-        let connect_task = tokio::spawn(async move {
-            let _ = sse_client.connect("sess_7668_fallback", tx).await;
-        });
-
-        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect(
-                "REST SSE fallback must deliver an event before the timeout — the pre-fix \
-                 GrpcSseAdapter selection would fail immediately with 'Suggestion streaming is \
-                 available only in gRPC mode' instead of ever reaching this stub server",
-            )
-            .expect("event channel must not close before the suggestion arrives");
-
-        assert!(
-            matches!(event, SseEvent::Suggestion(ref s) if s.suggestion_id == "sug_7668"),
-            "expected a Suggestion event delivered via the REST SseStreamClient fallback, got: {event:?}"
-        );
-
-        connect_task.abort();
-        server_task.abort();
-    }
-}
+mod tests;

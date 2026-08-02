@@ -15,7 +15,7 @@ mod migration;
 mod path_resolution;
 pub(crate) mod persistence;
 
-pub use path_resolution::{config_dir, data_dir, managed_config_dir};
+pub use path_resolution::{config_dir, data_dir, keychain_service_name, managed_config_dir};
 
 use crate::config::{load_managed_config, AppConfig, ManagedConfig};
 use crate::error::CoreError;

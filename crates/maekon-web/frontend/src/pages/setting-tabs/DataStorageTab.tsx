@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { CaptureReauthDialog } from '../../components/CaptureReauthGate'
+import { TagManagementCard } from '../../components/TagManagementCard'
 import { Alert, Button, Card, CardTitle, GuidancePanel, Input, Spinner } from '../../components/ui'
 import { colors, form, iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
@@ -261,6 +262,8 @@ export default function DataStorageTab() {
           </div>
         </div>
       </Card>
+
+      <TagManagementCard />
 
       <Card id="section-telemetry" variant="default" padding="lg">
         <CardTitle sticky>{t('settings.telemetryTitle')}</CardTitle>

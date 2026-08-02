@@ -80,6 +80,28 @@ pub struct ConsentPermissions {
     /// local PII filtering before off-device transfer.
     #[serde(default)]
     pub unredacted_external_ocr: bool,
+
+    // --- Tier 10: Memory-Graph Retrieval Ranking (ADR-032 Mode A) ---
+    /// Permits using memory-graph EDGE TOPOLOGY (`src_id`/`dst_id`/`edge_type`/
+    /// `confidence`) to re-rank local retrieval results (ADR-032 §1 Mode A).
+    /// No claim text is read or disclosed; endpoints stay in-process join keys
+    /// inside the ranking computation. Default false (fail-closed); this is a
+    /// dedicated permission, NOT borrowed from `memory_graph_enrichment` (which
+    /// gates the closed belief-revision self-maintenance loop) — ADR-032 §3.2
+    /// forbids any mode borrowing or extending a sibling permission.
+    #[serde(default)]
+    pub memory_graph_retrieval_ranking: bool,
+
+    // --- Tier 13: Memory Vault Mirror (ADR-033; Tiers 11/12 reserved by ADR-032) ---
+    /// Permits continuously mirroring digests + Active claims to a local
+    /// Markdown vault the user owns (ADR-033) — a plaintext file tree OUTSIDE
+    /// SQLite. Default false (fail-closed); this is a dedicated permission,
+    /// NOT borrowed from `memory_graph_enrichment`, `full_text_extraction`,
+    /// or `memory_graph_retrieval_ranking` (all differently-purposed). The
+    /// separate `custom_path_acknowledged` config gate (ADR-033 §3.3)
+    /// additionally covers custom-folder overwrite/sync risk.
+    #[serde(default)]
+    pub memory_vault_mirror: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

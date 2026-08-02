@@ -21,6 +21,8 @@ pub(super) mod util;
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;
 
 // Public re-exports — preserves `maekon_storage::frame_storage::{…}` compatibility.
 pub use disk::DiskStatus;

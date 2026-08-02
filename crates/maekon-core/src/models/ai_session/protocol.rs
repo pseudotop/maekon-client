@@ -45,6 +45,16 @@ pub struct SessionMessage {
     pub context: Option<MessageContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,
+    /// #9643 review I2 (in-process only, never serialized): marks a message
+    /// whose CONTENT was assembled from screen-derived data (OCR text, window
+    /// titles, GUI elements — e.g. current-context suggestion prompts,
+    /// explain-suggestion quotes). The conversation guard keeps the STRICT
+    /// window gate for these; only genuinely user-typed messages get the
+    /// context-stripped degrade when the window probe fails. Default `false`
+    /// is correct for every deserialized message: those originate from the
+    /// chat UI, i.e. user-typed.
+    #[serde(skip)]
+    pub screen_derived: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

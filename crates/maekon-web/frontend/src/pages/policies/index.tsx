@@ -9,6 +9,7 @@ import {
   fetchExecutionPolicies,
   updateExecutionPolicy,
 } from '../../api/client'
+import type { SandboxProfile } from '../../api/contracts'
 import {
   Badge,
   Button,
@@ -251,7 +252,9 @@ function PolicyForm({ initial, onSubmit, onCancel, isSubmitting, isEdit }: Polic
                 onChange={(e) =>
                   setForm((f) => ({
                     ...f,
-                    sandbox_profile: e.target.value || null,
+                    // Options are exactly '' + the canonical SandboxProfile
+                    // tokens, so the narrowing cast is sound (#9535).
+                    sandbox_profile: e.target.value ? (e.target.value as SandboxProfile) : null,
                   }))
                 }
               >

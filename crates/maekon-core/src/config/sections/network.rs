@@ -36,6 +36,24 @@ pub struct ServerConfig {
     pub request_timeout_ms: u64,
     #[serde(default = "default_sse_max_retry_secs")]
     pub sse_max_retry_secs: u64,
+    /// Hosts the app may hand off to over `https`, matched exactly and
+    /// case-insensitively. Empty means no external https handoff is permitted.
+    ///
+    /// #9785: this replaces a hardcoded vendor allowlist in
+    /// `commands/os_handoff.rs`. Every other origin in this client comes from
+    /// configuration — `base_url` defaults to `http://localhost:8000` — and that
+    /// one constant was the sole deviation, which is why the public-export
+    /// scanner flagged it. It also closes the gap its own author documented:
+    /// a self-hosted Console was unreachable through a static list.
+    ///
+    /// Exact match is deliberate and is preserved from the original design. A
+    /// suffix rule would turn `evil-app.<vendor-domain>` into an allowed target,
+    /// so no wildcard or suffix form is accepted here either.
+    ///
+    /// Configuring this is not a privilege escalation: anyone who can write this
+    /// file can already repoint `base_url`.
+    #[serde(default)]
+    pub allowed_handoff_hosts: Vec<String>,
 }
 
 // ── GrpcConfig ─────────────────────────────────────────────────────

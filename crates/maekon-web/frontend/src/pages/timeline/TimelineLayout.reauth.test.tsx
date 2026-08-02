@@ -25,7 +25,10 @@ const {
   removeTagFromFrame: vi.fn(),
 }))
 
-vi.mock('../../api/client', () => ({
+// Spread the real module: a bare factory drops exports the subject
+// imports but this test does not stub (e.g. TAGS_QUERY_KEY).
+vi.mock('../../api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/client')>()),
   addTagToFrame,
   batchAddTag,
   fetchFrames,

@@ -15,7 +15,7 @@ Before this pattern was established, 14 dispatchers across `maekon-network`, `ma
 | HTTP status | CoreError variant | Wire code | Retryable |
 |---|---|---|---|
 | 401 Unauthorized | `Auth` | `auth.failed` | No |
-| 403 Forbidden | `Auth` | `auth.failed` | No |
+| 403 Forbidden | `Auth` | `auth.failed` | No (see [Sanctioned deviations](#sanctioned-deviations)) |
 | 404 Not Found | `NotFound` | `not_found.resource_missing` | No |
 | 408 Request Timeout | `RequestTimeout` | `network.timeout` | Yes |
 | 429 Too Many Requests | `RateLimit` | `network.rate_limit` | Yes (with backoff) |
@@ -86,6 +86,35 @@ For `NetworkError`-based dispatchers, substitute `NetworkError::Auth / Timeout /
 
 For `ApiError`-based web handlers, map to `ApiError::Unauthorized / Forbidden / NotFound / ServiceUnavailable / BadRequest / Internal` — `ApiError` lacks dedicated Timeout/TooManyRequests variants, so 408/429/504 collapse into `ServiceUnavailable`.
 
+## Sanctioned deviations
+
+A dispatcher may depart from the table above only when the merged mapping would
+make the UI give the user an instruction that cannot work. Record it here and in
+the dispatcher's own module doc; an unrecorded departure is drift.
+
+### 403 → `policy.denied` on the context-home surface (#9625)
+
+`maekon-network::context_home` maps 401 to `auth.failed` and **403 to
+`policy.denied`** instead of merging both into `auth.failed`.
+
+The two statuses demand opposite responses. 401 means the session is gone and
+re-login fixes it. 403 means authenticated-but-not-permitted — re-login changes
+nothing, and a surface that offers "sign in again" there hands the user a loop
+with no exit. The stated purpose of wire codes ("code-based i18n lookup,
+code-based retry logic") is served by the split, not the merge.
+
+Constraints this deviation respects, and which any future one should too:
+
+- **No new wire code.** `policy.denied` is already in the frozen 54-code
+  registry, so the ADR-019 §5 re-introduction checklist does not apply and
+  `translateError` already has a template in every locale.
+- **`check_response` is left alone.** Widening the shared helper would change
+  behaviour for all of its existing callers, none of which asked for the
+  distinction. The split is local to the one dispatcher that needs it.
+- **Every other arm still matches the table**, and a test
+  (`canonical_table_arms_match_the_guide`) pins that so the deviation cannot
+  quietly grow.
+
 ## Domain-specific fallback
 
 The `_` wildcard should use a domain-specific variant when one exists, not always `Network::Generic`. Examples:
@@ -98,7 +127,7 @@ This preserves domain context for the "didn't match any known status" bucket.
 
 ## Dispatchers currently following this pattern
 
-16 dispatchers. **Impl** = mapping is implemented. **Tests** = has regression tests covering the mapping (specific-arm + fallback).
+17 dispatchers. **Impl** = mapping is implemented. **Tests** = has regression tests covering the mapping (specific-arm + fallback).
 
 | Crate / module | Impl | Tests |
 |---|---|---|
@@ -118,6 +147,7 @@ This preserves domain context for the "didn't match any known status" bucket.
 | `maekon-audio::cloud_stt` | ✓ | ✓ specific + fallback |
 | `maekon-audio::model_downloader` | ✓ | ✓ specific + fallback (needed `new_with_base_url` injection) |
 | `maekon-web::services::ai_model_catalog_web_service` | ✓ (ApiError form) | ✓ specific + fallback |
+| `maekon-network::context_home::map_failure_status` | ✓ (403 deviation, see above) | ✓ 7 tests — canonical-arm table, 403 split, bare-500 retryability, permanent-4xx, Retry-After passthrough, no-bearer-in-message |
 
 ## Intentionally excluded
 

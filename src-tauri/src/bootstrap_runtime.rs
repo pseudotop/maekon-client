@@ -187,13 +187,15 @@ impl BootstrapRuntimeBuilder {
 
 fn resolve_db_path(data_dir: Option<&Path>) -> PathBuf {
     data_dir
-        .map(|directory| directory.join("maekon.db"))
+        .map(|directory| directory.join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME))
         .or_else(|| {
             ConfigManager::data_dir()
                 .ok()
-                .map(|directory| directory.join("maekon.db"))
+                .map(|directory| directory.join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME))
         })
-        .unwrap_or_else(|| PathBuf::from("./maekon.db"))
+        .unwrap_or_else(|| {
+            PathBuf::from(".").join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME)
+        })
 }
 
 pub(crate) fn spawn_background_runtime() -> Result<Arc<ManagedBackgroundRuntime>> {

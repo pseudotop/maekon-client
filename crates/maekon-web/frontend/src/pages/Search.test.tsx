@@ -25,7 +25,10 @@ const mockSearch = vi.fn().mockResolvedValue({ query: '', total: 0, results: [] 
 const mockFetchSemanticSearch = vi.fn().mockResolvedValue([])
 const mockFetchSemanticSearchCapabilities = vi.fn()
 
-vi.mock('../api/client', () => ({
+// Spread the real module: a bare factory drops exports the subject
+// imports but this test does not stub (e.g. TAGS_QUERY_KEY).
+vi.mock('../api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/client')>()),
   fetchTags: (...args: unknown[]) => mockFetchTags(...args),
   search: (...args: unknown[]) => mockSearch(...args),
   fetchSemanticSearch: (...args: unknown[]) => mockFetchSemanticSearch(...args),

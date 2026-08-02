@@ -1,6 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import type { AppSettings } from '../../api/client'
-import { Card, CardTitle, GuidancePanel, Input } from '../../components/ui'
+import { type AppSettings, CONSENT_QUERY_KEY, getConsent } from '../../api/client'
+import { Alert, Card, CardTitle, GuidancePanel, Input } from '../../components/ui'
 import { colors, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useLoadedFormData, useSettingsFormContext } from '../settings/SettingsFormContext'
@@ -52,6 +53,20 @@ export default function AdvancedTab() {
   const { t } = useTranslation()
   const { form } = useSettingsFormContext()
   const formData = useLoadedFormData()
+
+  // #9687: the tiered-memory pipeline is gated on this consent in addition to
+  // its own toggle. Read-only here — granting stays on Privacy → Data Controls.
+  //
+  // `isSuccess` separates "we read the consent and it is missing" from "we could
+  // not read it at all" (standalone/dev without Tauri, transient IPC error, or
+  // simply the first render before the query settles). Only the former may show
+  // the warning; treating unknown as denied flashes a false "consent missing"
+  // at every cold mount and lies outright in standalone mode.
+  const { data: consent, isSuccess: consentKnown } = useQuery({
+    queryKey: CONSENT_QUERY_KEY,
+    queryFn: getConsent,
+  })
+  const patternLearningGranted = consent?.status === 'Valid' && consent.permissions.activity_pattern_learning === true
 
   const handleChange = <K extends keyof AppSettings>(section: K, field: string, value: unknown) => {
     form.setFormData((prev) => {
@@ -249,11 +264,32 @@ export default function AdvancedTab() {
             <NumberField
               id="regime-detection-interval"
               label={t('advancedTab.regimeDetectionIntervalHours')}
-              value={formData.analysis.tiered_memory?.regime_detection_interval_hours ?? 2}
-              onChange={(v) => handleChange('analysis', 'regime_detection_interval_hours' as never, v)}
+              value={formData.analysis.regime_detection_interval_hours}
+              onChange={(v) => handleChange('analysis', 'regime_detection_interval_hours', v)}
               min={1}
               max={24}
             />
+          </div>
+          {/* #9687: the toggle alone does nothing — the pipeline additionally
+              requires the activity_pattern_learning consent (GDPR Tier 4,
+              granted on Settings → Privacy, NOT part of the first-run bundle)
+              and an app restart (the pipeline is wired at boot from a config
+              snapshot). Both were verified empirically; without disclosure a
+              user flips this and sees no change anywhere. Consent is never
+              auto-granted from here — Tier 4 requires an explicit act. */}
+          <div className="space-y-2">
+            <ToggleRow
+              label={t('advancedTab.tieredMemory')}
+              description={t('advancedTab.tieredMemoryDescription')}
+              checked={formData.analysis.tiered_memory_enabled}
+              onChange={(v) => handleChange('analysis', 'tiered_memory_enabled', v)}
+            />
+            {formData.analysis.tiered_memory_enabled && consentKnown && !patternLearningGranted ? (
+              <Alert variant="warning">{t('advancedTab.tieredMemoryNeedsConsent')}</Alert>
+            ) : null}
+            {formData.analysis.tiered_memory_enabled && consentKnown && patternLearningGranted ? (
+              <Alert variant="info">{t('advancedTab.tieredMemoryNeedsRestart')}</Alert>
+            ) : null}
           </div>
           <ToggleRow
             label={t('advancedTab.embedding')}

@@ -72,6 +72,15 @@ const MASKED_COLUMNS: &[&str] = &[
     // `sanitized_*` column names, so they are listed explicitly.
     "sanitized_title",
     "sanitized_summary",
+    // #9643 review I3: free-text columns of the three tables reclassified
+    // from exempt to exported (gui_interactions / regime_overrides /
+    // automation_presets). `name` also masks other tables' name columns —
+    // over-masking is acceptable defense (the sanitizer masks PII patterns,
+    // it does not blank the value).
+    "element_text",
+    "steps_json",
+    "action_data",
+    "name",
 ];
 
 fn mask_row(mut row: serde_json::Value, sanitizer: &dyn PiiSanitizer) -> serde_json::Value {
@@ -93,6 +102,7 @@ fn mask_tables(
         .into_iter()
         .map(|table| PersonalDataTableExport {
             name: table.name,
+            truncated: table.truncated,
             rows: table
                 .rows
                 .into_iter()
@@ -205,6 +215,7 @@ mod tests {
     fn mask_tables_masks_every_row() {
         let tables = vec![PersonalDataTableExport {
             name: "activity_segments".to_string(),
+            truncated: false,
             rows: vec![
                 serde_json::json!({"llm_summary": "reviewed the budget"}),
                 serde_json::json!({"llm_summary": "wrote an email"}),

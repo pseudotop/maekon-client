@@ -277,6 +277,7 @@ mod tests {
 
     fn user_msg() -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: crate::models::ai_session::MessageRole::User,
             content: "steer me".to_string(),
             attachments: vec![],

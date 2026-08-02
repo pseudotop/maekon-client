@@ -1,5 +1,6 @@
 //! Token refresh logic: exponential backoff retry loop + `Retry-After` header parsing.
 
+use std::sync::atomic::Ordering;
 use std::time::Duration as StdDuration;
 
 use maekon_core::error::CoreError;
@@ -47,9 +48,17 @@ impl TokenManager {
         const INITIAL_BACKOFF_MS: u64 = REFRESH_INITIAL_BACKOFF_MS;
         const MAX_BACKOFF_MS: u64 = REFRESH_MAX_BACKOFF_MS;
 
-        let current = {
+        // #9491: capture the session generation under the SAME read lock as the
+        // snapshot, so the two always describe one session. Every state
+        // transition bumps the counter under the state write lock, so a
+        // different value at commit time means this rotation belongs to a
+        // session that no longer exists.
+        let (current, entry_generation) = {
             let state = self.state.read().await;
-            state.clone()
+            (
+                state.clone(),
+                self.session_generation.load(Ordering::SeqCst),
+            )
         };
 
         let current = current.ok_or_else(|| CoreError::Auth {
@@ -60,6 +69,10 @@ impl TokenManager {
             code: maekon_core::error_codes::AuthCode::Failed,
             message: "Refresh token is missing".to_string(),
         })?;
+        // The refresh response carries token material only, so who the session
+        // belongs to has to survive the swap from the previous state.
+        let identifier = current.identifier.clone();
+        let organization_id = current.organization_id.clone();
 
         let url = format!("{}/api/v1/auth/tokens/refresh", self.base_url);
 
@@ -118,11 +131,52 @@ impl TokenManager {
                         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl);
 
                         let mut state = self.state.write().await;
+                        // A session change can land while this refresh is in
+                        // flight: neither `logout()` / `logout_all_sessions()`
+                        // nor `login_with_org()` holds `refresh_lock`, so the
+                        // state can be cleared (and the persisted namespace
+                        // wiped) — and then re-populated by a fresh login,
+                        // possibly for a *different* account — between the
+                        // request above and this write. Committing the rotation
+                        // now would repopulate memory AND re-persist the
+                        // previous session's tokens, identifier, and
+                        // organization: after a plain logout the next launch
+                        // would greet a signed-out user, and after a re-login
+                        // the live session would silently revert to the account
+                        // the user just left (#9491).
+                        //
+                        // The generation captured at entry is the discriminator,
+                        // and it is re-read HERE, under the write lock that
+                        // every transition also holds — so the comparison
+                        // cannot race a concurrent login/logout. It subsumes the
+                        // old bare `state.is_none()` post-logout check (a logout
+                        // bumps the generation too); `is_none()` is retained
+                        // only as a backstop for a state written directly,
+                        // outside the transition helpers.
+                        let superseded =
+                            self.session_generation.load(Ordering::SeqCst) != entry_generation;
+                        if superseded || state.is_none() {
+                            drop(state);
+                            tracing::debug!(
+                                superseded,
+                                "token refresh completed after the session changed; \
+                                 rotated tokens discarded"
+                            );
+                            return Err(CoreError::Auth {
+                                code: maekon_core::error_codes::AuthCode::Failed,
+                                message: "Not authenticated (session ended during refresh)"
+                                    .to_string(),
+                            });
+                        }
                         *state = Some(TokenState {
                             access_token: token_resp.access_token,
                             refresh_token: token_resp.refresh_token.or(Some(refresh_token.clone())),
                             expires_at,
+                            identifier: identifier.clone(),
+                            organization_id: organization_id.clone(),
                         });
+                        drop(state);
+                        self.persist_current_state().await;
 
                         tracing::debug!("token refresh success, expires_at: {expires_at}");
                         return Ok(());

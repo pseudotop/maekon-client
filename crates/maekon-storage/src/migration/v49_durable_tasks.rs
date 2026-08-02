@@ -1,12 +1,17 @@
 //! V49: durable task lifecycle tables (ADR-028, #8577).
 //!
 //! Five additive tables backing user-confirmed tasks derived from reviewable
-//! candidates. FK `REFERENCES` clauses are documentation only — this codebase
-//! never enables the `foreign_keys` PRAGMA (ADR-028 Amendment B3), so cascade,
-//! retention, and erasure are application-enforced child-first deletes. The
-//! `UNIQUE` and `CHECK` constraints below ARE engine-enforced and carry the
-//! durable invariants (one candidate -> one to-do, dedupe uniqueness, idempotent
-//! receipts, no self-blocker edge).
+//! candidates.
+//!
+//! #9735 CORRECTED: this module previously said the FK `REFERENCES` clauses
+//! below were "documentation only" because the `foreign_keys` PRAGMA was off.
+//! It is ON — a compile-time default, now also set explicitly in
+//! `configure_connection` — so the declared cascades and reference checks do
+//! fire. Cascade, retention, and erasure keep their application-enforced
+//! child-first deletes: redundant with the engine, not in conflict with it.
+//! The `UNIQUE` and `CHECK` constraints carry the durable invariants (one
+//! candidate -> one to-do, dedupe uniqueness, idempotent receipts, no
+//! self-blocker edge) and are engine-enforced either way.
 
 use rusqlite::Connection;
 
@@ -103,12 +108,14 @@ mod tests {
     use super::*;
 
     fn base_v48(conn: &Connection) {
-        // Match production: the shared SqliteStorage connection runs with
-        // `PRAGMA foreign_keys` OFF (ADR-028 Amendment B3), so these tests must
-        // too, otherwise a bundled-rusqlite default of ON would mask the
-        // engine-enforced UNIQUE/CHECK constraints we actually assert here.
+        // #9735: match production, which runs with `PRAGMA foreign_keys` ON.
+        // This helper used to force it OFF "to match production" — the premise
+        // was backwards, and the consequence was not cosmetic: these tests
+        // inserted `todo_blockers` rows pointing at `todo_items` that were
+        // never created, which the engine rejects under the real setting. The
+        // suite was green against conditions the product never runs under.
         conn.execute_batch(
-            "PRAGMA foreign_keys=OFF;
+            "PRAGMA foreign_keys=ON;
              CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
              INSERT INTO schema_version VALUES (48);",
         )
@@ -184,11 +191,41 @@ mod tests {
         assert!(err.to_string().contains("UNIQUE constraint failed"));
     }
 
+    /// Insert a `task_candidates` parent row.
+    ///
+    /// #9735: the FK is enforced, so the referenced parent has to exist before
+    /// a child insert can reach the UNIQUE/CHECK constraint under test. These
+    /// tests used to skip this and pass only because the helper forced the
+    /// PRAGMA off — the assertion they name was never reached in the direction
+    /// production actually runs.
+    fn seed_candidate(conn: &Connection, id: &str, dedupe_key: &str) {
+        conn.execute(
+            "INSERT INTO task_candidates \
+             (id, state, expires_at, dedupe_key, revision, created_at, updated_at) \
+             VALUES (?1,'PROPOSED','2026-07-30T00:00:00Z',?2,1,'t','t')",
+            rusqlite::params![id, dedupe_key],
+        )
+        .unwrap();
+    }
+
+    /// Insert a `todo_items` parent row plus the candidate it originates from.
+    fn seed_todo(conn: &Connection, todo_id: &str, candidate_id: &str) {
+        seed_candidate(conn, candidate_id, candidate_id);
+        conn.execute(
+            "INSERT INTO todo_items \
+             (id, state, title, origin_candidate_id, revision, created_at, updated_at) \
+             VALUES (?1,'CONFIRMED','t',?2,1,'t','t')",
+            rusqlite::params![todo_id, candidate_id],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn origin_candidate_id_is_unique_one_todo_per_candidate() {
         let conn = Connection::open_in_memory().unwrap();
         base_v48(&conn);
         migrate_v49(&conn).unwrap();
+        seed_candidate(&conn, "tcand_1", "dk_1");
         conn.execute(
             "INSERT INTO todo_items (id, state, title, origin_candidate_id, revision, created_at, updated_at)
              VALUES ('todo_1','CONFIRMED','t','tcand_1',1,'t','t')",
@@ -210,6 +247,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         base_v48(&conn);
         migrate_v49(&conn).unwrap();
+        seed_todo(&conn, "todo_1", "tcand_1");
+        seed_todo(&conn, "todo_2", "tcand_2");
         let self_err = conn
             .execute(
                 "INSERT INTO todo_blockers (blocked_todo_id, blocker_todo_id, created_at)

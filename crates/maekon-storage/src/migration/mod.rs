@@ -57,6 +57,13 @@
 //!   `search_fts` CJK bigram shadow). Removes it from the GDPR erase loop too
 //!   (retention.rs), so a post-drop `DELETE FROM search_trigram` can no longer
 //!   error the erase transaction (#8056 P3).
+//! - `v54_orphan_annotation_cleanup.rs` — one-time repair: deletes
+//!   `frame_annotations` rows whose frame is already gone (#9736). Not a schema
+//!   change; `frame_annotations` declares no FK, so pre-#9731 deletions left the
+//!   rows behind and the GDPR export kept dumping them.
+//! - `v53_vault_mirror_state.rs` — `vault_mirror_state` (per-file content
+//!   hash for the ADR-033 memory vault mirror's change detection; member of
+//!   the GDPR erase sweep).
 //! - `v52_skill_pack_activation.rs` — `skill_pack_catalog`,
 //!   `skill_pack_activation` (singleton), and `skill_pack_activation_audit` for
 //!   ADR-029 trusted Skill Pack activation. v51 is reserved for the
@@ -102,11 +109,13 @@ mod v49_durable_tasks;
 mod v50_extension_registry;
 pub(crate) mod v51_work_context;
 mod v52_skill_pack_activation;
+mod v53_vault_mirror_state;
+mod v54_orphan_annotation_cleanup;
 
 use rusqlite::Connection;
 use tracing::{error, info, warn};
 
-pub const CURRENT_VERSION: u32 = 52;
+pub const CURRENT_VERSION: u32 = 54;
 
 /// Keep at most this many pre-migration backups for a given DB; older ones are
 /// pruned after each new backup so they cannot accumulate unbounded across the
@@ -437,6 +446,10 @@ pub fn run_migrations_to(conn: &Connection, target: u32) -> Result<(), rusqlite:
     }
     if target >= 52 && current < 52 {
         run_migration_step(conn, 52, v52_skill_pack_activation::migrate_v52)?;
+    }
+    if target >= 53 && current < 53 {
+        run_migration_step(conn, 53, v53_vault_mirror_state::migrate_v53)?;
+        run_migration_step(conn, 54, v54_orphan_annotation_cleanup::migrate_v54)?;
     }
 
     Ok(())

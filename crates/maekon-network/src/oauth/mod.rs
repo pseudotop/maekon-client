@@ -7,6 +7,8 @@ pub mod callback_server;
 pub mod pkce;
 pub mod provider_config;
 pub mod refresh_coordinator;
+#[cfg(test)]
+mod revoke_race_tests;
 pub mod token_exchange;
 
 use std::collections::HashMap;
@@ -122,6 +124,11 @@ impl OAuthClient {
             http: crate::outbound::hardened_client_builder(
                 crate::outbound::TransportPolicy::AllowLoopbackCleartext,
             )
+            // #9504 review (A3): the token-exchange/refresh POSTs run while the
+            // per-provider refresh lock is held, and `revoke()` now waits on
+            // that lock — an untimed request would let a hung token endpoint
+            // block credential revocation indefinitely. 30s bounds the stall.
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_else(|error| {
                 panic!(
@@ -282,6 +289,11 @@ impl OAuthPort for OAuthClient {
         let http = self.http.clone();
         let secret_store = self.secret_store.clone();
         let verifier = pkce.verifier.clone();
+        // #9504 review (A1): pre-resolve THIS provider's refresh lock so the
+        // spawned task can serialize its token commit against `revoke()` /
+        // the refresh paths — the connect flow is the third writer of the
+        // same namespace and was the one left unguarded.
+        let refresh_lock = self.refresh_lock_for(provider_id).await;
 
         let handle = tokio::spawn(async move {
             // --- Phase 1: wait for the loopback callback (no lock held) ---
@@ -303,8 +315,13 @@ impl OAuthPort for OAuthClient {
                         .await
                     {
                         Ok(tokens) => {
-                            match store_tokens_static(&*secret_store, &provider_id_bg, &tokens)
-                                .await
+                            match commit_connect_tokens(
+                                &refresh_lock,
+                                &*secret_store,
+                                &provider_id_bg,
+                                &tokens,
+                            )
+                            .await
                             {
                                 Ok(()) => {
                                     info!("OAuth flow completed for {provider_id_bg}");
@@ -449,6 +466,17 @@ impl OAuthPort for OAuthClient {
 
     async fn revoke(&self, provider_id: &str) -> Result<(), CoreError> {
         info!("revoking OAuth credentials for {provider_id}");
+        // #9504: serialize against every writer of this provider's namespace —
+        // the two refresh paths (which hold the per-provider lock through
+        // their network roundtrip AND store_tokens commit) and the connect
+        // flow's `commit_connect_tokens`. Deleting the namespace around an
+        // in-flight commit lets it land afterwards and re-persist the
+        // just-revoked credentials (the #9481/#9491 resurrection shape —
+        // TokenManager got the same treatment in #9499). Plain `lock().await`,
+        // never `try_lock`: a revoke must wait out an in-flight commit, not be
+        // skipped. The wait is bounded by the 30s OAuth http timeout.
+        let lock = self.refresh_lock_for(provider_id).await;
+        let _refresh_guard = lock.lock().await;
         self.secret_store.delete_namespace(provider_id).await?;
 
         // Clean up any active flows for this provider
@@ -619,6 +647,23 @@ impl OAuthPort for OAuthClient {
 }
 
 /// Static helper for use inside the spawned task (cannot borrow `self`).
+/// #9504 review (A1): the connect flow's token commit, serialized behind the
+/// same per-provider refresh lock as `try_refresh` / `refresh_access_token` /
+/// `revoke`. Without the guard, a revoke could interleave with the 4-write
+/// store sequence and either resurrect just-revoked credentials or leave a
+/// partial credential set. If the revoke wins the lock first, its flow-cleanup
+/// `abort()` cancels this task while it is parked here — the commit then never
+/// runs, which is the intended outcome.
+async fn commit_connect_tokens(
+    refresh_lock: &Arc<Mutex<()>>,
+    secret_store: &dyn SecretStore,
+    provider_id: &str,
+    result: &token_exchange::TokenExchangeResult,
+) -> Result<(), CoreError> {
+    let _guard = refresh_lock.lock().await;
+    store_tokens_static(secret_store, provider_id, result).await
+}
+
 async fn store_tokens_static(
     secret_store: &dyn SecretStore,
     provider_id: &str,

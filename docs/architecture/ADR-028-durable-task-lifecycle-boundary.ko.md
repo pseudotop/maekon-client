@@ -7,6 +7,7 @@
 **범위**: `maekon-core` task 모델·포트, `maekon-storage` SQLite 어댑터, `src-tauri` task 유스케이스·IPC, `maekon-web` task 뷰
 **관련**: ADR-001 (crate 의존 방향), ADR-006 (IPC 계약), ADR-022 (prefix+ULID ID), ADR-026 (비동기 storage·consent 포트), ADR-027 (파생 suggestion action binding)
 **이슈**: #8576 (`MK-CONTEXT-01.T01`)
+**구현 상태**: P01 #8577은 parent main `af5826ad96`에서 SQLite V49·core/store·IPC·독립 panel까지 구현됐고, `655d979ca1`이 그 panel을 `/tasks` route에 장착했다. Source-only readback이며 release·runtime·고객 효과 증거가 아니다.
 
 ---
 
@@ -378,9 +379,14 @@ retention 기간, source-loss 동작, rollback 계약을 리뷰해야 한다. #8
 8. unknown forward-compatible source/state 값
 9. crate-boundary와 IPC authority
 
-## 알려진 후속 작업
+## 구현 상태와 알려진 후속 작업
 
-1. **#8577 구현** — 본 ADR Accepted 후에만 구현한다.
+1. **#8577 P01 구현·장착 완료** — parent main `af5826ad96`에서 core model/port,
+   SQLite V49, store/export/retention, Tauri IPC, frontend hook과 독립 panel이
+   merge됐고, `655d979ca1`이 그 panel을 `pages/tasks/TasksPage.tsx`에서
+   렌더링하며 `routes/route-tree.ts`의 `/tasks` 경로로 등록했다. 이는 parent
+   `main`에 대한 source readback이며 public export, exact-build 통과, 실사용,
+   운영 준비 완료의 증거가 아니다.
 2. **#8583 extension envelope** — 최소화 `WorkContextEnvelope` projection을
    `TaskSourceRef`로 매핑한다. Task table에 envelope 자체를 저장하지 않는다.
 3. **Task sync ADR** — task table을 sync descriptor에 넣기 전에 conflict,
@@ -411,9 +417,18 @@ un-expiry 보호(§7), additive-migration 테스트 기준(§9)은 sound로 확�
   capture에서 나온 동일 sanitized 콘텐츠가 서로 다른 `dedupe_key`를 갖게 한다.
   content-hash-only dedupe는 단일 capture occurrence의 at-least-once 수집만 보호하며
   정당하게 재관측된 scene을 억제하지 않는다.
-- **B3 / P1 — FK cascade·receipt 보존·dedupe tombstone(§6, §9).** 이 코드베이스는 SQLite
-  `foreign_keys` PRAGMA를 켜지 않으므로(검증됨) 5개 테이블의 `ON DELETE`는 문서용이며
-  엔진 캐스케이드가 아니다. 모든 content-clearing/tombstone expiry/erasure 삭제는
+- **B3 / P1 — FK cascade·receipt 보존·dedupe tombstone(§6, §9).** ~~이 코드베이스는 SQLite `foreign_keys` PRAGMA를 켜지 않으므로(검증됨)
+  5개 테이블의 `ON DELETE`는 문서용이며 엔진 캐스케이드가 아니다.~~
+  **2026-08-01 정정 (#9735): `foreign_keys` 는 ON 이다.** 원 검증은 명시적
+  `PRAGMA` 쓰기를 찾았고 없다고 결론지었으나, 이 값은 **컴파일 타임 기본값**이다 —
+  `libsqlite3-sys` 가 번들 amalgamation 을 `-DSQLITE_DEFAULT_FOREIGN_KEYS=1` 로
+  빌드하고 이 워크스페이스가 그 빌드를 쓴다. 라이브 커넥션 실측:
+  `PRAGMA foreign_keys = 1`, `pragma_compile_options` 에 `DEFAULT_FOREIGN_KEYS`.
+  따라서 `ON DELETE` 선언은 **엔진이 강제한다**. 아래 서술된 애플리케이션 강제
+  child-first 삭제는 여전히 옳고 무해하다(엔진과 충돌이 아니라 중복). 다만
+  코드가 이 거짓 전제로부터 **판단하면 안 된다** — 이미 대가가 있었다:
+  아직 체크포인트되지 않은 `regime_id` 를 실은 `activity_segments` 삽입이
+  "차단될 수 없다" 고 적힌 주석의 권위 아래 실제로는 FK 에 거부되고 있었다. 모든 content-clearing/tombstone expiry/erasure 삭제는
   `retention.rs`의 `ALL_TABLES` 패턴과 동일하게 트랜잭션 내부의 명시적 child-first
   `DELETE`로 애플리케이션 강제한다. 삭제가 애플리케이션 순서이므로
   `task_transition_receipts`와 dedupe tombstone은 부모 행과 독립적 보존 수명을 갖는다

@@ -56,12 +56,15 @@ async function resolveFromWebDriver(fetchImpl: typeof fetch, port: number): Prom
       body: JSON.stringify({ handle }),
     })
 
-    const tokenResponse = await webdriverJson<string>(fetchImpl, `${sessionBase}/execute/async`, {
+    const tokenResponse = await webdriverJson<string>(fetchImpl, `${sessionBase}/execute/sync`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        script:
-          "const done=arguments[arguments.length-1]; window.__TAURI_INTERNALS__.invoke('get_local_auth_token').then(done).catch(() => done(null));",
+        // DesktopStartupCoordinator injects the process-lifetime token before
+        // showing the trusted main WebView. Reading that established contract
+        // avoids nested Tauri IPC from a WebDriver async script; on Windows the
+        // nested call serialized a null callback identifier into a required u32.
+        script: 'return window.__MAEKON_LOCAL_AUTH__ ?? null;',
         args: [],
       }),
     })

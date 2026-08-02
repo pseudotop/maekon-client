@@ -58,9 +58,10 @@ client workspace.
 | [029](./ADR-029-extension-package-runtime-boundary.md) | Extension Package and Runtime Boundary | Accepted | `maekon-core` extension contracts, trust reuse, `src-tauri`, extension-facing UI/API |
 | [030](./ADR-030-work-context-envelope-convergence.md) | Work Context Envelope and Convergence | Accepted | `maekon-core` work-context models/ports, future encrypted ledger, timeline/task/memory evidence projections |
 | [031](./ADR-031-extension-authorization-account-boundary.md) | Extension Authorization and Account Boundary | Accepted | `maekon-core` authorization broker, account-scoped OAuth/Keychain, readiness UI/API |
-| [032](./ADR-032-memory-graph-generation-input-contract.md) | Memory-Graph Generation-Input Contract | Proposed | `maekon-analysis`, `maekon-suggestion`, `maekon-core` ports/consent/prompt-assembly, `maekon-network` analysis client |
+| [032](./ADR-032-memory-graph-generation-input-contract.md) | Memory-Graph Generation-Input Contract | Accepted | `maekon-analysis`, `maekon-suggestion`, `maekon-core` ports/consent/prompt-assembly, `maekon-network` analysis client |
+| [033](./ADR-033-memory-vault-mirror.md) | Memory Vault Mirror — User-Owned Local Markdown Surface | Accepted | `maekon-core` consent/config/port, `maekon-analysis` writer, `maekon-storage` vault_mirror_state, erase orchestrators (`src-tauri`, `maekon-web`) |
 
-**Next available ID**: `ADR-033`.
+**Next available ID**: `ADR-034`.
 
 ## Conventions Summary
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fetch-context-home"
+description = "Enables the fetch_context_home command without any pre-configured scope."
+commands.allow = ["fetch_context_home"]
+
+[[permission]]
+identifier = "deny-fetch-context-home"
+description = "Denies the fetch_context_home command without any pre-configured scope."
+commands.deny = ["fetch_context_home"]

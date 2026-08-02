@@ -1,7 +1,20 @@
 # Dependencies
 node_modules/
 
-# Build output (keep the directory itself for cargo check without a prior build)
+# Build output.
+#
+# The `!dist/.gitkeep` negation below does NOT work and never has: the repository
+# root `.gitignore` excludes `dist/` as a *directory*, and git cannot re-include a
+# path whose parent directory is excluded. Verified 2026-07-31 (#9603) — `git add
+# crates/maekon-web/frontend/dist/.gitkeep` is a no-op without `-f`.
+#
+# Consequence, and the reason this is spelled out rather than deleted: a fresh
+# clone has no `dist/` at all, so `cargo check -p maekon-app` fails outright with
+# "The `frontendDist` configuration is set to ... but this path doesn't exist"
+# before compiling a single line of app code. Building the frontend first is a
+# hard prerequisite, not an optimization — see the from-source setup in
+# `../../../README.md`. Tracking a `.gitkeep` would not fix it either: vite
+# defaults to `emptyOutDir: true`, so every build would delete it again.
 dist/*
 !dist/.gitkeep
 

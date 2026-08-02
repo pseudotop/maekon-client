@@ -1,3 +1,5 @@
+// OOS-TBD: ADR-013 file split — baselined past the 900-line giant
+// threshold while growing for #9646; split per ADR-003 when next touched.
 //! MagicOverlay — transparent Tauri WebView overlay for coaching, detection,
 //! and suggestion panel display.
 //!
@@ -640,23 +642,30 @@ impl MagicOverlayHandle {
             );
         } else if state.suggestions_panel_open {
             const PANEL_STRIP_WIDTH: f64 = 380.0;
+            // #9646: the strip is BOUNDED in height, not monitor-tall. The
+            // visible panel card is ~190-500px depending on tab, yet the
+            // window used to span the full monitor height with
+            // ignore_cursor_events(false) — the transparent remainder
+            // swallowed clicks destined for the apps underneath and showed up
+            // as a screen-tall window in screenshots/Expose (user-reported).
+            // The panel scrolls internally, so a fixed cap loses nothing;
+            // clamp to the monitor for short displays.
+            const PANEL_STRIP_MAX_HEIGHT: f64 = 560.0;
             if let Ok(monitor) = target_overlay_monitor(&self.app_handle) {
                 let layout = overlay_monitor_layout(&monitor);
                 let x = layout.origin_x + layout.logical_width - PANEL_STRIP_WIDTH;
-                let _ = window.set_size(tauri::LogicalSize::new(
-                    PANEL_STRIP_WIDTH,
-                    layout.logical_height,
-                ));
+                let height = PANEL_STRIP_MAX_HEIGHT.min(layout.logical_height);
+                let _ = window.set_size(tauri::LogicalSize::new(PANEL_STRIP_WIDTH, height));
                 let _ = window.set_position(tauri::LogicalPosition::new(x, layout.origin_y));
             }
             let _ = window.set_focusable(false);
             let _ = show_overlay_window(&window);
             let _ = window.set_ignore_cursor_events(false);
-            debug!("Overlay layout: compact panel strip");
+            debug!("Overlay layout: compact panel strip (bounded height)");
         } else {
             // Reset passive geometry before either showing or hiding. A later
             // pointer/coaching event may show the pre-created window directly;
-            // it must not inherit the previous 380px suggestions-strip bounds.
+            // it must not inherit the previous bounded suggestions-strip bounds (#9646).
             if let Ok(monitor) = target_overlay_monitor(&self.app_handle) {
                 let layout = overlay_monitor_layout(&monitor);
                 let _ = window.set_position(tauri::LogicalPosition::new(

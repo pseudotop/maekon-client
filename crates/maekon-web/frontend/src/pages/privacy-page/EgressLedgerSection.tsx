@@ -23,6 +23,7 @@ import { Alert, Badge, type BadgeProps, Card, CardTitle, EmptyState, Select, Spi
 import { typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { formatBytes, formatDateTime, formatNumber } from '../../utils/formatters'
+import AiUsageCard from './AiUsageCard'
 
 type RangePreset = '24h' | '7d' | '30d' | 'all'
 type DispositionFilter = 'all' | 'uploaded' | 'blocked' | 'capture_blocked'
@@ -90,95 +91,99 @@ export default function EgressLedgerSection() {
   const ledgerLikelyEmpty = range === 'all' && disposition === 'all' && rawEntries.length === 0
 
   return (
-    <Card id="section-egress" variant="default" padding="lg">
-      <CardTitle className="mb-1">{t('privacy.egress.title')}</CardTitle>
-      <p className="mb-4 text-content-secondary text-sm">{t('privacy.egress.description')}</p>
+    <>
+      {/* #9466: spend + egress are two faces of one trust surface. */}
+      <AiUsageCard />
+      <Card id="section-egress" variant="default" padding="lg">
+        <CardTitle className="mb-1">{t('privacy.egress.title')}</CardTitle>
+        <p className="mb-4 text-content-secondary text-sm">{t('privacy.egress.description')}</p>
 
-      {/* Filters */}
-      <div className="mb-4 flex flex-wrap gap-4">
-        <label className="flex flex-col gap-1 text-content-secondary text-xs">
-          {t('privacy.egress.rangeLabel')}
-          <Select
-            aria-label={t('privacy.egress.rangeLabel')}
-            value={range}
-            selectSize="sm"
-            className="w-40"
-            onChange={(e) => setRange(e.target.value as RangePreset)}
-          >
-            {RANGE_PRESETS.map((preset) => (
-              <option key={preset} value={preset}>
-                {t(`privacy.egress.range.${preset}`)}
-              </option>
-            ))}
-          </Select>
-        </label>
-        <label className="flex flex-col gap-1 text-content-secondary text-xs">
-          {t('privacy.egress.dispositionLabel')}
-          <Select
-            aria-label={t('privacy.egress.dispositionLabel')}
-            value={disposition}
-            selectSize="sm"
-            className="w-48"
-            onChange={(e) => setDisposition(e.target.value as DispositionFilter)}
-          >
-            {DISPOSITION_FILTERS.map((value) => (
-              <option key={value} value={value}>
-                {t(`privacy.egress.disposition.${value}`)}
-              </option>
-            ))}
-          </Select>
-        </label>
-      </div>
-
-      {isLoading && (
-        <div className="flex items-center justify-center py-12">
-          <Spinner size="lg" className="text-brand-text" />
-          <span className="ml-3 text-content-secondary text-sm">{t('common.loading')}</span>
+        {/* Filters */}
+        <div className="mb-4 flex flex-wrap gap-4">
+          <label className="flex flex-col gap-1 text-content-secondary text-xs">
+            {t('privacy.egress.rangeLabel')}
+            <Select
+              aria-label={t('privacy.egress.rangeLabel')}
+              value={range}
+              selectSize="sm"
+              className="w-40"
+              onChange={(e) => setRange(e.target.value as RangePreset)}
+            >
+              {RANGE_PRESETS.map((preset) => (
+                <option key={preset} value={preset}>
+                  {t(`privacy.egress.range.${preset}`)}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <label className="flex flex-col gap-1 text-content-secondary text-xs">
+            {t('privacy.egress.dispositionLabel')}
+            <Select
+              aria-label={t('privacy.egress.dispositionLabel')}
+              value={disposition}
+              selectSize="sm"
+              className="w-48"
+              onChange={(e) => setDisposition(e.target.value as DispositionFilter)}
+            >
+              {DISPOSITION_FILTERS.map((value) => (
+                <option key={value} value={value}>
+                  {t(`privacy.egress.disposition.${value}`)}
+                </option>
+              ))}
+            </Select>
+          </label>
         </div>
-      )}
 
-      {isError && (
-        <Alert variant="error" title={t('privacy.egress.loadError')} className="mb-2">
-          {(error as Error).message}
-        </Alert>
-      )}
-
-      {!isLoading && !isError && filtered.length === 0 && (
-        <EmptyState
-          icon={<ShieldCheck size={28} aria-hidden="true" />}
-          title={ledgerLikelyEmpty ? t('privacy.egress.empty.ledgerTitle') : t('privacy.egress.empty.rangeTitle')}
-          description={ledgerLikelyEmpty ? t('privacy.egress.empty.ledgerDesc') : t('privacy.egress.empty.rangeDesc')}
-        />
-      )}
-
-      {!isLoading && !isError && filtered.length > 0 && (
-        <>
-          <p className="mb-2 text-content-tertiary text-xs">
-            {t('privacy.egress.entryCount', { count: filtered.length })}
-          </p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-muted border-b text-content-secondary text-xs">
-                  <th className={HEADER_CELL}>{t('privacy.egress.col.time')}</th>
-                  <th className={HEADER_CELL}>{t('privacy.egress.col.eventType')}</th>
-                  <th className={HEADER_CELL}>{t('privacy.egress.col.destination')}</th>
-                  <th className={HEADER_CELL}>{t('privacy.egress.col.disposition')}</th>
-                  <th className={HEADER_CELL_RIGHT}>{t('privacy.egress.col.bytes')}</th>
-                  <th className={HEADER_CELL_RIGHT}>{t('privacy.egress.col.recipients')}</th>
-                  <th className={HEADER_CELL}>{t('privacy.egress.col.consent')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((entry) => (
-                  <EgressRow key={entry.record_id} entry={entry} />
-                ))}
-              </tbody>
-            </table>
+        {isLoading && (
+          <div className="flex items-center justify-center py-12">
+            <Spinner size="lg" className="text-brand-text" />
+            <span className="ml-3 text-content-secondary text-sm">{t('common.loading')}</span>
           </div>
-        </>
-      )}
-    </Card>
+        )}
+
+        {isError && (
+          <Alert variant="error" title={t('privacy.egress.loadError')} className="mb-2">
+            {(error as Error).message}
+          </Alert>
+        )}
+
+        {!isLoading && !isError && filtered.length === 0 && (
+          <EmptyState
+            icon={<ShieldCheck size={28} aria-hidden="true" />}
+            title={ledgerLikelyEmpty ? t('privacy.egress.empty.ledgerTitle') : t('privacy.egress.empty.rangeTitle')}
+            description={ledgerLikelyEmpty ? t('privacy.egress.empty.ledgerDesc') : t('privacy.egress.empty.rangeDesc')}
+          />
+        )}
+
+        {!isLoading && !isError && filtered.length > 0 && (
+          <>
+            <p className="mb-2 text-content-tertiary text-xs">
+              {t('privacy.egress.entryCount', { count: filtered.length })}
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-muted border-b text-content-secondary text-xs">
+                    <th className={HEADER_CELL}>{t('privacy.egress.col.time')}</th>
+                    <th className={HEADER_CELL}>{t('privacy.egress.col.eventType')}</th>
+                    <th className={HEADER_CELL}>{t('privacy.egress.col.destination')}</th>
+                    <th className={HEADER_CELL}>{t('privacy.egress.col.disposition')}</th>
+                    <th className={HEADER_CELL_RIGHT}>{t('privacy.egress.col.bytes')}</th>
+                    <th className={HEADER_CELL_RIGHT}>{t('privacy.egress.col.recipients')}</th>
+                    <th className={HEADER_CELL}>{t('privacy.egress.col.consent')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((entry) => (
+                    <EgressRow key={entry.record_id} entry={entry} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </Card>
+    </>
   )
 }
 

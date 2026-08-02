@@ -87,7 +87,7 @@
     "@wdio/types": "^9.29.1",
     "autoprefixer": "^10.5.0",
     "jsdom": "^25.0.0",
-    "postcss": "^8.5.12",
+    "postcss": "^8.5.25",
     "storybook": "^10.3.5",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",

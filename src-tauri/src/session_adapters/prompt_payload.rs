@@ -326,6 +326,7 @@ mod tests {
     #[test]
     fn render_message_payload_includes_optional_sections() {
         let message = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "Explain this screenshot".to_string(),
             attachments: vec![Attachment::Image {
@@ -367,6 +368,7 @@ mod tests {
     #[test]
     fn render_message_payload_includes_text_attachment_preview() {
         let message = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "Summarize the attached file".to_string(),
             attachments: vec![Attachment::File {
@@ -388,6 +390,7 @@ mod tests {
     #[test]
     fn render_message_payload_skips_binary_attachment_preview() {
         let message = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "Inspect the binary".to_string(),
             attachments: vec![Attachment::File {
@@ -407,6 +410,7 @@ mod tests {
     #[test]
     fn render_message_payload_omits_secrets_prone_attachment_preview() {
         let message = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "Check the env".to_string(),
             attachments: vec![Attachment::File {

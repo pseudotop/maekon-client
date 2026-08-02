@@ -173,6 +173,12 @@ pub struct AudioStatus {
     /// VAD state: "idle", "listening", "speech", "transcribing".
     #[serde(default)]
     pub vad_state: String,
+    /// #9639: whether this build compiled the cloud STT provider. No release
+    /// target enables `cloud-stt`, yet the settings UI unconditionally showed
+    /// a cloud radio + API-key field — a visibly dead control. The UI hides
+    /// the option when this is false.
+    #[serde(default)]
+    pub cloud_stt_available: bool,
 }
 
 #[cfg(test)]
@@ -257,6 +263,7 @@ mod tests {
             stt_provider: String::new(),
             mic_input_mode: "push_to_talk".into(),
             vad_state: "idle".into(),
+            cloud_stt_available: false,
         };
         let json = serde_json::to_string(&status).unwrap();
         let restored: AudioStatus = serde_json::from_str(&json).unwrap();

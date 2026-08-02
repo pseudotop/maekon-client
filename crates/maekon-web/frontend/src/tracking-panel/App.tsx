@@ -367,7 +367,10 @@ export function App() {
 
   const handleQuit = useCallback(async () => {
     try {
-      await invoke('simulate_tray_action', { action: 'quit' })
+      // #9634: request_app_quit is the production quit path — the previous
+      // simulate_tray_action QC command is runtime-disabled in release builds
+      // (returns debug_tray_disabled), so the shipped quit button did nothing.
+      await invoke('request_app_quit')
       showFeedback(t('trackingPanel.quitRequested'))
     } catch (e) {
       console.warn('quit request failed:', e)

@@ -92,8 +92,12 @@ pub trait SkillPackCatalogCommandPort: Send + Sync {
     /// Remove every catalog entry and activation belonging to an installation.
     ///
     /// Called on uninstall/revoke. Children are deleted before parents
-    /// explicitly, because this workspace runs with `foreign_keys` OFF and the
-    /// `REFERENCES` clauses are documentation only (ADR-028 Amendment B3).
+    /// explicitly, and that ordering is kept for determinism — but it is
+    /// redundant with the engine, not load-bearing.
+    ///
+    /// #9735 CORRECTED: this doc used to end with "the `REFERENCES` clauses are
+    /// documentation only (ADR-028 Amendment B3)". They are not — `foreign_keys`
+    /// is ON, so the declared cascades fire.
     async fn remove_for_install(&self, install_id: &str) -> Result<SkillPackOutcome, CoreError>;
 }
 

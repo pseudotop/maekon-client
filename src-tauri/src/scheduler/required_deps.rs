@@ -9,7 +9,7 @@
 //! offline_mode), 7 cfg-gated, and the a-caveat if-let-wrapped set
 //! (`consent_manager`, `coaching_engine`, `magic_overlay`, etc. — always-Some
 //! in production but deliberately kept `Option` this pass). This struct
-//! carries the 8 fields that are unconditionally wired on EVERY shipped
+//! carries the 9 fields that are unconditionally wired on EVERY shipped
 //! deployment shape (default / `server` / `analysis` / `no-default-features`)
 //! — never behind a runtime feature flag or config toggle.
 //!
@@ -48,7 +48,7 @@ use maekon_core::ports::regime_storage::RegimeStoragePort;
 
 use crate::notification_manager::NotificationManager;
 
-/// The 8-field VERIFIED-unconditional `Scheduler` dependency set. See the
+/// The 9-field VERIFIED-unconditional `Scheduler` dependency set. See the
 /// module doc for the promotion criteria and the fields that deliberately
 /// stay `Option` (set via the `with_*` builders still on
 /// [`crate::scheduler::Scheduler`]).
@@ -90,6 +90,12 @@ pub struct SchedulerRequiredDeps {
     /// Consent + the `belief_revision_enabled` flag are still checked
     /// per-run by the aggregation loop.
     pub belief_revision: Arc<BeliefRevision>,
+    /// ADR-033 §7.5: memory vault mirror writer for the aggregation loop's
+    /// per-tick cycle (internally fail-closed — disabled/consent/window gates
+    /// yield a no-op). Built by `vault_wiring::build_vault_writer` over the
+    /// same shared `SqliteStorage` Arc (stateless; instances interchangeable).
+    pub memory_vault_writer:
+        Arc<dyn maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort>,
     /// #5810: the same underlying SQLite connection Arc, wrapped in
     /// `SqliteRegimeManagerStateStore` (the SAME wrapper the shutdown path
     /// uses) — periodic crash-durability checkpoint target for the

@@ -140,6 +140,8 @@ impl WebServer {
     pub fn with_required_deps(mut self, deps: WebServerRequiredDeps) -> Self {
         let WebServerRequiredDeps {
             memory_graph,
+            memory_graph_projection,
+            memory_vault_writer,
             audit_chain_verifier,
             egress_ledger_reader,
             regime_storage,
@@ -155,6 +157,8 @@ impl WebServer {
             provider_cli_diagnostics,
         } = deps;
         self.state.core.memory_graph = Some(memory_graph);
+        self.state.analysis.memory_graph_projection = Some(memory_graph_projection);
+        self.state.core.memory_vault_writer = Some(memory_vault_writer);
         self.state.core.audit_chain_verifier = Some(audit_chain_verifier);
         self.state.core.egress_ledger_reader = Some(egress_ledger_reader);
         self.state.core.regime_storage = Some(regime_storage);
@@ -1050,7 +1054,7 @@ mod tests {
     /// #7738 D-2: shared literal-construction helper for the tests below that
     /// need a full `WebServerRequiredDeps` — every field is non-Option (no
     /// `Default`/`..` escape on that struct, by design), so both tests that
-    /// exercise `with_required_deps` need every one of the 13 fields filled
+    /// exercise `with_required_deps` need every one of the 16 fields filled
     /// with a cheap-but-real value. Storage-derived ports reuse the SAME
     /// `SqliteStorage` Arc (Port Instance Sharing, mirrors the production
     /// wiring in `web_server_runtime.rs`); the 3 diagnostics ports have no
@@ -1103,6 +1107,43 @@ mod tests {
             }
         }
 
+        // ADR-032 Mode A: the real implementation lives in `maekon-analysis`
+        // (unreachable from this crate — ADR-001 §7), so the wiring tests use
+        // an always-empty stub, which is also the contract's off-state shape.
+        struct StubVaultWriter;
+        #[async_trait::async_trait]
+        impl maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort for StubVaultWriter {
+            async fn run_mirror_cycle(
+                &self,
+                _now_secs: i64,
+            ) -> Result<maekon_core::models::memory_vault::VaultCycleStats, CoreError> {
+                Ok(Default::default())
+            }
+            async fn snapshot_generated_roots(&self) -> Vec<std::path::PathBuf> {
+                Vec::new()
+            }
+            async fn erase_generated_files(
+                &self,
+                _roots: Vec<std::path::PathBuf>,
+            ) -> Result<maekon_core::models::memory_vault::VaultEraseReport, CoreError>
+            {
+                Ok(Default::default())
+            }
+        }
+
+        struct StubMemoryGraphProjection;
+        #[async_trait::async_trait]
+        impl maekon_core::ports::memory_graph_projection::MemoryGraphProjectionPort
+            for StubMemoryGraphProjection
+        {
+            async fn project_edges_for_ranking(
+                &self,
+                _now_secs: i64,
+            ) -> Result<maekon_core::models::memory_graph::EdgeProjection, CoreError> {
+                Ok(maekon_core::models::memory_graph::EdgeProjection::default())
+            }
+        }
+
         let temp_dir = tempdir().expect("temp dir");
         let config_manager =
             ConfigManager::with_path(temp_dir.path().join("config.json")).expect("config manager");
@@ -1116,6 +1157,10 @@ mod tests {
         WebServerRequiredDeps {
             memory_graph: storage.clone()
                 as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
+            memory_graph_projection: Arc::new(StubMemoryGraphProjection)
+                as Arc<dyn maekon_core::ports::memory_graph_projection::MemoryGraphProjectionPort>,
+            memory_vault_writer: Arc::new(StubVaultWriter)
+                as Arc<dyn maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort>,
             audit_chain_verifier: storage.clone()
                 as Arc<dyn maekon_core::ports::audit_chain_verifier::AuditChainVerifierPort>,
             egress_ledger_reader: storage.clone()

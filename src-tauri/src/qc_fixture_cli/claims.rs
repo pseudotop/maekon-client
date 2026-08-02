@@ -50,7 +50,7 @@ pub(super) async fn seed_claims_fixture(
     encryption_key: EncryptionKey,
     retention_days: u32,
 ) -> Result<ClaimsSeedReport> {
-    let db_path = data_dir.join("maekon.db");
+    let db_path = data_dir.join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME);
     let storage = Arc::new(
         SqliteStorage::open(&db_path, retention_days, Some(&encryption_key))
             .context("open isolated encrypted QC database")?,

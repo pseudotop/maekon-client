@@ -5,8 +5,11 @@
 //! §10 gates come from `ExtensionManifest::evaluate_availability`, and the
 //! installation state machine comes from `InstallationState::can_transition_to`.
 //!
-//! Cleanup ordering is application-enforced (the `foreign_keys` PRAGMA is off),
-//! so uninstall deletes child rows explicitly in the same transaction.
+//! Uninstall deletes child rows explicitly in the same transaction. #9735: this
+//! used to be justified by "the `foreign_keys` PRAGMA is off" — it is ON, so the
+//! declared cascades fire too. The explicit child-first ordering stays because
+//! it is correct either way and does not depend on every table having a
+//! declared FK.
 
 // OOS-TBD: ADR-013 file split — command port, query port, and row helpers can
 // move into an `extension_registry_impl/` directory module if this grows.

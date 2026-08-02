@@ -13,6 +13,7 @@ import {
   fetchTags,
   type SearchResult,
   search,
+  TAGS_QUERY_KEY,
 } from '../api/client'
 import type { SemanticSearchResult } from '../api/contracts'
 import { TagBadge } from '../components/TagBadge'
@@ -83,7 +84,7 @@ export default function Search() {
   const pageSize = 20
 
   const { data: allTags = [] } = useQuery({
-    queryKey: ['tags'],
+    queryKey: TAGS_QUERY_KEY,
     queryFn: fetchTags,
   })
 

@@ -132,6 +132,11 @@ pub(crate) fn config_to_settings(
             gui_intelligence_enabled: config.analysis.gui_intelligence.enabled,
             text_intelligence_enabled: config.analysis.text_intelligence.enabled,
             auto_tuner_enabled: config.analysis.tiered_memory.auto_tuning.enabled,
+            tiered_memory_enabled: config.analysis.tiered_memory.enabled,
+            regime_detection_interval_hours: config
+                .analysis
+                .tiered_memory
+                .regime_detection_interval_hours,
         },
         network: NetworkSettings {
             server_base_url: config.server.base_url.clone(),

@@ -177,16 +177,16 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Enables the activate_skill_pack command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-activate-skill-pack",
-          "markdownDescription": "Enables the activate_skill_pack command without any pre-configured scope."
-        },
-        {
           "description": "Enables the analyze_current_scene command without any pre-configured scope.",
           "type": "string",
           "const": "allow-analyze-current-scene",
           "markdownDescription": "Enables the analyze_current_scene command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the auth_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-auth-status",
+          "markdownDescription": "Enables the auth_status command without any pre-configured scope."
         },
         {
           "description": "Enables the authenticate_capture_history command without any pre-configured scope.",
@@ -211,12 +211,6 @@
           "type": "string",
           "const": "allow-clear-capture-reauth-pin",
           "markdownDescription": "Enables the clear_capture_reauth_pin command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the clear_skill_pack_activation command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-clear-skill-pack-activation",
-          "markdownDescription": "Enables the clear_skill_pack_activation command without any pre-configured scope."
         },
         {
           "description": "Enables the complete_onboarding command without any pre-configured scope.",
@@ -361,6 +355,12 @@
           "type": "string",
           "const": "allow-extract-ax-tree",
           "markdownDescription": "Enables the extract_ax_tree command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the fetch_context_home command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fetch-context-home",
+          "markdownDescription": "Enables the fetch_context_home command without any pre-configured scope."
         },
         {
           "description": "Enables the forget_sync_peer command without any pre-configured scope.",
@@ -573,16 +573,16 @@
           "markdownDescription": "Enables the get_tray_state command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_vault_mirror_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-vault-mirror-settings",
+          "markdownDescription": "Enables the get_vault_mirror_settings command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_web_port command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-web-port",
           "markdownDescription": "Enables the get_web_port command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the install_extension command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-install-extension",
-          "markdownDescription": "Enables the install_extension command without any pre-configured scope."
         },
         {
           "description": "Enables the interrupt_session_turn command without any pre-configured scope.",
@@ -609,12 +609,6 @@
           "markdownDescription": "Enables the list_ai_sessions command without any pre-configured scope."
         },
         {
-          "description": "Enables the list_extensions command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-list-extensions",
-          "markdownDescription": "Enables the list_extensions command without any pre-configured scope."
-        },
-        {
           "description": "Enables the list_task_candidates command without any pre-configured scope.",
           "type": "string",
           "const": "allow-list-task-candidates",
@@ -637,6 +631,12 @@
           "type": "string",
           "const": "allow-lock-capture-reauth",
           "markdownDescription": "Enables the lock_capture_reauth command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the login command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-login",
+          "markdownDescription": "Enables the login command without any pre-configured scope."
         },
         {
           "description": "Enables the logout_all_sessions command without any pre-configured scope.",
@@ -691,6 +691,12 @@
           "type": "string",
           "const": "allow-open-devtools",
           "markdownDescription": "Enables the open_devtools command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_external_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-external-target",
+          "markdownDescription": "Enables the open_external_target command without any pre-configured scope."
         },
         {
           "description": "Enables the poll_ax_focus_observer command without any pre-configured scope.",
@@ -753,6 +759,12 @@
           "markdownDescription": "Enables the report_frontend_error command without any pre-configured scope."
         },
         {
+          "description": "Enables the request_app_quit command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-app-quit",
+          "markdownDescription": "Enables the request_app_quit command without any pre-configured scope."
+        },
+        {
           "description": "Enables the request_chat_suggestions command without any pre-configured scope.",
           "type": "string",
           "const": "allow-request-chat-suggestions",
@@ -795,12 +807,6 @@
           "markdownDescription": "Enables the retry_ai_session command without any pre-configured scope."
         },
         {
-          "description": "Enables the rollback_extension command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-rollback-extension",
-          "markdownDescription": "Enables the rollback_extension command without any pre-configured scope."
-        },
-        {
           "description": "Enables the run_qc_upload_spool_step command without any pre-configured scope.",
           "type": "string",
           "const": "allow-run-qc-upload-spool-step",
@@ -811,6 +817,12 @@
           "type": "string",
           "const": "allow-run-suggestion-action",
           "markdownDescription": "Enables the run_suggestion_action command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the run_vault_mirror_cycle command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-run-vault-mirror-cycle",
+          "markdownDescription": "Enables the run_vault_mirror_cycle command without any pre-configured scope."
         },
         {
           "description": "Enables the save_panel_position command without any pre-configured scope.",
@@ -843,16 +855,16 @@
           "markdownDescription": "Enables the set_consent command without any pre-configured scope."
         },
         {
-          "description": "Enables the set_extension_enablement command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-set-extension-enablement",
-          "markdownDescription": "Enables the set_extension_enablement command without any pre-configured scope."
-        },
-        {
           "description": "Enables the set_indicator_visible command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-indicator-visible",
           "markdownDescription": "Enables the set_indicator_visible command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_vault_mirror_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-vault-mirror-path",
+          "markdownDescription": "Enables the set_vault_mirror_path command without any pre-configured scope."
         },
         {
           "description": "Enables the show_main_window command without any pre-configured scope.",
@@ -981,18 +993,6 @@
           "markdownDescription": "Enables the trigger_sync_cycle command without any pre-configured scope."
         },
         {
-          "description": "Enables the uninstall_extension command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-uninstall-extension",
-          "markdownDescription": "Enables the uninstall_extension command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the update_extension command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-update-extension",
-          "markdownDescription": "Enables the update_extension command without any pre-configured scope."
-        },
-        {
           "description": "Enables the update_regime_goals command without any pre-configured scope.",
           "type": "string",
           "const": "allow-update-regime-goals",
@@ -1017,16 +1017,16 @@
           "markdownDescription": "Enables the withdraw_consent command without any pre-configured scope."
         },
         {
-          "description": "Denies the activate_skill_pack command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-activate-skill-pack",
-          "markdownDescription": "Denies the activate_skill_pack command without any pre-configured scope."
-        },
-        {
           "description": "Denies the analyze_current_scene command without any pre-configured scope.",
           "type": "string",
           "const": "deny-analyze-current-scene",
           "markdownDescription": "Denies the analyze_current_scene command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the auth_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-auth-status",
+          "markdownDescription": "Denies the auth_status command without any pre-configured scope."
         },
         {
           "description": "Denies the authenticate_capture_history command without any pre-configured scope.",
@@ -1051,12 +1051,6 @@
           "type": "string",
           "const": "deny-clear-capture-reauth-pin",
           "markdownDescription": "Denies the clear_capture_reauth_pin command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the clear_skill_pack_activation command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-clear-skill-pack-activation",
-          "markdownDescription": "Denies the clear_skill_pack_activation command without any pre-configured scope."
         },
         {
           "description": "Denies the complete_onboarding command without any pre-configured scope.",
@@ -1201,6 +1195,12 @@
           "type": "string",
           "const": "deny-extract-ax-tree",
           "markdownDescription": "Denies the extract_ax_tree command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_context_home command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fetch-context-home",
+          "markdownDescription": "Denies the fetch_context_home command without any pre-configured scope."
         },
         {
           "description": "Denies the forget_sync_peer command without any pre-configured scope.",
@@ -1413,16 +1413,16 @@
           "markdownDescription": "Denies the get_tray_state command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_vault_mirror_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-vault-mirror-settings",
+          "markdownDescription": "Denies the get_vault_mirror_settings command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_web_port command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-web-port",
           "markdownDescription": "Denies the get_web_port command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the install_extension command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-install-extension",
-          "markdownDescription": "Denies the install_extension command without any pre-configured scope."
         },
         {
           "description": "Denies the interrupt_session_turn command without any pre-configured scope.",
@@ -1449,12 +1449,6 @@
           "markdownDescription": "Denies the list_ai_sessions command without any pre-configured scope."
         },
         {
-          "description": "Denies the list_extensions command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-list-extensions",
-          "markdownDescription": "Denies the list_extensions command without any pre-configured scope."
-        },
-        {
           "description": "Denies the list_task_candidates command without any pre-configured scope.",
           "type": "string",
           "const": "deny-list-task-candidates",
@@ -1477,6 +1471,12 @@
           "type": "string",
           "const": "deny-lock-capture-reauth",
           "markdownDescription": "Denies the lock_capture_reauth command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the login command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-login",
+          "markdownDescription": "Denies the login command without any pre-configured scope."
         },
         {
           "description": "Denies the logout_all_sessions command without any pre-configured scope.",
@@ -1531,6 +1531,12 @@
           "type": "string",
           "const": "deny-open-devtools",
           "markdownDescription": "Denies the open_devtools command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_external_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-external-target",
+          "markdownDescription": "Denies the open_external_target command without any pre-configured scope."
         },
         {
           "description": "Denies the poll_ax_focus_observer command without any pre-configured scope.",
@@ -1593,6 +1599,12 @@
           "markdownDescription": "Denies the report_frontend_error command without any pre-configured scope."
         },
         {
+          "description": "Denies the request_app_quit command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-app-quit",
+          "markdownDescription": "Denies the request_app_quit command without any pre-configured scope."
+        },
+        {
           "description": "Denies the request_chat_suggestions command without any pre-configured scope.",
           "type": "string",
           "const": "deny-request-chat-suggestions",
@@ -1635,12 +1647,6 @@
           "markdownDescription": "Denies the retry_ai_session command without any pre-configured scope."
         },
         {
-          "description": "Denies the rollback_extension command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-rollback-extension",
-          "markdownDescription": "Denies the rollback_extension command without any pre-configured scope."
-        },
-        {
           "description": "Denies the run_qc_upload_spool_step command without any pre-configured scope.",
           "type": "string",
           "const": "deny-run-qc-upload-spool-step",
@@ -1651,6 +1657,12 @@
           "type": "string",
           "const": "deny-run-suggestion-action",
           "markdownDescription": "Denies the run_suggestion_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the run_vault_mirror_cycle command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-run-vault-mirror-cycle",
+          "markdownDescription": "Denies the run_vault_mirror_cycle command without any pre-configured scope."
         },
         {
           "description": "Denies the save_panel_position command without any pre-configured scope.",
@@ -1683,16 +1695,16 @@
           "markdownDescription": "Denies the set_consent command without any pre-configured scope."
         },
         {
-          "description": "Denies the set_extension_enablement command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-set-extension-enablement",
-          "markdownDescription": "Denies the set_extension_enablement command without any pre-configured scope."
-        },
-        {
           "description": "Denies the set_indicator_visible command without any pre-configured scope.",
           "type": "string",
           "const": "deny-set-indicator-visible",
           "markdownDescription": "Denies the set_indicator_visible command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_vault_mirror_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-vault-mirror-path",
+          "markdownDescription": "Denies the set_vault_mirror_path command without any pre-configured scope."
         },
         {
           "description": "Denies the show_main_window command without any pre-configured scope.",
@@ -1819,18 +1831,6 @@
           "type": "string",
           "const": "deny-trigger-sync-cycle",
           "markdownDescription": "Denies the trigger_sync_cycle command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the uninstall_extension command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-uninstall-extension",
-          "markdownDescription": "Denies the uninstall_extension command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the update_extension command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-update-extension",
-          "markdownDescription": "Denies the update_extension command without any pre-configured scope."
         },
         {
           "description": "Denies the update_regime_goals command without any pre-configured scope.",

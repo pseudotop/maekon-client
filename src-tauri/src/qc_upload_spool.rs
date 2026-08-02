@@ -266,7 +266,7 @@ async fn prepare_fixture(
         )
     }
 
-    let db_path = data_dir.join("maekon.db");
+    let db_path = data_dir.join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME);
     if db_path.exists() {
         bail!("upload-spool preparation requires a fresh dedicated qc-*/tc-* profile")
     }
@@ -364,7 +364,7 @@ async fn verify_fixture(
 ) -> Result<UploadSpoolReport> {
     let storage = Arc::new(
         SqliteStorage::open(
-            &data_dir.join("maekon.db"),
+            &data_dir.join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME),
             retention_days,
             Some(&encryption_key),
         )

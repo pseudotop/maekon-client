@@ -1,5 +1,7 @@
 const APP_COMMANDS: &[&str] = &[
     "get_app_build_info",
+    "login",
+    "auth_status",
     "logout_all_sessions",
     "update_setting",
     "get_automation_status",
@@ -115,18 +117,12 @@ const APP_COMMANDS: &[&str] = &[
     "get_tray_state",
     "get_tray_geometry",
     "simulate_tray_action",
+    "request_app_quit",
     "get_consent",
     "set_consent",
     "withdraw_consent",
     "take_microphone_upgrade_notice",
-    "list_extensions",
-    "install_extension",
-    "set_extension_enablement",
-    "update_extension",
-    "rollback_extension",
-    "uninstall_extension",
-    "activate_skill_pack",
-    "clear_skill_pack_activation",
+    // #9639: MK-EXT commands retired — see lib.rs invoke_handler for why.
     "list_task_candidates",
     "list_todos",
     "confirm_task_candidate",
@@ -139,6 +135,14 @@ const APP_COMMANDS: &[&str] = &[
     "clear_capture_reauth_pin",
     "lock_capture_reauth",
     "set_capture_reauth_config",
+    // ADR-033 memory vault mirror (#9465).
+    "run_vault_mirror_cycle",
+    "get_vault_mirror_settings",
+    "set_vault_mirror_path",
+    // OS handoff boundary (#9707).
+    "open_external_target",
+    // Context-home read surface (#9625).
+    "fetch_context_home",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

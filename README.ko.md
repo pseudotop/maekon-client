@@ -248,17 +248,17 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
 ```
 
 ### 릴리즈 아티팩트
@@ -294,11 +294,13 @@ Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프�
 
 | 변수 | 설명 | 기본값 |
 |------|------|--------|
-| `MAEKON_EMAIL` | 로그인 이메일 (Connected 모드 전용) | (Standalone에서는 선택사항) |
-| `MAEKON_PASSWORD` | 로그인 비밀번호 (Connected 모드 전용) | (Standalone에서는 선택사항) |
 | `MAEKON_TESSDATA` | Tesseract 데이터 경로 | (선택사항) |
 | `MAEKON_DISABLE_TRAY` | 시스템 트레이 초기화 스킵 (headless CI/원격 GUI smoke 전용) | `0` |
 | `RUST_LOG` | 로그 레벨 | `info` |
+
+로그인 자격 증명은 환경 변수에서 읽지 않습니다. **설정 → 일반 → 계정**에서
+로그인하세요 (`--features server` 빌드 필요). 서버 URL은
+**설정 → 고급 → Network & Server**에서 설정합니다.
 
 ### 설정 파일
 

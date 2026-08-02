@@ -76,6 +76,7 @@
     }
   },
   "nav": {
+    "signIn": "登录",
     "support": "支持",
     "dashboard": "仪表盘",
     "timeline": "时间线",
@@ -100,7 +101,8 @@
     "groupInsights": "洞察",
     "groupManage": "管理",
     "groupSystem": "系统",
-    "tasks": "任务"
+    "tasks": "任务",
+    "contextHome": "上下文主页"
   },
   "dashboard": {
     "metricsError": "加载系统指标失败",
@@ -296,7 +298,13 @@
     "clearFilters": "Clear All",
     "filterSummary": "Showing {{shown}} of {{total}} frames",
     "tagSuggestions": "Tag suggestions",
-    "noActivity": "这一天没有记录的活动"
+    "noActivity": "这一天没有记录的活动",
+    "segments": {
+      "title": "屏幕上的内容",
+      "axis": "活动区间",
+      "empty": "此范围内没有活动区间。区间在周期性检查点写入，因此最近的范围可能仍为空。",
+      "filtered": "正在显示所选区间的帧。再次点击可查看整个范围。"
+    }
   },
   "settings": {
     "storageScopeNote": "所有已存储数据的累计总数（所有时间）。",
@@ -529,6 +537,16 @@
     "exportFramesLabel": "帧元数据",
     "exportFramesDesc": "截图信息（不含图片）",
     "retentionTitle": "数据保留",
+    "tagManagementTitle": "标签管理",
+    "tagManagementDesc": "重命名或删除你在时间线中创建的标签。删除标签会将其从所有帧中移除。",
+    "tagManagementEmpty": "暂无标签",
+    "tagManagementEmptyDesc": "你在时间线中为帧添加的标签会显示在这里。",
+    "tagRename": "重命名",
+    "tagRenameTitle": "重命名标签",
+    "tagNameLabel": "标签名称",
+    "tagNameDuplicate": "已有同名标签。",
+    "tagDeleteTitle": "删除标签",
+    "tagDeleteConfirm": "“{{name}}”将从所有关联的帧中移除。此操作无法撤销。",
     "retentionDays": "保留期限（天）",
     "retentionAutoDelete": "过期数据将被自动删除",
     "maxStorageMb": "最大存储空间（MB）",
@@ -845,7 +863,25 @@
       "confirmAction": "Sign out everywhere",
       "cancel": "Cancel",
       "success": "Signed out of all devices.",
-      "error": "Sign-out failed: {{error}}"
+      "error": "Sign-out failed: {{error}}",
+      "login": {
+        "title": "登录",
+        "description": "登录到已配置的 ONESHIM 服务器（Advanced → Network & Server）。",
+        "identifierLabel": "用户 ID",
+        "passwordLabel": "密码",
+        "organizationIdLabel": "组织 ID",
+        "submit": "登录",
+        "success": "已登录。",
+        "error": "登录失败：{{error}}",
+        "notAvailable": "此构建版本不包含服务器连接模式。",
+        "signedInAs": "已以 {{identifier}} @ {{organizationId}} 登录",
+        "errors": {
+          "invalidArguments": "请填写用户 ID、密码和组织 ID。",
+          "tokenManagerUnavailable": "无法打开会话存储。请重启 Maekon 后重试。",
+          "invalidCredentials": "登录被拒绝。请检查用户 ID、密码和组织 ID 后重试。",
+          "rejected": "登录失败。无法连接服务器或请求被拒绝 — 请稍后重试。"
+        }
+      }
     },
     "audio": {
       "title": "Audio & Speech-to-Text",
@@ -883,7 +919,8 @@
       "endpoint_hint": "OpenAI-compatible transcription endpoint.",
       "cloud_timeout": "Timeout (sec)",
       "notCompiledTitle": "此构建版本不可用",
-      "notCompiledDescription": "此构建版本编译时未包含音频/语音转文字支持。启用此开关并下载模型将无法正常工作。"
+      "notCompiledDescription": "此构建版本编译时未包含音频/语音转文字支持。启用此开关并下载模型将无法正常工作。",
+      "cloudUnavailable": "此构建不包含云转写 — 语音识别将使用本地 Whisper 引擎。选择 Local 可清除此提示。"
     },
     "advanced": {
       "aiSession": "AI Session",
@@ -901,7 +938,53 @@
     "permissionLinuxSessionLabel": "图形会话",
     "permissionLinuxSessionDescWayland": "检测到 Wayland 会话。Wayland 下无法使用活动窗口检测和跟踪面板；捕获将以精简的上下文继续。要使用全部功能，请登录 X11 会话。",
     "permissionLinuxSessionDescX11": "检测到 X11 会话。支持活动窗口检测和跟踪面板。",
-    "permissionLinuxSessionDescUnknown": "无法确定图形会话类型。活动窗口检测可能不可靠。"
+    "permissionLinuxSessionDescUnknown": "无法确定图形会话类型。活动窗口检测可能不可靠。",
+    "memoryVault": {
+      "sectionTitle": "记忆库（本地 Markdown）",
+      "sectionDescription": "将每日摘要和当前断言镜像为纯 Markdown 文件，可用 Obsidian 或任意编辑器打开。",
+      "oneWayNotice": "这是单向镜像。Maekon 只写入这些文件，从不读回其内容，因此你对生成文件的任何修改都会在重新生成时被覆盖。若要保留自己的版本，请把文件复制到记忆库之外。",
+      "enableLabel": "镜像到本地 Markdown 文件",
+      "enableHint": "授予记忆库专用许可，并在每次生成每日摘要后写入文件。默认关闭。",
+      "consentPending": "设置中镜像已开启，但记忆库许可当前无效，因此没有写入任何文件。请关闭再重新开启以重新授权。",
+      "windowOutOfBound": "镜像窗口（{{days}} 天）超出允许范围，因此每个周期都不做任何事——既不写入也不删除文件。请将窗口降到不超过保留期限。",
+      "activePathLabel": "记忆库文件夹",
+      "pathUnresolved": "无法在此设备上确定记忆库文件夹。",
+      "defaultPathNote": "这是应用自有的默认文件夹。它位于本设备本地，不在任何云同步文件夹内。",
+      "pendingPathNote": "{{path}} 已配置但尚未确认，因此镜像仍在使用默认文件夹。请在下方重新输入以查看风险并确认。",
+      "cloudActiveNotice": "该文件夹位于 {{provider}} 内。每个写入文件的周期都会在外发台账中记录一条。",
+      "pathInputLabel": "自定义记忆库文件夹（绝对路径）",
+      "pathInputPlaceholder": "/Users/you/Obsidian/MyVault/maekon",
+      "choosePath": "使用此文件夹",
+      "useDefault": "恢复默认文件夹",
+      "warningTitle": "使用 {{path}} 之前",
+      "warningOverwrite": "该文件夹中符合记忆库命名规则的文件将被覆盖或删除，不会合并。Maekon 未生成的文件不会被触碰——它只重写带有自身头行的文件。",
+      "warningSyncDetected": "该文件夹位于 {{provider}} 内。你的断言文本将通过该服务持续离开本设备。Maekon 无法检测所有同步机制，因此自定义文件夹由你自行负责。",
+      "warningSyncUnknown": "Maekon 未识别出该文件夹对应的云服务，但它无法检测所有同步机制。如果你运行的任何同步工具覆盖了该文件夹，你的断言文本会通过它离开本设备。自定义文件夹由你自行负责。",
+      "warningAcknowledge": "我了解文件可能被覆盖，且断言文本可能离开本设备。",
+      "warningConfirm": "使用此文件夹",
+      "warningCancel": "取消",
+      "pathSaved": "已更新记忆库文件夹。",
+      "pathCleared": "已恢复默认记忆库文件夹。",
+      "exportNow": "立即导出",
+      "exportNowHint": "立即运行一个完整镜像周期：刷新日期文件、重写断言文件、移除窗口之外的文件。",
+      "exportDone": "镜像完成。写入 {{days}} 个日期文件，移除 {{expired}} 个过期文件。",
+      "exportSkipped": "镜像未执行任何操作（{{reason}}）。没有写入或删除任何文件。",
+      "exportFailed": "无法运行镜像。",
+      "conflictsNotice": "已跳过 {{count}} 个文件，因为它们不是 Maekon 生成的。若希望记忆库使用这些名称，请重命名或移动它们。",
+      "lastCycleLabel": "上次镜像运行",
+      "lastCycleNever": "镜像尚未运行。开启后，它会在每日摘要之后自动运行。",
+      "lastCycleSummary": "{{time}} — 写入 {{days}} 个日期文件，删除 {{expired}} 个过期文件。",
+      "conflictsTitle": "已跳过 {{count}} 个文件，并原样保留。",
+      "conflictsExplain": "这些名称与记忆库使用的格式相同，但文件不是 Maekon 生成的，因此被跳过而未被覆盖。没有任何修改或删除。若希望镜像使用这些名称，请移动或重命名相应文件。",
+      "conflictsMore": "…还有 {{count}} 个。",
+      "provider": {
+        "icloud": "iCloud Drive",
+        "cloudStorage": "云存储文件夹",
+        "onedrive": "OneDrive",
+        "dropbox": "Dropbox",
+        "googleDrive": "Google Drive"
+      }
+    }
   },
   "privacy": {
     "claims": {
@@ -958,6 +1041,19 @@
         "success": "主张已撤回",
         "alreadyRetracted": "该主张已被撤回"
       }
+    },
+    "aiUsage": {
+      "title": "今日 AI 用量",
+      "description": "已配置的 AI 提供商今日处理的令牌数，以及基于本地参考价目表的估算费用 — 无网络查询。",
+      "inputTokens": "输入令牌",
+      "outputTokens": "输出令牌",
+      "totalTokens": "合计",
+      "estimatedSpend": "估算支出",
+      "estimateSuffix": "估算",
+      "pricingUnknown": "此模型无本地价格条目",
+      "budgetUsed": "已使用每日 {{budget}} 令牌预算的 {{pct}}%",
+      "noBudget": "未设置每日令牌预算",
+      "todayOnlyNote": "仅统计今日；应用重启或日期变更后重置。"
     },
     "egress": {
       "title": "外发透明度",
@@ -1092,6 +1188,7 @@
         "collectedTitle": "启用时将收集：",
         "collected": {
           "screenFrames": "屏幕帧",
+          "ocrText": "提取的屏幕文本（OCR）及文本区域坐标，随捕获记录保存至保留期结束",
           "windowTitles": "窗口标题",
           "appUsage": "应用使用情况",
           "inputActivity": "输入活动水平",
@@ -1152,7 +1249,8 @@
           "extractedText": "用于本地捕获和场景上下文的提取文本及文本区域坐标",
           "retention": "根据所配置保留期限，与本地捕获记录一同存储的 OCR 文本"
         },
-        "disclosure": "此同意本身不允许原始截图离开您的设备。外部 OCR 还需要提供商配置；发送未脱敏截图需要下方单独的最高敏感度同意。关闭此项会阻止捕获、场景分析和提供商路径产生新的 OCR 文本。请通过撤回同意或删除数据来清除先前保留的记录。"
+        "disclosure": "此同意本身不允许原始截图离开您的设备。外部 OCR 还需要提供商配置；发送未脱敏截图需要下方单独的最高敏感度同意。关闭此项会阻止捕获、场景分析和提供商路径产生新的 OCR 文本。请通过撤回同意或删除数据来清除先前保留的记录。",
+        "linuxUnsupported": "Linux 上暂不支持 OCR — 平台引擎推出后此同意才会生效。"
       },
       "unredactedExternalOcr": {
         "label": "未脱敏外部 OCR",
@@ -1374,7 +1472,8 @@
     "totalFrames": "总帧数",
     "totalIdle": "总空闲时间",
     "apps": "应用数",
-    "scrubber": "Timeline scrubber"
+    "scrubber": "Timeline scrubber",
+    "showMore": "显示更多"
   },
   "backup": {
     "title": "备份 / 恢复",
@@ -1400,6 +1499,7 @@
     "framesRestored": "已恢复 {{count}} 个帧",
     "errors": "错误列表",
     "moreErrors": "及其他 {{count}} 个错误",
+    "notes": "说明",
     "fullExportTitle": "导出我的所有数据（GDPR 第20条）",
     "fullExportDescription": "下载此设备保存的所有个人数据表（活动片段及摘要、建议、辅导、习惯连续记录、记忆图谱、帧注释、AI 对话、专注指标、工作会话和摘要）的机器可读 JSON 归档。自由文本内容将被掩码处理。",
     "exporting": "正在准备导出…",
@@ -1951,6 +2051,12 @@
     "searchShortcut": "搜索（{{key}}+K）"
   },
   "errors": {
+    "ipc": {
+      "handoffLaunchFailed": "无法打开该链接。系统未能完成请求。请确认已设置处理该类型内容的应用后重试。",
+      "handoffNoHandler": "此电脑上没有可打开该内容的应用。如果是邮件链接，请先安装或设置邮件应用。",
+      "handoffRejected": "未打开该链接。这不是 Maekon 可以交给系统处理的地址。",
+      "storageUnavailable": "本地存储不可用，Maekon 无法确认操作是否已完成。请重启 Maekon 后重试。"
+    },
     "boundaryTitle": "出现了问题",
     "boundaryRetry": "重试",
     "serverOffline": "服务器离线",
@@ -2363,7 +2469,11 @@
       "egressNote": "在设置中选择提供商并配置凭据之前，云端语音转文字将保持关闭。"
     },
     "stepIndicatorLabel": "步骤指示器",
-    "step4RecoveryCardHint": "在您工作时，Maekon 会寻找合适的时机提供帮助。您的第一张 recovery card——基于屏幕内容的下一步建议——通常会在约 15 分钟内出现在屏幕顶部的小型跟踪面板中。"
+    "step4RecoveryCardHint": "在您工作时，Maekon 会寻找合适的时机提供帮助。您的第一张 recovery card——基于屏幕内容的下一步建议——通常会在约 15 分钟内出现在屏幕顶部的小型跟踪面板中。",
+    "step4SuggestionsShortcut": "恢复卡片会显示在建议面板中 — 随时按 {{shortcut}} 打开。",
+    "readyCollectionOffTitle": "将在未开启采集的情况下启动",
+    "readyCollectionOffDesc": "你跳过了同意，因此 Maekon 未采集任何内容。时间线和建议将保持为空。可以现在开启，或稍后在 设置 > 隐私 中开启。",
+    "readyGrantNow": "立即开启采集"
   },
   "chat": {
     "title": "AI 会话",
@@ -2725,7 +2835,9 @@
     "steps": "{{count}} 步",
     "builtin": "内置",
     "templateCount": "{{count}} 项",
-    "variableLabel": "模板变量：{{name}}"
+    "variableLabel": "模板变量：{{name}}",
+    "run": "运行",
+    "runNamed": "运行 {{name}}"
   },
   "trackingSchedule": {
     "title": "Tracking Schedule",
@@ -2859,6 +2971,10 @@
     "textIntelligenceDescription": "从活动中提取并分类文本模式",
     "autoTuner": "自动调优器",
     "autoTunerDescription": "基于 EMA 的漂移检测以及行为模式的自动重新聚类",
+    "tieredMemory": "分层记忆管线",
+    "tieredMemoryDescription": "根据你的活动生成日/周摘要、重校准分段、目标进度和习惯连击。本地运行。",
+    "tieredMemoryNeedsConsent": "该管线还需要默认关闭的“模式学习与辅导”授权。请在隐私 → 数据管理中授予；在此之前该开关不会生效。",
+    "tieredMemoryNeedsRestart": "将在下次启动时生效。管线在启动时装配，因此日/周摘要、分段、目标与习惯连击会从开启此设置之后的那次启动开始填充。",
     "serverBaseUrl": "服务器基础 URL",
     "requestTimeoutMs": "请求超时（毫秒）",
     "grpcEnabled": "启用 gRPC",
@@ -3144,6 +3260,8 @@
       "noCandidateDetail": "已查看您的屏幕，但未提出操作。",
       "providerOfflineTitle": "助手离线",
       "providerOfflineDetail": "建议提供方目前不可用。",
+      "noSessionTitle": "没有助手会话",
+      "noSessionDetail": "打开聊天并创建一个会话。如果尚未配置 AI 提供方，请先在设置中完成配置。",
       "noContextTitle": "屏幕信息不足",
       "noContextDetail": "当前上下文不足以建议下一步。"
     }
@@ -3160,5 +3278,77 @@
     "rechecking": "检查中…",
     "revokedToast": "屏幕录制权限已被撤销 — 捕获已停止。",
     "restoredToast": "屏幕录制权限已恢复 — 捕获已恢复。"
+  },
+  "login": {
+    "pageTitle": "登录 ONESHIM",
+    "pageSubtitle": "将此设备连接到组织的 ONESHIM 服务器。",
+    "unavailableTitle": "此版本不包含联网模式",
+    "signedInTitle": "你已登录",
+    "continueWithoutSignIn": "不登录，继续使用",
+    "localFirstNote": "Maekon 无需账户即可完整运行。登录只会增加联网模式功能。",
+    "continueToHome": "前往你的上下文"
+  },
+  "contextHome": {
+    "title": "你的上下文",
+    "actorLine": "{{actor}} · {{org}}",
+    "refresh": "刷新",
+    "retry": "重试",
+    "loading": "正在加载你的上下文…",
+    "moreRows": "还有 {{count}} 条",
+    "moreParticipants": "+{{count}}",
+    "sections": {
+      "mail": "邮件",
+      "messenger": "消息",
+      "projects": "项目"
+    },
+    "empty": {
+      "threads": "暂无近期会话。",
+      "projects": "你还没有参与任何项目。"
+    },
+    "section": {
+      "unavailableFlag": "无法加载",
+      "timeout": "该板块加载超时，已跳过。",
+      "backendUnavailable": "该板块无法加载，其余上下文仍是最新的。"
+    },
+    "stale": {
+      "badge": "显示最后一次获取的数据"
+    },
+    "unavailable": {
+      "body": "当前无法加载你的上下文，通常是暂时性问题。"
+    },
+    "denied": {
+      "body": "该账号没有查看上下文主页的权限，请向管理员申请。"
+    },
+    "reauth": {
+      "body": "会话已过期。重新登录即可查看你的上下文。"
+    },
+    "bridgeAbsent": {
+      "body": "上下文主页仅在桌面应用中可用，浏览器面板不提供。"
+    },
+    "malformed": {
+      "body": "服务器返回了此应用版本无法解析的上下文响应。更新应用通常可以解决。"
+    },
+    "participant": {
+      "external": "{{name}}（外部）"
+    },
+    "project": {
+      "role": "角色：{{role}}",
+      "counterparty": "对方：{{name}}"
+    },
+    "announce": {
+      "complete": "上下文已加载。",
+      "partial": "上下文已加载，但部分板块无法加载。",
+      "empty": "上下文已加载，暂无内容。",
+      "unavailable": "无法加载上下文。",
+      "denied": "你没有查看该上下文的权限。",
+      "reauth": "会话已过期，正在返回登录页。",
+      "bridgeAbsent": "上下文主页需要桌面应用。",
+      "malformed": "无法解析上下文响应。",
+      "refreshing": "正在刷新你的上下文。"
+    },
+    "syntheticBadge": {
+      "label": "演示数据",
+      "description": "此会话展示的是演示用的合成数据，并非真实记录。"
+    }
   }
 }

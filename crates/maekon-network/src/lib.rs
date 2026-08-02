@@ -79,6 +79,7 @@ pub mod codex_app_server;
 pub mod codex_app_server_session;
 pub mod compression;
 pub mod connectivity;
+pub mod context_home;
 pub mod feature_perf_uploader;
 pub mod http_api_session;
 pub mod http_client;

@@ -144,8 +144,9 @@ test.describe('Onboarding (simulated first-run)', () => {
     await nextBtn.click()
     await expect(page.getByText(step4TitleName)).toBeVisible({ timeout: 5000 })
 
-    // The tip card with role="note" should mention the keyboard shortcut
-    const tipNote = page.locator('[role="note"]')
+    // The ready screen also has a recovery-card note. Locate this note by its
+    // accessible content instead of assuming the page contains only one note.
+    const tipNote = page.getByRole('note').filter({ hasText: step4TipName })
     await expect(tipNote).toBeVisible()
     await expect(tipNote).toContainText(step4TipName)
   })

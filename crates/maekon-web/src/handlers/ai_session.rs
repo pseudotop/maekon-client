@@ -86,6 +86,7 @@ pub async fn send_message(
     session_manager.touch_session(&path.id).await;
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: req.content,
         attachments: req.attachments,

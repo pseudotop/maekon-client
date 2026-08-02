@@ -23,6 +23,12 @@ pub struct TokenResponse {
 pub struct RefreshTokenRequest {
     #[prost(string, tag = "1")]
     pub refresh_token: ::prost::alloc::string::String,
+    /// Tenant scope for the refresh. RefreshToken is a public RPC (no access token
+    /// yet), so the server receives no x-org-id metadata — the same request-field
+    /// path GetToken uses is the only org source. The refresh token itself remains
+    /// the authenticator; a wrong org simply fails token lookup.
+    #[prost(string, tag = "2")]
+    pub organization_id: ::prost::alloc::string::String,
 }
 /// Generated client implementations.
 pub mod client_auth_client {

@@ -305,7 +305,7 @@ describe('tracking panel', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Quit Maekon' }))
     })
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith('simulate_tray_action', { action: 'quit' })
+      expect(mockInvoke).toHaveBeenCalledWith('request_app_quit', undefined)
     })
   })
 

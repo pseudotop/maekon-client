@@ -567,6 +567,26 @@ pub struct AnalysisSettings {
     pub text_intelligence_enabled: bool,
     /// Whether the EMA-based auto-tuner (drift detection + re-clustering) is active.
     pub auto_tuner_enabled: bool,
+    /// Master switch for the tiered-memory pipeline (`analysis.tiered_memory.enabled`).
+    ///
+    /// Powers /day, /week, recalibration segments, coaching goal progress, and
+    /// habit streaks. Before this field existed (#9629) the switch was readable
+    /// at boot but writable NOWHERE (no REST, no IPC, no UI), leaving those
+    /// surfaces permanently empty. `serde(default)` keeps payloads from older
+    /// frontends valid.
+    #[serde(default)]
+    pub tiered_memory_enabled: bool,
+    /// Regime-detection interval (`analysis.tiered_memory.regime_detection_interval_hours`).
+    ///
+    /// The AdvancedTab control for this value previously (#9629) read a nested
+    /// key the server never sent and wrote a flat key serde dropped — a full
+    /// round-trip break. A flat contract field fixes both directions.
+    #[serde(default = "default_regime_detection_interval_hours")]
+    pub regime_detection_interval_hours: i64,
+}
+
+fn default_regime_detection_interval_hours() -> i64 {
+    2
 }
 
 impl Default for AnalysisSettings {
@@ -581,6 +601,8 @@ impl Default for AnalysisSettings {
             gui_intelligence_enabled: true,
             text_intelligence_enabled: true,
             auto_tuner_enabled: true,
+            tiered_memory_enabled: false,
+            regime_detection_interval_hours: default_regime_detection_interval_hours(),
         }
     }
 }

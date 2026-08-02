@@ -2133,6 +2133,7 @@ async fn guarded_ocr_provider_denies_sensitive_apps() {
 
 fn chat_message(content: &str) -> maekon_core::models::ai_session::SessionMessage {
     maekon_core::models::ai_session::SessionMessage {
+        screen_derived: false,
         role: maekon_core::models::ai_session::MessageRole::User,
         content: content.to_string(),
         attachments: vec![],
@@ -2179,15 +2180,89 @@ async fn sanitize_outbound_masks_pii_in_chat_content() {
 }
 
 #[tokio::test]
-async fn sanitize_outbound_fails_closed_without_active_window() {
+async fn sanitize_outbound_strips_context_when_window_unavailable() {
     use super::guarded_conversation::ConversationContentGuard;
 
-    // No active window → the shared external-LLM gate denies (fail-closed).
+    // #9632: chat payloads are USER-TYPED — a FAILED window probe (macOS
+    // accessibility permission absent) must degrade to context-less egress,
+    // not a policy denial. The screen gates protect screen-derived content;
+    // with the context stripped, nothing screen-derived egresses.
     let (guard, _temp_dir) = make_external_privacy_guard_with_permissions(
         Some(ConsentPermissions {
             ocr_processing: true,
             screen_capture: true,
             full_text_extraction: true,
+            ..Default::default()
+        }),
+        None,
+        None,
+    );
+
+    let mut message = chat_message("what was I working on?");
+    message.context = Some(maekon_core::models::ai_session::MessageContext {
+        active_app: Some("Sensitive Editor".to_string()),
+        regime: Some("deep-work".to_string()),
+    });
+
+    let sanitized = guard
+        .sanitize_outbound(&message, "session-test")
+        .await
+        .expect("user-typed chat must proceed context-less when the window probe fails");
+
+    assert!(
+        sanitized.context.is_none(),
+        "screen-derived context must be stripped when the window is unavailable"
+    );
+    assert!(
+        sanitized.content.contains("working"),
+        "typed content itself must survive: {}",
+        sanitized.content
+    );
+}
+
+#[tokio::test]
+async fn sanitize_outbound_screen_derived_still_denies_without_window() {
+    use super::guarded_conversation::ConversationContentGuard;
+
+    // #9643 review I2: a message whose CONTENT was assembled from screen data
+    // (current-context prompt / explain quote) must keep the ORIGINAL strict
+    // gate — the screen-derived text egresses in the content itself and
+    // cannot be stripped like the context field.
+    let (guard, _temp_dir) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions {
+            ocr_processing: true,
+            screen_capture: true,
+            full_text_extraction: true,
+            ..Default::default()
+        }),
+        None,
+        None,
+    );
+
+    let mut message = chat_message("ocr-derived candidate list");
+    message.screen_derived = true;
+
+    let result = guard.sanitize_outbound(&message, "session-test").await;
+    assert!(
+        matches!(
+            result.unwrap_err(),
+            maekon_core::error::CoreError::PolicyDenied { .. }
+        ),
+        "screen-derived payloads must fail closed when the window is unavailable"
+    );
+}
+
+#[tokio::test]
+async fn sanitize_outbound_still_denies_without_consent_when_window_unavailable() {
+    use super::guarded_conversation::ConversationContentGuard;
+
+    // #9632 boundary: the window-probe degrade does NOT bypass consent — with
+    // full_text_extraction missing, chat egress stays denied.
+    let (guard, _temp_dir) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions {
+            ocr_processing: true,
+            screen_capture: true,
+            full_text_extraction: false,
             ..Default::default()
         }),
         None,
@@ -2203,7 +2278,7 @@ async fn sanitize_outbound_fails_closed_without_active_window() {
             result.unwrap_err(),
             maekon_core::error::CoreError::PolicyDenied { .. }
         ),
-        "guard must fail closed with PolicyDenied when the active-window/consent gate denies"
+        "missing consent must stay fail-closed even on the user-typed path"
     );
 }
 

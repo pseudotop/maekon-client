@@ -135,6 +135,18 @@ pub trait ConsentManagerPort: Send + Sync {
     fn activity_pattern_learning_permitted(&self) -> bool {
         self.effective_permissions().activity_pattern_learning
     }
+
+    /// Convenience: `effective_permissions().memory_graph_retrieval_ranking`
+    /// (ADR-032 Mode A — Tier 10).
+    fn memory_graph_retrieval_ranking_permitted(&self) -> bool {
+        self.effective_permissions().memory_graph_retrieval_ranking
+    }
+
+    /// Convenience: `effective_permissions().memory_vault_mirror`
+    /// (ADR-033 — Tier 13).
+    fn memory_vault_mirror_permitted(&self) -> bool {
+        self.effective_permissions().memory_vault_mirror
+    }
 }
 
 // NOTE: `impl ConsentManagerPort for ConsentManager` lives in `consent.rs`

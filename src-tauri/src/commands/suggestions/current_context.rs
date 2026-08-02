@@ -218,6 +218,10 @@ pub async fn request_current_context_suggestions(
 
     let message_content = format!("{CURRENT_CONTEXT_SUGGESTION_PROMPT}{}", prompt.context_json);
     let message = SessionMessage {
+        // #9643 review I2: this prompt is assembled from context_json (OCR
+        // regions, window titles, GUI elements) — screen-derived, so the
+        // guard must keep the STRICT window gate.
+        screen_derived: true,
         role: MessageRole::User,
         content: message_content,
         attachments: Vec::new(),

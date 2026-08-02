@@ -75,6 +75,9 @@ rand = { workspace = true }
 # brute-force resistant verifier stored in app_meta; never a plaintext PIN).
 argon2 = { workspace = true }
 ed25519-dalek = { workspace = true }
+# #9707: URL parsing for the OS handoff allowlist. Already in Cargo.lock via
+# maekon-network, so this adds no crate to the supply-chain surface.
+url = { workspace = true }
 directories = { workspace = true }
 parking_lot = { workspace = true }
 sysinfo = { workspace = true }
@@ -188,6 +191,7 @@ dispatch2 = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 tauri = { workspace = true, features = ["tray-icon"] }
+tauri-winrt-notification = { workspace = true }
 windows-sys = { workspace = true }
 
 [package.metadata.bundle]

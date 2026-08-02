@@ -33,6 +33,7 @@ pub mod ai_model_lifecycle_policy;
 pub mod app_registry;
 pub mod backoff;
 pub mod binary_quantizer;
+pub mod bounded_op;
 pub mod capture_gate;
 pub mod circuit_breaker;
 pub mod codex_approval;
@@ -59,6 +60,7 @@ pub mod services;
 pub mod sync;
 pub mod sync_engine;
 pub mod types;
+pub mod vault_cloud_sync;
 
 pub use id_generation::{generate_id, generate_id_checked, IdError};
 pub use sanitized_display::{sanitized, SanitizedDisplay};

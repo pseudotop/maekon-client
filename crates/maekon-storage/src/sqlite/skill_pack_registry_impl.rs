@@ -8,9 +8,11 @@
 //! * The catalog stores `body_sha256`, never the body. Re-hashing the presented
 //!   body at activation is what makes an on-disk swap detectable.
 //! * `remove_for_install` deletes children before parents explicitly. The
-//!   `REFERENCES ... ON DELETE CASCADE` clauses in v52 are inert because this
-//!   workspace runs with `foreign_keys` OFF (ADR-028 Amendment B3), so relying
-//!   on them would leave orphaned activations pointing at uninstalled packages.
+//!   `REFERENCES ... ON DELETE CASCADE` clauses in v52 DO fire — this workspace
+//!   runs with `foreign_keys` ON (#9735 CORRECTED — the old claim of OFF was
+//!   wrong, and an earlier pass at this sentence left the causality backwards).
+//!   The explicit deletes are kept for order control, redundant with the engine
+//!   rather than the only thing preventing orphans.
 //
 // OOS-TBD: ADR-013 file split — command port, query port, and row helpers can
 // move into a `skill_pack_registry_impl/` directory module if this grows.
@@ -321,8 +323,19 @@ impl SkillPackCatalogCommandPort for SqliteStorage {
         let result: Option<SkillPackOutcome> = self
             .with_conn_mut(move |conn| {
                 let tx = conn.transaction()?;
-                // Child first: the activation points at a catalog row, and the
-                // FK cascade is inert with foreign_keys OFF.
+                // Child first: the activation points at a catalog row.
+                //
+                // #9786 measured what this delete is worth. Disabling it leaves
+                // `remove_for_install_clears_the_catalog_and_its_activation`
+                // passing — `skill_pack_activation.skill_id REFERENCES
+                // skill_pack_catalog(skill_id) ON DELETE CASCADE` fires and
+                // removes the row anyway. So the previous comment's claim that
+                // this is belt-and-braces is now a measurement, not a guess.
+                //
+                // It stays because it does not depend on the PRAGMA being on.
+                // #9735 found a dozen comments reasoning from the wrong value of
+                // that setting; a delete that is correct either way is cheaper
+                // than being sure which way it reads next year.
                 tx.execute(
                     "DELETE FROM skill_pack_activation
                      WHERE skill_id IN (SELECT skill_id FROM skill_pack_catalog
@@ -418,5 +431,268 @@ impl SkillPackCatalogQueryPort for SqliteStorage {
         })
         .await
         .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use maekon_core::models::extension::{
+        Contribution, ContributionKind, ExecutionLocation, ExtensionManifest, RuntimeKind,
+        SignatureState, SourceKind,
+    };
+    use maekon_core::ports::extension_registry::{
+        ExtensionRegistryCommandPort, RegisterPackageRequest,
+    };
+
+    /// Real storage: `open_in_memory` runs the whole migration chain, so v52's
+    /// `REFERENCES extension_installs(install_id)` points at the actual v50
+    /// table rather than a stand-in.
+    ///
+    /// #9786 review CORRECTION: an earlier version of this comment said
+    /// "nothing exercised the pair against the schema production runs". That was
+    /// wrong — `tests/skill_pack_registry_reopen.rs` already drives
+    /// `register_skill_pack` / `record_activation` / `list_skill_packs` /
+    /// `reference_graph` / `get_activation` / `clear_activation` against a
+    /// disk-backed `SqliteStorage::open`, which runs the identical chain. The
+    /// claim was written after grepping this file for `#[cfg(test)]` and the
+    /// tree for `SkillPackRegistry|skill_pack_catalog`; the reopen file uses
+    /// neither literal, so a too-narrow search became a statement of fact.
+    ///
+    /// What was actually uncovered, and what these tests add: `remove_for_install`
+    /// (no caller or test anywhere), the FK against the REAL v50 table (v52's own
+    /// migration tests satisfy it with a stripped three-column stand-in, which an
+    /// FK accepts because it only checks the referenced column), and the cascade
+    /// in isolation.
+    fn storage() -> SqliteStorage {
+        SqliteStorage::open_in_memory(30).expect("in-memory sqlite")
+    }
+
+    fn manifest(extension_id: &str) -> ExtensionManifest {
+        ExtensionManifest {
+            extension_id: extension_id.to_string(),
+            version: "1.0.0".to_string(),
+            publisher_id: "maekon".to_string(),
+            package_digest: "sha256:abc".to_string(),
+            source_kind: SourceKind::AppBundle,
+            signature_state: SignatureState::AppBundleTrusted,
+            signature_key_id: None,
+            signed_manifest_digest: None,
+            manifest_schema: 1,
+            host_api_min: 1,
+            host_api_max: 2,
+            runtime_kind: RuntimeKind::FirstPartyBuiltin,
+            execution_location: ExecutionLocation::Local,
+            entry_point: "builtin:review".to_string(),
+            contributions: vec![Contribution {
+                contribution_id: "review.pack".to_string(),
+                kind: ContributionKind::SkillPack,
+                api_version: 1,
+                requested_capabilities: vec![],
+            }],
+            permission_profile_id: None,
+            external_egress: vec![],
+            data_classification: None,
+            retention_class: None,
+            update_channel: None,
+            rollback_window: None,
+            minimum_allowed_version: None,
+            uninstall_cleanup: vec![],
+        }
+    }
+
+    /// Create the `extension_installs` parent through the production path.
+    ///
+    /// The extension id is derived from `install_id` because `register_package`
+    /// conflicts on `extension_id`, not `install_id` (v50 `UNIQUE(extension_id)`).
+    /// A fixed id would make a second `seed_install` on the same storage a silent
+    /// no-op that still returns `Ok`, so the install would never exist and the
+    /// test would be measuring something other than what it says (#9786 review).
+    async fn seed_install(s: &SqliteStorage, install_id: &str) {
+        s.register_package(RegisterPackageRequest {
+            install_id: install_id.to_string(),
+            manifest: manifest(&format!("com.maekon.review.{install_id}")),
+            now: Utc::now(),
+        })
+        .await
+        .expect("register the owning package");
+    }
+
+    fn entry(skill_id: &str, install_id: &str) -> SkillPackEntry {
+        SkillPackEntry {
+            skill_id: skill_id.to_string(),
+            install_id: install_id.to_string(),
+            extension_id: "com.maekon.review".to_string(),
+            contribution_id: "review.pack".to_string(),
+            contribution_kind: ContributionKind::SkillPack,
+            version: "1.0.0".to_string(),
+            publisher_id: "maekon".to_string(),
+            body_sha256: "sha256:aa".to_string(),
+            required_capabilities: vec!["context.read".to_string()],
+            optional_capabilities: vec!["context.write".to_string()],
+            references: vec![],
+        }
+    }
+
+    async fn register(s: &SqliteStorage, e: SkillPackEntry) -> SkillPackOutcome {
+        s.register_skill_pack(RegisterSkillPackRequest {
+            entry: e,
+            now: Utc::now(),
+        })
+        .await
+        .expect("register_skill_pack")
+    }
+
+    /// Roundtrip through the real schema.
+    ///
+    /// #9786 review: this overlaps `tests/skill_pack_registry_reopen.rs`'s
+    /// `catalog_entry_and_activation_survive_reopen`, which already asserts
+    /// `body_sha256` / `contribution_kind` / `required_capabilities` /
+    /// `references`. Kept for the two columns that file does not read back —
+    /// `optional_capabilities` and `install_id` — and `install_id` is the one
+    /// that matters here, since it is the FK column the tests below turn on.
+    #[tokio::test]
+    async fn register_then_read_back_preserves_every_field() {
+        let s = storage();
+        seed_install(&s, "inst_1").await;
+        let out = register(&s, entry("sk.review", "inst_1")).await;
+        assert!(matches!(out, SkillPackOutcome::Applied { .. }), "{out:?}");
+
+        let got = s
+            .get_skill_pack("sk.review")
+            .await
+            .expect("get_skill_pack")
+            .expect("the entry just registered");
+        // The list columns go through an encode/decode pair, which is the part
+        // a roundtrip can actually get wrong.
+        assert_eq!(got.required_capabilities, vec!["context.read".to_string()]);
+        assert_eq!(got.optional_capabilities, vec!["context.write".to_string()]);
+        assert_eq!(got.references, Vec::<String>::new());
+        assert_eq!(got.body_sha256, "sha256:aa");
+        assert_eq!(got.install_id, "inst_1");
+    }
+
+    /// The FK to `extension_installs` is live against the real v50 table.
+    ///
+    /// This is what the migration tests could not show: theirs satisfy the FK
+    /// with a three-column stand-in, so an entry pointing at an install that was
+    /// never created is exactly the case neither layer covered.
+    #[tokio::test]
+    async fn registering_against_an_unknown_install_is_refused() {
+        let s = storage();
+        let err = s
+            .register_skill_pack(RegisterSkillPackRequest {
+                entry: entry("sk.orphan", "inst_never_created"),
+                now: Utc::now(),
+            })
+            .await
+            .expect_err("an entry may not outlive the install that owns it");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("FOREIGN KEY constraint failed"),
+            "expected the engine to refuse the orphan, got: {msg}"
+        );
+    }
+
+    /// `remove_for_install` deletes children before parents, under real FK
+    /// enforcement — the path #9735's review flagged as never verified.
+    #[tokio::test]
+    async fn remove_for_install_clears_the_catalog_and_its_activation() {
+        let s = storage();
+        seed_install(&s, "inst_1").await;
+        register(&s, entry("sk.review", "inst_1")).await;
+        s.record_activation(RecordActivationRequest {
+            activation_id: "act_1".to_string(),
+            skill_id: "sk.review".to_string(),
+            version: "1.0.0".to_string(),
+            body_sha256: "sha256:aa".to_string(),
+            selection: SkillSelectionKind::ExplicitUserSelection,
+            now: Utc::now(),
+            lifetime_secs: 3600,
+        })
+        .await
+        .expect("record_activation");
+        assert!(s.get_activation().await.expect("get_activation").is_some());
+
+        let out = s
+            .remove_for_install("inst_1")
+            .await
+            .expect("remove_for_install");
+        assert!(matches!(out, SkillPackOutcome::Applied { .. }), "{out:?}");
+
+        assert!(
+            s.get_skill_pack("sk.review")
+                .await
+                .expect("get_skill_pack")
+                .is_none(),
+            "the catalog entry must be gone"
+        );
+        assert!(
+            s.get_activation().await.expect("get_activation").is_none(),
+            "the activation pointed at a row that no longer exists, so it must \
+             be gone too"
+        );
+    }
+
+    /// The cascade alone removes the activation — measured, not assumed.
+    ///
+    /// #9786: `remove_for_install` deletes the activation explicitly first, and
+    /// the adapter comment called that belt-and-braces. Deleting the catalog row
+    /// directly, with no explicit child delete anywhere in the path, shows the
+    /// engine doing the work: `skill_pack_activation.skill_id REFERENCES
+    /// skill_pack_catalog(skill_id) ON DELETE CASCADE` under the enforcement
+    /// #9735 established.
+    ///
+    /// Worth pinning separately because the outcome test above passes whether
+    /// the explicit delete runs or not — it cannot tell which mechanism did it,
+    /// and a test that cannot distinguish them cannot notice the cascade going
+    /// away.
+    #[tokio::test]
+    async fn deleting_a_catalog_row_cascades_to_its_activation() {
+        let s = storage();
+        seed_install(&s, "inst_1").await;
+        register(&s, entry("sk.review", "inst_1")).await;
+        s.record_activation(RecordActivationRequest {
+            activation_id: "act_1".to_string(),
+            skill_id: "sk.review".to_string(),
+            version: "1.0.0".to_string(),
+            body_sha256: "sha256:aa".to_string(),
+            selection: SkillSelectionKind::ExplicitUserSelection,
+            now: Utc::now(),
+            lifetime_secs: 3600,
+        })
+        .await
+        .expect("record_activation");
+
+        // Delete the parent directly, bypassing `remove_for_install` entirely.
+        {
+            let conn = s.connection_arc();
+            let guard = conn.test_lock();
+            guard
+                .execute(
+                    "DELETE FROM skill_pack_catalog WHERE skill_id = 'sk.review'",
+                    [],
+                )
+                .expect("delete the catalog row");
+        }
+
+        assert!(
+            s.get_activation().await.expect("get_activation").is_none(),
+            "the declared ON DELETE CASCADE must remove the orphaned activation"
+        );
+    }
+
+    /// Removing an install that owns nothing reports `NotFound` rather than
+    /// claiming it deleted something.
+    #[tokio::test]
+    async fn remove_for_install_reports_not_found_when_nothing_is_owned() {
+        let s = storage();
+        seed_install(&s, "inst_1").await;
+        let out = s
+            .remove_for_install("inst_1")
+            .await
+            .expect("remove_for_install");
+        assert!(matches!(out, SkillPackOutcome::NotFound), "{out:?}");
     }
 }

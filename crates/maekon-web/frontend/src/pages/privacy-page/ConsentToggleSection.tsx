@@ -17,15 +17,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { getConsent, setConsent, withdrawConsent } from '../../api/client'
+import { CONSENT_QUERY_KEY, getConsent, setConsent, withdrawConsent } from '../../api/client'
 import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../api/contracts'
-import { errorMessageFromInvoke } from '../../api/desktop'
 import { Alert, Button, Card, CardTitle, Checkbox } from '../../components/ui'
+import { addToast } from '../../hooks/useToast'
+import { describeIpcError } from '../../i18n/tauriIpcErrors'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { IS_LINUX } from '../../utils/platform'
 import { ConfirmModal } from './PrivacyLayout'
-
-const CONSENT_QUERY_KEY = ['consent'] as const
 
 // Stable id of the microphone cloud-egress disclosure Alert. The microphone toggle's Checkbox
 // points to this id via aria-describedby, so the screen reader also reads the disclosure when it reads the toggle.
@@ -34,9 +34,13 @@ const FULL_TEXT_DISCLOSURE_ID = 'consent-full-text-disclosure'
 const OCR_PROCESSING_DISCLOSURE_ID = 'consent-ocr-processing-disclosure'
 const UNREDACTED_OCR_DISCLOSURE_ID = 'consent-unredacted-external-ocr-disclosure'
 
-// The 6 master fields that make up the monitoring bundle. All true when ON, all false when OFF.
+// The monitoring bundle driven by the master toggle — all true when ON, all
+// false when OFF. #9643 review M3: includes ocr_processing to stay in
+// lockstep with the first-run onboarding grant (#9631); without it, turning
+// monitoring OFF left the onboarding-granted OCR consent silently on.
 const MONITORING_FIELDS = [
   'screen_capture',
+  'ocr_processing',
   'window_title_collection',
   'app_usage_analytics',
   'process_monitoring',
@@ -126,7 +130,7 @@ interface ConsentToggleSectionProps {
 }
 
 export default function ConsentToggleSection({ onConsentChanged }: ConsentToggleSectionProps = {}) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const queryClient = useQueryClient()
   const [showWithdrawModal, setShowWithdrawModal] = useState(false)
 
@@ -153,6 +157,18 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
       setShowWithdrawModal(false)
       queryClient.invalidateQueries({ queryKey: CONSENT_QUERY_KEY })
       onConsentChanged?.()
+    },
+    // #9505: without this, a withdraw failure (e.g. `storage.unavailable` from
+    // `commands/consent.rs::erase_all_local_data`) was completely silent — the
+    // confirm modal covers the card's inline error alert, so the user saw an
+    // open modal that appeared to ignore the click. Toast renders above the
+    // modal; the modal intentionally stays open as the retry affordance (same
+    // contract as the sibling PrivacyLayout delete-all path from #9492).
+    onError: (error: Error) => {
+      addToast(
+        'error',
+        describeIpcError(error, (key) => t(key), i18n.language),
+      )
     },
   })
 
@@ -246,10 +262,13 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
     setMutation.mutate({ ...permissions, memory_graph_enrichment: next })
   }
 
+  // #9505 sibling: the inline alert previously rendered the raw Rust wire
+  // literal via errorMessageFromInvoke — route both mutations through the
+  // shared IPC-error mapping like every other privacy surface (#9492 item 4).
   const lastError = setMutation.isError
-    ? errorMessageFromInvoke(setMutation.error)
+    ? describeIpcError(setMutation.error, (key) => t(key), i18n.language)
     : withdrawMutation.isError
-      ? errorMessageFromInvoke(withdrawMutation.error)
+      ? describeIpcError(withdrawMutation.error, (key) => t(key), i18n.language)
       : null
 
   return (
@@ -290,6 +309,10 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
           collectedTitle={t('privacy.consent.monitoring.collectedTitle')}
           collected={[
             t('privacy.consent.monitoring.collected.screenFrames'),
+            // #9643 re-review O-2: the bundle grants ocr_processing (M3), so
+            // the disclosure under this toggle must name text extraction —
+            // same gap I1 closed on the onboarding surface.
+            t('privacy.consent.monitoring.collected.ocrText'),
             t('privacy.consent.monitoring.collected.windowTitles'),
             t('privacy.consent.monitoring.collected.appUsage'),
             t('privacy.consent.monitoring.collected.inputActivity'),
@@ -390,6 +413,10 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
           <Alert id={OCR_PROCESSING_DISCLOSURE_ID} variant="info">
             {t('privacy.consent.ocrProcessing.disclosure')}
           </Alert>
+          {/* #9631: no OCR engine ships on Linux (native_ocr is macOS/Windows
+              only) — without this note the consent reads as a working toggle
+              that silently does nothing. */}
+          {IS_LINUX ? <Alert variant="warning">{t('privacy.consent.ocrProcessing.linuxUnsupported')}</Alert> : null}
         </div>
 
         <div className="space-y-2">
@@ -482,6 +509,7 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
         note={t('privacy.consent.withdraw.confirmNote')}
         confirmText={t('privacy.consent.withdraw.confirmButton')}
         isDangerous
+        confirmDisabled={withdrawMutation.isPending}
         onConfirm={() => withdrawMutation.mutate()}
         onCancel={() => setShowWithdrawModal(false)}
       />

@@ -56,6 +56,9 @@ pub mod bootstrap_preflight;
 pub mod bootstrap_runtime;
 pub mod breaker_registry;
 pub mod bridge_cli;
+/// #9659: build-capability markers embedded in the binary so an operator can
+/// tell a login-capable artifact from a login-less one without launching it.
+pub mod build_capabilities;
 pub mod capture_scale;
 pub mod capture_services;
 pub mod cli_subscription_bridge;
@@ -131,6 +134,7 @@ pub mod skill_pack_resolver;
 pub mod storage_runtime;
 pub mod subprocess_provider;
 pub mod suggestion_manager;
+pub mod windows_notification_activation;
 // E20-24 (#4816): no-op ApiClient so the local-suggestion FeedbackSender satisfies
 // its required `Arc<dyn ApiClient>` with zero network. See local_api_client.rs.
 #[cfg(feature = "local-suggestions")]
@@ -142,6 +146,7 @@ pub mod tray_watch;
 pub mod update_coordinator;
 pub mod update_runtime;
 pub mod updater;
+pub(crate) mod vault_wiring;
 pub mod web_server_runtime;
 pub mod window_state;
 #[cfg(debug_assertions)]
@@ -905,16 +910,23 @@ pub fn run() {
             std::process::exit(run_debug_autostart_cli_command(command));
         }
     }
-    if args.len() > 1 && args[1] == "auth" {
-        let config_dir = maekon_core::config_manager::ConfigManager::config_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let exit_code = auth_cli::run(&args[2..], &config_dir);
-        std::process::exit(exit_code);
-    }
-    if args.len() > 1 && args[1] == "secret" {
-        let config_dir = maekon_core::config_manager::ConfigManager::config_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let exit_code = secret_cli::run(&args[2..], &config_dir);
+    if args.len() > 1 && (args[1] == "auth" || args[1] == "secret") {
+        // #9523: fail loud instead of falling back to `.` — a credential CLI
+        // silently operating on ./maekon-keychain-registry.json (a DIFFERENT
+        // file than the GUI's config-dir registry) would revoke/inspect the
+        // wrong inventory while reporting success.
+        let config_dir = match maekon_core::config_manager::ConfigManager::config_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("error: cannot resolve the config directory ({e}); refusing to operate on a fallback registry path");
+                std::process::exit(2);
+            }
+        };
+        let exit_code = if args[1] == "auth" {
+            auth_cli::run(&args[2..], &config_dir)
+        } else {
+            secret_cli::run(&args[2..], &config_dir)
+        };
         std::process::exit(exit_code);
     }
     if args.len() > 1 && args[1] == "bridge" {
@@ -1006,7 +1018,11 @@ pub fn run() {
         // overwrite an already-managed type), so the slot is the populate path.
         // Until populated (or for disabled features / bootstrap failures) the
         // slot stays empty and the command fails immediately.
-        .manage(commands::auth::TokenManagerState::empty());
+        .manage(commands::auth::TokenManagerState::empty())
+        // #9625: same slot discipline for the context-home transport. Registered
+        // empty here; `app_runtime_launch::auth_wiring` populates it from the
+        // shared login session so one sign-in serves this surface too.
+        .manage(commands::context_home::ContextHomeState::empty());
 
     // WebdriverIO plugins — test-only and excluded from production builds.
     // The service supplies TAURI_WEBDRIVER_PORT and owns app lifecycle.
@@ -1041,6 +1057,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::build_info::get_app_build_info,
+            commands::auth::login,
+            commands::auth::auth_status,
             commands::auth::logout_all_sessions,
             commands::settings::update_setting,
             commands::system::get_automation_status,
@@ -1154,20 +1172,31 @@ pub fn run() {
             commands::audit::verify_audit_log,
             commands::error_report::report_frontend_error,
             commands::tray::get_tray_state,
+            commands::tray::request_app_quit,
             commands::tray::get_tray_geometry,
             commands::tray::simulate_tray_action,
             commands::consent::get_consent,
             commands::consent::set_consent,
             commands::consent::withdraw_consent,
             commands::consent::take_microphone_upgrade_notice,
-            commands::extension::list_extensions,
-            commands::extension::install_extension,
-            commands::extension::set_extension_enablement,
-            commands::extension::update_extension,
-            commands::extension::rollback_extension,
-            commands::extension::uninstall_extension,
-            commands::extension::activate_skill_pack,
-            commands::extension::clear_skill_pack_activation,
+            // #9639: the MK-EXT IPC surface is RETIRED — the eight
+            // `commands::extension::*` commands used to be registered here.
+            //
+            // Measured: nothing in production calls `register_package`, so
+            // `extension_installs` is permanently empty. `install()` then returns
+            // `RevisionConflict` on every call (`load_row` → None), `list_extensions`
+            // returns `[]`, and skill-pack activation fails at
+            // `get_manifest(install_id)` — the whole chain is dead at the root, not
+            // at the leaf. Registering them made the app advertise a feature that
+            // could never do anything.
+            //
+            // The implementation stays as directly testable Rust functions
+            // (`commands/extension.rs`, the storage adapters, their tests), without
+            // `#[command]` annotations that would falsely describe a live IPC surface.
+            // Reviving requires restoring those annotations, re-adding these lines,
+            // AND wiring a real `register_package` call site — the guard in
+            // `tests/ipc_command_contract.rs` names that order so the surface cannot
+            // come back half-wired again.
             commands::task::list_task_candidates,
             commands::task::list_todos,
             commands::task::confirm_task_candidate,
@@ -1180,6 +1209,14 @@ pub fn run() {
             commands::reauth::clear_capture_reauth_pin,
             commands::reauth::lock_capture_reauth,
             commands::reauth::set_capture_reauth_config,
+            // ADR-033 memory vault mirror (#9465).
+            commands::vault::run_vault_mirror_cycle,
+            commands::vault::get_vault_mirror_settings,
+            commands::vault::set_vault_mirror_path,
+            // OS handoff boundary (#9707).
+            commands::os_handoff::open_external_target,
+            // Context-home read surface (#9625).
+            commands::context_home::fetch_context_home,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("error while building Maekon: {error}"));

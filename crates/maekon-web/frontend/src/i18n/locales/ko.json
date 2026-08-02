@@ -76,6 +76,7 @@
     }
   },
   "nav": {
+    "signIn": "로그인",
     "support": "지원",
     "dashboard": "대시보드",
     "timeline": "타임라인",
@@ -100,7 +101,8 @@
     "groupInsights": "인사이트",
     "groupManage": "관리",
     "groupSystem": "시스템",
-    "tasks": "할 일"
+    "tasks": "할 일",
+    "contextHome": "맥락 홈"
   },
   "dashboard": {
     "metricsError": "시스템 지표를 불러오지 못했습니다",
@@ -296,7 +298,13 @@
     "clearFilters": "Clear All",
     "filterSummary": "Showing {{shown}} of {{total}} frames",
     "tagSuggestions": "Tag suggestions",
-    "noActivity": "이 날 기록된 활동이 없습니다"
+    "noActivity": "이 날 기록된 활동이 없습니다",
+    "segments": {
+      "title": "화면에 있던 작업",
+      "axis": "활동 구간",
+      "empty": "이 범위에 활동 구간이 없습니다. 구간은 주기적 체크포인트에 기록되므로 아주 최근 범위는 비어 있을 수 있습니다.",
+      "filtered": "선택한 구간의 프레임만 보고 있습니다. 다시 클릭하면 전체 범위로 돌아갑니다."
+    }
   },
   "settings": {
     "storageScopeNote": "저장된 모든 데이터의 누적 합계입니다(전체 기간).",
@@ -567,6 +575,16 @@
     "exportFramesLabel": "프레임 메타데이터",
     "exportFramesDesc": "스크린샷 정보 (이미지 제외)",
     "retentionTitle": "데이터 보관",
+    "tagManagementTitle": "태그 관리",
+    "tagManagementDesc": "타임라인에서 만든 태그의 이름을 바꾸거나 삭제합니다. 태그를 삭제하면 연결된 모든 프레임에서 제거됩니다.",
+    "tagManagementEmpty": "아직 태그가 없습니다",
+    "tagManagementEmptyDesc": "타임라인에서 프레임에 추가한 태그가 여기에 표시됩니다.",
+    "tagRename": "이름 변경",
+    "tagRenameTitle": "태그 이름 변경",
+    "tagNameLabel": "태그 이름",
+    "tagNameDuplicate": "같은 이름의 태그가 이미 있습니다.",
+    "tagDeleteTitle": "태그 삭제",
+    "tagDeleteConfirm": "\"{{name}}\" 태그가 연결된 모든 프레임에서 제거됩니다. 되돌릴 수 없습니다.",
     "retentionDays": "보존 기간 (일)",
     "retentionAutoDelete": "오래된 데이터는 자동 삭제됩니다",
     "maxStorageMb": "최대 저장 용량 (MB)",
@@ -744,7 +762,25 @@
       "confirmAction": "모든 디바이스 로그아웃",
       "cancel": "취소",
       "success": "모든 디바이스에서 로그아웃되었습니다.",
-      "error": "로그아웃 실패: {{error}}"
+      "error": "로그아웃 실패: {{error}}",
+      "login": {
+        "title": "로그인",
+        "description": "설정된 ONESHIM 서버에 로그인합니다 (고급 → Network & Server).",
+        "identifierLabel": "아이디",
+        "passwordLabel": "비밀번호",
+        "organizationIdLabel": "조직 ID",
+        "submit": "로그인",
+        "success": "로그인되었습니다.",
+        "error": "로그인 실패: {{error}}",
+        "notAvailable": "이 빌드에는 서버 연결 모드가 포함되어 있지 않습니다.",
+        "signedInAs": "{{identifier}} @ {{organizationId}} 계정으로 로그인됨",
+        "errors": {
+          "invalidArguments": "아이디, 비밀번호, 조직 ID를 모두 입력하세요.",
+          "tokenManagerUnavailable": "세션 저장소를 열지 못했습니다. Maekon을 다시 시작한 뒤 시도하세요.",
+          "invalidCredentials": "로그인이 거부되었습니다. 아이디, 비밀번호, 조직 ID를 확인한 뒤 다시 시도하세요.",
+          "rejected": "로그인에 실패했습니다. 서버에 연결하지 못했거나 요청이 거부되었습니다 — 잠시 후 다시 시도하세요."
+        }
+      }
     },
     "bugReportWizardTitle": "버그 리포트",
     "bugReportStepGenerate": "생성",
@@ -883,7 +919,8 @@
       "endpoint_hint": "OpenAI 호환 음성 인식 엔드포인트입니다.",
       "cloud_timeout": "타임아웃 (초)",
       "notCompiledTitle": "이 빌드에서는 사용할 수 없음",
-      "notCompiledDescription": "이 빌드는 오디오/음성-텍스트 변환 지원 없이 컴파일되었습니다. 이 토글을 켜고 모델을 다운로드해도 동작하지 않습니다."
+      "notCompiledDescription": "이 빌드는 오디오/음성-텍스트 변환 지원 없이 컴파일되었습니다. 이 토글을 켜고 모델을 다운로드해도 동작하지 않습니다.",
+      "cloudUnavailable": "이 빌드에는 클라우드 전사가 포함되어 있지 않습니다 — 음성 인식은 로컬 Whisper 엔진을 사용합니다. Local을 선택하면 이 안내가 사라집니다."
     },
     "advanced": {
       "aiSession": "AI Session",
@@ -901,7 +938,53 @@
     "permissionLinuxSessionLabel": "그래픽 세션",
     "permissionLinuxSessionDescWayland": "Wayland 세션이 감지되었습니다. Wayland 에서는 활성 창 감지와 트래킹 패널을 사용할 수 없고, 캡처는 축소된 컨텍스트로 계속됩니다. 전체 기능을 사용하려면 X11 세션으로 로그인하세요.",
     "permissionLinuxSessionDescX11": "X11 세션이 감지되었습니다. 활성 창 감지와 트래킹 패널이 지원됩니다.",
-    "permissionLinuxSessionDescUnknown": "그래픽 세션 유형을 확인할 수 없습니다. 활성 창 감지가 불안정할 수 있습니다."
+    "permissionLinuxSessionDescUnknown": "그래픽 세션 유형을 확인할 수 없습니다. 활성 창 감지가 불안정할 수 있습니다.",
+    "memoryVault": {
+      "sectionTitle": "메모리 볼트 (로컬 마크다운)",
+      "sectionDescription": "일일 다이제스트와 현재 클레임을 Obsidian이나 아무 편집기로 열 수 있는 마크다운 파일로 미러링합니다.",
+      "oneWayNotice": "단방향 미러입니다. Maekon은 이 파일들을 쓰기만 하고 내용을 다시 읽지 않으므로, 생성된 파일을 수정해도 다음 재생성 때 덮어써집니다. 내용을 보존하려면 볼트 밖으로 파일을 복사하세요.",
+      "enableLabel": "로컬 마크다운 파일로 미러링",
+      "enableHint": "메모리 볼트 전용 동의를 부여하고 매일 다이제스트 생성 후 파일을 씁니다. 기본값은 꺼짐입니다.",
+      "consentPending": "설정에서는 미러가 켜져 있지만 메모리 볼트 동의가 현재 유효하지 않아 파일이 기록되지 않습니다. 스위치를 껐다 다시 켜서 동의를 재부여하세요.",
+      "windowOutOfBound": "미러 기간({{days}}일)이 허용 범위를 벗어나 모든 주기가 아무 동작도 하지 않습니다 — 파일을 쓰지도, 지우지도 않습니다. 보관 기간 이하로 낮추세요.",
+      "activePathLabel": "볼트 폴더",
+      "pathUnresolved": "이 기기에서 볼트 폴더를 확인할 수 없습니다.",
+      "defaultPathNote": "앱이 관리하는 기본 폴더입니다. 이 기기에 로컬로 저장되며 어떤 클라우드 동기화 폴더에도 속하지 않습니다.",
+      "pendingPathNote": "{{path}}가 설정되어 있지만 확인되지 않아 미러는 여전히 기본 폴더를 사용합니다. 아래에 다시 입력해 위험을 확인하고 승인하세요.",
+      "cloudActiveNotice": "이 폴더는 {{provider}} 안에 있습니다. 파일을 쓰는 모든 주기마다 유출 원장에 항목 1건이 기록됩니다.",
+      "pathInputLabel": "사용자 지정 볼트 폴더 (절대 경로)",
+      "pathInputPlaceholder": "/Users/you/Obsidian/MyVault/maekon",
+      "choosePath": "이 폴더 사용",
+      "useDefault": "기본 폴더로 되돌리기",
+      "warningTitle": "{{path}} 사용 전 확인",
+      "warningOverwrite": "해당 폴더에서 볼트 이름 규칙과 일치하는 파일은 병합 없이 덮어쓰거나 삭제됩니다. Maekon이 만들지 않은 파일은 건드리지 않습니다 — 자체 헤더 줄이 있는 파일만 다시 씁니다.",
+      "warningSyncDetected": "이 폴더는 {{provider}} 안에 있습니다. 클레임 텍스트가 해당 서비스를 통해 계속 기기 밖으로 나갑니다. Maekon은 모든 동기화 수단을 감지할 수 없으므로 사용자 지정 폴더는 사용자 책임입니다.",
+      "warningSyncUnknown": "이 폴더에서 클라우드 서비스를 인식하지 못했지만, Maekon은 모든 동기화 수단을 감지할 수 없습니다. 이 폴더를 포함하는 동기화 도구를 사용 중이라면 클레임 텍스트가 그 경로로 기기 밖으로 나갑니다. 사용자 지정 폴더는 사용자 책임입니다.",
+      "warningAcknowledge": "파일이 덮어써질 수 있고 클레임 텍스트가 기기 밖으로 나갈 수 있음을 이해합니다.",
+      "warningConfirm": "이 폴더 사용",
+      "warningCancel": "취소",
+      "pathSaved": "볼트 폴더를 변경했습니다.",
+      "pathCleared": "기본 볼트 폴더로 되돌렸습니다.",
+      "exportNow": "지금 내보내기",
+      "exportNowHint": "전체 미러 주기를 즉시 1회 실행합니다: 일자 파일 갱신, 클레임 파일 재작성, 기간을 벗어난 파일 제거.",
+      "exportDone": "미러링 완료. 일자 파일 {{days}}개 기록, 만료 파일 {{expired}}개 제거.",
+      "exportSkipped": "미러가 아무 동작도 하지 않았습니다({{reason}}). 기록되거나 삭제된 파일이 없습니다.",
+      "exportFailed": "미러를 실행할 수 없습니다.",
+      "conflictsNotice": "Maekon이 생성하지 않은 파일이라 {{count}}개를 건너뛰었습니다. 볼트가 그 이름을 쓰게 하려면 이름을 바꾸거나 옮기세요.",
+      "lastCycleLabel": "마지막 미러 실행",
+      "lastCycleNever": "미러가 아직 실행되지 않았습니다. 켜 두면 매일 다이제스트 뒤에 자동으로 실행됩니다.",
+      "lastCycleSummary": "{{time}} — 일자 파일 {{days}}개 기록, 만료 파일 {{expired}}개 삭제.",
+      "conflictsTitle": "{{count}}개 파일을 건너뛰고 그대로 두었습니다.",
+      "conflictsExplain": "이름은 볼트가 쓰는 형식과 같지만 Maekon이 만든 파일이 아니라, 덮어쓰지 않고 건너뛰었습니다. 변경도 삭제도 없었습니다. 미러가 그 이름을 쓰게 하려면 파일을 옮기거나 이름을 바꾸세요.",
+      "conflictsMore": "…그리고 {{count}}개 더.",
+      "provider": {
+        "icloud": "iCloud Drive",
+        "cloudStorage": "클라우드 스토리지 폴더",
+        "onedrive": "OneDrive",
+        "dropbox": "Dropbox",
+        "googleDrive": "Google Drive"
+      }
+    }
   },
   "privacy": {
     "claims": {
@@ -958,6 +1041,19 @@
         "success": "주장을 철회했습니다",
         "alreadyRetracted": "이미 철회된 주장입니다"
       }
+    },
+    "aiUsage": {
+      "title": "오늘의 AI 사용량",
+      "description": "설정된 AI 프로바이더가 오늘 처리한 토큰과 로컬 참조 테이블 기준 추정 비용입니다 — 네트워크 조회 없음.",
+      "inputTokens": "입력 토큰",
+      "outputTokens": "출력 토큰",
+      "totalTokens": "합계",
+      "estimatedSpend": "추정 지출",
+      "estimateSuffix": "추정",
+      "pricingUnknown": "이 모델의 로컬 가격 항목 없음",
+      "budgetUsed": "일일 토큰 예산 {{budget}} 중 {{pct}}% 사용",
+      "noBudget": "일일 토큰 예산 미설정",
+      "todayOnlyNote": "오늘 기준이며, 앱 재시작 또는 날짜 변경 시 초기화됩니다."
     },
     "egress": {
       "title": "이그레스 투명성",
@@ -1092,6 +1188,7 @@
         "collectedTitle": "켜져 있을 때 수집되는 항목:",
         "collected": {
           "screenFrames": "화면 프레임",
+          "ocrText": "추출된 화면 텍스트(OCR)와 텍스트 영역 좌표 — 보존 기간 동안 캡처 기록과 함께 저장됩니다",
           "windowTitles": "창 제목",
           "appUsage": "앱 사용 내역",
           "inputActivity": "입력 활동 수준",
@@ -1152,7 +1249,8 @@
           "extractedText": "로컬 캡처 및 장면 맥락에 사용되는 추출 텍스트와 텍스트 영역 좌표",
           "retention": "설정된 보존 기간에 따라 로컬 캡처 기록과 함께 저장되는 OCR 텍스트"
         },
-        "disclosure": "이 동의만으로 원본 스크린샷의 기기 외부 전송을 허용하지 않습니다. 외부 OCR에는 제공자 설정도 필요하며, 마스킹 없는 원본 스크린샷 전송에는 아래의 별도 최고 민감도 동의가 필요합니다. 이 항목을 끄면 캡처, 장면 분석, 제공자 경로의 새 OCR 텍스트가 차단됩니다. 이미 보존된 기록은 동의 철회 또는 데이터 삭제로 지우세요."
+        "disclosure": "이 동의만으로 원본 스크린샷의 기기 외부 전송을 허용하지 않습니다. 외부 OCR에는 제공자 설정도 필요하며, 마스킹 없는 원본 스크린샷 전송에는 아래의 별도 최고 민감도 동의가 필요합니다. 이 항목을 끄면 캡처, 장면 분석, 제공자 경로의 새 OCR 텍스트가 차단됩니다. 이미 보존된 기록은 동의 철회 또는 데이터 삭제로 지우세요.",
+        "linuxUnsupported": "Linux에서는 아직 OCR을 사용할 수 없습니다 — 플랫폼용 엔진이 제공되면 이 동의가 적용됩니다."
       },
       "unredactedExternalOcr": {
         "label": "마스킹 없는 외부 OCR",
@@ -1374,7 +1472,8 @@
     "totalFrames": "총 프레임",
     "totalIdle": "총 유휴",
     "apps": "앱 수",
-    "scrubber": "Timeline scrubber"
+    "scrubber": "Timeline scrubber",
+    "showMore": "더 보기"
   },
   "backup": {
     "title": "백업 / 복원",
@@ -1400,6 +1499,7 @@
     "framesRestored": "프레임 {{count}}개가 복원되었습니다",
     "errors": "오류 목록",
     "moreErrors": "외 {{count}}개 오류",
+    "notes": "참고",
     "fullExportTitle": "내 모든 데이터 내보내기 (GDPR 제20조)",
     "fullExportDescription": "이 기기가 보유한 모든 개인 데이터 테이블(활동 세그먼트 및 요약, 제안, 코칭, 습관 스트릭, 메모리 그래프, 프레임 주석, AI 대화, 집중 지표, 작업 세션, 다이제스트)을 기계 판독 가능한 JSON 아카이브로 다운로드합니다. 자유 텍스트 내용은 마스킹됩니다.",
     "exporting": "내보내기 준비 중…",
@@ -2091,6 +2191,12 @@
     "searchShortcut": "검색 ({{key}}+K)"
   },
   "errors": {
+    "ipc": {
+      "handoffLaunchFailed": "링크를 열지 못했습니다. 시스템이 요청을 완료하지 못했습니다. 이 항목을 처리할 앱이 지정돼 있는지 확인한 뒤 다시 시도하세요.",
+      "handoffNoHandler": "이 항목을 열 수 있는 앱이 이 컴퓨터에 없습니다. 메일 링크라면 메일 앱을 먼저 설치하거나 설정하세요.",
+      "handoffRejected": "이 링크는 열지 않았습니다. Maekon이 시스템에 넘길 수 있는 주소가 아닙니다.",
+      "storageUnavailable": "로컬 저장소를 사용할 수 없어 작업이 완료되었는지 확인하지 못했습니다. Maekon을 다시 시작한 뒤 시도하세요."
+    },
     "boundaryTitle": "오류가 발생했습니다",
     "boundaryRetry": "다시 시도",
     "serverOffline": "서버가 오프라인 상태입니다",
@@ -2363,7 +2469,11 @@
       "egressNote": "클라우드 음성-텍스트 변환은 설정에서 provider를 선택하고 자격 증명을 구성할 때까지 꺼진 상태입니다."
     },
     "stepIndicatorLabel": "단계 표시기",
-    "step4RecoveryCardHint": "작업을 하는 동안 Maekon 이 도울 만한 순간을 살핍니다. 화면에 있던 내용을 근거로 한 다음 단계 제안, 즉 첫 recovery card 는 보통 15분 안에 화면 상단의 작은 트래킹 패널에 나타납니다."
+    "step4RecoveryCardHint": "작업을 하는 동안 Maekon 이 도울 만한 순간을 살핍니다. 화면에 있던 내용을 근거로 한 다음 단계 제안, 즉 첫 recovery card 는 보통 15분 안에 화면 상단의 작은 트래킹 패널에 나타납니다.",
+    "step4SuggestionsShortcut": "복구 카드는 제안 패널에 표시됩니다 — {{shortcut}}로 언제든 열 수 있습니다.",
+    "readyCollectionOffTitle": "수집이 꺼진 채로 시작합니다",
+    "readyCollectionOffDesc": "동의를 건너뛰어 Maekon 이 아무것도 수집하지 않습니다. 타임라인과 제안은 비어 있게 됩니다. 지금 켜거나, 나중에 설정 > 개인정보에서 켤 수 있습니다.",
+    "readyGrantNow": "지금 수집 동의하기"
   },
   "chat": {
     "title": "AI 세션",
@@ -2725,7 +2835,9 @@
     "steps": "{{count}}단계",
     "builtin": "내장",
     "templateCount": "{{count}}개 항목",
-    "variableLabel": "템플릿 변수: {{name}}"
+    "variableLabel": "템플릿 변수: {{name}}",
+    "run": "실행",
+    "runNamed": "{{name}} 실행"
   },
   "trackingSchedule": {
     "title": "추적 일정",
@@ -2859,6 +2971,10 @@
     "textIntelligenceDescription": "활동에서 텍스트 패턴을 추출하고 분류합니다",
     "autoTuner": "자동 튜너",
     "autoTunerDescription": "EMA 기반 드리프트 감지 및 행동 패턴의 자동 재클러스터링",
+    "tieredMemory": "계층 메모리 파이프라인",
+    "tieredMemoryDescription": "활동으로부터 일별/주별 다이제스트, 재캘리브레이션 세그먼트, 목표 진행률, 습관 스트릭을 만듭니다. 로컬에서 실행됩니다.",
+    "tieredMemoryNeedsConsent": "이 파이프라인에는 기본값이 꺼짐인 ‘패턴 학습·코칭’ 동의도 필요합니다. 개인정보 → 데이터 관리에서 부여하기 전까지 이 스위치는 효과가 없습니다.",
+    "tieredMemoryNeedsRestart": "다음 실행부터 적용됩니다. 파이프라인은 시작 시 구성되므로 일별/주별 요약·세그먼트·목표·습관 스트릭은 이 설정을 켠 뒤 처음 실행할 때부터 채워집니다.",
     "serverBaseUrl": "서버 기본 URL",
     "requestTimeoutMs": "요청 시간 제한(ms)",
     "grpcEnabled": "gRPC 사용",
@@ -3144,6 +3260,8 @@
       "noCandidateDetail": "화면을 검토했지만 제안할 동작이 없습니다.",
       "providerOfflineTitle": "어시스턴트 오프라인",
       "providerOfflineDetail": "제안 제공자를 지금 사용할 수 없습니다.",
+      "noSessionTitle": "어시스턴트 세션 없음",
+      "noSessionDetail": "채팅을 열어 세션을 시작하세요. AI provider 를 아직 설정하지 않았다면 설정에서 먼저 등록해야 합니다.",
       "noContextTitle": "화면 정보 부족",
       "noContextDetail": "다음 단계를 제안할 만큼의 현재 맥락이 없었습니다."
     }
@@ -3160,5 +3278,77 @@
     "rechecking": "확인 중…",
     "revokedToast": "화면 기록 권한이 철회되어 캡처가 중지되었습니다.",
     "restoredToast": "화면 기록 권한이 복원되어 캡처가 재개되었습니다."
+  },
+  "login": {
+    "pageTitle": "ONESHIM 로그인",
+    "pageSubtitle": "이 기기를 조직의 ONESHIM 서버에 연결합니다.",
+    "unavailableTitle": "이 빌드에는 연결 모드가 없습니다",
+    "signedInTitle": "로그인되어 있습니다",
+    "continueWithoutSignIn": "로그인하지 않고 계속하기",
+    "localFirstNote": "Maekon은 계정 없이도 모든 기능이 동작합니다. 로그인은 연결 모드 기능만 추가합니다.",
+    "continueToHome": "내 맥락으로 이동"
+  },
+  "contextHome": {
+    "title": "내 맥락",
+    "actorLine": "{{actor}} · {{org}}",
+    "refresh": "새로고침",
+    "retry": "다시 시도",
+    "loading": "맥락을 불러오는 중…",
+    "moreRows": "외 {{count}}건",
+    "moreParticipants": "+{{count}}",
+    "sections": {
+      "mail": "메일",
+      "messenger": "메시지",
+      "projects": "프로젝트"
+    },
+    "empty": {
+      "threads": "최근 대화가 없습니다.",
+      "projects": "참여 중인 프로젝트가 없습니다."
+    },
+    "section": {
+      "unavailableFlag": "불러오지 못함",
+      "timeout": "이 섹션은 응답이 늦어 건너뛰었습니다.",
+      "backendUnavailable": "이 섹션을 불러오지 못했습니다. 나머지 맥락은 최신입니다."
+    },
+    "stale": {
+      "badge": "마지막으로 확인된 데이터"
+    },
+    "unavailable": {
+      "body": "지금은 맥락을 불러올 수 없습니다. 대개 일시적인 문제입니다."
+    },
+    "denied": {
+      "body": "이 계정에는 맥락 홈을 볼 권한이 없습니다. 관리자에게 권한을 요청하세요."
+    },
+    "reauth": {
+      "body": "세션이 만료되었습니다. 다시 로그인하면 맥락을 볼 수 있습니다."
+    },
+    "bridgeAbsent": {
+      "body": "맥락 홈은 데스크톱 앱에서만 사용할 수 있고 브라우저 대시보드에서는 제공되지 않습니다."
+    },
+    "malformed": {
+      "body": "이 앱 버전이 읽을 수 없는 맥락 응답을 서버가 보냈습니다. 앱을 업데이트하면 대개 해결됩니다."
+    },
+    "participant": {
+      "external": "{{name}} (외부)"
+    },
+    "project": {
+      "role": "역할: {{role}}",
+      "counterparty": "상대사: {{name}}"
+    },
+    "announce": {
+      "complete": "맥락을 불러왔습니다.",
+      "partial": "맥락을 불러왔지만 일부 섹션은 불러오지 못했습니다.",
+      "empty": "맥락을 불러왔고 표시할 항목이 없습니다.",
+      "unavailable": "맥락을 불러올 수 없습니다.",
+      "denied": "이 맥락을 볼 권한이 없습니다.",
+      "reauth": "세션이 만료되어 로그인 화면으로 돌아갑니다.",
+      "bridgeAbsent": "맥락 홈에는 데스크톱 앱이 필요합니다.",
+      "malformed": "맥락 응답을 읽지 못했습니다.",
+      "refreshing": "맥락을 새로고침하는 중입니다."
+    },
+    "syntheticBadge": {
+      "label": "데모 데이터",
+      "description": "이 세션은 실제 기록이 아니라 시연용 합성 데이터를 보여주고 있습니다."
+    }
   }
 }

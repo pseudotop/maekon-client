@@ -342,6 +342,11 @@ pub struct PersonalDataTableExport {
     pub name: String,
     /// Every row as a JSON object keyed by column name.
     pub rows: Vec<serde_json::Value>,
+    /// #9639: true when a per-table row cap cut the dump short (currently
+    /// only `gui_interactions`, newest-first LIMIT). An Art.20 archive must
+    /// not silently present a truncated table as complete.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// Backup export/import operations (tags, frame-tags, events, frames, metrics).
@@ -379,19 +384,49 @@ pub trait BackupStorage: Send + Sync {
         &self,
         from: &str,
     ) -> Result<Vec<HourlyMetricsRecord>, CoreError>;
+    /// Restore one archived tag and return the id it actually occupies, or
+    /// `None` when nothing was written.
+    ///
+    /// #9700: restore merges into the live table, so the archived id may already
+    /// belong to a different tag (and the archived name may already exist under
+    /// a different id). The caller MUST remap `frame_tags` through this return
+    /// value — writing the archived id blind produces mis-attached or dangling
+    /// relations, silently — the FK does not constrain which frame the caller
+    /// names (#9735: the PRAGMA is ON, but that is not what protects this).
+    ///
+    /// `None` means the write was skipped (the #4928 erase barrier). It is NOT
+    /// an id, and the caller must not invent one: remapping relations onto a
+    /// row that was never written is the exact failure this contract exists to
+    /// prevent.
+    ///
+    /// NOTE this arbitrates the TAG axis only. `frame_tags.frame_id` has the
+    /// same collision hazard and is not yet arbitrated — see #9708.
     async fn upsert_backup_tag(
         &self,
         id: i64,
         name: &str,
         color: &str,
         created_at: &str,
-    ) -> Result<(), CoreError>;
+    ) -> Result<Option<i64>, CoreError>;
+    /// Insert one archived frame↔tag relation; `true` when it is present
+    /// afterwards, `false` when the frame is not on this device.
+    ///
+    /// #9714: the existence guard lives INSIDE the statement, so the check and
+    /// the write are one atomic operation. Checking separately first meant two
+    /// lock acquisitions with an `.await` between them, and a concurrent frame
+    /// delete in that window made the insert fail outright
+    /// (`FOREIGN KEY constraint failed`) rather than return the `false` this
+    /// contract promises. (#9735: this doc previously blamed
+    /// `PRAGMA foreign_keys` being OFF. It is ON, and `frame_tags` does declare
+    /// the reference — the race produced an error, not a dangling row.)
     async fn upsert_backup_frame_tag(
         &self,
         frame_id: i64,
         tag_id: i64,
         created_at: &str,
-    ) -> Result<(), CoreError>;
+    ) -> Result<bool, CoreError>;
+    /// Insert one archived event; `true` when it is present afterwards,
+    /// `false` only when the erase barrier skipped the write (#9722).
     async fn upsert_backup_event(
         &self,
         event_id: &str,
@@ -399,7 +434,23 @@ pub trait BackupStorage: Send + Sync {
         timestamp: &str,
         app_name: Option<&str>,
         window_title: Option<&str>,
-    ) -> Result<(), CoreError>;
+    ) -> Result<bool, CoreError>;
+    /// Restore one archived frame and return the id it actually occupies, or
+    /// `None` when nothing was written (the erase barrier).
+    ///
+    /// #9708: `frames.id` is AUTOINCREMENT, so on a device that has been
+    /// capturing, essentially every archived id is already taken. The caller
+    /// MUST remap `frame_tags.frame_id` through this value — writing the
+    /// archived id blind attaches the relation to an unrelated local screenshot.
+    ///
+    /// Frames have no natural identity key (unlike `tags.name`), so a collision
+    /// never means "the same frame": the archived row is relocated to a fresh
+    /// id rather than merged. That is safe because restored frames are
+    /// metadata-only (`has_image = 0`, `file_path = NULL`), so no image file is
+    /// keyed to the id.
+    // NOTE: keep this attribute directly above the `async fn` and BELOW the doc
+    // comment — #9714 inserted a method between the two and silently moved the
+    // allow onto a 2-arg method, turning the CI clippy gate red.
     #[allow(clippy::too_many_arguments)]
     async fn upsert_backup_frame(
         &self,
@@ -412,7 +463,7 @@ pub trait BackupStorage: Send + Sync {
         width: i32,
         height: i32,
         ocr_text: Option<&str>,
-    ) -> Result<(), CoreError>;
+    ) -> Result<Option<i64>, CoreError>;
 }
 
 // ---------------------------------------------------------------------------

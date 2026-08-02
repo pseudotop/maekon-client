@@ -17,9 +17,9 @@ pub(super) struct SyncResult {
     pub sync_engine: Option<Arc<SyncEngine>>,
 }
 
-use maekon_core::config::{
-    MIN_SYNC_PASSPHRASE_LEN, SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT, SYNC_PASSPHRASE_KEYCHAIN_SERVICE,
-};
+use maekon_core::bounded_op::{run_keychain_bounded, DEFAULT_KEYCHAIN_OP_TIMEOUT};
+use maekon_core::config::{MIN_SYNC_PASSPHRASE_LEN, SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT};
+use maekon_core::config_manager::keychain_service_name;
 
 /// Whether a sync passphrase satisfies the minimum-length policy.
 ///
@@ -33,7 +33,8 @@ fn sync_passphrase_meets_policy(passphrase: &str) -> bool {
 
 /// Resolve the sync passphrase, preferring the `MAEKON_SYNC_PASSPHRASE`
 /// environment variable (headless / power-user override) and falling back to
-/// the OS keychain entry `maekon/sync_passphrase` (#8056 P2-2).
+/// the OS keychain entry `<flavored service>/sync_passphrase` (#8056 P2-2,
+/// service name per `keychain_service_name`, #9588).
 ///
 /// Without the keychain fallback, a GUI app launched from Finder / the Start
 /// menu — which does not inherit a shell's exported env — could never activate
@@ -48,11 +49,14 @@ fn resolve_sync_passphrase() -> String {
     if !from_env.is_empty() {
         return from_env;
     }
-    keyring::Entry::new(
-        SYNC_PASSPHRASE_KEYCHAIN_SERVICE,
-        SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT,
-    )
-    .and_then(|entry| entry.get_password())
+    // Bounded read (#9588): this runs during boot, so a pending macOS ACL
+    // prompt must degrade into "no passphrase" (sync stays off) instead of
+    // hanging the launch. Service name is the flavored app identity.
+    run_keychain_bounded("sync-passphrase-read", DEFAULT_KEYCHAIN_OP_TIMEOUT, || {
+        keyring::Entry::new(&keychain_service_name(), SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT)
+            .and_then(|entry| entry.get_password())
+            .unwrap_or_default()
+    })
     .unwrap_or_default()
 }
 
@@ -74,7 +78,8 @@ pub(super) async fn build_sync_engine(
     if passphrase.is_empty() {
         warn!(
             "sync enabled but no passphrase available (checked MAEKON_SYNC_PASSPHRASE and the \
-             OS keychain entry maekon/sync_passphrase); sync disabled — set one in Settings → Sync"
+             OS keychain entry {}/sync_passphrase); sync disabled — set one in Settings → Sync",
+            keychain_service_name()
         );
         return SyncResult { sync_engine: None };
     }
@@ -144,12 +149,23 @@ pub(super) async fn build_sync_engine(
         #[cfg(feature = "analysis")]
         SyncTransportKind::Remote => match &config.sync.remote_endpoint {
             Some(endpoint) => {
-                // Retrieve auth credential from OS keychain
-                let credential = keyring::Entry::new("maekon", "sync_remote_token")
-                    .and_then(|entry| entry.get_password())
-                    .unwrap_or_default();
+                // Retrieve auth credential from OS keychain — bounded (#9588),
+                // service name follows the flavored app identity.
+                let credential = run_keychain_bounded(
+                    "sync-remote-token-read",
+                    DEFAULT_KEYCHAIN_OP_TIMEOUT,
+                    || {
+                        keyring::Entry::new(&keychain_service_name(), "sync_remote_token")
+                            .and_then(|entry| entry.get_password())
+                            .unwrap_or_default()
+                    },
+                )
+                .unwrap_or_default();
                 if credential.is_empty() {
-                    warn!("sync transport=remote but no credential in keychain (key: maekon/sync_remote_token)");
+                    warn!(
+                        "sync transport=remote but no credential in keychain (key: {}/sync_remote_token)",
+                        keychain_service_name()
+                    );
                 }
                 maekon_network::sync::RemoteSyncTransport::new(
                     endpoint.clone(),

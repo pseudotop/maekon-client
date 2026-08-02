@@ -16,10 +16,14 @@
 //!   body column and no context column, so a future writer cannot leak content
 //!   into audit even by accident (#8588 acceptance criterion 7).
 //!
-//! FK `REFERENCES` clauses are documentation only — this workspace never enables
-//! the `foreign_keys` PRAGMA (ADR-028 Amendment B3), so cleanup ordering is
-//! enforced by the port layer with explicit child-first `DELETE`s. The
-//! `UNIQUE`/`CHECK` constraints below ARE engine-enforced.
+//! #9735 CORRECTED: this module used to say the FK `REFERENCES` clauses were
+//! documentation only because "this workspace never enables the `foreign_keys`
+//! PRAGMA (ADR-028 Amendment B3)". Both halves were wrong — the PRAGMA is ON
+//! (compile-time default, now explicit in `configure_connection`) and B3 has
+//! been amended. The declared references are enforced. The port layer keeps its
+//! explicit child-first `DELETE`s, redundant with the engine rather than a
+//! substitute. The `UNIQUE`/`CHECK` constraints below are engine-enforced
+//! either way.
 
 use rusqlite::Connection;
 
@@ -85,13 +89,31 @@ mod tests {
     use super::*;
 
     fn base_v51(conn: &Connection) {
-        // Match production: the shared connection runs with foreign_keys OFF
-        // (ADR-028 Amendment B3), so these tests assert the engine-enforced
-        // UNIQUE/CHECK constraints rather than FK behaviour.
+        // #9735: match production, which runs with foreign_keys ON. This used
+        // to force it OFF citing ADR-028 B3; that amendment has been corrected.
         conn.execute_batch(
-            "PRAGMA foreign_keys=OFF;
+            "PRAGMA foreign_keys=ON;
              CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
              INSERT INTO schema_version VALUES (51);",
+        )
+        .unwrap();
+    }
+
+    /// Insert the `extension_installs` parent row the catalog references.
+    ///
+    /// #9735: the FK is enforced, so a catalog insert cannot reach its own
+    /// UNIQUE constraint without this. These tests used to skip it and pass
+    /// only because the helper forced the PRAGMA off — the constraint each one
+    /// names was never actually exercised in the direction production runs.
+    fn seed_install(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS extension_installs (
+                install_id      TEXT PRIMARY KEY,
+                extension_id    TEXT NOT NULL,
+                version         TEXT NOT NULL
+             );
+             INSERT OR IGNORE INTO extension_installs (install_id, extension_id, version)
+             VALUES ('inst_1', 'com.maekon.review', '1.0.0');",
         )
         .unwrap();
     }
@@ -153,6 +175,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         base_v51(&conn);
         migrate_v52(&conn).unwrap();
+        seed_install(&conn);
+        insert_entry(&conn, "sk.review", "review.pack").unwrap();
         insert_activation(&conn, 1).unwrap();
         let err = insert_activation(&conn, 2).unwrap_err();
         assert!(
@@ -166,6 +190,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         base_v51(&conn);
         migrate_v52(&conn).unwrap();
+        seed_install(&conn);
         insert_entry(&conn, "sk.a", "review.pack").unwrap();
         let err = insert_entry(&conn, "sk.b", "review.pack").unwrap_err();
         assert!(err.to_string().contains("UNIQUE constraint failed"));

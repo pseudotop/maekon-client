@@ -71,7 +71,7 @@ pub(super) async fn seed_fixture(
     max_storage_mb: u64,
     pin: &str,
 ) -> Result<SeedReport> {
-    let db_path = data_dir.join("maekon.db");
+    let db_path = data_dir.join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME);
     let storage = SqliteStorage::open(&db_path, retention_days, Some(&encryption_key))
         .context("open isolated encrypted QC database")?;
 

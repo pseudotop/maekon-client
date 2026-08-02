@@ -76,6 +76,7 @@
     }
   },
   "nav": {
+    "signIn": "Iniciar sesión",
     "support": "Soporte",
     "dashboard": "Dashboard",
     "timeline": "Línea de tiempo",
@@ -100,7 +101,8 @@
     "groupInsights": "Perspectivas",
     "groupManage": "Gestión",
     "groupSystem": "Sistema",
-    "tasks": "Tareas"
+    "tasks": "Tareas",
+    "contextHome": "Contexto"
   },
   "dashboard": {
     "metricsError": "Error al cargar las métricas del sistema",
@@ -296,7 +298,13 @@
     "clearFilters": "Clear All",
     "filterSummary": "Showing {{shown}} of {{total}} frames",
     "tagSuggestions": "Tag suggestions",
-    "noActivity": "No hay actividad registrada para este día"
+    "noActivity": "No hay actividad registrada para este día",
+    "segments": {
+      "title": "Qué había en pantalla",
+      "axis": "Segmentos de actividad",
+      "empty": "No hay segmentos de actividad en este rango. Los segmentos se escriben en un punto de control periódico, por lo que un rango muy reciente puede estar vacío.",
+      "filtered": "Mostrando fotogramas del segmento seleccionado. Haz clic de nuevo para ver todo el rango."
+    }
   },
   "settings": {
     "storageScopeNote": "Totales acumulados de todos los datos almacenados (histórico).",
@@ -529,6 +537,16 @@
     "exportFramesLabel": "Metadatos de fotogramas",
     "exportFramesDesc": "Información de capturas de pantalla (sin imágenes)",
     "retentionTitle": "Retención de datos",
+    "tagManagementTitle": "Gestión de etiquetas",
+    "tagManagementDesc": "Cambia el nombre o elimina las etiquetas que creaste en la línea de tiempo. Al eliminar una etiqueta se quita de todos los fotogramas.",
+    "tagManagementEmpty": "Aún no hay etiquetas",
+    "tagManagementEmptyDesc": "Las etiquetas que añadas a los fotogramas en la línea de tiempo aparecerán aquí.",
+    "tagRename": "Renombrar",
+    "tagRenameTitle": "Renombrar etiqueta",
+    "tagNameLabel": "Nombre de la etiqueta",
+    "tagNameDuplicate": "Otra etiqueta ya usa este nombre.",
+    "tagDeleteTitle": "Eliminar etiqueta",
+    "tagDeleteConfirm": "«{{name}}» se quitará de todos los fotogramas a los que esté asociada. Esta acción no se puede deshacer.",
     "retentionDays": "Período de retención (días)",
     "retentionAutoDelete": "Los datos antiguos se eliminarán automáticamente",
     "maxStorageMb": "Almacenamiento máximo (MB)",
@@ -845,7 +863,25 @@
       "confirmAction": "Sign out everywhere",
       "cancel": "Cancel",
       "success": "Signed out of all devices.",
-      "error": "Sign-out failed: {{error}}"
+      "error": "Sign-out failed: {{error}}",
+      "login": {
+        "title": "Iniciar sesión",
+        "description": "Inicia sesión en el servidor ONESHIM configurado (Advanced → Network & Server).",
+        "identifierLabel": "Identificador",
+        "passwordLabel": "Contraseña",
+        "organizationIdLabel": "ID de organización",
+        "submit": "Iniciar sesión",
+        "success": "Sesión iniciada.",
+        "error": "Error al iniciar sesión: {{error}}",
+        "notAvailable": "El modo conectado no está incluido en esta compilación.",
+        "signedInAs": "Sesión iniciada como {{identifier}} @ {{organizationId}}",
+        "errors": {
+          "invalidArguments": "Introduce tu identificador, contraseña e ID de organización.",
+          "tokenManagerUnavailable": "No se pudo abrir el almacén de sesión. Reinicia Maekon e inténtalo de nuevo.",
+          "invalidCredentials": "Se rechazó el inicio de sesión. Comprueba tu identificador, contraseña e ID de organización e inténtalo de nuevo.",
+          "rejected": "Error al iniciar sesión. No se pudo contactar con el servidor o rechazó la solicitud: inténtalo de nuevo en un momento."
+        }
+      }
     },
     "audio": {
       "title": "Audio & Speech-to-Text",
@@ -883,7 +919,8 @@
       "endpoint_hint": "OpenAI-compatible transcription endpoint.",
       "cloud_timeout": "Timeout (sec)",
       "notCompiledTitle": "No disponible en esta compilación",
-      "notCompiledDescription": "Esta compilación se creó sin soporte de audio/voz a texto. Activar esta opción y descargar un modelo no funcionará."
+      "notCompiledDescription": "Esta compilación se creó sin soporte de audio/voz a texto. Activar esta opción y descargar un modelo no funcionará.",
+      "cloudUnavailable": "La transcripción en la nube no está incluida en esta compilación — el reconocimiento usará el motor Whisper local. Selecciona Local para quitar este aviso."
     },
     "advanced": {
       "aiSession": "AI Session",
@@ -901,7 +938,53 @@
     "permissionLinuxSessionLabel": "Sesión Gráfica",
     "permissionLinuxSessionDescWayland": "Sesión Wayland detectada. La detección de ventana activa y el panel de seguimiento no están disponibles en Wayland; la captura continúa con contexto reducido. Inicia sesión en X11 para el conjunto completo de funciones.",
     "permissionLinuxSessionDescX11": "Sesión X11 detectada. La detección de ventana activa y el panel de seguimiento son compatibles.",
-    "permissionLinuxSessionDescUnknown": "No se pudo determinar el tipo de sesión gráfica. La detección de ventana activa puede ser poco fiable."
+    "permissionLinuxSessionDescUnknown": "No se pudo determinar el tipo de sesión gráfica. La detección de ventana activa puede ser poco fiable.",
+    "memoryVault": {
+      "sectionTitle": "Bóveda de memoria (Markdown local)",
+      "sectionDescription": "Replica tus resúmenes diarios y tus afirmaciones actuales en archivos Markdown que puedes abrir en Obsidian o en cualquier editor.",
+      "oneWayNotice": "Es una réplica unidireccional. Maekon escribe estos archivos y nunca vuelve a leer su contenido, así que cualquier edición que hagas en un archivo generado se sobrescribe al regenerarse. Copia el archivo fuera de la bóveda si quieres conservar tu versión.",
+      "enableLabel": "Replicar en archivos Markdown locales",
+      "enableHint": "Concede el permiso específico de la bóveda de memoria y empieza a escribir archivos tras cada resumen diario. Desactivado por defecto.",
+      "consentPending": "La réplica está activada en los ajustes, pero el permiso de la bóveda de memoria no es válido ahora mismo, así que no se está escribiendo ningún archivo. Desactívala y vuelve a activarla para concederlo de nuevo.",
+      "windowOutOfBound": "La ventana de réplica ({{days}} días) está fuera del rango permitido, así que cada ciclo no hace nada: no se escribe ni se borra ningún archivo. Redúcela para que no supere tu periodo de retención.",
+      "activePathLabel": "Carpeta de la bóveda",
+      "pathUnresolved": "No se pudo determinar una carpeta de bóveda en este dispositivo.",
+      "defaultPathNote": "Es la carpeta predeterminada gestionada por la aplicación. Es local a este dispositivo y no está dentro de ninguna carpeta de sincronización en la nube.",
+      "pendingPathNote": "{{path}} está configurada pero no se ha confirmado, así que la réplica sigue usando la carpeta predeterminada. Vuelve a introducirla abajo para revisar los riesgos y confirmar.",
+      "cloudActiveNotice": "Esta carpeta está dentro de {{provider}}. Cada ciclo que escriba un archivo registra una entrada en el registro de salidas.",
+      "pathInputLabel": "Carpeta de bóveda personalizada (ruta absoluta)",
+      "pathInputPlaceholder": "/Users/tu-usuario/Obsidian/MiBoveda/maekon",
+      "choosePath": "Usar esta carpeta",
+      "useDefault": "Volver a la carpeta predeterminada",
+      "warningTitle": "Antes de usar {{path}}",
+      "warningOverwrite": "Los archivos de esa carpeta que coincidan con el patrón de nombres de la bóveda se sobrescribirán o se borrarán sin fusionarse. Los archivos que Maekon no haya generado quedan intactos: solo reescribe archivos que llevan su propia línea de encabezado.",
+      "warningSyncDetected": "Esta carpeta está dentro de {{provider}}. El texto de tus afirmaciones saldrá de este dispositivo de forma continua a través de ese servicio. Maekon no puede detectar todos los mecanismos de sincronización, así que una carpeta personalizada es tu responsabilidad.",
+      "warningSyncUnknown": "Maekon no reconoció ningún servicio en la nube para esta carpeta, pero no puede detectar todos los mecanismos de sincronización. Si alguna herramienta de sincronización que uses cubre esta carpeta, el texto de tus afirmaciones saldrá de este dispositivo por ahí. Una carpeta personalizada es tu responsabilidad.",
+      "warningAcknowledge": "Entiendo que los archivos pueden sobrescribirse y que el texto de mis afirmaciones puede salir de este dispositivo.",
+      "warningConfirm": "Usar esta carpeta",
+      "warningCancel": "Cancelar",
+      "pathSaved": "Carpeta de la bóveda actualizada.",
+      "pathCleared": "Se ha vuelto a la carpeta predeterminada de la bóveda.",
+      "exportNow": "Exportar ahora",
+      "exportNowHint": "Ejecuta un ciclo de réplica completo de inmediato: actualiza los archivos por día, reescribe el archivo de afirmaciones y elimina los archivos fuera de la ventana.",
+      "exportDone": "Réplica completada. {{days}} archivo(s) de día escritos, {{expired}} archivo(s) caducados eliminados.",
+      "exportSkipped": "La réplica no hizo nada ({{reason}}). No se escribió ni se borró ningún archivo.",
+      "exportFailed": "No se pudo ejecutar la réplica.",
+      "conflictsNotice": "Se omitieron {{count}} archivo(s) porque Maekon no los generó. Cámbiales el nombre o muévelos si quieres que la bóveda use esos nombres.",
+      "lastCycleLabel": "Última ejecución del espejo",
+      "lastCycleNever": "El espejo aún no se ha ejecutado. Con la opción activada, se ejecuta automáticamente tras cada resumen diario.",
+      "lastCycleSummary": "{{time}} — {{days}} archivo(s) de día escritos, {{expired}} archivo(s) caducados eliminados.",
+      "conflictsTitle": "Se omitieron {{count}} archivo(s) y se dejaron tal cual.",
+      "conflictsExplain": "Esos nombres coinciden con los que usa la bóveda, pero Maekon no generó los archivos, así que los omitió en lugar de sobrescribirlos. No se cambió ni se borró nada. Mueve o cambia el nombre de un archivo si quieres que el espejo use ese nombre.",
+      "conflictsMore": "…y {{count}} más.",
+      "provider": {
+        "icloud": "iCloud Drive",
+        "cloudStorage": "una carpeta de almacenamiento en la nube",
+        "onedrive": "OneDrive",
+        "dropbox": "Dropbox",
+        "googleDrive": "Google Drive"
+      }
+    }
   },
   "privacy": {
     "claims": {
@@ -958,6 +1041,19 @@
         "success": "Afirmación retractada",
         "alreadyRetracted": "La afirmación ya estaba retractada"
       }
+    },
+    "aiUsage": {
+      "title": "Uso de IA hoy",
+      "description": "Tokens procesados hoy por tu proveedor de IA, valorados con una tabla de referencia local — sin consultas de red.",
+      "inputTokens": "Tokens de entrada",
+      "outputTokens": "Tokens de salida",
+      "totalTokens": "Total",
+      "estimatedSpend": "Gasto estimado",
+      "estimateSuffix": "est.",
+      "pricingUnknown": "Sin precio local para este modelo",
+      "budgetUsed": "{{pct}}% del presupuesto diario de {{budget}} tokens usado",
+      "noBudget": "Sin presupuesto diario de tokens",
+      "todayOnlyNote": "Solo hoy; el contador se reinicia al reiniciar la app o cambiar el día."
     },
     "egress": {
       "title": "Transparencia de salida",
@@ -1092,6 +1188,7 @@
         "collectedTitle": "Cuando está activado, recopila:",
         "collected": {
           "screenFrames": "Fotogramas de pantalla",
+          "ocrText": "Texto de pantalla extraído (OCR) y coordenadas de regiones de texto, almacenados con los registros de captura durante tu período de retención",
           "windowTitles": "Títulos de ventana",
           "appUsage": "Uso de aplicaciones",
           "inputActivity": "Nivel de actividad de entrada",
@@ -1152,7 +1249,8 @@
           "extractedText": "Texto extraído y coordenadas de regiones de texto usados en el contexto local de captura y escena",
           "retention": "Texto OCR almacenado con los registros locales de captura durante el periodo de conservación configurado"
         },
-        "disclosure": "Este consentimiento no permite por sí solo que las capturas de pantalla sin procesar salgan del dispositivo. El OCR externo también requiere configurar un proveedor; enviar una captura sin censura requiere el consentimiento independiente de máxima sensibilidad que aparece abajo. Desactivar esta opción bloquea nuevo texto OCR en las rutas de captura, análisis de escena y proveedor. Usa Retirar consentimiento o la eliminación de datos para borrar registros conservados anteriormente."
+        "disclosure": "Este consentimiento no permite por sí solo que las capturas de pantalla sin procesar salgan del dispositivo. El OCR externo también requiere configurar un proveedor; enviar una captura sin censura requiere el consentimiento independiente de máxima sensibilidad que aparece abajo. Desactivar esta opción bloquea nuevo texto OCR en las rutas de captura, análisis de escena y proveedor. Usa Retirar consentimiento o la eliminación de datos para borrar registros conservados anteriormente.",
+        "linuxUnsupported": "OCR aún no está disponible en Linux — este consentimiento se aplicará cuando haya un motor para tu plataforma."
       },
       "unredactedExternalOcr": {
         "label": "OCR externo sin censura",
@@ -1374,7 +1472,8 @@
     "totalFrames": "Total de fotogramas",
     "totalIdle": "Total inactivo",
     "apps": "Aplicaciones",
-    "scrubber": "Timeline scrubber"
+    "scrubber": "Timeline scrubber",
+    "showMore": "Mostrar más"
   },
   "backup": {
     "title": "Copia de seguridad / Restaurar",
@@ -1400,6 +1499,7 @@
     "framesRestored": "{{count}} fotogramas restaurados",
     "errors": "Errores",
     "moreErrors": "y {{count}} errores más",
+    "notes": "Notas",
     "fullExportTitle": "Exportar todos mis datos (GDPR Art. 20)",
     "fullExportDescription": "Descargue un archivo JSON legible por máquina con todas las tablas de datos personales que este dispositivo posee (segmentos de actividad y resúmenes, sugerencias, coaching, rachas de hábitos, el grafo de memoria, anotaciones de fotogramas, chats de IA, métricas de enfoque, sesiones de trabajo y resúmenes). El contenido de texto libre se enmascara.",
     "exporting": "Preparando la exportación…",
@@ -1951,6 +2051,12 @@
     "searchShortcut": "Buscar ({{key}}+K)"
   },
   "errors": {
+    "ipc": {
+      "handoffLaunchFailed": "Maekon no pudo abrir ese enlace. El sistema no completó la solicitud: comprueba que haya una aplicación asignada para abrirlo y vuelve a intentarlo.",
+      "handoffNoHandler": "Ninguna aplicación de este equipo está configurada para abrir eso. Si es un enlace de correo, instala o configura primero una aplicación de correo.",
+      "handoffRejected": "Maekon no abrió ese enlace. No es una dirección que esta aplicación pueda entregar al sistema.",
+      "storageUnavailable": "El almacenamiento local no está disponible, por lo que Maekon no pudo confirmar que la operación terminara. Reinicia Maekon e inténtalo de nuevo."
+    },
     "boundaryTitle": "Algo salió mal",
     "boundaryRetry": "Reintentar",
     "serverOffline": "El servidor está fuera de línea",
@@ -2363,7 +2469,11 @@
       "egressNote": "La voz a texto en la nube permanece desactivada hasta que elijas un proveedor y configures credenciales en Ajustes."
     },
     "stepIndicatorLabel": "Indicador de paso",
-    "step4RecoveryCardHint": "Mientras trabajas, Maekon busca un buen momento para ayudar. Tu primera recovery card — un próximo paso sugerido respaldado por lo que había en pantalla — suele aparecer en el panel de seguimiento en la parte superior de tu pantalla en unos 15 minutos."
+    "step4RecoveryCardHint": "Mientras trabajas, Maekon busca un buen momento para ayudar. Tu primera recovery card — un próximo paso sugerido respaldado por lo que había en pantalla — suele aparecer en el panel de seguimiento en la parte superior de tu pantalla en unos 15 minutos.",
+    "step4SuggestionsShortcut": "Las tarjetas de recuperación aparecen en el panel de sugerencias — ábrelo cuando quieras con {{shortcut}}.",
+    "readyCollectionOffTitle": "Comenzando con la recopilación desactivada",
+    "readyCollectionOffDesc": "Omitiste el consentimiento, así que Maekon no está recopilando nada. Tu cronología y sugerencias permanecerán vacías. Actívalo ahora o más tarde en Configuración > Privacidad.",
+    "readyGrantNow": "Activar la recopilación ahora"
   },
   "chat": {
     "title": "Sesiones de IA",
@@ -2725,7 +2835,9 @@
     "steps": "{{count}} pasos",
     "builtin": "Integrado",
     "templateCount": "{{count}} elementos",
-    "variableLabel": "Variable de plantilla: {{name}}"
+    "variableLabel": "Variable de plantilla: {{name}}",
+    "run": "Ejecutar",
+    "runNamed": "Ejecutar {{name}}"
   },
   "trackingSchedule": {
     "title": "Tracking Schedule",
@@ -2859,6 +2971,10 @@
     "textIntelligenceDescription": "Extrae y clasifica patrones de texto a partir de la actividad",
     "autoTuner": "Ajuste automático",
     "autoTunerDescription": "Detección de deriva basada en EMA y reagrupación automática de los regímenes de comportamiento",
+    "tieredMemory": "Canal de memoria por niveles",
+    "tieredMemoryDescription": "Genera resúmenes diarios/semanales, segmentos de recalibración, progreso de metas y rachas de hábitos a partir de tu actividad. Se ejecuta localmente.",
+    "tieredMemoryNeedsConsent": "Este canal también necesita el consentimiento «Aprendizaje de Patrones y Coaching», desactivado por defecto. Concédelo en Privacidad → Control de datos; hasta entonces este interruptor no tiene efecto.",
+    "tieredMemoryNeedsRestart": "Se aplica en el próximo arranque. El canal se configura al inicio, así que los resúmenes diarios/semanales, segmentos, metas y rachas se llenan desde el arranque posterior a activar esta opción.",
     "serverBaseUrl": "URL base del servidor",
     "requestTimeoutMs": "Tiempo de espera de solicitud (ms)",
     "grpcEnabled": "gRPC habilitado",
@@ -3144,6 +3260,8 @@
       "noCandidateDetail": "Se revisó tu pantalla, pero no se propuso ninguna acción.",
       "providerOfflineTitle": "Asistente sin conexión",
       "providerOfflineDetail": "El proveedor de sugerencias no está disponible ahora mismo.",
+      "noSessionTitle": "Sin sesión del asistente",
+      "noSessionDetail": "Abre el chat e inicia una sesión. Si aún no has configurado un proveedor de IA, hazlo primero en Ajustes.",
       "noContextTitle": "Poca información en pantalla",
       "noContextDetail": "No había suficiente contexto actual para sugerir un paso."
     }
@@ -3160,5 +3278,77 @@
     "rechecking": "Comprobando…",
     "revokedToast": "El permiso de grabación de pantalla fue revocado — captura detenida.",
     "restoredToast": "Permiso de grabación de pantalla restaurado — captura reanudada."
+  },
+  "login": {
+    "pageTitle": "Inicia sesión en ONESHIM",
+    "pageSubtitle": "Conecta este dispositivo al servidor ONESHIM de tu organización.",
+    "unavailableTitle": "El modo conectado no está en esta compilación",
+    "signedInTitle": "Sesión iniciada",
+    "continueWithoutSignIn": "Continuar sin iniciar sesión",
+    "localFirstNote": "Maekon funciona por completo sin una cuenta. Iniciar sesión solo añade funciones del modo conectado.",
+    "continueToHome": "Ir a tu contexto"
+  },
+  "contextHome": {
+    "title": "Tu contexto",
+    "actorLine": "{{actor}} · {{org}}",
+    "refresh": "Actualizar",
+    "retry": "Reintentar",
+    "loading": "Cargando tu contexto…",
+    "moreRows": "+{{count}} más",
+    "moreParticipants": "+{{count}}",
+    "sections": {
+      "mail": "Correo",
+      "messenger": "Mensajes",
+      "projects": "Proyectos"
+    },
+    "empty": {
+      "threads": "No hay conversaciones recientes.",
+      "projects": "Todavía no participas en ningún proyecto."
+    },
+    "section": {
+      "unavailableFlag": "No disponible",
+      "timeout": "Esta sección tardó demasiado en cargar y se omitió.",
+      "backendUnavailable": "No se pudo cargar esta sección. El resto de tu contexto está actualizado."
+    },
+    "stale": {
+      "badge": "Mostrando los últimos datos conocidos"
+    },
+    "unavailable": {
+      "body": "No se pudo cargar tu contexto en este momento. Suele ser temporal."
+    },
+    "denied": {
+      "body": "Esta cuenta no tiene permiso para ver su contexto. Solicita acceso a un administrador."
+    },
+    "reauth": {
+      "body": "Tu sesión ha caducado. Inicia sesión de nuevo para ver tu contexto."
+    },
+    "bridgeAbsent": {
+      "body": "El contexto solo está disponible en la aplicación de escritorio, no en el panel del navegador."
+    },
+    "malformed": {
+      "body": "El servidor envió una respuesta de contexto que esta versión no puede leer. Actualizar la aplicación suele resolverlo."
+    },
+    "participant": {
+      "external": "{{name}} (externo)"
+    },
+    "project": {
+      "role": "Rol: {{role}}",
+      "counterparty": "Contraparte: {{name}}"
+    },
+    "announce": {
+      "complete": "Tu contexto se cargó.",
+      "partial": "Tu contexto se cargó, pero algunas secciones no están disponibles.",
+      "empty": "Tu contexto se cargó y está vacío.",
+      "unavailable": "Tu contexto no está disponible.",
+      "denied": "No tienes permiso para ver este contexto.",
+      "reauth": "Tu sesión caducó. Volviendo al inicio de sesión.",
+      "bridgeAbsent": "El contexto necesita la aplicación de escritorio.",
+      "malformed": "No se pudo leer la respuesta de contexto.",
+      "refreshing": "Actualizando tu contexto."
+    },
+    "syntheticBadge": {
+      "label": "Datos de demostración",
+      "description": "Esta sesión muestra datos sintéticos de demostración, no registros reales."
+    }
   }
 }

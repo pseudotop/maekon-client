@@ -52,7 +52,22 @@ impl MasterKeyVault for crate::keychain::KeychainOps {
 
 /// Fixed keychain namespace for the at-rest master key (#8040). Distinct from
 /// the OAuth namespaces `keychain.rs`'s `KNOWN_OAUTH_KEYS` enumerates.
-const MASTER_KEY_KEYCHAIN_NAMESPACE: &str = "master_key";
+/// `pub(crate)`: `keychain_guard` limits the #9588 legacy read-through to
+/// exactly this namespace (its entries are data-dir-scoped, so a forward-copy
+/// can never move another profile's — or the production app's — secrets).
+pub(crate) const MASTER_KEY_KEYCHAIN_NAMESPACE: &str = "master_key";
+
+/// Filename of the SQLCipher database this master key protects, inside the
+/// same `app_data_dir` that holds `.db_key` (#9598 item 1).
+///
+/// Lives here rather than in the composition root because the fresh-install
+/// escape hatch below has to answer "is there anything to lose?", and that
+/// question is about the encrypted artifacts this module is responsible for.
+/// `src-tauri`'s `resolve_db_path` and the QC spool now join this instead of
+/// repeating the literal — a second copy would drift the moment either side
+/// renamed the file, and the escape hatch would then probe a path that never
+/// exists and hand out a new key over live data.
+pub const SQLCIPHER_DB_FILENAME: &str = "maekon.db";
 
 /// Derives a stable, data-dir-scoped keychain entry identifier for the
 /// at-rest master key. Multiple maekon profiles/installs on the same OS user
@@ -166,38 +181,104 @@ impl EncryptionKey {
             }
             Ok(None) => {
                 // Fresh install: no keychain entry, no file.
-                let key = Self::generate()?;
-                match key.seal(keychain, &entry) {
-                    Ok(()) => {
-                        tracing::info!(
-                            "#8040: new master key generated and sealed in the OS keychain \
-                             (no plaintext key file written)"
-                        );
-                        Ok(key)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "#8040: OS keychain unavailable ({e}); falling back to the \
-                             plaintext key-file scheme (expected on headless Linux/CI \
-                             without a keyring backend)"
-                        );
-                        key.save_to_file(&key_path)?;
-                        tracing::info!("New DB encryption key generated: {:?}", key_path);
-                        Ok(key)
-                    }
+                Self::seal_fresh_key(keychain, &entry, &key_path)
+            }
+            Err(e @ StorageError::SecretStoreTimeout(_)) => {
+                // #9588 review B1: a TIMEOUT means the keychain item may EXIST
+                // but could not be read (pending ACL prompt / wedged keychain).
+                // Falling through to `load_or_create` here would generate a
+                // NEW key and write `.db_key` — priming the next launch's
+                // migration arm to seal the wrong key and delete the only
+                // path back to the real one (permanent loss of the SQLCipher
+                // DB). Fail closed: the caller aborts startup and the next
+                // launch retries cleanly once the prompt is answered.
+                //
+                // #9598 item 1: except when there is provably nothing to lose.
+                // The whole reason to fail closed is protecting data encrypted
+                // under a key we cannot currently read. A FRESH INSTALL has no
+                // such data — no SQLCipher DB, no `.db_key` — so refusing to
+                // boot buys nothing and costs the user the app entirely, on a
+                // machine whose keychain may stay wedged until they find the
+                // prompt.
+                //
+                // The condition is deliberately BOTH-absent, not either:
+                //   - DB present, key absent  → the DB is encrypted under the
+                //     sealed key; a new key orphans it permanently.
+                //   - DB absent, key present  → `.db_key` may be the legacy
+                //     key for frame files or a DB about to be opened; the
+                //     migration arm must get to see it.
+                // Only "neither exists" is safe, and it is checked here rather
+                // than inferred from a caller-supplied flag so no call site can
+                // express "I don't know" as "it's fresh".
+                let db_path = app_data_dir.join(SQLCIPHER_DB_FILENAME);
+                if !db_path.exists() && !key_path.exists() {
+                    tracing::warn!(
+                        "#9598: master-key keychain read timed out ({e}), but this data \
+                         dir holds neither {db_path:?} nor {key_path:?} — nothing is \
+                         encrypted under the unreadable key. Provisioning a fresh key \
+                         so a first launch is not blocked by a wedged keychain."
+                    );
+                    // Same fresh-install path as the `Ok(None)` arm: try to seal,
+                    // and fall back to the plaintext-file scheme if the keychain
+                    // is still unreachable. The wedge latch makes that attempt
+                    // fail fast rather than burn another full timeout.
+                    return Self::seal_fresh_key(keychain, &entry, &key_path);
                 }
+
+                tracing::error!(
+                    "#9588: master-key keychain read timed out ({e}); refusing the \
+                     plaintext-file fallback because the sealed key may exist. \
+                     Approve the OS keychain dialog (or relaunch the app from its \
+                     original install location) and start again."
+                );
+                Err(e)
             }
             Err(e) => {
-                // Keychain unreachable right now (locked / no backend / etc.) — fall
-                // back to the plaintext-file scheme wholesale rather than fail
-                // closed: master-key availability across reboots must not depend
-                // on an OS feature that may legitimately be absent (headless
+                // Keychain DEFINITIVELY unreachable (no backend / locked with an
+                // immediate error — NOT a timeout) — fall back to the
+                // plaintext-file scheme wholesale rather than fail closed:
+                // master-key availability across reboots must not depend on an
+                // OS feature that may legitimately be absent (headless
                 // Linux/CI).
                 tracing::warn!(
                     "#8040: OS keychain unavailable ({e}); using the plaintext key-file \
                      scheme (expected on headless Linux/CI without a keyring backend)"
                 );
                 Self::load_or_create(app_data_dir)
+            }
+        }
+    }
+
+    /// Generate a master key for a data dir that has nothing encrypted yet, and
+    /// persist it — keychain first, plaintext file as the documented fallback.
+    ///
+    /// Extracted (#9598 item 1) so the `Ok(None)` fresh-install arm and the
+    /// timeout escape hatch cannot drift: both mean "no existing ciphertext,
+    /// provision a key", and a second copy would be the place where one of them
+    /// quietly stopped writing the fallback file.
+    fn seal_fresh_key(
+        keychain: &dyn MasterKeyVault,
+        entry: &str,
+        key_path: &PathBuf,
+    ) -> Result<Self, StorageError> {
+        let key = Self::generate()?;
+        match key.seal(keychain, entry) {
+            Ok(()) => {
+                tracing::info!(
+                    "#8040: new master key generated and sealed in the OS keychain \
+                     (no plaintext key file written)"
+                );
+                Ok(key)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "#8040: OS keychain unavailable ({e}); falling back to the \
+                     plaintext key-file scheme (expected on headless Linux/CI \
+                     without a keyring backend)"
+                );
+                key.save_to_file(key_path)?;
+                tracing::info!("New DB encryption key generated: {:?}", key_path);
+                Ok(key)
             }
         }
     }
@@ -469,6 +550,16 @@ impl EncryptionKey {
 #[cfg(windows)]
 pub(crate) fn set_owner_only_dacl(path: &std::path::Path) -> Result<(), StorageError> {
     maekon_core::secure_file::set_owner_only_dacl(path).map_err(StorageError::Core)
+}
+
+/// Set an inheritable owner-only DACL on a known directory.
+///
+/// This explicit directory variant remains usable when an empty DACL makes
+/// metadata inspection fail. Frame retention calls it to repair legacy capture
+/// directories before retrying deletion (#9276).
+#[cfg(windows)]
+pub(crate) fn set_owner_only_directory_dacl(path: &std::path::Path) -> Result<(), StorageError> {
+    maekon_core::secure_file::set_owner_only_directory_dacl(path).map_err(StorageError::Core)
 }
 
 // Safe Debug implementation so the key is never printed to logs.

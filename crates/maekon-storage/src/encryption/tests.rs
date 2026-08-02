@@ -263,6 +263,10 @@ mod sealed_key_tests {
         entries: Mutex<HashMap<(String, String), String>>,
         force_store_err: bool,
         force_retrieve_err: bool,
+        /// #9588 review B1: simulate a bounded-op TIMEOUT (pending ACL prompt)
+        /// — distinct from `force_retrieve_err` ("no backend at all") because
+        /// the two must take OPPOSITE fallback paths.
+        force_retrieve_timeout: bool,
         corrupt_readback: bool,
     }
 
@@ -279,6 +283,11 @@ mod sealed_key_tests {
         }
 
         fn retrieve(&self, namespace: &str, key: &str) -> Result<Option<String>, StorageError> {
+            if self.force_retrieve_timeout {
+                return Err(StorageError::SecretStoreTimeout(
+                    "fake pending ACL prompt".into(),
+                ));
+            }
             if self.force_retrieve_err {
                 return Err(StorageError::SecretStore("fake retrieve failure".into()));
             }
@@ -306,6 +315,125 @@ mod sealed_key_tests {
                 .unwrap()
                 .remove(&(namespace.to_string(), key.to_string()));
             Ok(())
+        }
+    }
+
+    /// #9588 review B1: a TIMEOUT on the master-key read means the sealed key
+    /// may EXIST but could not be read. Falling back to key generation here
+    /// would write a wrong `.db_key` and prime the next launch's migration
+    /// arm to seal the wrong key and delete the only path back to the real
+    /// one (permanent SQLCipher data loss). The resolution must fail closed.
+    ///
+    /// #9598 item 1 made the guard conditional, so this test now states the
+    /// condition it always meant: there IS ciphertext to protect. Before, it
+    /// ran against an empty temp dir — a fresh install — which is the one
+    /// situation where failing closed protects nothing.
+    #[test]
+    fn retrieve_timeout_fails_closed_when_an_encrypted_db_exists() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(SQLCIPHER_DB_FILENAME), b"ciphertext").unwrap();
+        let vault = FakeVault {
+            force_retrieve_timeout: true,
+            ..Default::default()
+        };
+
+        let err = EncryptionKey::load_or_create_sealed(dir.path(), &vault)
+            .expect_err("timeout must fail closed, not regenerate a key");
+
+        assert!(
+            matches!(err, StorageError::SecretStoreTimeout(_)),
+            "the timeout variant must propagate: {err:?}"
+        );
+        assert!(
+            !dir.path().join(".db_key").exists(),
+            "no plaintext key file may be written on a keychain timeout"
+        );
+    }
+
+    /// #9598 item 1: the other half of the same guard — a legacy `.db_key`
+    /// with no DB file still means "there is key material this launch must not
+    /// orphan" (frame files are encrypted under it, and the migration arm has
+    /// to get to see it).
+    #[test]
+    fn retrieve_timeout_fails_closed_when_only_a_legacy_key_file_exists() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".db_key"), [7u8; 32]).unwrap();
+        let vault = FakeVault {
+            force_retrieve_timeout: true,
+            ..Default::default()
+        };
+
+        let err = EncryptionKey::load_or_create_sealed(dir.path(), &vault)
+            .expect_err("a legacy key file must still force the closed path");
+
+        assert!(
+            matches!(err, StorageError::SecretStoreTimeout(_)),
+            "the timeout variant must propagate: {err:?}"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(".db_key")).unwrap(),
+            [7u8; 32],
+            "the existing legacy key must be left exactly as it was"
+        );
+    }
+
+    /// #9598 item 1: a fresh install must not be held hostage by a wedged
+    /// keychain. With neither a SQLCipher DB nor a `.db_key`, nothing is
+    /// encrypted under the unreadable key, so there is nothing for the closed
+    /// path to protect — and refusing to boot costs the user the whole app.
+    #[test]
+    fn retrieve_timeout_provisions_a_key_when_nothing_is_encrypted_yet() {
+        let dir = TempDir::new().unwrap();
+        let vault = FakeVault {
+            force_retrieve_timeout: true,
+            ..Default::default()
+        };
+
+        let key = EncryptionKey::load_or_create_sealed(dir.path(), &vault)
+            .expect("a fresh install must boot even while the keychain is wedged");
+
+        // The keychain is wedged, so `seal` cannot verify a round trip; the
+        // documented plaintext-file fallback is what keeps this launch usable
+        // and lets the NEXT launch migrate it once the prompt is answered.
+        assert!(
+            dir.path().join(".db_key").exists(),
+            "the fresh key must be persisted somewhere or the next launch loses it"
+        );
+        assert_eq!(
+            EncryptionKey::load_or_create(dir.path()).unwrap().as_hex(),
+            key.as_hex(),
+            "the persisted key must be the one that was returned"
+        );
+    }
+
+    /// #9598 item 1: the escape hatch is BOTH-absent, never either-absent.
+    /// Stated as its own assertion because the two-condition shape is the
+    /// whole safety argument — an `||` here would silently reopen the
+    /// data-loss path this guard exists to close.
+    #[test]
+    fn the_fresh_install_escape_hatch_requires_both_artifacts_absent() {
+        for (label, seed) in [
+            ("db only", SQLCIPHER_DB_FILENAME),
+            ("legacy key only", ".db_key"),
+        ] {
+            let dir = TempDir::new().unwrap();
+            std::fs::write(dir.path().join(seed), b"x").unwrap();
+            let vault = FakeVault {
+                force_retrieve_timeout: true,
+                ..Default::default()
+            };
+
+            let err = EncryptionKey::load_or_create_sealed(dir.path(), &vault)
+                .expect_err("one surviving artifact must still force the closed path");
+            assert!(
+                matches!(err, StorageError::SecretStoreTimeout(_)),
+                "{label}: must fail closed with the timeout variant, not some other \
+                 error that a caller might treat as 'store absent': {err:?}"
+            );
+            assert!(
+                dir.path().join(seed).exists(),
+                "{label}: the surviving artifact must be left untouched"
+            );
         }
     }
 

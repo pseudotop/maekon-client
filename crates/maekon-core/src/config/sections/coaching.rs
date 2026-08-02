@@ -35,10 +35,9 @@ pub struct CoachingConfig {
     /// Overlay display mode (Phase 2 — stored for forward compatibility).
     #[serde(default)]
     pub overlay_mode: OverlayMode,
-
-    /// Overlay toggle hotkey (Phase 2 — stored for forward compatibility).
-    #[serde(default = "default_overlay_hotkey")]
-    pub overlay_hotkey: String,
+    // #9638: `overlay_hotkey` sat here unread since Phase 2 — the MagicOverlay
+    // hotkey wiring never consulted it. Removed; serde ignores the stale key
+    // in existing configs. Re-add only together with actual hotkey wiring.
 }
 
 impl Default for CoachingConfig {
@@ -51,21 +50,12 @@ impl Default for CoachingConfig {
             regime_goals: HashMap::new(),
             locale: default_locale(),
             overlay_mode: OverlayMode::default(),
-            overlay_hotkey: default_overlay_hotkey(),
         }
     }
 }
 
 fn default_locale() -> String {
     "en".to_string()
-}
-
-fn default_overlay_hotkey() -> String {
-    if cfg!(target_os = "macos") {
-        "Cmd+Shift+O".to_string()
-    } else {
-        "Ctrl+Shift+O".to_string()
-    }
 }
 
 fn default_profile_configs() -> HashMap<String, ProfileConfig> {

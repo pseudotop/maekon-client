@@ -110,6 +110,16 @@ impl SqliteStorage {
         }
 
         if delete_frames {
+            // #9721: `frame_annotations` declares no FK, so SQLite's engine
+            // cannot clean it up when the frame goes — and the rows carry the
+            // user's own memo text on a path whose purpose is deletion.
+            // `frame_tags` (CASCADE) and `interruptions` (SET NULL) DO have
+            // FKs and are handled by the engine; see #9735 for the widespread
+            // comments in this crate that wrongly claim otherwise.
+            //
+            // Runs before the parent delete, in the same transaction.
+            super::frame_dependents::delete_frame_dependents_in_range(&tx, from, to)?;
+
             counts.frames_deleted = tx
                 .execute(
                     "DELETE FROM frames WHERE timestamp >= ?1 AND timestamp <= ?2",
@@ -516,6 +526,13 @@ impl SqliteStorage {
             // as `audit_log`. Intentionally absent from ALL_TABLES; do NOT add it.
             "skill_pack_activation",
             "skill_pack_catalog",
+            // V53 (#9465, ADR-033 §1.4): vault mirror hash state. MUST be
+            // erased with everything else — an erase-surviving hash row would
+            // make the next mirror cycle silently skip regenerating files the
+            // Art.17 Phase-3 just deleted (the vault files themselves are
+            // deleted by the erase orchestrators via
+            // `MemoryVaultWriterPort::erase_generated_files`, not here).
+            "vault_mirror_state",
         ];
 
         let tx = conn

@@ -98,6 +98,12 @@ impl DataCommandService {
         let frames_dir = self.ctx.frames_dir.clone();
         let storage = self.ctx.storage.clone();
 
+        // ADR-033 IMPORTANT#2: snapshot vault roots BEFORE the Phase-1 SQL
+        // wipe destroys the stored-root row in vault_mirror_state.
+        let vault_roots = match self.ctx.memory_vault_writer.as_ref() {
+            Some(vw) => Some(vw.snapshot_generated_roots().await),
+            None => None,
+        };
         let outcome: Result<DeleteResult, ApiError> = async {
             let frame_paths = if frames_dir.is_some() {
                 storage
@@ -128,6 +134,29 @@ impl DataCommandService {
                         }
                     }
                 }
+            }
+
+            // Phase 3 (ADR-033 §4): vault mirror generated-file erasure via the
+            // shared MemoryVaultWriterPort. Failures surface as an incomplete
+            // erasure — never log-and-continue (§4.3: the files carry disclosed
+            // claim text). An absent handle mirrors the #8039 frame-storage
+            // discipline: refuse to report Art.17 success while generated
+            // vault files may remain on disk.
+            let Some(vault_writer) = self.ctx.memory_vault_writer.as_ref() else {
+                return Err(ApiError::Internal(
+                    "vault writer unavailable — cannot verify ADR-033 vault erasure completed"
+                        .to_string(),
+                ));
+            };
+            let report = vault_writer
+                .erase_generated_files(vault_roots.unwrap_or_default())
+                .await
+                .map_err(|error| ApiError::Internal(format!("vault erasure failed: {error}")))?;
+            if !report.is_complete() {
+                return Err(ApiError::Internal(format!(
+                    "vault erasure incomplete: {} file(s) could not be deleted",
+                    report.failures.len()
+                )));
             }
 
             let mut result = DeleteResult::empty();
@@ -192,6 +221,12 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let mut ctx = StorageWebContext::from_state(&test_state());
         ctx.erasure_requested = Some(flag.clone());
+        // ADR-033 Phase-3 is now part of a successful erase; give the test a
+        // complete vault erase so the original #4478 G3 intent stays testable.
+        ctx.memory_vault_writer = Some(std::sync::Arc::new(
+            super::vault_phase3_tests::FakeVaultWriter { fail: false },
+        )
+            as Arc<dyn maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort>);
         let service = DataCommandService::new(ctx);
 
         service.delete_all_data().await.expect("delete_all_data");
@@ -237,5 +272,101 @@ mod tests {
         let resolved =
             resolve_stored_frame_path(&frames_dir, "2026-05-07/frame.png").expect("resolved");
         assert_eq!(resolved, child.canonicalize().expect("canonical child"));
+    }
+}
+
+#[cfg(test)]
+pub(super) mod vault_phase3_tests {
+    use super::*;
+    use maekon_core::error::CoreError;
+    use maekon_core::models::memory_vault::{VaultCycleStats, VaultEraseFailure, VaultEraseReport};
+    use maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort;
+    use std::sync::Arc;
+
+    pub(super) struct FakeVaultWriter {
+        pub(super) fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryVaultWriterPort for FakeVaultWriter {
+        async fn run_mirror_cycle(&self, _now_secs: i64) -> Result<VaultCycleStats, CoreError> {
+            Ok(Default::default())
+        }
+        async fn snapshot_generated_roots(&self) -> Vec<std::path::PathBuf> {
+            Vec::new()
+        }
+        async fn erase_generated_files(
+            &self,
+            _roots: Vec<std::path::PathBuf>,
+        ) -> Result<VaultEraseReport, CoreError> {
+            if self.fail {
+                Ok(VaultEraseReport {
+                    deleted: 0,
+                    failures: vec![VaultEraseFailure {
+                        file_name: "claims.md".to_string(),
+                        message: "locked".to_string(),
+                    }],
+                })
+            } else {
+                Ok(VaultEraseReport {
+                    deleted: 3,
+                    failures: vec![],
+                })
+            }
+        }
+    }
+
+    fn ctx_with_writer(
+        writer: Option<Arc<dyn MemoryVaultWriterPort>>,
+    ) -> crate::services::web_contexts::StorageWebContext {
+        let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
+        state.core.memory_vault_writer = writer;
+        crate::services::web_contexts::StorageWebContext::from_state(&state)
+    }
+
+    /// ADR-033 §4.4 regression guard (web orchestrator, pass-after half):
+    /// with a complete vault erase, delete_all_data succeeds.
+    #[tokio::test]
+    async fn delete_all_data_succeeds_when_vault_erase_completes() {
+        let service = DataCommandService::new(ctx_with_writer(Some(Arc::new(FakeVaultWriter {
+            fail: false,
+        }))));
+        let result = service
+            .delete_all_data()
+            .await
+            .expect("complete vault erase must not fail the erase");
+        assert_eq!(result.message, "All data was deleted");
+    }
+
+    /// ADR-033 §4.3 (web orchestrator, fail-before half): an incomplete vault
+    /// erase surfaces as an erase failure — never log-and-continue.
+    #[tokio::test]
+    async fn delete_all_data_fails_when_vault_erase_incomplete() {
+        let service = DataCommandService::new(ctx_with_writer(Some(Arc::new(FakeVaultWriter {
+            fail: true,
+        }))));
+        let err = service
+            .delete_all_data()
+            .await
+            .expect_err("incomplete vault erase must surface as an Art.17 failure");
+        assert!(
+            err.to_string().contains("vault erasure incomplete"),
+            "error must name the incomplete vault erasure, got: {err}"
+        );
+    }
+
+    /// ADR-033 §4 + #8039 discipline: an absent vault writer handle refuses
+    /// to report Art.17 success.
+    #[tokio::test]
+    async fn delete_all_data_fails_without_vault_writer() {
+        let service = DataCommandService::new(ctx_with_writer(None));
+        let err = service
+            .delete_all_data()
+            .await
+            .expect_err("absent vault writer must fail loud");
+        assert!(
+            err.to_string().contains("vault writer unavailable"),
+            "error must name the missing vault writer, got: {err}"
+        );
     }
 }

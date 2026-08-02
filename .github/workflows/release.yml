@@ -395,11 +395,14 @@ jobs:
               for entry in accepted.get("dependabot", []):
                   if not not_expired(entry):
                       continue
-                  number_match = entry.get("number") == alert.get("number")
-                  advisory_match = entry.get("advisory") == advisory.get("ghsa_id")
-                  package_match = entry.get("package") == (dependency.get("package") or {}).get("name")
-                  manifest_match = entry.get("manifest") == dependency.get("manifest_path")
-                  if number_match or advisory_match or (package_match and manifest_match):
+                  selectors = {
+                      "number": alert.get("number"),
+                      "advisory": advisory.get("ghsa_id"),
+                      "package": (dependency.get("package") or {}).get("name"),
+                      "manifest": dependency.get("manifest_path"),
+                  }
+                  declared = [(key, value) for key, value in selectors.items() if key in entry]
+                  if declared and all(entry.get(key) == value for key, value in declared):
                       return True
               return False
 
@@ -674,6 +677,11 @@ jobs:
             exit 1
           fi
 
+      - name: Verify WebDriver dependency isolation
+        if: runner.os == 'Linux'
+        shell: bash
+        run: ./scripts/check-webdriver-security-isolation.sh
+
       - name: Build release
         shell: bash
         # Feature set is OS-conditional. Linux keeps `systemd-notify` for its
@@ -692,6 +700,25 @@ jobs:
             FEATURES="grpc,lan-sync,stt,download"
           fi
           ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features "$FEATURES"
+
+      - name: Verify prebuilt Windows runtime DLL closure
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
+          $dumpbins = @(Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse)
+          $dumpbin = $dumpbins |
+            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$dumpbin) { $dumpbin = $dumpbins | Sort-Object FullName -Descending | Select-Object -First 1 }
+          if (!$dumpbin) { throw "dumpbin.exe was not found under $installation" }
+          node scripts/verify-windows-runtime-closure.mjs `
+            --payload-root "target/${{ matrix.target }}/release" `
+            --dependency-tool $dumpbin.FullName
 
       - name: Validate WiX assets
         if: runner.os == 'Windows'
@@ -775,6 +802,45 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe,target/${{ matrix.target }}/release/maekon-sandbox-worker.exe -DestinationPath dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}
+
+      - name: Verify packaged Windows runtime DLL closure
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
+          $dumpbins = @(Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse)
+          $dumpbin = $dumpbins |
+            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$dumpbin) { $dumpbin = $dumpbins | Sort-Object FullName -Descending | Select-Object -First 1 }
+          if (!$dumpbin) { throw "dumpbin.exe was not found under $installation" }
+
+          $zipRoot = Join-Path $env:RUNNER_TEMP "maekon-zip-runtime-closure"
+          Remove-Item -LiteralPath $zipRoot -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath "dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}" -DestinationPath $zipRoot
+          node scripts/verify-windows-runtime-closure.mjs --payload-root $zipRoot --dependency-tool $dumpbin.FullName
+
+          $msi = Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$msi) { throw "No MSI file found for runtime closure verification" }
+          $msiRoot = Join-Path $env:RUNNER_TEMP "maekon-msi-runtime-closure"
+          Remove-Item -LiteralPath $msiRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $msiRoot -Force | Out-Null
+          & msiexec.exe /a $msi.FullName /qn "TARGETDIR=$msiRoot"
+          if ($LASTEXITCODE -ne 0) { throw "MSI administrative extraction failed with exit $LASTEXITCODE" }
+          node scripts/verify-windows-runtime-closure.mjs --payload-root $msiRoot --dependency-tool $dumpbin.FullName
+
+          $setup = Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis","src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$setup) { throw "No NSIS setup file found for runtime closure verification" }
+          $nsisRoot = Join-Path $env:RUNNER_TEMP "maekon-nsis-runtime-closure"
+          Remove-Item -LiteralPath $nsisRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $nsisRoot -Force | Out-Null
+          & 7z.exe x "-o$nsisRoot" -y $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed with exit $LASTEXITCODE" }
+          node scripts/verify-windows-runtime-closure.mjs --payload-root $nsisRoot --dependency-tool $dumpbin.FullName
 
       - name: Generate checksums
         if: runner.os != 'Windows'

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AppSettings, UpdateChannel } from '../../api/client'
+import { type AuthStatus, requestLogoutAllSessions } from '../../components/auth/authIpc'
+import { LoginForm } from '../../components/auth/LoginForm'
+import { useAuthStatus } from '../../components/auth/useAuthStatus'
 import LanguageSelector from '../../components/LanguageSelector'
 import SupportToolsCard from '../../components/SupportToolsCard'
 import {
@@ -19,7 +22,7 @@ import {
 import { DEFAULT_WEB_PORT } from '../../constants'
 import { useTheme } from '../../contexts/ThemeContext'
 import { addToast } from '../../hooks/useToast'
-import { translateError, type WireErrorLocale } from '../../i18n/translateError'
+import { describeIpcError } from '../../i18n/tauriIpcErrors'
 import { form } from '../../styles/tokens'
 import { IS_TAURI } from '../../utils/platform'
 import { isSelectableUpdateChannel } from '../../utils/updateChannels'
@@ -333,29 +336,60 @@ export default function GeneralTab() {
   )
 }
 
-/* ── Account: Sign out of all devices (OOS-TBD-N15-UI-EXPOSURE) ── */
+/* ── Account: Sign in (#9459) + sign out of all devices (OOS-TBD-N15-UI-EXPOSURE) ── */
 
+/**
+ * Settings' view of this device's session.
+ *
+ * #9603 WD-02.1 moved the wire DTO, the `auth_status` read (stale-read guard +
+ * foreground re-read) and the three-field form out to `components/auth/`, so the
+ * demo sign-in screen at `/login` renders literally the same form rather than a
+ * copy of it. What stays here is what is genuinely Settings-only: the
+ * sign-out-of-all-devices confirmation and the signed-in summary line.
+ */
 // Exported for unit testing (Vitest).
 export function AccountSection() {
   const { t, i18n } = useTranslation()
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [loading, setLoading] = useState(false)
+  const { status, refresh: refreshStatus, setStatus } = useAuthStatus()
+
+  const describeAuthError = useCallback(
+    (e: unknown) => describeIpcError(e, (key) => t(key), i18n.language),
+    [i18n.language, t],
+  )
 
   const handleConfirm = useCallback(async () => {
     setLoading(true)
     try {
-      await invokeDesktop<void>('logout_all_sessions')
+      await requestLogoutAllSessions()
+      // This device's session is revoked too, so the signed-in summary would
+      // otherwise stay on screen until the page remounts. Clear it immediately
+      // rather than waiting on the round trip below.
+      setStatus((prev) => (prev ? { ...prev, authenticated: false, identifier: null, organization_id: null } : prev))
       addToast('success', t('settings.account.success'))
       setConfirmOpen(false)
+      // #9492 item 2: the local clear above is this device's assumption; confirm
+      // it against `auth_status` so the section shows what the client actually
+      // holds rather than what the command implied.
+      await refreshStatus()
     } catch (e) {
-      const lang = i18n.language?.split('-')[0]
-      const locale: WireErrorLocale = lang === 'ko' ? 'ko' : 'en'
-      const message = translateError(e, locale)
-      addToast('error', t('settings.account.error', { error: message }))
+      addToast('error', t('settings.account.error', { error: describeAuthError(e) }))
     } finally {
       setLoading(false)
     }
-  }, [i18n.language, t])
+  }, [describeAuthError, refreshStatus, setStatus, t])
+
+  const handleAuthenticated = useCallback(
+    async (next: AuthStatus) => {
+      setStatus(next)
+      // #9492 item 2: `login` returns this device's view of the session it just
+      // created; re-read `auth_status` so the summary tracks the same source of
+      // truth every other trigger uses.
+      await refreshStatus()
+    },
+    [refreshStatus, setStatus],
+  )
 
   return (
     <>
@@ -363,6 +397,22 @@ export function AccountSection() {
         <CardTitle sticky>{t('settings.account.title')}</CardTitle>
         <div className="space-y-3">
           <p className="text-content-secondary text-sm">{t('settings.account.description')}</p>
+
+          {status && !status.server_feature && (
+            <p className="text-content-secondary text-sm">{t('settings.account.login.notAvailable')}</p>
+          )}
+
+          {status?.server_feature && status.authenticated && (
+            <p className="text-content-strong text-sm">
+              {t('settings.account.login.signedInAs', {
+                identifier: status.identifier ?? '',
+                organizationId: status.organization_id ?? '',
+              })}
+            </p>
+          )}
+
+          {status?.server_feature && !status.authenticated && <LoginForm onAuthenticated={handleAuthenticated} />}
+
           <p className="text-content-secondary text-xs">{t('settings.account.signOutAllDevicesDescription')}</p>
           <Button type="button" variant="danger" size="sm" onClick={() => setConfirmOpen(true)}>
             {t('settings.account.signOutAllDevicesButton')}

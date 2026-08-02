@@ -1,3 +1,5 @@
+// OOS-TBD: ADR-013 file split — baselined past the 900-line giant
+// threshold while growing for #9643; split per ADR-003 when next touched.
 use crate::error::StorageError;
 use maekon_core::ports::web_storage::PersonalDataTableExport;
 
@@ -63,6 +65,95 @@ const PERSONAL_DATA_EXPORT_TABLES: &[&str] = &[
     // a bounded enum, a digest, or a timestamp.
     "skill_pack_catalog",
     "skill_pack_activation",
+    // V47 (#9630): STT transcripts — Tier-8 microphone-consent data, MORE
+    // sensitive than screen-derived text, yet the one personal-data category
+    // that was erasable (ALL_TABLES) but not portable. The free-text `text`
+    // column is masked by maekon-web full_export's MASKED_COLUMNS ("text" is
+    // already listed).
+    "transcripts",
+    // V50 (#9630 drift-guard adoption): the user's installed extension
+    // inventory — same rationale as skill_pack_catalog/activation (their
+    // install choices are their data; manifests are developer-authored
+    // package metadata, not user free-text).
+    "extension_installs",
+    "extension_manifests",
+    // #9643 review I3: three tables the initial exempt classification got
+    // WRONG — each holds user-authored or user-disclosed content:
+    // - gui_interactions: `element_text` (screen text), and the consent
+    //   screen enumerates it as a collected category; no other export route
+    //   carries it.
+    // - regime_overrides: the user's MANUAL corrections (`action_type`/
+    //   `action_data`) — not re-derivable by definition.
+    // - automation_presets: user-authored automations (`name`,
+    //   `description`, `steps_json`).
+    // Free-text columns are masked via the web handler's MASKED_COLUMNS
+    // (element_text/steps_json/action_data/name added alongside this).
+    "gui_interactions",
+    "regime_overrides",
+    "automation_presets",
+];
+
+/// #9630: every user table must carry an EXPLICIT portability disposition —
+/// exported above, or exempted here with a reason. The drift-guard test below
+/// compares this union against the live schema, so a new migration that adds
+/// a table without deciding its Art.20 treatment fails CI instead of silently
+/// repeating the `transcripts` gap (erasable but not portable for 3 months).
+///
+/// Categories (do not exempt personal content without a route):
+/// - dedicated export routes: events, frames, tags/frame_tags, metrics
+/// - derived/re-derivable state (source data is exported): vectors, indexes,
+///   regime/trigger snapshots, scorer tallies
+/// - device/infra internals (no personal content): identity, clocks, markers
+/// - deliberate policy exclusions documented at their declaration site
+#[cfg(test)] // consumed by the drift-guard test below — the list IS the policy record
+const PERSONAL_DATA_EXPORT_EXEMPT_TABLES: &[&str] = &[
+    // Dedicated /export/* + /backup routes (documented in the allowlist doc).
+    "events",
+    "frames",
+    "frame_tags",
+    "tags",
+    "system_metrics",
+    "system_metrics_hourly",
+    "process_snapshots",
+    "idle_periods",
+    // Derived / re-derivable analysis state — the SOURCE segments/claims are
+    // exported; these are recomputable artifacts, not primary records.
+    "embedding_vectors",
+    "vector_binary_codes",
+    "vector_index_meta",
+    "ivf_centroids",
+    "ivf_assignments",
+    "search_fts",
+    "calibration_log",
+    "regimes",
+    "trigger_params_snapshots",
+    "feedback_scorer_tallies",
+    "regime_reaction_stats",
+    "adaptive_scorer_state",
+    "regime_manager_state",
+    "pomodoro_state",
+    // Device/infra internals — no personal content columns.
+    "device_identity",
+    "sync_peers",
+    "lan_peer_pins",
+    "feedback_retries",
+    "hlc_clock",
+    "digest_processing_markers",
+    "vault_mirror_state",
+    "work_context_access_epochs",
+    // Deliberate policy exclusion (ADR-030 §12): raw blobs export only via the
+    // reauthenticated encrypted-attachment path, never a JSON dump.
+    "work_context_raw_blobs",
+    // Retained processing records — exported via the audit route / retained
+    // under GDPR Art.17(3) with inline justification at their schemas.
+    "audit_log",
+    "egress_ledger",
+    "sync_tombstones",
+    "skill_pack_activation_audit",
+    "extension_registry_audit",
+    "session_audit_log",
+    // Internal key-value app metadata (schema bookkeeping, not personal data).
+    "app_meta",
 ];
 
 /// Convert a single SQLite value to JSON. BLOBs are summarized (byte length)
@@ -78,6 +169,19 @@ fn value_ref_to_json(value: rusqlite::types::ValueRef<'_>) -> serde_json::Value 
     }
 }
 
+/// #9639/#9643: newest-first row cap for the one high-cardinality table
+/// in the portability dump (see the LIMIT rationale at the query below).
+/// Single source for both the SQL literal and the `truncated` detection.
+const GUI_INTERACTIONS_EXPORT_ROW_LIMIT: usize = 20000;
+
+/// Per-table row cap for the portability dump; `None` = unbounded.
+fn personal_data_export_row_limit(table: &str) -> Option<usize> {
+    match table {
+        "gui_interactions" => Some(GUI_INTERACTIONS_EXPORT_ROW_LIMIT),
+        _ => None,
+    }
+}
+
 /// Export query for a personal-data table. Retracted memory claims remain in
 /// the local graph for lifecycle transparency, but they must not re-enter a
 /// portable user-data archive after the user has withdrawn them. Edges that
@@ -85,6 +189,18 @@ fn value_ref_to_json(value: rusqlite::types::ValueRef<'_>) -> serde_json::Value 
 /// a dangling identifier or provenance path back to a retracted belief.
 fn personal_data_export_query(table: &str) -> String {
     match table {
+        // #9643 re-review: gui_interactions is per-interaction telemetry (one
+        // row per GUI event) — the one high-cardinality table in this list.
+        // The dump materializes every row three times over (Value vec, masked
+        // vec, pretty String), so an unbounded SELECT risks an OOM/freeze on
+        // a retention-full profile. Newest-first LIMIT keeps the archive
+        // bounded (~4MB at 200B/row) while covering the vast majority of
+        // profiles completely; a dedicated range-filtered route (like
+        // events/frames) is the follow-up if full-history portability of this
+        // telemetry is ever required.
+        "gui_interactions" => format!(
+            "SELECT * FROM gui_interactions ORDER BY timestamp DESC LIMIT {GUI_INTERACTIONS_EXPORT_ROW_LIMIT}"
+        ),
         "memory_claims" => "SELECT * FROM memory_claims WHERE status != 'retracted'".to_string(),
         "memory_edges" => "SELECT memory_edges.* FROM memory_edges
              WHERE NOT EXISTS (
@@ -567,9 +683,12 @@ impl SqliteStorage {
                 .map_err(|e| StorageError::Internal(format!("query export {table}: {e}")))?
                 .filter_map(Result::ok)
                 .collect();
+            let truncated =
+                personal_data_export_row_limit(table).is_some_and(|limit| rows.len() >= limit);
             out.push(PersonalDataTableExport {
                 name: table.to_string(),
                 rows,
+                truncated,
             });
         }
         Ok(out)
@@ -579,6 +698,165 @@ impl SqliteStorage {
 #[cfg(test)]
 mod personal_data_export_tests {
     use super::*;
+
+    /// #9630 drift guard: the schema is the source of truth — every live user
+    /// table must appear in exactly one of the two disposition lists, and
+    /// neither list may carry stale names. This is the check whose absence
+    /// let `transcripts` ship erasable-but-not-portable.
+    #[test]
+    fn every_user_table_has_an_explicit_portability_disposition() {
+        let storage = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
+        let conn = storage.connection_arc();
+        let read = conn.read_lock();
+
+        // #9643 review M6: shadow tables are identified structurally, not by
+        // name — an FTS5 virtual table's shadow tables have NULL sql or a
+        // CREATE that references the base virtual table, while the virtual
+        // table itself says "USING fts5". A REAL user table that merely ends
+        // in `_fts` would carry its own CREATE TABLE sql and still be listed.
+        let live_rows: Vec<(String, Option<String>)> = read
+            .conn()
+            .prepare(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'table' \
+                 AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .expect("prepare sqlite_master scan")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .expect("scan tables")
+            .filter_map(Result::ok)
+            .collect();
+        let fts_bases: std::collections::BTreeSet<String> = read
+            .conn()
+            .prepare("SELECT name FROM sqlite_master WHERE sql LIKE '%USING fts5%'")
+            .expect("prepare fts scan")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("scan fts")
+            .filter_map(Result::ok)
+            .collect();
+        let live_tables: Vec<String> = live_rows
+            .into_iter()
+            .filter(|(name, sql)| {
+                // Keep: real tables that are not a shadow of an FTS base.
+                // #9639 (re-review carry-over): EXACT shadow-suffix match, not
+                // a bare `{base}_` prefix — fts5 creates exactly these five
+                // shadows, and a prefix rule silently dropped real user tables
+                // like `search_fts_history` from the guard (measured against a
+                // live fts5 schema). `sql.is_none()` is kept as belt-and-
+                // braces for other virtual-table shadow conventions.
+                const FTS_SHADOW_SUFFIXES: [&str; 5] =
+                    ["_data", "_idx", "_content", "_docsize", "_config"];
+                let is_shadow = sql.is_none()
+                    || fts_bases.iter().any(|base| {
+                        FTS_SHADOW_SUFFIXES
+                            .iter()
+                            .any(|suffix| *name == format!("{base}{suffix}"))
+                    });
+                !is_shadow
+            })
+            .map(|(name, _)| name)
+            .collect();
+
+        let exported: std::collections::BTreeSet<&str> =
+            PERSONAL_DATA_EXPORT_TABLES.iter().copied().collect();
+        let exempt: std::collections::BTreeSet<&str> =
+            PERSONAL_DATA_EXPORT_EXEMPT_TABLES.iter().copied().collect();
+
+        let mut undecided = Vec::new();
+        for table in &live_tables {
+            // Migration bookkeeping; FTS base virtual tables carry their
+            // disposition via the exempt list (search_fts), shadows are
+            // filtered structurally above (M6).
+            if table == "schema_version" {
+                continue;
+            }
+            if !exported.contains(table.as_str()) && !exempt.contains(table.as_str()) {
+                undecided.push(table.clone());
+            }
+        }
+        assert!(
+            undecided.is_empty(),
+            "new table(s) without an Art.20 portability disposition — add each \
+             to PERSONAL_DATA_EXPORT_TABLES or (with a reason) to \
+             PERSONAL_DATA_EXPORT_EXEMPT_TABLES: {undecided:?}"
+        );
+
+        let overlap: Vec<&&str> = exported.intersection(&exempt).collect();
+        assert!(
+            overlap.is_empty(),
+            "a table cannot be both exported and exempt: {overlap:?}"
+        );
+
+        let live: std::collections::BTreeSet<&str> =
+            live_tables.iter().map(String::as_str).collect();
+        let stale: Vec<&&str> = exported
+            .union(&exempt)
+            .filter(|name| !live.contains(**name))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "disposition lists reference tables absent from the live schema \
+             (renamed or dropped without updating the lists): {stale:?}"
+        );
+    }
+
+    /// #9639: the truncation signal — an archive must not present a capped
+    /// table as complete. Conservative edge: a table holding EXACTLY the cap
+    /// reports truncated=true (false positive accepted for Art.20 honesty).
+    #[test]
+    fn gui_interactions_dump_reports_truncation_at_the_cap() {
+        assert_eq!(
+            personal_data_export_row_limit("gui_interactions"),
+            Some(GUI_INTERACTIONS_EXPORT_ROW_LIMIT)
+        );
+        assert!(personal_data_export_query("gui_interactions")
+            .contains(&format!("LIMIT {GUI_INTERACTIONS_EXPORT_ROW_LIMIT}")));
+        // Behavioral check on a small storage: unbounded tables never truncate.
+        let storage = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
+        let conn = storage.connection_arc();
+        let read = conn.read_lock();
+        let tables =
+            SqliteStorage::export_personal_data_tables_inner(read.conn()).expect("export dump");
+        assert!(
+            tables.iter().all(|t| !t.truncated),
+            "no table may report truncated on an empty database"
+        );
+    }
+
+    /// #9630: the category that motivated the guard — transcripts must be in
+    /// the portable dump, and the dump must round-trip a seeded row.
+    #[test]
+    fn transcripts_are_included_in_the_portability_dump() {
+        let storage = SqliteStorage::open_in_memory(30).expect("in-memory sqlite");
+        {
+            let conn = storage.connection_arc();
+            let guard = conn.retained_write_lock();
+            guard
+                .execute(
+                    "INSERT INTO transcripts (id, timestamp, duration_secs, source, language, text) \
+                     VALUES ('tr-1', '2026-07-30T10:00:00Z', 3.5, 'microphone', 'en', 'meeting recap words')",
+                    [],
+                )
+                .expect("seed transcript row");
+        }
+
+        let conn = storage.connection_arc();
+        let read = conn.read_lock();
+        let tables =
+            SqliteStorage::export_personal_data_tables_inner(read.conn()).expect("export dump");
+
+        let transcripts = tables
+            .iter()
+            .find(|t| t.name == "transcripts")
+            .expect("transcripts table present in the Art.20 dump");
+        assert_eq!(transcripts.rows.len(), 1);
+        assert_eq!(
+            transcripts.rows[0].get("text").and_then(|v| v.as_str()),
+            Some("meeting recap words"),
+            "storage dump is policy-free; masking happens in the web handler"
+        );
+    }
 
     #[test]
     fn dump_covers_allowlist_tables_and_round_trips_a_seeded_row() {

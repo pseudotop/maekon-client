@@ -171,6 +171,9 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(debug_assertions)]
     crate::commands::bug_report::maybe_spawn_debug_native_dialog_from_env(app.handle());
 
+    #[cfg(target_os = "windows")]
+    crate::windows_notification_activation::maybe_spawn_test_notification_from_env(app.handle());
+
     info!("Tauri setup complete");
     crate::lifecycle::sd_notify::notify_ready();
     Ok(())
