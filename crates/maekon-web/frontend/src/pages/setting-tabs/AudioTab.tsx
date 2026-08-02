@@ -21,6 +21,8 @@ type AudioStatusResponse = {
     | { state: 'ready'; path: string; size_bytes: number }
     | { state: 'error'; message: string }
   stt_provider_loaded: boolean
+  /** #9639: false when this build has no cloud STT provider compiled in. */
+  cloud_stt_available?: boolean
 }
 
 const MODEL_LABELS: Record<ModelSize, string> = {
@@ -447,22 +449,33 @@ export default function AudioTab() {
             />
             <span className={colors.text.primary}>{t('settings.audio.local', 'Local (Whisper)')}</span>
           </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="radio"
-              name="stt_provider"
-              value="cloud"
-              checked={sttProvider === 'cloud'}
-              onChange={() => handleAudioChange('stt_provider', 'cloud')}
-              disabled={controlsDisabled}
-            />
-            <span className={colors.text.primary}>{t('settings.audio.cloud', 'Cloud (OpenAI)')}</span>
-          </label>
+          {/* #9639: the cloud provider is compiled into NO release target
+              today — showing the radio + API-key field was a visibly dead
+              control. Render it only when the build actually carries it. */}
+          {audioStatus?.cloud_stt_available ? (
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="stt_provider"
+                value="cloud"
+                checked={sttProvider === 'cloud'}
+                onChange={() => handleAudioChange('stt_provider', 'cloud')}
+                disabled={controlsDisabled}
+              />
+              <span className={colors.text.primary}>{t('settings.audio.cloud', 'Cloud (OpenAI)')}</span>
+            </label>
+          ) : null}
         </div>
       </fieldset>
 
       {/* Cloud STT Settings (shown when Cloud selected) */}
-      {sttProvider === 'cloud' && (
+      {/* #9643 review M9: a saved stt_provider of 'cloud' in a build without
+          the provider would otherwise leave the radio group with nothing
+          selected and no explanation. */}
+      {sttProvider === 'cloud' && audioStatus && !audioStatus.cloud_stt_available ? (
+        <Alert variant="warning">{t('settings.audio.cloudUnavailable')}</Alert>
+      ) : null}
+      {sttProvider === 'cloud' && audioStatus?.cloud_stt_available ? (
         <div className="space-y-4 rounded-lg border border-muted p-4">
           <div className="space-y-2">
             <label htmlFor="cloud-api-key" className={cn(typography.label, colors.text.secondary)}>
@@ -515,7 +528,7 @@ export default function AudioTab() {
             />
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

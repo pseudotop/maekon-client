@@ -33,6 +33,8 @@ use maekon_core::ports::audit_chain_verifier::AuditChainVerifierPort;
 use maekon_core::ports::audit_log::AuditLogPort;
 use maekon_core::ports::egress_ledger_reader::EgressLedgerReaderPort;
 use maekon_core::ports::memory_graph_port::MemoryGraphPort;
+use maekon_core::ports::memory_graph_projection::MemoryGraphProjectionPort;
+use maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use maekon_core::ports::regime_storage::RegimeStoragePort;
 use maekon_core::ports::runtime_log_provider::RuntimeLogProvider;
@@ -42,7 +44,7 @@ use maekon_core::ports::text_search::TextSearchProvider;
 use crate::services::provider_cli_diagnostics::ProviderCliDiagnosticsProvider;
 use crate::update_control::UpdateControl;
 
-/// The 13-field VERIFIED-unconditional `WebServer` dependency set. See the
+/// The 16-field VERIFIED-unconditional `WebServer` dependency set. See the
 /// module doc for the promotion criteria and the fields that deliberately
 /// stay `Option` in [`crate::runtime_bindings::WebServerRuntimeBindings`].
 pub struct WebServerRequiredDeps {
@@ -50,6 +52,16 @@ pub struct WebServerRequiredDeps {
     /// `storage`, as a `MemoryGraphPort`). Lets the digest export render
     /// accumulated claims.
     pub memory_graph: Arc<dyn MemoryGraphPort>,
+    /// ADR-032 Mode A: the bounded, fail-closed memory-graph projection
+    /// helper. Unconditional because the implementation is always
+    /// constructible and internally fail-closed (disabled config, denied or
+    /// absent consent ⇒ empty projection ⇒ ranking unchanged) — the OFF state
+    /// lives inside the port, not in an `Option` here.
+    pub memory_graph_projection: Arc<dyn MemoryGraphProjectionPort>,
+    /// ADR-033 §4: vault mirror writer. Unconditional (always constructible;
+    /// internally fail-closed for cycles) — the web erase orchestrator MUST
+    /// hold it so Art.17 Phase-3 can never be silently skipped.
+    pub memory_vault_writer: Arc<dyn MemoryVaultWriterPort>,
     /// #7600: durable audit-log hash-chain verifier (the same `SqliteStorage`
     /// as `storage`, as an `AuditChainVerifierPort`). Lets `GET /audit/verify`
     /// reach the real ADR-072 verification.

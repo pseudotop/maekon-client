@@ -43,25 +43,40 @@ runs:
             continue
           }
 
+          # Release artifacts must not inherit the SDK's import libraries. The
+          # previous probe accepted libcrypto.lib/libssl.lib, which link the
+          # OpenSSL DLLs even while OPENSSL_STATIC=1 is set. Stage only the
+          # reviewed static archives under the names openssl-sys expects.
           $libCandidates = @(
+            (Join-Path $root "lib\VC\x64\MT"),
             (Join-Path $root "lib"),
             (Join-Path $root "lib64"),
             (Join-Path $root "lib\VC\x64\MD"),
-            (Join-Path $root "lib\VC\x64\MT"),
             (Join-Path $root "lib\x64")
           )
 
           foreach ($libDir in $libCandidates) {
-            if ((Test-Path (Join-Path $libDir "libssl.lib")) -and
-                (Test-Path (Join-Path $libDir "libcrypto.lib"))) {
+            $staticSsl = Join-Path $libDir "libssl_static.lib"
+            $staticCrypto = Join-Path $libDir "libcrypto_static.lib"
+            if ((Test-Path $staticSsl) -and (Test-Path $staticCrypto)) {
+              $stagingRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+              $stagingDir = Join-Path $stagingRoot "maekon-openssl-static-lib"
+              New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+              Copy-Item -LiteralPath $staticSsl -Destination (Join-Path $stagingDir "libssl.lib") -Force
+              Copy-Item -LiteralPath $staticCrypto -Destination (Join-Path $stagingDir "libcrypto.lib") -Force
+
               "OPENSSL_DIR=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
               "OPENSSL_INCLUDE_DIR=$includeDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "OPENSSL_LIB_DIR=$libDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "OPENSSL_LIB_DIR=$stagingDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "OPENSSL_LIBS=ssl:crypto" | Out-File -FilePath $env:GITHUB_ENV -Append
               "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
               "OPENSSL_NO_VENDOR=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=+crt-static" | Out-File -FilePath $env:GITHUB_ENV -Append
               Write-Host "OpenSSL root: $root"
               Write-Host "OpenSSL include: $includeDir"
-              Write-Host "OpenSSL lib: $libDir"
+              Write-Host "OpenSSL static source: $libDir"
+              Write-Host "OpenSSL staged static lib: $stagingDir"
+              Write-Host "MSVC CRT: statically linked"
               exit 0
             }
           }
@@ -74,4 +89,4 @@ runs:
         }
         Write-Host "Candidate roots:"
         $uniqueRoots | ForEach-Object { Write-Host " - $_" }
-        Write-Error "Unable to locate OpenSSL headers and import libraries on this Windows runner."
+        Write-Error "Unable to locate OpenSSL headers and static libraries on this Windows runner."

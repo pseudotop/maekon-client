@@ -42,7 +42,7 @@ maekon-analysis/src/
 ├── regime_classifier.rs, regime_detector.rs, regime_manager.rs,
 │   regime_analysis_facade.rs, regime_goal_tracker.rs   # Behavioral regime pipeline
 ├── embedding_pipeline.rs       # EmbeddingPipeline — INT8 quantization
-├── vector_retriever.rs, hybrid_search_service.rs, query_expander.rs, few_shot_selector.rs
+├── vector_retriever.rs, query_expander.rs, few_shot_selector.rs
 ├── adaptive_search/            # AdaptiveSearchCoordinator — auto strategy selection (directory module)
 ├── hnsw_adapter.rs             # HnswAdapter — `#[cfg(feature = "hnsw")]`
 ├── kmeans_adapter.rs, gmm_detector/, hdbscan_detector.rs, clustering_strategy.rs

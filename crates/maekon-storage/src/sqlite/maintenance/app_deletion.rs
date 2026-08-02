@@ -192,6 +192,12 @@ impl SqliteStorage {
                     })?);
                 }
             }
+            // #9721: `frame_annotations` has no FK, so the engine cannot
+            // cascade it. This path is a data-minimization action — "delete
+            // everything for this app" — so leaving those rows behind kept the
+            // user's own memo text past the deletion.
+            super::frame_dependents::delete_frame_dependents_matching(&tx, pred)?;
+
             counts.frames_deleted = tx
                 .execute(&format!("DELETE FROM frames WHERE {pred}"), [])
                 .map_err(|e| StorageError::Internal(format!("app frame delete failure: {e}")))?
@@ -335,6 +341,126 @@ mod tests {
                 )
                 .unwrap();
         }
+    }
+
+    /// #9721: "delete everything for this app" is a data-minimization action.
+    /// `frame_annotations` declares no FK, so SQLite could not cascade it and
+    /// the user's own memo text survived the deletion. (`frame_tags` and
+    /// `interruptions` DO have FKs and are handled by the engine — they are
+    /// asserted here as a scoping check, not as a regression guard.)
+    #[test]
+    fn deleting_an_apps_frames_removes_the_annotations_the_fk_engine_cannot() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let (local, _) = storage.ensure_device_identity("Local").unwrap();
+        seed(&storage, &local);
+
+        // Attach dependents to the Banking frame that the deletion targets.
+        let banking_frame: i64 = {
+            let guard = storage.conn.test_lock();
+            let id = guard
+                .query_row(
+                    "SELECT id FROM frames WHERE app_name = 'Banking'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            guard
+                .execute(
+                    "INSERT INTO tags (id, name, color, created_at)                      VALUES (900, 'private', '#ef4444', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+            guard
+                .execute(
+                    "INSERT INTO frame_tags (frame_id, tag_id, created_at)                      VALUES (?1, 900, '2026-01-01T00:00:00Z')",
+                    rusqlite::params![id],
+                )
+                .unwrap();
+            guard
+                .execute(
+                    "INSERT INTO frame_annotations (annotation_id, frame_id, annotation_type, x, y, text, created_at)                      VALUES ('ann-bank', ?1, 'memo', 0.1, 0.1, 'account number', '2026-01-01T00:00:00Z')",
+                    rusqlite::params![id],
+                )
+                .unwrap();
+            guard
+                .execute(
+                    "INSERT INTO interruptions (interrupted_at, from_app, from_category, to_app, to_category, snapshot_frame_id)                      VALUES ('2026-01-01T00:00:00Z', 'Banking', 'fin', 'Slack', 'chat', ?1)",
+                    rusqlite::params![id],
+                )
+                .unwrap();
+            id
+        };
+
+        // The OTHER app's frame keeps its annotation — without this the
+        // assertions below pass even if the cleanup wiped the table wholesale.
+        let editor_frame: i64 = {
+            let guard = storage.conn.test_lock();
+            let id = guard
+                .query_row(
+                    "SELECT id FROM frames WHERE app_name != 'Banking'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            guard
+                .execute(
+                    "INSERT INTO frame_annotations (annotation_id, frame_id, annotation_type, x, y, text, created_at) \
+                     VALUES ('ann-editor', ?1, 'memo', 0.2, 0.2, 'keep me', '2026-01-01T00:00:00Z')",
+                    rusqlite::params![id],
+                )
+                .unwrap();
+            id
+        };
+
+        storage
+            .delete_data_for_apps_inner_for_test(&["Banking".to_string()], &[])
+            .unwrap();
+
+        let guard = storage.conn.test_lock();
+        let relations: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM frame_tags WHERE frame_id = ?1",
+                rusqlite::params![banking_frame],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(relations, 0, "CASCADE: the relation must go with its frame");
+
+        let annotations: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM frame_annotations WHERE frame_id = ?1",
+                rusqlite::params![banking_frame],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            annotations, 0,
+            "the user's memo must not survive a deletion of the app it belonged to"
+        );
+
+        let dangling: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM interruptions WHERE snapshot_frame_id = ?1",
+                rusqlite::params![banking_frame],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            dangling, 0,
+            "SET NULL: the snapshot reference must be cleared"
+        );
+
+        let survivor: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM frame_annotations WHERE frame_id = ?1",
+                rusqlite::params![editor_frame],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            survivor, 1,
+            "another app's annotation must survive — the cleanup must be scoped"
+        );
     }
 
     #[test]

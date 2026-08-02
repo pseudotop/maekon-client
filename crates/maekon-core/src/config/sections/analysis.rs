@@ -44,6 +44,15 @@ pub struct AnalysisConfig {
     /// HIGH — a wrong supersede destroys a durable user belief. Default 0.9.
     #[serde(default = "default_supersede_confidence_threshold")]
     pub supersede_confidence_threshold: f64,
+    /// ADR-032 §2: bounds for the shared memory-graph generation-input
+    /// projection helper (single named config section — three mode consumers
+    /// inventing three config paths would void the single-helper guarantee).
+    #[serde(default)]
+    pub memory_graph_projection: MemoryGraphProjectionConfig,
+    /// ADR-033 §2.2: memory vault mirror configuration (user-owned local
+    /// Markdown vault of digests + Active claims).
+    #[serde(default)]
+    pub memory_vault: MemoryVaultConfig,
 }
 
 impl Default for AnalysisConfig {
@@ -63,8 +72,121 @@ impl Default for AnalysisConfig {
             text_intelligence: TextIntelligenceConfig::default(),
             belief_revision_enabled: false,
             supersede_confidence_threshold: default_supersede_confidence_threshold(),
+            memory_graph_projection: MemoryGraphProjectionConfig::default(),
+            memory_vault: MemoryVaultConfig::default(),
         }
     }
+}
+
+/// ADR-033 §2.2: memory vault mirror configuration.
+///
+/// Off by default at both layers: `enabled = false` AND the dedicated
+/// Tier-13 `memory_vault_mirror` consent defaults false. A `custom_path`
+/// only takes effect once `custom_path_acknowledged` is set through the
+/// explicit UI flow (ADR-033 §3.3) — config mutation paths must reject an
+/// unacknowledged custom path rather than silently mirroring into it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryVaultConfig {
+    /// Master switch. Default false (opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+    /// User-chosen vault root. `None` = the app-owned default
+    /// (`<data_dir()>/vault`). Ignored until acknowledged (§3.3).
+    #[serde(default)]
+    pub custom_path: Option<std::path::PathBuf>,
+    /// ADR-033 §3.3: the user completed the explicit custom-path
+    /// acknowledgement flow (overwrite/delete + possible-sync risks stated).
+    /// Default false — a custom path without this flag is rejected.
+    #[serde(default)]
+    pub custom_path_acknowledged: bool,
+    /// ADR-033 §3.2: cloud-sync detection result stored at path-acceptance
+    /// time (coarse provider label, e.g. `icloud`; never a path). `Some`
+    /// gates the §3.4 egress-ledger record; `None` = not detected.
+    #[serde(default)]
+    pub cloud_provider: Option<String>,
+    /// ADR-033 §1.4: bounded mirror window in days. Must be ≥ 1 and
+    /// ≤ `embedding.retention_days`; a violation is an unevaluable gate
+    /// (complete no-op cycle — no writes AND no deletes). Default 90.
+    #[serde(default = "default_mirror_window_days")]
+    pub mirror_window_days: u32,
+}
+
+impl Default for MemoryVaultConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            custom_path: None,
+            custom_path_acknowledged: false,
+            cloud_provider: None,
+            mirror_window_days: default_mirror_window_days(),
+        }
+    }
+}
+
+fn default_mirror_window_days() -> u32 {
+    90
+}
+
+/// ADR-032 §2 bounds for the shared memory-graph projection helper.
+///
+/// The starting defaults are CONTRACTUAL starting values (ADR-032 §2):
+/// tunable via config, but the fields must exist, be enforced by the helper,
+/// and be covered by fail-closed contract tests. The generation window is
+/// independent of — and must stay ≤ — the `embedding.retention_days` storage
+/// floor; the helper treats a violation as an unevaluable bound (empty
+/// projection), never as permission to widen selection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryGraphProjectionConfig {
+    /// Master switch for the projection helper. Default false (opt-in);
+    /// additionally gated per mode by its dedicated consent permission
+    /// (Mode A: `memory_graph_retrieval_ranking`, Tier 10).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Bounded `updated_at` recency window in days (ADR-032 §2.2).
+    /// Must be ≥ 1 and ≤ `embedding.retention_days`. Default 30.
+    #[serde(default = "default_generation_window_days")]
+    pub generation_window_days: u32,
+    /// Input-side claim confidence floor (ADR-032 §2.3). Distinct from the
+    /// output-side `supersede_confidence_threshold` (0.9), which must not be
+    /// reused here. Must be within [0.0, 1.0]. Default 0.5.
+    #[serde(default = "default_min_input_confidence")]
+    pub min_input_confidence: f64,
+    /// Hard claim-selection cap (ADR-032 §2.4), ordered `updated_at DESC`
+    /// with `claim_id` tie-break. Must be ≥ 1. Default 64.
+    #[serde(default = "default_projection_max_claims")]
+    pub max_claims: usize,
+    /// Hard edge-selection cap (ADR-032 §2.4), ordered `created_at DESC`
+    /// with `edge_id` tie-break. Must be ≥ 1. Default 256.
+    #[serde(default = "default_projection_max_edges")]
+    pub max_edges: usize,
+}
+
+impl Default for MemoryGraphProjectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            generation_window_days: default_generation_window_days(),
+            min_input_confidence: default_min_input_confidence(),
+            max_claims: default_projection_max_claims(),
+            max_edges: default_projection_max_edges(),
+        }
+    }
+}
+
+fn default_generation_window_days() -> u32 {
+    30
+}
+
+fn default_min_input_confidence() -> f64 {
+    0.5
+}
+
+fn default_projection_max_claims() -> usize {
+    64
+}
+
+fn default_projection_max_edges() -> usize {
+    256
 }
 
 /// Floor for `analysis.interval_secs` (#6177). Originally mirrored the now-deleted

@@ -43,6 +43,13 @@ async fn sample_and_log_resource_budget(
 struct ResourceSignalState {
     rss_over_budget: bool,
     cpu_over_budget: bool,
+    /// #9635: transition tracker for the ASPIRATIONAL (product-target) band.
+    /// The enforcement warn only fires at the loose provisional ceiling
+    /// (200MB/200%), leaving the entire 100–200MB / 2–200% band — exactly
+    /// where a regression incubates — without any local signal. This
+    /// info-level breadcrumb closes that band without touching the
+    /// CI-asserted ceiling.
+    rss_over_aspirational: bool,
     leak_suspected: bool,
 }
 
@@ -106,6 +113,23 @@ fn log_resource_signals(
         );
     }
     signal_state.rss_over_budget = rss_over_budget;
+
+    // #9635: aspirational-band breadcrumb (info, transition-edged like the
+    // budget warn above — one line per crossing, not per tick).
+    let rss_over_aspirational = snapshot.rss_bytes > resource_budget::ASPIRATIONAL_RSS_BYTES;
+    if rss_over_aspirational && !signal_state.rss_over_aspirational {
+        info!(
+            rss_mb,
+            target_mb = resource_budget::ASPIRATIONAL_RSS_BYTES as f64 / 1024.0 / 1024.0,
+            "self RSS crossed the aspirational product target (still under the enforcement ceiling)"
+        );
+    } else if !rss_over_aspirational && signal_state.rss_over_aspirational {
+        info!(
+            rss_mb,
+            "self RSS returned within the aspirational product target"
+        );
+    }
+    signal_state.rss_over_aspirational = rss_over_aspirational;
 
     // A 0.0 CPU reading means "no baseline yet" (first tick) or an idle
     // process — never treat it as an over-budget breach.

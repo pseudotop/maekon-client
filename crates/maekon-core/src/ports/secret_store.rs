@@ -20,6 +20,19 @@ pub const INTEGRATION_REFRESH_TOKEN_SECRET_KEY: &str = "refresh_token";
 pub const INTEGRATION_EXPIRES_AT_SECRET_KEY: &str = "expires_at";
 pub const INTEGRATION_DPOP_SIGNING_KEY_SECRET_KEY: &str = "dpop_signing_key";
 
+/// ONESHIM server login session material (Task: #9459 REST login slice).
+/// Mirrors the `integration/auth/default` namespace convention.
+///
+/// The key literals collide with their `INTEGRATION_*` counterparts on purpose:
+/// they are deliberately separate constants so the ONESHIM session namespace
+/// never inherits a change made for the integration-bridge namespace.
+pub const ONESHIM_AUTH_SECRET_NAMESPACE: &str = "oneshim/auth/default";
+pub const ONESHIM_ACCESS_TOKEN_SECRET_KEY: &str = "access_token";
+pub const ONESHIM_REFRESH_TOKEN_SECRET_KEY: &str = "refresh_token";
+pub const ONESHIM_EXPIRES_AT_SECRET_KEY: &str = "expires_at";
+pub const ONESHIM_IDENTIFIER_SECRET_KEY: &str = "identifier";
+pub const ONESHIM_ORGANIZATION_ID_SECRET_KEY: &str = "organization_id";
+
 pub fn validate_secret_segment(raw: &str, field_name: &str) -> Result<String, CoreError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

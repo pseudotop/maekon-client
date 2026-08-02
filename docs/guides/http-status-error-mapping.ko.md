@@ -15,7 +15,7 @@ ADR-019의 `err.code()` wire code는 Grafana group-by-code, code 기반 i18n 룩
 | HTTP status | CoreError variant | Wire code | 재시도 가능? |
 |---|---|---|---|
 | 401 Unauthorized | `Auth` | `auth.failed` | 아니오 |
-| 403 Forbidden | `Auth` | `auth.failed` | 아니오 |
+| 403 Forbidden | `Auth` | `auth.failed` | 아니오 ([승인된 편차](#승인된-편차) 참조) |
 | 404 Not Found | `NotFound` | `not_found.resource_missing` | 아니오 |
 | 408 Request Timeout | `RequestTimeout` | `network.timeout` | 예 |
 | 429 Too Many Requests | `RateLimit` | `network.rate_limit` | 예 (backoff) |
@@ -86,6 +86,34 @@ if !status.is_success() {
 
 `ApiError` 기반 web handler는 `ApiError::Unauthorized / Forbidden / NotFound / ServiceUnavailable / BadRequest / Internal`로 매핑. `ApiError`는 전용 Timeout/TooManyRequests variant가 없으므로 408/429/504는 `ServiceUnavailable`로 collapse.
 
+## 승인된 편차
+
+병합된 매핑이 UI 로 하여금 **작동할 수 없는 지시**를 사용자에게 주게 만드는 경우에만
+위 표에서 벗어날 수 있습니다. 벗어났다면 여기와 해당 디스패처의 모듈 doc 양쪽에
+기록합니다 — 기록되지 않은 이탈은 drift 입니다.
+
+### context-home 표면의 403 → `policy.denied` (#9625)
+
+`maekon-network::context_home` 은 401 을 `auth.failed` 로, **403 을
+`policy.denied`** 로 매핑합니다(둘을 `auth.failed` 로 병합하지 않음).
+
+두 상태는 정반대의 대응을 요구합니다. 401 은 세션이 사라진 것이고 재로그인이
+해결합니다. 403 은 인증은 됐으나 권한이 없는 것 — 재로그인은 아무것도 바꾸지
+못하며, 여기서 "다시 로그인하세요"를 제시하는 표면은 사용자에게 빠져나갈 수 없는
+루프를 건네는 셈입니다. wire code 의 명시된 목적(code 기반 i18n 룩업, code 기반
+retry 로직)은 병합이 아니라 분리로 달성됩니다.
+
+이 편차가 지킨 제약이며, 향후 편차도 지켜야 할 것:
+
+- **신규 wire code 없음.** `policy.denied` 는 이미 동결된 54-code 레지스트리에
+  있으므로 ADR-019 §5 재도입 체크리스트 대상이 아니고, `translateError` 에 전
+  로케일 템플릿이 이미 있습니다.
+- **`check_response` 는 건드리지 않음.** 공유 헬퍼를 넓히면 이 구분을 요청한 적
+  없는 기존 호출자 전체의 동작이 바뀝니다. 분리는 필요한 디스패처 하나에
+  국한됩니다.
+- **나머지 arm 은 전부 표를 따르며**, 테스트(`canonical_table_arms_match_the_guide`)
+  가 이를 고정해 편차가 조용히 자라지 못하게 합니다.
+
 ## 도메인별 fallback
 
 `_` wildcard는 도메인별 variant가 있으면 `Network::Generic` 대신 사용. 예:
@@ -98,7 +126,7 @@ if !status.is_success() {
 
 ## 이 패턴을 따르는 디스패처
 
-16개 디스패처. **구현** = 매핑 구현됨. **테스트** = 매핑을 검증하는 회귀 테스트 (specific-arm + fallback) 존재.
+17개 디스패처. **구현** = 매핑 구현됨. **테스트** = 매핑을 검증하는 회귀 테스트 (specific-arm + fallback) 존재.
 
 | Crate / module | 구현 | 테스트 |
 |---|---|---|
@@ -118,6 +146,7 @@ if !status.is_success() {
 | `maekon-audio::cloud_stt` | ✓ | ✓ specific + fallback |
 | `maekon-audio::model_downloader` | ✓ | ✓ specific + fallback (`new_with_base_url` 주입 refactor 필요했음) |
 | `maekon-web::services::ai_model_catalog_web_service` | ✓ (ApiError form) | ✓ specific + fallback |
+| `maekon-network::context_home::map_failure_status` | ✓ (403 편차 — 위 참조) | ✓ 7개 — 정본 arm 표, 403 분리, bare-500 재시도성, 영구 4xx, Retry-After 전달, 메시지에 bearer 없음 |
 
 ## 의도적 제외
 

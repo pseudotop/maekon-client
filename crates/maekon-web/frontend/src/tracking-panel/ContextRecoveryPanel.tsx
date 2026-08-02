@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, Clock, FileSearch, Pencil, RefreshCw, ShieldAlert, X } from 'lucide-react'
+import { ArrowLeft, Check, Clock, FileSearch, MessageSquarePlus, Pencil, RefreshCw, ShieldAlert, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { type RecoveryResult, useContextRecovery } from '../hooks/useContextRecovery'
@@ -17,6 +17,17 @@ import { type TaskCandidateView, type TodoState, useDurableTasks } from '../hook
  */
 
 const LOCAL_SCENE_SOURCE = 'LOCAL_CURRENT_SCENE'
+
+/**
+ * Reason string for "no active or idle assistant session exists" (#9813).
+ *
+ * Minted by `select_session` returning `None` in
+ * `src-tauri/src/commands/suggestions/current_context.rs`. Named here rather
+ * than inlined because the whole point of this slice is that it is NOT a
+ * provider outage, and a bare string literal sitting next to the outage list
+ * is how it got folded into one in the first place.
+ */
+const NO_SESSION_REASON = 'active_session_unavailable'
 
 const TODO_NEXT_STATES: Record<TodoState, TodoState[]> = {
   CONFIRMED: ['IN_PROGRESS', 'DONE', 'CANCELLED'],
@@ -437,13 +448,32 @@ function outcomeCopy(result: RecoveryResult, t: ReturnType<typeof useTranslation
         detail: t('recovery.outcome.noCandidateDetail', 'Your screen was reviewed but no action was proposed.'),
       }
     default: {
-      // analysis_unavailable — split provider outages from empty/insufficient context.
-      const providerReasons = [
-        'provider_unavailable',
-        'provider_error',
-        'provider_timeout',
-        'active_session_unavailable',
-      ]
+      // analysis_unavailable splits three ways, not two.
+      //
+      // #9813: `active_session_unavailable` used to sit in `providerReasons`
+      // below, so a user with no assistant session was told "the suggestion
+      // provider is unavailable right now" — a sentence asserting two things
+      // the reason never said: that a provider exists, and that its failure is
+      // temporary. For someone who has not set one up, both are false, and the
+      // only instruction it carries is "wait", for a recovery that never comes.
+      //
+      // The reason means exactly one thing: `select_session` found no active or
+      // idle session (`src-tauri/src/commands/suggestions/current_context.rs`).
+      // So that is what this branch says, and it names what creates one.
+      if (result.reason === NO_SESSION_REASON) {
+        return {
+          testid: 'recovery-outcome-no-session',
+          icon: <MessageSquarePlus size={14} />,
+          title: t('recovery.outcome.noSessionTitle', 'No assistant session'),
+          detail: t(
+            'recovery.outcome.noSessionDetail',
+            'Open Chat and start a session. If you have not set up an AI provider yet, do that first in Settings.',
+          ),
+        }
+      }
+      // What is left genuinely describes a provider that exists and failed, so
+      // "offline, try later" is the honest reading of these three.
+      const providerReasons = ['provider_unavailable', 'provider_error', 'provider_timeout']
       if (result.reason && providerReasons.includes(result.reason)) {
         return {
           testid: 'recovery-outcome-provider-offline',

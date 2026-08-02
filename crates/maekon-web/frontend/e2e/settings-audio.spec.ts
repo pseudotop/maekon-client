@@ -54,7 +54,7 @@ const mockedSettings = {
     excluded_app_patterns: [],
     excluded_title_patterns: [],
     auto_exclude_sensitive: true,
-    pii_filter_level: 'standard',
+    pii_filter_level: 'Standard',
   },
   schedule: {
     active_hours_enabled: false,
@@ -69,7 +69,7 @@ const mockedSettings = {
   },
   sandbox: {
     enabled: true,
-    profile: 'balanced',
+    profile: 'Standard',
     allowed_read_paths: [],
     allowed_write_paths: [],
     allow_network: false,
@@ -77,9 +77,9 @@ const mockedSettings = {
     max_cpu_time_ms: 30000,
   },
   ai_provider: {
-    ocr_provider: 'local',
-    llm_provider: 'local',
-    external_data_policy: 'disabled',
+    ocr_provider: 'Local',
+    llm_provider: 'Local',
+    external_data_policy: 'PiiFilterStrict',
     bypass_pii_filter_for_external_ocr: false,
     ocr_validation: {
       enabled: true,
@@ -152,6 +152,7 @@ function mockAudioCompiledTauriIpc(page: Page) {
             selected_model: 'base',
             model_status: { state: 'not_installed' },
             stt_provider_loaded: false,
+            cloud_stt_available: true,
           })
         }
         // Catch-all for the remaining settings/permission/event IPC calls
@@ -282,7 +283,7 @@ test.describe('Settings Audio Tab', () => {
     await expect(downloadBtn).toBeVisible()
   })
 
-  test('should display STT provider radio group', async ({ page }) => {
+  test('should display only supported STT providers', async ({ page }) => {
     await gotoAudioTab(page)
 
     const panel = audioPanel(page)
@@ -292,10 +293,11 @@ test.describe('Settings Audio Tab', () => {
     await expect(localRadio).toBeVisible()
     await expect(localRadio).toBeChecked()
 
-    // Cloud (OpenAI) radio
+    // This release build has no cloud STT provider. Do not advertise a dead
+    // control that cannot work; the explicit capability mock below exercises
+    // the cloud interaction separately.
     const cloudRadio = panel.locator('input[name="stt_provider"][value="cloud"]')
-    await expect(cloudRadio).toBeVisible()
-    await expect(cloudRadio).not.toBeChecked()
+    await expect(cloudRadio).toHaveCount(0)
   })
 
   test('should show cloud API key field when cloud provider selected', async ({ page }) => {

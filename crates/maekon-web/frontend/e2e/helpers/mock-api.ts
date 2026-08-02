@@ -95,7 +95,7 @@ const fallbackSettings = {
     excluded_app_patterns: [],
     excluded_title_patterns: [],
     auto_exclude_sensitive: true,
-    pii_filter_level: 'standard',
+    pii_filter_level: 'Standard',
   },
   schedule: {
     active_hours_enabled: false,
@@ -110,7 +110,7 @@ const fallbackSettings = {
   },
   sandbox: {
     enabled: true,
-    profile: 'balanced',
+    profile: 'Standard',
     allowed_read_paths: [],
     allowed_write_paths: [],
     allow_network: false,
@@ -118,9 +118,9 @@ const fallbackSettings = {
     max_cpu_time_ms: 30000,
   },
   ai_provider: {
-    ocr_provider: 'local',
-    llm_provider: 'local',
-    external_data_policy: 'disabled',
+    ocr_provider: 'Local',
+    llm_provider: 'Local',
+    external_data_policy: 'PiiFilterStrict',
     bypass_pii_filter_for_external_ocr: false,
     ocr_validation: {
       enabled: true,
@@ -313,14 +313,14 @@ const fallbackFocusMetrics = {
 const fallbackAutomationStatus = {
   enabled: true,
   sandbox_enabled: true,
-  sandbox_profile: 'balanced',
-  ocr_provider: 'local',
-  llm_provider: 'local',
+  sandbox_profile: 'Standard',
+  ocr_provider: 'Local',
+  llm_provider: 'Local',
   ocr_source: 'local',
   llm_source: 'local',
   ocr_fallback_reason: null,
   llm_fallback_reason: null,
-  external_data_policy: 'disabled',
+  external_data_policy: 'PiiFilterStrict',
   pending_audit_entries: 0,
 }
 

@@ -27,6 +27,25 @@ Valid types: work_guidance, email_draft, productivity_tip, workflow_optimization
 Valid priorities: low, medium, high, critical.
 Do not output JSONL, Markdown fences, or any text outside the wrapper."#;
 
+/// #9639: user-facing mapping for the screen-derived strict gate. These
+/// commands send screen-assembled content, so a failed window probe stays a
+/// denial (#9643 I2) — but the raw guard message ("External LLM blocked:
+/// active window context unavailable") reads like a security fault. Name the
+/// actual cause and the remedy instead.
+fn map_send_error(e: maekon_core::error::CoreError) -> IpcError {
+    if let maekon_core::error::CoreError::PolicyDenied { message, .. } = &e {
+        if message.contains("active window context unavailable") {
+            return IpcError::new(
+                "policy.denied",
+                "Screen context could not be read (no active window — check the \
+                 Accessibility permission), so this screen-based request was not \
+                 sent. Focus the target window and try again.",
+            );
+        }
+    }
+    IpcError::from(e)
+}
+
 /// Generate suggestions from an active chat session by sending a structured
 /// prompt and parsing the AI response. Returns the number of suggestions added.
 #[command]
@@ -56,6 +75,7 @@ pub async fn request_chat_suggestions(
     let session = mgr.get_session(&session_id).await.map_err(IpcError::from)?;
 
     let msg = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: SUGGESTION_PROMPT.to_string(),
         attachments: Vec::new(),
@@ -64,7 +84,7 @@ pub async fn request_chat_suggestions(
         response_format: None,
     };
 
-    let mut stream = session.send_message(&msg).await.map_err(IpcError::from)?;
+    let mut stream = session.send_message(&msg).await.map_err(map_send_error)?;
 
     // Drain stream and collect response text with a 60s timeout.
     // ResponseStream yields Result<OutboundMessage, CoreError>.
@@ -229,6 +249,9 @@ pub async fn explain_suggestion_in_chat(
 
     let user_content = prompt.clone();
     let msg = SessionMessage {
+        // #9643 review I2: the explain prompt quotes suggestion text that can
+        // itself derive from screen content — treat as screen-derived.
+        screen_derived: true,
         role: MessageRole::User,
         content: prompt,
         attachments: Vec::new(),
@@ -238,7 +261,7 @@ pub async fn explain_suggestion_in_chat(
     };
 
     let session_storage = ai_state.session_storage();
-    let stream = session.send_message(&msg).await.map_err(IpcError::from)?;
+    let stream = session.send_message(&msg).await.map_err(map_send_error)?;
 
     // Spawn streaming task to emit events + persist messages
     // (same pattern as send_session_message in ai_session.rs)

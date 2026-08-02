@@ -1,8 +1,27 @@
-import { render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { type RenderResult, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DataStorageTab from './DataStorageTab'
+
+// The tab hosts TagManagementCard, which reads the shared ['tags'] query.
+// Keep the real component mounted (a missing provider here would mirror a real
+// regression) but serve it an empty tag list instead of a network call.
+vi.mock('../../api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/client')>()),
+  fetchTags: vi.fn().mockResolvedValue([]),
+}))
+
+function renderTab(ui: ReactElement): RenderResult {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
 
 const mocks = vi.hoisted(() => ({
   useSettingsFormContext: vi.fn(),
@@ -64,11 +83,7 @@ describe('DataStorageTab capture export re-authentication', () => {
 
   it('wires the frame export action and renders the shared PIN dialog', async () => {
     const user = userEvent.setup()
-    render(
-      <MemoryRouter>
-        <DataStorageTab />
-      </MemoryRouter>,
-    )
+    renderTab(<DataStorageTab />)
 
     await user.click(screen.getByRole('button', { name: /settings.exportFramesLabel/ }))
     expect(handleExport).toHaveBeenCalledWith('frames')
@@ -104,11 +119,7 @@ describe('DataStorageTab capture export re-authentication', () => {
       },
     })
 
-    render(
-      <MemoryRouter>
-        <DataStorageTab />
-      </MemoryRouter>,
-    )
+    renderTab(<DataStorageTab />)
 
     const alert = screen.getByRole('alert')
     expect(alert).toHaveTextContent('settings.exportFailed')

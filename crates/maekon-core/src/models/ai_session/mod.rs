@@ -31,6 +31,7 @@ mod tests {
     #[test]
     fn serializes_inbound_message() {
         let msg = InboundMessage::Message(SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hello".to_string(),
             attachments: vec![],

@@ -217,7 +217,15 @@ impl HttpApiClient {
         self
     }
 
-    async fn authorized_request(
+    /// Build a request with the bearer already attached.
+    ///
+    /// `pub(crate)` rather than private so sibling transports in this crate
+    /// (e.g. `context_home`) can issue authenticated calls **without ever
+    /// touching the token**: this hands back a ready `RequestBuilder`, never
+    /// the credential itself, and `token_manager` stays private. Widening this
+    /// one method is the narrower option — the alternative was exposing the
+    /// token manager or duplicating bearer handling per call site.
+    pub(crate) async fn authorized_request(
         &self,
         method: reqwest::Method,
         path: &str,

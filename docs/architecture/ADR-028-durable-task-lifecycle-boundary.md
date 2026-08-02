@@ -7,6 +7,7 @@
 **Scope**: `maekon-core` task models and ports, `maekon-storage` SQLite adapter, `src-tauri` task use cases and IPC, `maekon-web` task views
 **Related**: ADR-001 (crate dependency direction), ADR-006 (IPC contract), ADR-022 (prefix+ULID IDs), ADR-026 (async storage and consent ports), ADR-027 (derived suggestion action binding)
 **Issue**: #8576 (`MK-CONTEXT-01.T01`)
+**Implementation status**: P01 #8577 landed on parent main in `af5826ad96` (SQLite V49, core/store, IPC, standalone panel), and `655d979ca1` mounted the panel at route `/tasks`. Source-only readback; not release, runtime, or customer-effect evidence.
 
 ---
 
@@ -391,9 +392,15 @@ rollback contract. Before #8577 can close, tests must cover:
     construction fails closed when no sanitizer is available (see
     [Amendment 2026-07-21](#amendment-2026-07-21-review-resolutions) P3).
 
-## Known Follow-ups
+## Implementation Status and Known Follow-ups
 
-1. **#8577 implementation** — implement only after this ADR is accepted.
+1. **#8577 P01 implemented and mounted** — parent main `af5826ad96` merged the
+   core model/port, SQLite V49, store/export/retention, Tauri IPC, frontend
+   hook, and a standalone panel; `655d979ca1` then rendered that panel from
+   `pages/tasks/TasksPage.tsx` and registered it at `/tasks` in
+   `routes/route-tree.ts`. This is a source readback of parent `main`, not
+   evidence of a public export, exact-build pass, real usage, or production
+   readiness.
 2. **#8583 extension envelope** — map a minimized `WorkContextEnvelope`
    projection into `TaskSourceRef`; do not persist the envelope in task tables.
 3. **Task sync ADR** — define conflict, tombstone, and cross-device confirmation
@@ -435,10 +442,23 @@ additive-migration test bar (§9) were confirmed sound and are unchanged.
   anchor. This preserves §5's stated intent ("an at-least-once ingestion guard,
   not semantic task matching").
 - **B3 / P1 — FK cascade, receipt retention, and dedupe-tombstone permanence
-  (§6, §9).** This codebase does not enable the SQLite `foreign_keys` PRAGMA
+  (§6, §9).** ~~This codebase does not enable the SQLite `foreign_keys` PRAGMA
   (verified: no connection sets it in `sqlite/mod.rs`), so the five tables' `ON
-  DELETE` declarations are **documentation-only** and do not cascade at the
-  engine level. All content-clearing (§3), tombstone expiry (§6), and erasure
+  DELETE` declarations are documentation-only and do not cascade at the engine
+  level.~~
+  **CORRECTED 2026-08-01 (#9735): `foreign_keys` is ON.** The original check
+  looked for an explicit `PRAGMA` write and found none — but the value is a
+  *compile-time default*: `libsqlite3-sys` builds the bundled amalgamation with
+  `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`, and this workspace pins
+  `rusqlite = { features = ["bundled-sqlcipher", ...] }`. Measured on a live
+  connection: `PRAGMA foreign_keys = 1`, and `pragma_compile_options` contains
+  `DEFAULT_FOREIGN_KEYS`. So the `ON DELETE` declarations **are** engine-enforced.
+  The application-enforced child-first deletes described below remain correct
+  and harmless (they are redundant with the engine, not in conflict with it) —
+  but code must not *reason* from the false premise. It already had cost:
+  `activity_segments` inserts carrying a not-yet-checkpointed `regime_id` were
+  rejected outright by the enforced FK, on the authority of a comment that said
+  they could not be. All content-clearing (§3), tombstone expiry (§6), and erasure
   (§6) deletions are application-enforced as explicit child-first `DELETE`
   statements inside the governing transaction, matching the existing
   `ALL_TABLES` pattern in `sqlite/maintenance/retention.rs`. Because deletion is

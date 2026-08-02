@@ -332,6 +332,7 @@ pub async fn get_audio_status(
         stt_provider: format!("{:?}", audio_cfg.stt_provider).to_lowercase(),
         mic_input_mode: mic_input_mode_wire_value(audio_cfg.mic_input_mode),
         vad_state,
+        cloud_stt_available: cfg!(feature = "cloud-stt"),
     })
 }
 

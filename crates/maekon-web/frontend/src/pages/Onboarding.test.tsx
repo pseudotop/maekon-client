@@ -87,7 +87,9 @@ describe('Onboarding', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Next' }))
   }
 
-  it('grant CTA → calls set_consent with the 6 master fields true and the other 7 false', async () => {
+  // #9631: the first-run bundle includes ocr_processing — without it, frames
+  // carry no text and /search reads as broken to a new user.
+  it('grant CTA → calls set_consent with the 7 monitoring-bundle fields true and the rest false', async () => {
     // The consent IPC returns a grant snapshot (other invokes return undefined).
     mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
       if (cmd === 'set_consent') {
@@ -115,7 +117,7 @@ describe('Onboarding', () => {
           process_monitoring: true,
           input_activity: true,
           telemetry: true,
-          ocr_processing: false,
+          ocr_processing: true,
           clipboard_monitoring: false,
           file_access_monitoring: false,
           activity_pattern_learning: false,
@@ -124,6 +126,8 @@ describe('Onboarding', () => {
           memory_graph_enrichment: false,
           microphone: false,
           unredacted_external_ocr: false,
+          memory_graph_retrieval_ranking: false,
+          memory_vault_mirror: false,
         },
       })
     })
@@ -155,6 +159,87 @@ describe('Onboarding', () => {
     gotoConsentStep()
 
     expect(mockInvoke).not.toHaveBeenCalledWith('set_consent', expect.anything())
+  })
+
+  // #9811: StepReady must not claim readiness the app cannot deliver.
+  //
+  // The consent step deliberately does not gate `Next` — consent has to stay
+  // freely refusable — so a user can reach the last step without granting. The
+  // app then collects nothing and the timeline stays empty forever, which is
+  // exactly what a new install looked like before this fix.
+
+  function gotoReadyStep() {
+    // Intro(0)→Permissions(1)→Consent(2)→Features(3)→Audio(4)→Coaching(5)→Ready(6).
+    for (let i = 0; i < 6; i += 1) {
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    }
+  }
+
+  it('says collection is off — not "all set" — when the user skipped consent', async () => {
+    // `get_consent` is the only IPC StepReady issues; report a never-granted
+    // snapshot, which is what skipping the grant button actually leaves behind.
+    mockInvoke.mockImplementation((cmd: string) =>
+      cmd === 'get_consent'
+        ? Promise.resolve({ status: 'NotGranted', permissions: { screen_capture: false } })
+        : Promise.resolve(undefined),
+    )
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoReadyStep()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-ready-collection-off')).toBeInTheDocument()
+    })
+    expect(screen.queryByText(en.onboarding.step4Desc)).not.toBeInTheDocument()
+  })
+
+  it('grants from the last step without forcing it earlier', async () => {
+    let granted = false
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_consent') {
+        return Promise.resolve(
+          granted
+            ? { status: 'Valid', permissions: { screen_capture: true } }
+            : { status: 'NotGranted', permissions: { screen_capture: false } },
+        )
+      }
+      if (cmd === 'set_consent') {
+        granted = true
+        return Promise.resolve({ status: 'Valid', permissions: { screen_capture: true } })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoReadyStep()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-ready-collection-off')).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByTestId('onboarding-ready-collection-off').querySelector('button')!)
+
+    // The warning clears only because consent actually landed, not because the
+    // button was pressed — the re-read is what decides.
+    await waitFor(() => {
+      expect(screen.queryByTestId('onboarding-ready-collection-off')).not.toBeInTheDocument()
+    })
+    expect(mockInvoke).toHaveBeenCalledWith('set_consent', expect.anything())
+  })
+
+  it('stays quiet when consent is already granted', async () => {
+    mockInvoke.mockImplementation((cmd: string) =>
+      cmd === 'get_consent'
+        ? Promise.resolve({ status: 'Valid', permissions: { screen_capture: true } })
+        : Promise.resolve(undefined),
+    )
+
+    renderWithProviders(<Onboarding onComplete={vi.fn()} />)
+    gotoReadyStep()
+
+    await waitFor(() => {
+      expect(screen.getByText(en.onboarding.step4Desc)).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('onboarding-ready-collection-off')).not.toBeInTheDocument()
   })
 
   // #5707: StepCoaching tests — index 5 of 7 (after the default-off Audio step).
@@ -202,6 +287,8 @@ describe('Onboarding', () => {
       memory_graph_enrichment: false,
       microphone: false,
       unredacted_external_ocr: false,
+      memory_graph_retrieval_ranking: false,
+      memory_vault_mirror: false,
     }
     mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
       if (cmd === 'get_consent') {

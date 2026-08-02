@@ -38,6 +38,8 @@ describe('set_consent IPC contract', () => {
       memory_graph_enrichment: false,
       microphone: false,
       unredacted_external_ocr: false,
+      memory_graph_retrieval_ranking: false,
+      memory_vault_mirror: false,
     }
 
     const result = await setConsent(permissions)

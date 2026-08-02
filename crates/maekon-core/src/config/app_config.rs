@@ -125,6 +125,11 @@ impl AppConfig {
                 base_url: "http://localhost:8000".to_string(),
                 request_timeout_ms: default_request_timeout_ms(),
                 sse_max_retry_secs: default_sse_max_retry_secs(),
+                // #9785: empty by default — deny-by-default for external https
+                // handoff, matching `base_url`'s local-first default. A
+                // distribution that wants its Console reachable configures it,
+                // the same way it configures the server it talks to.
+                allowed_handoff_hosts: Vec::new(),
             },
             monitor: MonitorConfig {
                 poll_interval_ms: default_poll_interval_ms(),

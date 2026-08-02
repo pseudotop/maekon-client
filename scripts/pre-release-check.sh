@@ -294,6 +294,12 @@ echo ""
 
 # --- Dependency Security Gate ---
 echo "[Dependency Security]"
+if scripts/check-webdriver-security-isolation.sh; then
+  pass "WebDriver-only vulnerable dependency isolation verified"
+else
+  fail "WebDriver dependency isolation failed — shipped artifacts may contain test-only GTK3 dependencies"
+fi
+
 if command -v gh >/dev/null 2>&1; then
   # Check for open security advisories via dependabot alerts.
   # Distinguish genuine "0 open alerts" from "Dependabot disabled / query failed" —
@@ -381,11 +387,14 @@ def accepted_dependabot(alert):
     for entry in accepted.get("dependabot", []):
         if not not_expired(entry):
             continue
-        if entry.get("number") == alert.get("number"):
-            return True
-        if entry.get("advisory") == advisory.get("ghsa_id"):
-            return True
-        if entry.get("package") == package and entry.get("manifest") == manifest:
+        selectors = {
+            "number": alert.get("number"),
+            "advisory": advisory.get("ghsa_id"),
+            "package": package,
+            "manifest": manifest,
+        }
+        declared = [(key, value) for key, value in selectors.items() if key in entry]
+        if declared and all(entry.get(key) == value for key, value in declared):
             return True
     return False
 

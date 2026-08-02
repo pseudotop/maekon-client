@@ -8,10 +8,14 @@
 //! still starts `NOT_INSTALLED` (ADR-029 Amendment B1). Collapsing them would
 //! make "bundled built-in the user actually enabled" unrepresentable.
 //!
-//! FK `REFERENCES` clauses are documentation only — this workspace never enables
-//! the `foreign_keys` PRAGMA (ADR-028 Amendment B3), so cleanup ordering is
-//! enforced by the port layer, not the engine. The `UNIQUE`/`CHECK` constraints
-//! below ARE engine-enforced and carry the durable invariants.
+//! #9735 CORRECTED: this module used to say the FK `REFERENCES` clauses were
+//! documentation only because "this workspace never enables the `foreign_keys`
+//! PRAGMA (ADR-028 Amendment B3)". The PRAGMA is ON — a compile-time default,
+//! now also explicit in `configure_connection` — and B3 has been amended, so the
+//! declared references and cascades are engine-enforced. The port layer keeps
+//! its explicit child-first ordering: redundant with the engine rather than a
+//! substitute. The `UNIQUE`/`CHECK` constraints below are engine-enforced either
+//! way and carry the durable invariants.
 
 use rusqlite::Connection;
 
@@ -89,11 +93,12 @@ mod tests {
     use super::*;
 
     fn base_v49(conn: &Connection) {
-        // Match production: the shared connection runs with foreign_keys OFF
-        // (ADR-028 Amendment B3), so these tests assert the engine-enforced
-        // UNIQUE/CHECK constraints rather than FK behaviour.
+        // #9735 CORRECTED: production runs with foreign_keys **ON** (compile-time
+        // default, now also set explicitly in configure_connection). This helper
+        // used to force it OFF "to match production" and so verified these
+        // migrations under the opposite condition from the one they ship under.
         conn.execute_batch(
-            "PRAGMA foreign_keys=OFF;
+            "PRAGMA foreign_keys=ON;
              CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
              INSERT INTO schema_version VALUES (49);",
         )

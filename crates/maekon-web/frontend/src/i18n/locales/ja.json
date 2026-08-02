@@ -76,6 +76,7 @@
     }
   },
   "nav": {
+    "signIn": "サインイン",
     "support": "サポート",
     "dashboard": "ダッシュボード",
     "timeline": "タイムライン",
@@ -100,7 +101,8 @@
     "groupInsights": "インサイト",
     "groupManage": "管理",
     "groupSystem": "システム",
-    "tasks": "タスク"
+    "tasks": "タスク",
+    "contextHome": "コンテキストホーム"
   },
   "dashboard": {
     "metricsError": "システムメトリクスの読み込みに失敗しました",
@@ -296,7 +298,13 @@
     "clearFilters": "すべてクリア",
     "filterSummary": "{{total}} 件中 {{shown}} 件のフレームを表示",
     "tagSuggestions": "タグの候補",
-    "noActivity": "この日に記録されたアクティビティはありません"
+    "noActivity": "この日に記録されたアクティビティはありません",
+    "segments": {
+      "title": "画面にあった作業",
+      "axis": "アクティビティ区間",
+      "empty": "この範囲にアクティビティ区間がありません。区間は定期チェックポイントで記録されるため、直近の範囲は空のことがあります。",
+      "filtered": "選択した区間のフレームのみ表示中です。もう一度クリックすると全範囲に戻ります。"
+    }
   },
   "settings": {
     "storageScopeNote": "保存されているすべてのデータの累計です（全期間）。",
@@ -529,6 +537,16 @@
     "exportFramesLabel": "フレームメタデータ",
     "exportFramesDesc": "スクリーンショット情報 (画像を除く)",
     "retentionTitle": "データ保持",
+    "tagManagementTitle": "タグ管理",
+    "tagManagementDesc": "タイムラインで作成したタグの名前変更や削除を行います。タグを削除すると、すべてのフレームから外れます。",
+    "tagManagementEmpty": "タグがありません",
+    "tagManagementEmptyDesc": "タイムラインでフレームに追加したタグがここに表示されます。",
+    "tagRename": "名前を変更",
+    "tagRenameTitle": "タグ名を変更",
+    "tagNameLabel": "タグ名",
+    "tagNameDuplicate": "同じ名前のタグが既に存在します。",
+    "tagDeleteTitle": "タグを削除",
+    "tagDeleteConfirm": "「{{name}}」は付与されているすべてのフレームから削除されます。元に戻せません。",
     "retentionDays": "保持期間 (日)",
     "retentionAutoDelete": "古いデータは自動的に削除されます",
     "maxStorageMb": "最大ストレージ (MB)",
@@ -845,7 +863,25 @@
       "confirmAction": "すべての端末からサインアウト",
       "cancel": "キャンセル",
       "success": "すべての端末からサインアウトしました。",
-      "error": "サインアウトに失敗しました: {{error}}"
+      "error": "サインアウトに失敗しました: {{error}}",
+      "login": {
+        "title": "サインイン",
+        "description": "設定済みの ONESHIM サーバーにサインインします（詳細設定 → ネットワークとサーバー）。",
+        "identifierLabel": "ユーザー ID",
+        "passwordLabel": "パスワード",
+        "organizationIdLabel": "組織 ID",
+        "submit": "サインイン",
+        "success": "サインインしました。",
+        "error": "サインインに失敗しました: {{error}}",
+        "notAvailable": "このビルドにはサーバー接続モードが含まれていません。",
+        "signedInAs": "{{identifier}} @ {{organizationId}} としてサインイン中",
+        "errors": {
+          "invalidArguments": "ユーザー ID、パスワード、組織 ID をすべて入力してください。",
+          "tokenManagerUnavailable": "セッションストアを開けませんでした。Maekon を再起動してからもう一度お試しください。",
+          "invalidCredentials": "サインインが拒否されました。ユーザー ID、パスワード、組織 ID を確認してからもう一度お試しください。",
+          "rejected": "サインインに失敗しました。サーバーに接続できないか、リクエストが拒否されました — しばらくしてからもう一度お試しください。"
+        }
+      }
     },
     "audio": {
       "title": "オーディオと音声認識",
@@ -883,7 +919,8 @@
       "endpoint_hint": "OpenAI 互換の文字起こしエンドポイント。",
       "cloud_timeout": "タイムアウト (秒)",
       "notCompiledTitle": "このビルドでは利用できません",
-      "notCompiledDescription": "このビルドは音声/音声認識サポートなしでコンパイルされています。このトグルを有効にしてモデルをダウンロードしても動作しません。"
+      "notCompiledDescription": "このビルドは音声/音声認識サポートなしでコンパイルされています。このトグルを有効にしてモデルをダウンロードしても動作しません。",
+      "cloudUnavailable": "このビルドにはクラウド文字起こしが含まれていません — 音声認識はローカルのWhisperエンジンを使用します。Localを選択するとこの通知は消えます。"
     },
     "advanced": {
       "aiSession": "AI セッション",
@@ -901,7 +938,53 @@
     "permissionLinuxSessionLabel": "グラフィカルセッション",
     "permissionLinuxSessionDescWayland": "Wayland セッションを検出しました。Wayland ではアクティブウィンドウ検出とトラッキングパネルは利用できず、キャプチャは縮小されたコンテキストで継続します。全機能を使うには X11 セッションでログインしてください。",
     "permissionLinuxSessionDescX11": "X11 セッションを検出しました。アクティブウィンドウ検出とトラッキングパネルがサポートされます。",
-    "permissionLinuxSessionDescUnknown": "グラフィカルセッションの種類を判別できませんでした。アクティブウィンドウ検出が不安定になる可能性があります。"
+    "permissionLinuxSessionDescUnknown": "グラフィカルセッションの種類を判別できませんでした。アクティブウィンドウ検出が不安定になる可能性があります。",
+    "memoryVault": {
+      "sectionTitle": "メモリーヴォールト（ローカル Markdown）",
+      "sectionDescription": "日次ダイジェストと現在のクレームを、Obsidian や任意のエディタで開ける Markdown ファイルにミラーします。",
+      "oneWayNotice": "これは一方向のミラーです。Maekon はこれらのファイルを書き込むだけで内容を読み戻さないため、生成されたファイルを編集しても再生成時に上書きされます。保存したい場合はヴォールトの外にコピーしてください。",
+      "enableLabel": "ローカル Markdown ファイルにミラーする",
+      "enableHint": "メモリーヴォールト専用の同意を付与し、日次ダイジェストの生成後にファイルを書き込みます。既定はオフです。",
+      "consentPending": "設定ではミラーがオンですが、メモリーヴォールトの同意が現在有効でないためファイルは書き込まれていません。スイッチをオフにして再度オンにし、同意を付与し直してください。",
+      "windowOutOfBound": "ミラー期間（{{days}} 日）が許容範囲外のため、すべてのサイクルが何もしません — ファイルの書き込みも削除も行われません。保持期間以下に下げてください。",
+      "activePathLabel": "ヴォールトフォルダ",
+      "pathUnresolved": "このデバイスでヴォールトフォルダを特定できませんでした。",
+      "defaultPathNote": "アプリが管理する既定のフォルダです。このデバイス内にあり、クラウド同期フォルダには含まれません。",
+      "pendingPathNote": "{{path}} は設定済みですが承認されていないため、ミラーは既定のフォルダを使い続けています。下に再入力してリスクを確認し、承認してください。",
+      "cloudActiveNotice": "このフォルダは {{provider}} の中にあります。ファイルを書き込むサイクルごとに、送信台帳へ 1 件記録されます。",
+      "pathInputLabel": "カスタムヴォールトフォルダ（絶対パス）",
+      "pathInputPlaceholder": "/Users/you/Obsidian/MyVault/maekon",
+      "choosePath": "このフォルダを使う",
+      "useDefault": "既定のフォルダに戻す",
+      "warningTitle": "{{path}} を使う前に",
+      "warningOverwrite": "そのフォルダ内でヴォールトの命名規則に一致するファイルは、マージされずに上書きまたは削除されます。Maekon が生成していないファイルには触れません — 独自のヘッダー行を持つファイルのみ書き換えます。",
+      "warningSyncDetected": "このフォルダは {{provider}} の中にあります。クレームのテキストはそのサービスを通じて継続的にこのデバイスの外へ出ます。Maekon はすべての同期手段を検出できないため、カスタムフォルダは利用者の責任です。",
+      "warningSyncUnknown": "このフォルダでクラウドサービスは認識されませんでしたが、Maekon はすべての同期手段を検出できません。このフォルダを対象にする同期ツールを使っている場合、クレームのテキストはそこを通じてデバイスの外へ出ます。カスタムフォルダは利用者の責任です。",
+      "warningAcknowledge": "ファイルが上書きされる可能性と、クレームのテキストがこのデバイスの外へ出る可能性を理解しました。",
+      "warningConfirm": "このフォルダを使う",
+      "warningCancel": "キャンセル",
+      "pathSaved": "ヴォールトフォルダを更新しました。",
+      "pathCleared": "既定のヴォールトフォルダに戻しました。",
+      "exportNow": "今すぐエクスポート",
+      "exportNowHint": "完全なミラーサイクルを 1 回すぐに実行します: 日次ファイルの更新、クレームファイルの再作成、期間外ファイルの削除。",
+      "exportDone": "ミラー完了。日次ファイル {{days}} 件を書き込み、期限切れファイル {{expired}} 件を削除しました。",
+      "exportSkipped": "ミラーは何もしませんでした（{{reason}}）。書き込まれたファイルも削除されたファイルもありません。",
+      "exportFailed": "ミラーを実行できませんでした。",
+      "conflictsNotice": "Maekon が生成したファイルではないため、{{count}} 件をスキップしました。ヴォールトにその名前を使わせたい場合は名前を変更するか移動してください。",
+      "lastCycleLabel": "最後のミラー実行",
+      "lastCycleNever": "ミラーはまだ実行されていません。オンにしておくと毎日のダイジェストの後に自動実行されます。",
+      "lastCycleSummary": "{{time}} — 日次ファイル {{days}} 件を書き込み、期限切れ {{expired}} 件を削除。",
+      "conflictsTitle": "{{count}} 件のファイルをスキップし、そのまま残しました。",
+      "conflictsExplain": "名前はヴォールトが使う形式と同じですが、Maekon が生成したファイルではないため、上書きせずスキップしました。変更も削除もしていません。ミラーにその名前を使わせたい場合は、ファイルを移動するか名前を変更してください。",
+      "conflictsMore": "…ほか {{count}} 件。",
+      "provider": {
+        "icloud": "iCloud Drive",
+        "cloudStorage": "クラウドストレージのフォルダ",
+        "onedrive": "OneDrive",
+        "dropbox": "Dropbox",
+        "googleDrive": "Google Drive"
+      }
+    }
   },
   "privacy": {
     "claims": {
@@ -958,6 +1041,19 @@
         "success": "主張を撤回しました",
         "alreadyRetracted": "この主張はすでに撤回されています"
       }
+    },
+    "aiUsage": {
+      "title": "本日のAI使用量",
+      "description": "設定済みAIプロバイダーが本日処理したトークンと、ローカル参照テーブルによる推定費用です — ネットワーク照会なし。",
+      "inputTokens": "入力トークン",
+      "outputTokens": "出力トークン",
+      "totalTokens": "合計",
+      "estimatedSpend": "推定支出",
+      "estimateSuffix": "推定",
+      "pricingUnknown": "このモデルのローカル価格情報なし",
+      "budgetUsed": "1日のトークン予算 {{budget}} のうち {{pct}}% 使用",
+      "noBudget": "1日のトークン予算未設定",
+      "todayOnlyNote": "本日分のみ。アプリ再起動または日付変更でリセットされます。"
     },
     "egress": {
       "title": "送信の透明性",
@@ -1092,6 +1188,7 @@
         "collectedTitle": "オンの場合に収集される項目:",
         "collected": {
           "screenFrames": "画面フレーム",
+          "ocrText": "抽出された画面テキスト（OCR）とテキスト領域の座標 — 保持期間中キャプチャ記録とともに保存されます",
           "windowTitles": "ウィンドウタイトル",
           "appUsage": "アプリ使用状況",
           "inputActivity": "入力アクティビティのレベル",
@@ -1152,7 +1249,8 @@
           "extractedText": "ローカルのキャプチャおよびシーンコンテキストで使う抽出テキストとテキスト領域の座標",
           "retention": "設定した保持期間に従ってローカルのキャプチャ記録とともに保存される OCR テキスト"
         },
-        "disclosure": "この同意だけで生のスクリーンショットをデバイス外へ送信することは許可されません。外部 OCR にはプロバイダー設定も必要で、マスクなしの生画像送信には下の別個の最高機微度の同意が必要です。オフにすると、キャプチャ、シーン分析、プロバイダー経路で新しい OCR テキストがブロックされます。すでに保持された記録は、同意の撤回またはデータ削除で消去してください。"
+        "disclosure": "この同意だけで生のスクリーンショットをデバイス外へ送信することは許可されません。外部 OCR にはプロバイダー設定も必要で、マスクなしの生画像送信には下の別個の最高機微度の同意が必要です。オフにすると、キャプチャ、シーン分析、プロバイダー経路で新しい OCR テキストがブロックされます。すでに保持された記録は、同意の撤回またはデータ削除で消去してください。",
+        "linuxUnsupported": "LinuxではOCRはまだ利用できません — お使いのプラットフォーム向けエンジンの提供後にこの同意が適用されます。"
       },
       "unredactedExternalOcr": {
         "label": "マスクなし外部 OCR",
@@ -1374,7 +1472,8 @@
     "totalFrames": "フレーム合計",
     "totalIdle": "アイドル合計",
     "apps": "アプリ数",
-    "scrubber": "タイムラインスクラバー"
+    "scrubber": "タイムラインスクラバー",
+    "showMore": "さらに表示"
   },
   "backup": {
     "title": "バックアップ / 復元",
@@ -1400,6 +1499,7 @@
     "framesRestored": "{{count}}件のフレームを復元しました",
     "errors": "エラー",
     "moreErrors": "他 {{count}}件のエラー",
+    "notes": "注記",
     "fullExportTitle": "自分のすべてのデータをエクスポート（GDPR 第20条）",
     "fullExportDescription": "このデバイスが保持するすべての個人データテーブル（アクティビティセグメントと要約、提案、コーチング、習慣ストリーク、メモリグラフ、フレーム注釈、AIチャット、集中指標、作業セッション、ダイジェスト）を機械可読なJSONアーカイブとしてダウンロードします。自由記述テキストはマスクされます。",
     "exporting": "エクスポートを準備中…",
@@ -1951,6 +2051,12 @@
     "searchShortcut": "検索 ({{key}}+K)"
   },
   "errors": {
+    "ipc": {
+      "handoffLaunchFailed": "リンクを開けませんでした。システムが要求を完了できませんでした。処理するアプリが設定されているか確認してから、もう一度お試しください。",
+      "handoffNoHandler": "これを開けるアプリがこのコンピューターにありません。メールのリンクの場合は、先にメールアプリをインストールまたは設定してください。",
+      "handoffRejected": "このリンクは開きませんでした。Maekon がシステムに渡せるアドレスではありません。",
+      "storageUnavailable": "ローカルストレージが利用できないため、処理が完了したことを確認できませんでした。Maekon を再起動してからもう一度お試しください。"
+    },
     "boundaryTitle": "問題が発生しました",
     "boundaryRetry": "再試行",
     "serverOffline": "サーバーがオフラインです",
@@ -2363,7 +2469,11 @@
       "egressNote": "クラウド音声認識は、設定でプロバイダーを選択して認証情報を構成するまでオフのままです。"
     },
     "stepIndicatorLabel": "ステップインジケーター",
-    "step4RecoveryCardHint": "作業を進めると、Maekon が役立てそうな瞬間を見つけます。画面の内容を根拠にした次のステップ提案 — 最初の recovery card — は、通常 15 分以内に画面上部の小さなトラッキングパネルに表示されます。"
+    "step4RecoveryCardHint": "作業を進めると、Maekon が役立てそうな瞬間を見つけます。画面の内容を根拠にした次のステップ提案 — 最初の recovery card — は、通常 15 分以内に画面上部の小さなトラッキングパネルに表示されます。",
+    "step4SuggestionsShortcut": "リカバリーカードは提案パネルに表示されます — {{shortcut}}でいつでも開けます。",
+    "readyCollectionOffTitle": "収集がオフのまま開始します",
+    "readyCollectionOffDesc": "同意をスキップしたため、Maekon は何も収集していません。タイムラインと提案は空のままになります。今すぐ有効にするか、後で 設定 > プライバシー から有効にできます。",
+    "readyGrantNow": "今すぐ収集を有効にする"
   },
   "chat": {
     "title": "AIセッション",
@@ -2725,7 +2835,9 @@
     "steps": "{{count}}ステップ",
     "builtin": "組み込み",
     "templateCount": "{{count}}件",
-    "variableLabel": "テンプレート変数: {{name}}"
+    "variableLabel": "テンプレート変数: {{name}}",
+    "run": "実行",
+    "runNamed": "{{name}}を実行"
   },
   "trackingSchedule": {
     "title": "トラッキングスケジュール",
@@ -2859,6 +2971,10 @@
     "textIntelligenceDescription": "アクティビティからテキストパターンを抽出して分類します",
     "autoTuner": "オートチューナー",
     "autoTunerDescription": "EMAベースのドリフト検出と行動レジームの自動再クラスタリング",
+    "tieredMemory": "階層メモリパイプライン",
+    "tieredMemoryDescription": "アクティビティから日次/週次ダイジェスト、再調整セグメント、目標進捗、習慣ストリークを生成します。ローカルで実行されます。",
+    "tieredMemoryNeedsConsent": "このパイプラインには既定でオフの「パターン学習・コーチング」同意も必要です。プライバシー → データ管理で許可するまで、このスイッチは効果がありません。",
+    "tieredMemoryNeedsRestart": "次回起動から有効になります。パイプラインは起動時に構成されるため、日次/週次ダイジェスト・セグメント・目標・習慣ストリークは、この設定をオンにした後の起動から蓄積されます。",
     "serverBaseUrl": "サーバーのベースURL",
     "requestTimeoutMs": "リクエストタイムアウト（ms）",
     "grpcEnabled": "gRPCを有効にする",
@@ -3144,6 +3260,8 @@
       "noCandidateDetail": "画面を確認しましたが、提案された操作はありません。",
       "providerOfflineTitle": "アシスタントはオフライン",
       "providerOfflineDetail": "提案プロバイダーは現在利用できません。",
+      "noSessionTitle": "アシスタントセッションがありません",
+      "noSessionDetail": "チャットを開いてセッションを開始してください。AI プロバイダーが未設定の場合は、先に設定で登録してください。",
       "noContextTitle": "画面の情報が不足",
       "noContextDetail": "次のステップを提案するには現在のコンテキストが不十分でした。"
     }
@@ -3160,5 +3278,77 @@
     "rechecking": "確認中…",
     "revokedToast": "画面収録の権限が取り消されたため、キャプチャを停止しました。",
     "restoredToast": "画面収録の権限が復元され、キャプチャを再開しました。"
+  },
+  "login": {
+    "pageTitle": "ONESHIM にサインイン",
+    "pageSubtitle": "このデバイスを組織の ONESHIM サーバーに接続します。",
+    "unavailableTitle": "このビルドには接続モードが含まれていません",
+    "signedInTitle": "サインイン済みです",
+    "continueWithoutSignIn": "サインインせずに続ける",
+    "localFirstNote": "Maekon はアカウントなしでもすべての機能が動作します。サインインは接続モードの機能を追加するだけです。",
+    "continueToHome": "コンテキストへ進む"
+  },
+  "contextHome": {
+    "title": "あなたのコンテキスト",
+    "actorLine": "{{actor}} · {{org}}",
+    "refresh": "更新",
+    "retry": "再試行",
+    "loading": "コンテキストを読み込み中…",
+    "moreRows": "他 {{count}} 件",
+    "moreParticipants": "+{{count}}",
+    "sections": {
+      "mail": "メール",
+      "messenger": "メッセージ",
+      "projects": "プロジェクト"
+    },
+    "empty": {
+      "threads": "最近の会話はありません。",
+      "projects": "参加中のプロジェクトはありません。"
+    },
+    "section": {
+      "unavailableFlag": "取得できません",
+      "timeout": "このセクションは応答が遅く、スキップされました。",
+      "backendUnavailable": "このセクションを読み込めませんでした。他のコンテキストは最新です。"
+    },
+    "stale": {
+      "badge": "最後に取得したデータを表示中"
+    },
+    "unavailable": {
+      "body": "現在コンテキストを読み込めません。通常は一時的な問題です。"
+    },
+    "denied": {
+      "body": "このアカウントにはコンテキストホームの閲覧権限がありません。管理者に権限を依頼してください。"
+    },
+    "reauth": {
+      "body": "セッションが期限切れです。再度サインインするとコンテキストを表示できます。"
+    },
+    "bridgeAbsent": {
+      "body": "コンテキストホームはデスクトップアプリでのみ利用でき、ブラウザーダッシュボードでは利用できません。"
+    },
+    "malformed": {
+      "body": "このアプリのバージョンでは読み取れないコンテキスト応答をサーバーが返しました。アプリを更新すると通常解決します。"
+    },
+    "participant": {
+      "external": "{{name}}（社外）"
+    },
+    "project": {
+      "role": "役割: {{role}}",
+      "counterparty": "取引先: {{name}}"
+    },
+    "announce": {
+      "complete": "コンテキストを読み込みました。",
+      "partial": "コンテキストを読み込みましたが、一部のセクションを取得できませんでした。",
+      "empty": "コンテキストを読み込みましたが、表示する項目はありません。",
+      "unavailable": "コンテキストを読み込めません。",
+      "denied": "このコンテキストを閲覧する権限がありません。",
+      "reauth": "セッションが期限切れのため、サインイン画面に戻ります。",
+      "bridgeAbsent": "コンテキストホームにはデスクトップアプリが必要です。",
+      "malformed": "コンテキスト応答を読み取れませんでした。",
+      "refreshing": "コンテキストを更新しています。"
+    },
+    "syntheticBadge": {
+      "label": "デモデータ",
+      "description": "このセッションは実際の記録ではなく、デモ用の合成データを表示しています。"
+    }
   }
 }

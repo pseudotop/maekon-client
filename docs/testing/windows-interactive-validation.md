@@ -1,7 +1,8 @@
 # Windows interactive validation topology
 
-Status: executable admission contract; interactive tier execution is not yet
-enabled. Tracking: #9144 and #9190.
+Status: admission and versioned tier executor are wired; execution remains
+fail-closed when the reviewed runner, app artifact, VM snapshot identity, or
+manual receipts are absent. Tracking: #9144, #9190, and #9837.
 
 The source of truth is the parent repository's internal validation-tier
 manifest, `windows-validation-tiers.v1.json` (maintained outside this
@@ -16,12 +17,15 @@ artifact, missing evidence, or manual prompt into an automated pass.
 | Tier | Primary scope | Environment | Timeout / retry | Evidence |
 | --- | --- | --- | --- | --- |
 | PR | Rust contracts, renderer CDP, minimal real-Tauri smoke | Ephemeral CI; no native Windows claim | 60 min; no retry | source SHA, structured result, sanitized logs |
-| Nightly | Full real-Tauri plus adopted UIA single-instance, shortcut, and native-dialog cases | Restored Windows 11 VM, isolated user/profile, unlocked serialized desktop | 180 min; one infrastructure-only retry | snapshot identity, admission receipt, JSONL, product receipts, UIA evidence |
+| Nightly | Full real-Tauri plus adopted UIA single-instance, shortcut, native-dialog, tray, and notification-activation cases | Restored Windows 11 VM, isolated user/profile, unlocked serialized desktop | 180 min; one infrastructure-only retry | snapshot identity, admission receipt, JSONL, product receipts, UIA evidence |
 | Release candidate | Install/update/rollback, DPI/locale/topology, lock/sleep, proxy/offline, protected manual gates | Clean VM reset and the exact signed artifact | 360 min; no retry | source/artifact SHA, Authenticode, lifecycle before/after, manual decisions |
 
-Tray activation and production notification activation remain blocked by #9181
-and #9182. They are not silently replaced by coordinate input or debug
-simulation.
+Production Windows notification activation uses the WinRT `Activated` callback,
+an explicit internal-route allowlist, and a durable sanitized audit receipt.
+Tray identity uses a unique accessible Name/AutomationId/ControlType selector. The tested
+Windows 11 XAML provider does not dispatch coordinate-free UIA activation to
+the application, so hide/restore stays blocked and is never replaced by
+coordinate input or debug simulation.
 
 ## VM baseline and reset
 
@@ -78,19 +82,33 @@ Automation stops before the protected action. A human records only the
 decision/result and non-sensitive postcondition; no credential or protected
 prompt content is captured.
 
-## Enablement gate
+## Executor boundary
 
-`.github/workflows/maekon-client-windows-interactive.yml` is dispatch-only and
-currently admission-only. It validates the topology, requires explicit
-operator confirmation, targets only the five reviewed labels, and then fails
-intentionally after writing an admission receipt. Therefore a green workflow
-cannot be mistaken for completed native UI or release lifecycle coverage.
+`.github/workflows/maekon-client-windows-interactive.yml` remains
+dispatch-only. After admission, `Invoke-WindowsInteractiveTier.ps1` resolves
+the versioned manifest plan and executes entries serially. Nightly owns full
+WDIO plus the single-instance, global-shortcut, native-dialog, tray, and
+notification-activation UIA
+scenarios. Every entry writes a per-TC JSONL row, bounded driver receipts, the
+exact source SHA, sanitized relative evidence references, executable
+name/SHA-256/size identity when supplied, admission and snapshot identity, and
+a target-scoped cleanup receipt.
 
-Enable actual nightly/release-candidate commands only in a separate reviewed
-change after:
+TRAY-007 is executable and records `blocked` if the Shell does not expose
+exactly one named Maekon notification-area button. NOTIF-007 is executable and
+requires the native UIA tree, semantic input, stable PID/HWND, routed product
+receipt, and activation audit receipt together. Because `fail` outranks
+`blocked`, and `blocked` outranks `pass`, the tier cannot report pass while a
+declared product blocker remains.
+Release-candidate lifecycle and protected surfaces use reviewed manual receipt
+keys; missing or invalid receipts are blocked or failed, never inferred as
+pass. The executor never accepts UAC, credentials, security, or privacy
+prompts.
 
-1. the isolated snapshot and runner labels exist;
-2. the runner marker is configured;
-3. a dry-run admission receipt is reviewed;
-4. tier commands write the manifest's complete evidence contract; and
-5. failure/locked/background drills prove that the workflow remains fail-closed.
+An operator must still provide all external prerequisites:
+
+1. the isolated snapshot and exact reviewed runner labels;
+2. the runner marker and non-sensitive snapshot identity;
+3. a passing admission receipt;
+4. an exact nightly application path or signed release-candidate artifact;
+5. reviewed manual receipts for lifecycle or protected actions.

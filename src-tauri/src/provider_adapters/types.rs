@@ -371,6 +371,60 @@ impl ExternalOcrPrivacyGuard {
         Ok(active_window)
     }
 
+    /// #9632: gate variant for USER-TYPED payloads (chat). The screen gates
+    /// (sensitive app, exclusion policy) exist to protect SCREEN-DERIVED
+    /// content, so when the active-window probe itself fails (macOS
+    /// accessibility permission absent / transient AX failure) a typed chat
+    /// message must not die with a policy denial — the caller instead strips
+    /// every screen-derived part (context) and proceeds content-only.
+    ///
+    /// Returns `Ok(Some(window))` when the probe succeeded and every gate
+    /// passed (screen context may egress after sanitization), or `Ok(None)`
+    /// when the window context is unavailable — the caller MUST strip the
+    /// message context before sending. Consent and (when a window IS present)
+    /// sensitive-app/exclusion gates still fail closed exactly as before.
+    async fn ensure_external_llm_allowed_for_user_typed(
+        &self,
+        provider_name: &str,
+        purpose: &str,
+        correlation_id: &str,
+    ) -> Result<Option<maekon_core::models::context::WindowInfo>, CoreError> {
+        if self.process_monitor.get_active_window().await?.is_none() {
+            // #9643 review M1: consent is checked BEFORE the context_stripped
+            // event is written — a request that ends denied must not leave a
+            // completed "context_stripped" record alongside the denial.
+            if !self.consent_manager.full_text_extraction_permitted() {
+                self.log_denied_event_with_correlation(
+                    "privacy.external_llm.denied",
+                    correlation_id,
+                    &format!(
+                        "provider={provider_name} purpose={purpose} reason=full_text_extraction_missing"
+                    ),
+                )
+                .await;
+                return Err(CoreError::PolicyDenied {
+                    code: maekon_core::error_codes::PolicyCode::Denied,
+                    message: "External LLM blocked: full text extraction consent is required"
+                        .to_string(),
+                });
+            }
+            self.log_event_with_correlation(
+                "privacy.external_llm.context_stripped",
+                correlation_id,
+                &format!("provider={provider_name} purpose={purpose} reason=no_active_window"),
+            )
+            .await;
+            return Ok(None);
+        }
+        // Deliberate double probe: `ensure_external_llm_allowed_with_correlation`
+        // re-probes internally. A window vanishing between the two probes fails
+        // CLOSED (the old denial) — rare and safe, so the shared gate sequence
+        // stays single-sourced instead of being split apart.
+        self.ensure_external_llm_allowed_with_correlation(provider_name, purpose, correlation_id)
+            .await
+            .map(Some)
+    }
+
     fn external_llm_filter_level(&self) -> PiiFilterLevel {
         self.external_data_policy
             .effective_egress_pii_level(self.pii_filter_level)
@@ -584,15 +638,42 @@ impl super::guarded_conversation::ConversationContentGuard for ExternalOcrPrivac
         message: &maekon_core::models::ai_session::SessionMessage,
         correlation_id: &str,
     ) -> Result<maekon_core::models::ai_session::SessionMessage, CoreError> {
-        // Fail-closed: consent / active-window / sensitive-app / exclusion gate.
-        let active_window = self
-            .ensure_external_llm_allowed_with_correlation("conversation", "chat", correlation_id)
-            .await?;
+        // #9632: USER-TYPED chat payloads degrade to context-less egress when
+        // the window probe fails (accessibility permission absent) instead of
+        // dying with a policy denial; consent still fails closed, and
+        // sensitive-app/exclusion gates fail closed whenever a window IS
+        // probeable. #9643 review I2: messages whose CONTENT was assembled
+        // from screen data (current-context prompts, explain-suggestion
+        // quotes — `message.screen_derived`) keep the ORIGINAL strict gate:
+        // for them, "window unavailable" must remain a denial, because the
+        // screen-derived text egresses in the content itself and cannot be
+        // stripped like the context field.
+        let active_window = if message.screen_derived {
+            Some(
+                self.ensure_external_llm_allowed_with_correlation(
+                    "conversation",
+                    "chat",
+                    correlation_id,
+                )
+                .await?,
+            )
+        } else {
+            self.ensure_external_llm_allowed_for_user_typed("conversation", "chat", correlation_id)
+                .await?
+        };
 
         let level = self.external_llm_filter_level();
         let mut sanitized = message.clone();
         sanitized.content =
             maekon_vision::privacy::sanitize_title_with_level(&message.content, level);
+        if active_window.is_none() {
+            // Window context unavailable → strip the screen-derived context
+            // field. NOTE (#9643 review M2): user-attached app-reference
+            // attachments may still carry an app name/window title; they are
+            // user-selected payloads and go through the same PII sanitization
+            // below rather than being dropped.
+            sanitized.context = None;
+        }
         if let Some(context) = sanitized.context.as_mut() {
             if let Some(app) = context.active_app.as_deref() {
                 context.active_app = Some(maekon_vision::privacy::sanitize_title_with_level(
@@ -649,7 +730,10 @@ impl super::guarded_conversation::ConversationContentGuard for ExternalOcrPrivac
             correlation_id,
             &format!(
                 "o=1 p=conversation u=chat a={} z={} n={} cp={} cc={} ac={} ib={} ia={} ec={}",
-                self.audit_safe_fragment(&active_window.app_name),
+                active_window
+                    .as_ref()
+                    .map(|window| self.audit_safe_fragment(&window.app_name))
+                    .unwrap_or_else(|| "window_unavailable".to_string()),
                 sanitized.content.len(),
                 sanitized.attachments.len(),
                 u8::from(sanitized.context.is_some()),

@@ -98,10 +98,11 @@ pub struct PermissionFileSystemRules {
     pub deny: Vec<String>,
     #[serde(default = "default_secret_deny_globs")]
     pub deny_globs: Vec<String>,
-    #[serde(default)]
-    pub workspace_roots: Vec<String>,
-    #[serde(default = "default_permission_max_scan_depth")]
-    pub max_scan_depth: u8,
+    // #9638: `workspace_roots` / `max_scan_depth` were declared here for two
+    // years but never read by `access_for_path` (the sole enforcement point) —
+    // an operator setting them changed nothing. Removed rather than silently
+    // kept; serde ignores the stale keys in existing config files. Re-add only
+    // together with actual enforcement.
 }
 
 impl PermissionFileSystemRules {
@@ -134,8 +135,6 @@ impl Default for PermissionFileSystemRules {
             write: Vec::new(),
             deny: Vec::new(),
             deny_globs: default_secret_deny_globs(),
-            workspace_roots: Vec::new(),
-            max_scan_depth: default_permission_max_scan_depth(),
         }
     }
 }
@@ -347,10 +346,6 @@ pub fn default_secret_deny_globs() -> Vec<String> {
 
 fn default_permission_schema_version() -> u8 {
     PERMISSION_PROFILE_V2_SCHEMA_VERSION
-}
-
-fn default_permission_max_scan_depth() -> u8 {
-    8
 }
 
 fn normalize_permission_path(value: &str) -> String {
@@ -654,7 +649,6 @@ mod tests {
                 write: vec!["/workspace/out".to_string()],
                 deny: vec!["/workspace/out/private".to_string()],
                 deny_globs: Vec::new(),
-                ..PermissionFileSystemRules::default()
             },
             ..PermissionProfileV2::default()
         };

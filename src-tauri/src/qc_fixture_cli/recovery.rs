@@ -137,7 +137,7 @@ fn prepare_legacy_migration_fixture(
     encryption_key: EncryptionKey,
     retention_days: u32,
 ) -> Result<LegacyMigrationReport> {
-    let db_path = data_dir.join("maekon.db");
+    let db_path = data_dir.join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME);
     if db_path.exists() {
         bail!(
             "legacy migration preparation requires a fresh isolated profile; discard this qc-*/tc-* profile and retry"
@@ -219,7 +219,7 @@ fn verify_legacy_migration_fixture(
         )
     }
 
-    let db_path = data_dir.join("maekon.db");
+    let db_path = data_dir.join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME);
     let storage = SqliteStorage::open(&db_path, retention_days, Some(&encryption_key))
         .context("reopen migrated isolated QC database")?;
     let (schema_version, invariant_preserved, target_table_present, egress_ledger_entries) =

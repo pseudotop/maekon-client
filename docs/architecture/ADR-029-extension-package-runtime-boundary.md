@@ -7,6 +7,7 @@
 **Scope**: `maekon-core` extension contracts, `maekon-automation` trust reuse, `src-tauri` composition root, extension-facing UI/API
 **Related**: ADR-001 (crate direction), ADR-002 (execution boundary), ADR-019 (typed errors), ADR-026 (consent port), ADR-028 (durable task provenance)
 **Issue**: #8585 (`MK-EXT-01.S01`)
+**Implementation status**: Registry P01 #8586 landed on parent main in `75d6a1e9af` (SQLite V50, core/store, lifecycle IPC, standalone panel), and Skill Pack activation #8588 landed in `4b80bf4bdf` (SQLite V52, activation IPC). The panel is still unmounted and Skill Pack has no frontend surface; connectors, a marketplace, and third-party runtimes remain unimplemented. Source-only readback; not release, runtime, or customer-effect evidence.
 
 ---
 
@@ -388,14 +389,20 @@ test:
 9. typed UI/API unavailability parity; and
 10. public-export exclusion of parent-only threat evidence.
 
-## Known Follow-ups
+## Implementation Status and Known Follow-ups
 
 1. **#8583 envelope contract** — define external source identity, revisions,
    tombstones, and minimized task provenance.
 2. **#8584 permission/OAuth contract** — define account-scoped credentials,
    dynamic grants, and provider scope reconciliation.
-3. **#8586 registry implementation** — implement lifecycle axes only after the
-   Wave-0 contracts are accepted.
+3. **#8586 registry P01 implemented, not mounted** — parent main `75d6a1e9af`
+   merged the lifecycle axes, SQLite V50, IPC, a frontend hook, and a standalone
+   `ExtensionRegistryPanel` with component tests. That panel appears in no route
+   entry and in no non-test source file, so extension lifecycle has no reachable
+   UI. `4b80bf4bdf` added Skill Pack catalog/activation and the capability
+   resolver (SQLite V52, `activate_skill_pack` and `clear_skill_pack_activation`
+   IPC, regression fix `26aa185c82`) with no frontend surface at all. App/route
+   composition and actual connector/runtime work remain separate follow-ups.
 4. **Subprocess/WASM ADR** — required before any non-built-in runtime is enabled.
 5. **Action Adapter ADR** — required before any external write contribution.
 6. **Relay ADR** — required before `relay` or `either` becomes available.

@@ -1,4 +1,4 @@
-//! Tauri IPC command contract tests — CRT-PRV-IPC-001..043.
+//! Tauri IPC command contract tests — CRT-PRV-IPC-001..044.
 //!
 //! Each `#[test]` asserts that the named IPC command module exists +
 //! declares at least one `#[tauri::command]` function. These are SMOKE /
@@ -181,7 +181,7 @@ const TRACKING_PANEL_APP_COMMANDS: &[&str] = &[
     "get_pending_suggestion_count",
     "toggle_suggestions_panel",
     "show_main_window",
-    "simulate_tray_action",
+    "request_app_quit",
     "toggle_capture_pause",
     "set_indicator_visible",
 ];
@@ -222,6 +222,7 @@ const COVERED_COMMAND_MODULES: &[&str] = &[
     "capture_status",
     "coaching",
     "consent",
+    "context_home",
     "detection",
     "error_report",
     "extension",
@@ -230,6 +231,7 @@ const COVERED_COMMAND_MODULES: &[&str] = &[
     "integration",
     "notification",
     "onboarding",
+    "os_handoff",
     "permissions",
     "privacy_audit",
     "qc_upload_spool",
@@ -242,6 +244,7 @@ const COVERED_COMMAND_MODULES: &[&str] = &[
     "system",
     "task",
     "tray",
+    "vault",
 ];
 
 /// Rust files colocated with command modules for test organization only.
@@ -589,6 +592,15 @@ fn crt_prv_ipc_036_reauth() {
     assert_command_module("reauth");
 }
 
+/// ADR-033 (#9465): memory vault mirror IPC module coverage — the "Export now"
+/// full-cycle trigger plus the §3 settings surface (read + the §3.3-gated
+/// custom-path write). #9508 landed `vault.rs` without adding it here, which
+/// left this enumeration test red on `main`; the module is now covered.
+#[test]
+fn crt_prv_ipc_044_vault() {
+    assert_command_module("vault");
+}
+
 /// #8094: durable privacy-transition audit helper module coverage.
 /// `privacy_audit.rs` is a pure helper (HELPER_MODULES) invoked by the
 /// capture-pause and focus-mode command paths to write privacy-safe
@@ -622,35 +634,83 @@ fn crt_prv_ipc_038_shortcuts() {
 /// dismiss/transition/delete. The commands mint their own ids and request
 /// hashes, so this module must keep a real `#[command]` surface rather than
 /// degrading into a helper.
-/// #8586 (ADR-029): Extension registry IPC module coverage — list/install/
-/// enable/update/rollback/uninstall. Registration is intentionally absent from
-/// the IPC surface so the WebView cannot forge provenance or trust fields.
+/// #9639: the MK-EXT IPC surface is RETIRED — this contract now pins that.
+///
+/// It used to assert the eight `commands::extension::*` commands were on the
+/// invoke surface (#8586, ADR-029). Measured before retiring: nothing in
+/// production calls `register_package`, so `extension_installs` stays empty
+/// forever. Every registered command then dead-ends —
+/// `install()` → `RevisionConflict` (`load_row` → None), `list_extensions` → `[]`,
+/// and skill-pack activation fails at `get_manifest(install_id)`. The chain is
+/// dead at the root, so no amount of frontend work could make it do anything.
+///
+/// The implementation is kept (`commands/extension.rs`, storage adapters, their
+/// tests). This test states the ORDER that revival requires: wire a real
+/// `register_package` call site FIRST, then re-register. Flipping only the
+/// registration puts the app back to advertising a feature that cannot work.
 #[test]
-fn crt_prv_ipc_041_extension() {
-    assert_command_module("extension");
+fn crt_prv_ipc_041_extension_surface_stays_retired() {
+    let lib = fs::read_to_string(src_dir().join("lib.rs")).expect("read lib.rs");
+    let handler = extract_invoke_handler_commands(&lib);
+    let retired = [
+        "list_extensions",
+        "install_extension",
+        "set_extension_enablement",
+        "update_extension",
+        "rollback_extension",
+        "uninstall_extension",
+        "activate_skill_pack",
+        "clear_skill_pack_activation",
+    ];
+    let live: Vec<&str> = retired
+        .iter()
+        .copied()
+        .filter(|c| handler.contains(*c))
+        .collect();
+    assert!(
+        live.is_empty(),
+        "MK-EXT is retired (#9639) but these are registered again: {live:?}\n\
+         Reviving requires a production `register_package` call site FIRST — \
+         without it every one of these dead-ends on an empty `extension_installs`. \
+         Once that exists, update this test to pin the live surface instead."
+    );
+
+    // The build manifest must agree — a command in the ACL but not the handler
+    // is the half-wired state this retirement exists to prevent.
+    let build = fs::read_to_string(manifest_dir().join("build.rs")).expect("read build.rs");
+    let manifest = extract_build_manifest_commands(&build);
+    let stale: Vec<&str> = retired
+        .iter()
+        .copied()
+        .filter(|c| manifest.contains(*c))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "retired commands still in the build manifest (ACL): {stale:?}"
+    );
 }
 
-/// #8588 adversarial-review Fix 2: the trusted Skill Pack activation commands
-/// must be present on the extension IPC surface and registered in the invoke
-/// handler. Registration completeness (build manifest + capability scope) is
-/// enforced globally by crt_prv_ipc_029/030; this pins the specific command
-/// surface #8588 adds so a future refactor cannot silently drop it.
+/// #9639: the Skill Pack activation implementation survives the retirement.
+///
+/// #8588 pinned these commands to the invoke surface. #9639 removed them from it
+/// (see the test above), but deliberately did NOT delete the code — skill-pack
+/// activation is complete apart from the same missing `register_package` call
+/// site, so reviving it is re-registration, not reimplementation.
+///
+/// This test keeps that promise honest: the module must still declare the
+/// commands. If someone deletes them, the retirement has quietly become a
+/// removal, and the revival cost stated above is no longer true.
 #[test]
-fn crt_prv_ipc_042_skill_pack_activation() {
+fn crt_prv_ipc_042_skill_pack_activation_impl_is_preserved() {
     let ext = fs::read_to_string(commands_dir().join("extension.rs"))
         .expect("read commands/extension.rs");
     for command in ["activate_skill_pack", "clear_skill_pack_activation"] {
         assert!(
             ext.contains(&format!("pub async fn {command}")),
-            "extension module must declare the {command} command"
+            "extension module must still declare {command} — #9639 retired the \
+             IPC surface, not the implementation"
         );
     }
-    let lib = fs::read_to_string(src_dir().join("lib.rs")).expect("read lib.rs");
-    let handler = extract_invoke_handler_commands(&lib);
-    assert!(
-        handler.contains("activate_skill_pack") && handler.contains("clear_skill_pack_activation"),
-        "skill pack activation commands must be registered in the invoke handler"
-    );
 }
 
 /// #9305: QC upload spool recovery exposes a real frontend-invokable IPC
@@ -663,6 +723,82 @@ fn crt_prv_ipc_043_qc_upload_spool() {
 #[test]
 fn crt_prv_ipc_040_task() {
     assert_command_module("task");
+}
+
+/// #9707: the OS handoff boundary is the only sanctioned way out of the app,
+/// so it must stay a registered command rather than drifting back into
+/// per-surface `window.open` calls.
+#[test]
+fn crt_prv_ipc_045_os_handoff() {
+    assert_command_module("os_handoff");
+}
+
+/// #9707: the handoff command must NOT be `cfg(feature = "server")`-gated.
+///
+/// Opening a link is a local-first capability — the connected-mode slices
+/// (#9627, #9628) are its first callers, but gating it on `server` would make
+/// the default build the one that cannot open anything, and every existing
+/// `window.open` caller is in the default build. `auth.rs` is deliberately
+/// dual-path; this one is deliberately not, and nothing else records that.
+#[test]
+fn crt_prv_ipc_046_os_handoff_is_not_server_feature_gated() {
+    let path = commands_dir().join("os_handoff.rs");
+    let src = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+
+    let command = src
+        .split("pub async fn open_external_target")
+        .next()
+        .expect("os_handoff must declare open_external_target");
+    let attribute_tail = command
+        .rsplit("#[tauri::command]")
+        .next()
+        .unwrap_or_default();
+
+    assert!(
+        !attribute_tail.contains("feature = \"server\""),
+        "open_external_target must stay available in the default build"
+    );
+}
+
+/// #9625: the context-home read surface is the client's only route to the
+/// server's context-home projection, so it must stay a registered command
+/// rather than dissolving back into per-surface REST calls that each re-derive
+/// their own auth handling.
+#[test]
+fn crt_prv_ipc_047_context_home() {
+    assert_command_module("context_home");
+}
+
+/// #9625: `fetch_context_home` must take no identity argument.
+///
+/// The server resolves actor and organization from the JWT alone. The moment
+/// this signature grows a `user_id` / `organization_id` parameter, "fetch
+/// someone else's home" becomes expressible from the WebView, and the only
+/// thing left between that and a cross-tenant leak is a server-side check. That
+/// property is invisible in the type system and would regress silently under a
+/// well-meaning "let the caller pick the org" refactor — this pins it.
+#[test]
+fn crt_prv_ipc_048_context_home_takes_no_identity_argument() {
+    let path = commands_dir().join("context_home.rs");
+    let src = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+
+    let signature = src
+        .split("pub async fn fetch_context_home(")
+        .nth(1)
+        .expect("context_home must declare fetch_context_home")
+        .split(')')
+        .next()
+        .expect("the signature must close");
+
+    for forbidden in ["user_id", "organization_id", "actor_id", "token", "org_id"] {
+        assert!(
+            !signature.contains(forbidden),
+            "fetch_context_home must not accept `{forbidden}` — identity comes from the JWT, \
+             not from the caller. Signature was: {signature}"
+        );
+    }
 }
 
 /// #8199: native fullscreen-policy diagnostics must remain debug-gated rather

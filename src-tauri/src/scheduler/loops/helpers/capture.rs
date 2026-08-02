@@ -1,8 +1,9 @@
 //! Frame capture, processing, and retention helpers.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
 use maekon_api_contracts::stream::{FrameUpdate, RealtimeEvent};
 use maekon_core::models::frame::{ImagePayload, OcrRegion};
@@ -208,13 +209,44 @@ pub(crate) fn redact_window_title(title: String, permitted: bool) -> String {
 pub(crate) const FRAME_RETENTION_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(100);
 
+/// Persistent frame-retention failures are a privacy-health incident, not a
+/// background warning. Three failed scheduler cycles (~5 minutes) escalate to
+/// an error-level signal; the counter resets only after both retention and the
+/// storage-limit pass succeed (#9276).
+const FRAME_RETENTION_FAILURE_THRESHOLD: u32 = 3;
+static FRAME_RETENTION_CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
+
 /// Enforce frame retention and storage limits. Called periodically from the
 /// monitor loop to prevent unbounded disk usage.
 pub(crate) async fn enforce_frame_retention(frame_storage: &dyn FrameStoragePort) {
+    let mut failed = false;
     if let Err(e) = frame_storage.enforce_retention().await {
         warn!("frame retention enforcement failed: {e}");
+        failed = true;
     }
     if let Err(e) = frame_storage.enforce_storage_limit().await {
         warn!("frame storage limit enforcement failed: {e}");
+        failed = true;
+    }
+
+    if failed {
+        let consecutive_failures = FRAME_RETENTION_CONSECUTIVE_FAILURES
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        if consecutive_failures >= FRAME_RETENTION_FAILURE_THRESHOLD {
+            error!(
+                consecutive_failures,
+                "frame retention privacy health degraded"
+            );
+        }
+    } else {
+        let recovered_after_failures =
+            FRAME_RETENTION_CONSECUTIVE_FAILURES.swap(0, Ordering::Relaxed);
+        if recovered_after_failures >= FRAME_RETENTION_FAILURE_THRESHOLD {
+            info!(
+                recovered_after_failures,
+                "frame retention privacy health recovered"
+            );
+        }
     }
 }

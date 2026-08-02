@@ -48,6 +48,23 @@ const FORBIDDEN_ALLOWED_SUBPATHS: &[(&str, &[&str])] = &[
         "update",
         &["require_signature_verification", "signature_public_key"],
     ),
+    // ADR-033 §3.3: the memory-vault custom-path triple is the acknowledgement
+    // gate. `analysis` is an allowed top-level key (users toggle
+    // `memory_vault.enabled` and `mirror_window_days` here), but a generic
+    // patch that sets `custom_path` + `custom_path_acknowledged = true` would
+    // point the mirror at an arbitrary — possibly cloud-synced — folder while
+    // skipping the warning flow entirely, and `cloud_provider` gates the §3.4
+    // egress-ledger record. These three are writable ONLY through
+    // `commands::vault::set_vault_mirror_path`, which runs §3.2 detection and
+    // enforces the acknowledgement in one place.
+    (
+        "analysis",
+        &[
+            "memory_vault.custom_path",
+            "memory_vault.custom_path_acknowledged",
+            "memory_vault.cloud_provider",
+        ],
+    ),
 ];
 
 /// Whitelist of setting keys that can be modified from the WebView.
@@ -730,6 +747,39 @@ mod tests {
         assert!(
             err.contains("update.require_signature_verification"),
             "got: {err}"
+        );
+    }
+
+    // ADR-033 §3.3: the acknowledgement gate must not be reachable from the
+    // generic config-patch surface. Without these entries a WebView patch
+    // could point the mirror at a cloud-synced folder and mark it acknowledged
+    // in one call, producing continuous off-device claim-text egress that the
+    // user never saw a warning for.
+    #[test]
+    fn reject_forbidden_allowed_subpaths_rejects_vault_custom_path_triple() {
+        for field in ["custom_path", "custom_path_acknowledged", "cloud_provider"] {
+            let patch = json!({ "analysis": { "memory_vault": { field: "x" } } });
+            let err = reject_forbidden_allowed_subpaths(&patch).expect_err("must be rejected");
+            assert!(
+                err.contains(&format!("analysis.memory_vault.{field}")),
+                "got: {err}"
+            );
+        }
+    }
+
+    // The sibling half of the same contract: the two harmless vault fields
+    // stay editable, so the guard above is a targeted gate rather than a
+    // blanket block that would make the settings UI unable to enable the
+    // feature at all.
+    #[test]
+    fn reject_forbidden_allowed_subpaths_allows_vault_enabled_and_window() {
+        let patch = json!({
+            "analysis": { "memory_vault": { "enabled": true, "mirror_window_days": 30 } }
+        });
+        assert_eq!(
+            reject_forbidden_allowed_subpaths(&patch),
+            Ok(()),
+            "enabled / mirror_window_days must remain WebView-editable"
         );
     }
 

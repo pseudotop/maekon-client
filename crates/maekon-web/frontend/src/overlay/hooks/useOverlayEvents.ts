@@ -17,7 +17,7 @@ import type {
   SuggestionViewDto,
 } from '../types'
 
-type OverlayAction =
+export type OverlayAction =
   | { type: 'show-coaching'; payload: CoachingPayload }
   | { type: 'upgrade-message'; payload: { message_id: string; personalized_text: string } }
   | { type: 'dismiss' }
@@ -42,7 +42,10 @@ type OverlayAction =
   | { type: 'codex-approval-dismiss' }
   | { type: 'set-fullscreen-policy'; payload: OverlayFullscreenPolicyPayload }
 
-const initialState: OverlayState = {
+// #9637: exported so the reducer — the overlay's single state SSOT per the
+// CLAUDE.md guardrail — can be unit-tested directly (13/23 branches had no
+// automated coverage of any kind).
+export const initialState: OverlayState = {
   mode: 'minimal',
   coaching: null,
   coachingQueue: [],
@@ -64,7 +67,7 @@ const initialState: OverlayState = {
   fullscreenPolicy: null,
 }
 
-function reducer(state: OverlayState, action: OverlayAction): OverlayState {
+export function reducer(state: OverlayState, action: OverlayAction): OverlayState {
   switch (action.type) {
     case 'show-coaching':
       if (state.coaching === null) {

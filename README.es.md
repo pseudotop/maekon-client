@@ -244,17 +244,17 @@ Guía de instalación completa:
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
 ```
 
 ### Recursos de Lanzamiento
@@ -287,11 +287,14 @@ identificadores técnicos estables en esta línea de lanzamiento.
 
 | Variable | Descripción | Valor Predeterminado |
 |------|------|--------|
-| `MAEKON_EMAIL` | Correo electrónico de inicio de sesión (solo modo conectado) | (opcional en autónomo) |
-| `MAEKON_PASSWORD` | Contraseña de inicio de sesión (solo modo conectado) | (opcional en autónomo) |
 | `MAEKON_TESSDATA` | Ruta de datos de Tesseract | (opcional) |
 | `MAEKON_DISABLE_TRAY` | Omitir inicialización de la bandeja del sistema (solo CI headless/prueba de humo remota de GUI) | `0` |
 | `RUST_LOG` | Nivel de registro | `info` |
+
+Las credenciales de inicio de sesión no se leen del entorno. Inicia sesión desde
+**Configuración → General → Account** (requiere una compilación con
+`--features server`); la URL del servidor se configura en
+**Configuración → Advanced → Network & Server**.
 
 ### Archivo de Configuración
 

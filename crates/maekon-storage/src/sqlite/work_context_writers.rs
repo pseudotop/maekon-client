@@ -11,7 +11,9 @@
 //!
 //! Both planes are written only for objects judged `Accepted`, and are removed
 //! immediately by `clear_content_for_object` on close/revocation/supersede. Since
-//! the `foreign_keys` PRAGMA is OFF, the children (raw/projection) are deleted explicitly first.
+//! #9735 CORRECTED: the `foreign_keys` PRAGMA is ON, so declared cascades do
+//! fire. The children (raw/projection) are still deleted explicitly first —
+//! belt-and-braces, and it keeps deletion order under this module's control.
 
 use chrono::{DateTime, Utc};
 use maekon_core::models::work_context::{

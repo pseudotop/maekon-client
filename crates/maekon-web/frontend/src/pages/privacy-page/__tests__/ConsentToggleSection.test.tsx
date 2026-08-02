@@ -20,10 +20,11 @@ import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../.
 // Test i18n resolves to en (fallbackLng='en'). After Task 3 keys resolve to actual copy, so
 // reference the resolved copy from en.json directly instead of the key string (the test stays
 // consistent across wording changes as long as the key path is preserved).
+import * as toastModule from '../../../hooks/useToast'
 import en from '../../../i18n/locales/en.json'
 import ConsentToggleSection from '../ConsentToggleSection'
 
-// Baseline permission set with all 15 permissions false.
+// Baseline permission set with all 17 permissions false.
 const ALL_FALSE: ConsentPermissions = {
   screen_capture: false,
   ocr_processing: false,
@@ -40,6 +41,8 @@ const ALL_FALSE: ConsentPermissions = {
   memory_graph_enrichment: false,
   microphone: false,
   unredacted_external_ocr: false,
+  memory_graph_retrieval_ranking: false,
+  memory_vault_mirror: false,
 }
 
 function snapshot(status: ConsentStatus, overrides: Partial<ConsentPermissions> = {}): ConsentSnapshot {
@@ -410,6 +413,63 @@ describe('ConsentToggleSection', () => {
     fireEvent.click(confirm)
 
     await waitFor(() => expect(withdrawSpy).toHaveBeenCalledTimes(1))
+  })
+
+  it('#9505: withdraw failure surfaces the mapped error toast and keeps the modal open for retry', async () => {
+    const addToastSpy = vi.spyOn(toastModule, 'addToast')
+    // The real failure shape: `withdraw_consent` rejects with the
+    // `storage.unavailable` IpcError from erase_all_local_data. Previously this
+    // was completely silent — no onError, and the confirm modal covered the
+    // card's inline alert.
+    mockIPC((cmd) => {
+      if (cmd === 'get_consent') return snapshot('Valid', { screen_capture: true })
+      if (cmd === 'withdraw_consent') {
+        return Promise.reject({ code: 'storage.unavailable', message: 'frame purge unverified' })
+      }
+      return undefined
+    })
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const trigger = await screen.findByTestId('consent-withdraw-trigger')
+    fireEvent.click(trigger)
+    const confirm = await screen.findByRole('button', {
+      name: en.privacy.consent.withdraw.confirmButton,
+    })
+    fireEvent.click(confirm)
+
+    await waitFor(() => {
+      expect(addToastSpy).toHaveBeenCalledWith('error', en.errors.ipc.storageUnavailable)
+    })
+    // Not the raw Rust wire literal.
+    expect(addToastSpy).not.toHaveBeenCalledWith('error', expect.stringContaining('frame purge unverified'))
+    // The modal stays open as the retry affordance (sibling parity with the
+    // PrivacyLayout delete-all path) — closing silently would look like success.
+    expect(screen.getByRole('button', { name: en.privacy.consent.withdraw.confirmButton })).toBeInTheDocument()
+
+    addToastSpy.mockRestore()
+  })
+
+  it('#9524: confirm button is disabled while the withdraw erase is in flight', async () => {
+    // A never-resolving withdraw keeps the mutation pending; the confirm
+    // button must not accept a second click (double-submit would run two
+    // concurrent erase passes, each with its own EraseWindowGuard).
+    mockIPC((cmd) => {
+      if (cmd === 'get_consent') return snapshot('Valid', { screen_capture: true })
+      if (cmd === 'withdraw_consent') return new Promise(() => {})
+      return undefined
+    })
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    fireEvent.click(await screen.findByTestId('consent-withdraw-trigger'))
+    const confirm = await screen.findByRole('button', {
+      name: en.privacy.consent.withdraw.confirmButton,
+    })
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+
+    await waitFor(() => expect(confirm).toBeDisabled())
   })
 
   it('an Expired snapshot renders a visible warning', async () => {

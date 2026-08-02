@@ -168,7 +168,13 @@ export default function ReplayLayout() {
           still showing it on /replay/events alongside the event log. */}
       {!loading && (
         <>
-          {timeline && timeline.items.length > 0 && <TimelineScrubberSection timeline={timeline} playback={playback} />}
+          {/* #9633: the player must stay reachable while the event log scrolls
+              — sticky within the app's single scroll container (App.tsx main). */}
+          {timeline && timeline.items.length > 0 && (
+            <div className="sticky top-0 z-10 -mx-2 bg-surface px-2 pb-1">
+              <TimelineScrubberSection timeline={timeline} playback={playback} />
+            </div>
+          )}
 
           <div className={cn('grid grid-cols-1 gap-4', hasTimelineData && 'lg:grid-cols-3')}>
             <div className={cn('min-w-0 space-y-4', hasTimelineData && 'lg:col-span-2')}>

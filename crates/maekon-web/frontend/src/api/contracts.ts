@@ -68,6 +68,29 @@ export interface Frame {
 /** User-created annotation attached to a captured frame (Rust `AnnotationType`). */
 export type AnnotationType = 'Highlight' | 'Memo' | 'Arrow'
 
+/**
+ * Canonical `ExternalDataPolicy` wire tokens (Rust enum, PascalCase serde).
+ * #9524: the server RESPONSE path only ever emits these three; fixtures and
+ * form state must use them. The server REQUEST path additionally accepts
+ * exactly one lowercase legacy alias ('disabled' → PiiFilterStrict) via
+ * `settings_validation.rs` — that alias is a server-side compatibility
+ * contract and deliberately NOT part of this type. Note the type only guards
+ * annotated non-test src code; test/e2e/private fixtures sit outside the
+ * tsc program and still rely on review.
+ */
+export type ExternalDataPolicy = 'PiiFilterStrict' | 'PiiFilterStandard' | 'AllowFiltered'
+
+/**
+ * #9535: canonical wire tokens for the sibling enum-backed fields, same
+ * scope/limits as `ExternalDataPolicy` above (guards annotated non-test src;
+ * request paths accept case-insensitive aliases server-side).
+ * Rust: `SandboxProfile` / `OcrProviderType` / `LlmProviderType` — all
+ * PascalCase in both serde and Display.
+ */
+export type SandboxProfile = 'Permissive' | 'Standard' | 'Strict'
+export type OcrProvider = 'Local' | 'Remote'
+export type LlmProvider = 'Local' | 'Remote'
+
 export interface FrameAnnotation {
   annotation_id: string
   frame_id: number
@@ -249,10 +272,6 @@ export interface IndicatorSettings {
   border_opacity: number
 }
 
-export interface TieredMemorySettings {
-  regime_detection_interval_hours: number
-}
-
 export interface AnalysisSettings {
   enabled: boolean
   interval_secs: number
@@ -269,7 +288,18 @@ export interface AnalysisSettings {
   gui_intelligence_enabled: boolean
   text_intelligence_enabled: boolean
   auto_tuner_enabled: boolean
-  tiered_memory?: TieredMemorySettings
+  /**
+   * #9629: master switch for the tiered-memory pipeline (maps to nested Rust
+   * `analysis.tiered_memory.enabled`) — powers /day, /week, recalibration
+   * segments, coaching goal progress, and habit streaks.
+   */
+  tiered_memory_enabled: boolean
+  /**
+   * #9629: flat contract field (maps to nested Rust
+   * `analysis.tiered_memory.regime_detection_interval_hours`). Replaces the
+   * phantom nested `tiered_memory` object the server never sent.
+   */
+  regime_detection_interval_hours: number
 }
 
 export interface NetworkSettings {
@@ -940,6 +970,13 @@ export interface RestoreResult {
     frames: number
   }
   errors: string[]
+  /**
+   * Non-failing observations (#9714). Separate from `errors` because `success`
+   * is `errors.is_empty()` server-side: a relation pointing at a frame this
+   * device no longer has is data-hygiene noise (#9721), not a failed restore.
+   * Absent on older servers, hence optional.
+   */
+  notes?: string[]
 }
 
 export interface TimelineSessionInfo {
@@ -1062,7 +1099,7 @@ export interface AutomationSettings {
 
 export interface SandboxSettings {
   enabled: boolean
-  profile: string
+  profile: SandboxProfile
   allowed_read_paths: string[]
   allowed_write_paths: string[]
   allow_network: boolean
@@ -1072,9 +1109,9 @@ export interface SandboxSettings {
 
 export interface AiProviderProfileConfig {
   access_mode: string
-  ocr_provider: string
-  llm_provider: string
-  external_data_policy: string
+  ocr_provider: OcrProvider
+  llm_provider: LlmProvider
+  external_data_policy: ExternalDataPolicy
   bypass_pii_filter_for_external_ocr: boolean
   ocr_validation: OcrValidationSettings
   scene_action_override: SceneActionOverrideSettings
@@ -1279,14 +1316,14 @@ export interface ProviderEndpointProbeResult {
 export interface AutomationStatus {
   enabled: boolean
   sandbox_enabled: boolean
-  sandbox_profile: string
-  ocr_provider: string
-  llm_provider: string
+  sandbox_profile: SandboxProfile
+  ocr_provider: OcrProvider
+  llm_provider: LlmProvider
   ocr_source: string
   llm_source: string
   ocr_fallback_reason: string | null
   llm_fallback_reason: string | null
-  external_data_policy: string
+  external_data_policy: ExternalDataPolicy
   pending_audit_entries: number
   /** Intent-hint confirmation policy; combine with sandbox fields for containment copy. */
   confirmation_policy?: string
@@ -1411,10 +1448,10 @@ export interface AutomationStats {
 
 export interface PoliciesInfo {
   automation_enabled: boolean
-  sandbox_profile: string
+  sandbox_profile: SandboxProfile
   sandbox_enabled: boolean
   allow_network: boolean
-  external_data_policy: string
+  external_data_policy: ExternalDataPolicy
   scene_action_override_enabled: boolean
   scene_action_override_active: boolean
   scene_action_override_reason: string | null
@@ -1437,7 +1474,7 @@ export interface ExecutionPolicyConfig {
   requires_sudo: boolean
   max_execution_time_ms: number
   audit_level: string
-  sandbox_profile?: string | null
+  sandbox_profile?: SandboxProfile | null
   allowed_paths: string[]
   allow_network?: boolean | null
   require_signed_token: boolean
@@ -2022,7 +2059,10 @@ export type ConsentStatus = 'NotGranted' | 'Valid' | 'Expired' | 'UpdateRequired
 
 /**
  * Matches Rust's `ConsentPermissions` struct (snake_case fields, no rename_all).
- * 15 tiered boolean permissions; all default to false (fail-closed) on the Rust side.
+ * 17 tiered boolean permissions; all default to false (fail-closed) on the Rust side.
+ *
+ * Tier numbering is NOT contiguous: Tiers 11/12 are name-reserved by ADR-032 for
+ * its Modes B/C and have no field yet, so Tier 13 follows Tier 10 directly.
  */
 export interface ConsentPermissions {
   // Tier 1
@@ -2049,6 +2089,16 @@ export interface ConsentPermissions {
   microphone: boolean
   // Tier 9: Raw Off-Device OCR
   unredacted_external_ocr: boolean
+  // Tier 10: Memory-Graph Retrieval Ranking (ADR-032 Mode A)
+  memory_graph_retrieval_ranking: boolean
+  /**
+   * Tier 13: Memory Vault Mirror (ADR-033). Permits continuously mirroring
+   * digests + Active claims to a local Markdown vault OUTSIDE SQLite. Dedicated
+   * and never implied by a sibling permission; the separate
+   * `custom_path_acknowledged` config gate (ADR-033 §3.3) additionally covers
+   * custom-folder overwrite/sync risk.
+   */
+  memory_vault_mirror: boolean
 }
 
 /** Matches Rust's `ConsentSnapshot` DTO returned by the consent IPC commands. */

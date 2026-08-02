@@ -15,11 +15,14 @@ import {
   fetchFrameTags,
   fetchSettings,
   fetchTags,
+  fetchTimeline,
   removeTagFromFrame,
+  TAGS_QUERY_KEY,
 } from '../../api/client'
 import { isStandaloneModeEnabled } from '../../api/standalone'
 import DateRangePicker from '../../components/DateRangePicker'
 import Lightbox from '../../components/Lightbox'
+import SegmentNavigator from '../../components/SegmentNavigator'
 import { Skeleton } from '../../components/ui'
 import { useCaptureMutationRecovery } from '../../hooks/useCaptureMutationRecovery'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
@@ -118,6 +121,21 @@ export default function TimelineLayout() {
   const dateRange = {
     from: searchParams.get('from') ?? undefined,
     to: searchParams.get('to') ?? undefined,
+  }
+  // #9812: the drilled-into segment lives in the URL like every other filter
+  // here, so a reload or a shared link lands on the same view. Keeping it in
+  // component state would make "send me what you were looking at" impossible.
+  const segmentStart = searchParams.get('seg')
+  const segmentEnd = searchParams.get('segEnd')
+
+  // Frames are fetched for the segment when one is selected, the whole picked
+  // range otherwise. Narrowing the QUERY rather than filtering the page is what
+  // makes this useful: a 10-minute segment holds at most ~120 frames at the
+  // default 5s throttle, so the existing pagination becomes the right size
+  // instead of paging through the whole retention window.
+  const effectiveRange = {
+    from: segmentStart ?? dateRange.from,
+    to: segmentEnd ?? dateRange.to,
   }
 
   const setAppFilter = useCallback<React.Dispatch<React.SetStateAction<string>>>(
@@ -238,7 +256,7 @@ export default function TimelineLayout() {
   )
 
   const { data: allTags = [] } = useQuery({
-    queryKey: ['tags'],
+    queryKey: TAGS_QUERY_KEY,
     queryFn: fetchTags,
   })
 
@@ -285,9 +303,44 @@ export default function TimelineLayout() {
     },
   })
 
+  // Segments come from the same `/api/timeline` the replay screen already uses
+  // — no new endpoint. Scoped to the PICKED range, never the segment, or
+  // drilling in would erase the axis you drilled from.
+  const { data: timeline } = useQuery({
+    queryKey: ['timeline-segments', dateRange.from, dateRange.to],
+    queryFn: () => fetchTimeline({ from: dateRange.from, to: dateRange.to }),
+    staleTime: 120_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const selectSegment = useCallback(
+    (segment: { start: string; end: string } | null) => {
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev)
+          if (segment) {
+            p.set('seg', segment.start)
+            p.set('segEnd', segment.end)
+          } else {
+            p.delete('seg')
+            p.delete('segEnd')
+          }
+          // Page numbers do not survive a range change — page 7 of the whole
+          // window is not page 7 of one segment, and leaving it would show an
+          // empty list that looks like "no frames here".
+          p.delete('page')
+          return p
+        },
+        { replace: true },
+      )
+      setPage(0)
+    },
+    [setPage, setSearchParams],
+  )
+
   const { data: response, isLoading } = useQuery({
-    queryKey: ['frames', page, dateRange.from, dateRange.to],
-    queryFn: () => fetchFrames(dateRange.from, dateRange.to, pageSize, page * pageSize),
+    queryKey: ['frames', page, effectiveRange.from, effectiveRange.to],
+    queryFn: () => fetchFrames(effectiveRange.from, effectiveRange.to, pageSize, page * pageSize),
     staleTime: 120_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -459,6 +512,10 @@ export default function TimelineLayout() {
           </span>
         </div>
         <DateRangePicker onRangeChange={handleRangeChange} initialFrom={dateRange.from} initialTo={dateRange.to} />
+      </div>
+
+      <div className="mb-4">
+        <SegmentNavigator segments={timeline?.segments ?? []} selectedStart={segmentStart} onSelect={selectSegment} />
       </div>
 
       <Outlet context={ctx} />

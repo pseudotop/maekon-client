@@ -96,7 +96,16 @@ fn register_capture_shortcut(app: &App) {
             });
 
     match result {
-        Ok(()) => info!("Global shortcut registered: CmdOrCtrl+Shift+\\ (capture toggle)"),
+        Ok(()) => {
+            // #9639: record in the registry so diagnostics (and UI notices)
+            // see the effective chord — 4 of 6 shortcuts never recorded.
+            crate::shortcut_registry::record_registered(
+                "capture-toggle",
+                "capture pause toggle",
+                "CmdOrCtrl+Shift+\\",
+            );
+            info!("Global shortcut registered: CmdOrCtrl+Shift+\\ (capture toggle)");
+        }
         Err(e) => tracing::warn!("Failed to register capture shortcut: {e}"),
     }
 }
@@ -327,6 +336,13 @@ fn register_detection_shortcut(app: &App) {
             })
     {
         tracing::warn!("failed to register detection shortcut: {e}");
+    } else {
+        // #9639: registry visibility for diagnostics/UI notices.
+        crate::shortcut_registry::record_registered(
+            "detection-toggle",
+            "detection overlay toggle",
+            "CmdOrCtrl+Shift+D",
+        );
     }
 }
 
@@ -351,6 +367,12 @@ fn register_detection_refresh_shortcut(app: &App) {
             })
     {
         tracing::warn!("failed to register detection refresh shortcut: {e}");
+    } else {
+        crate::shortcut_registry::record_registered(
+            "detection-refresh",
+            "detection overlay refresh",
+            "CmdOrCtrl+Shift+R",
+        );
     }
 }
 
@@ -377,6 +399,12 @@ fn register_automation_shortcut(app: &App) {
             })
     {
         tracing::warn!("failed to register automation shortcut: {e}");
+    } else {
+        crate::shortcut_registry::record_registered(
+            "automation-quick-access",
+            "automation quick access",
+            "CmdOrCtrl+Shift+A",
+        );
     }
 }
 

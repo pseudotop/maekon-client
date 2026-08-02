@@ -52,3 +52,41 @@ describe('ConfirmModal — erasure export disclosure (#4478 G5)', () => {
     expect(note).toContain('JSON/CSV')
   })
 })
+
+describe('ConfirmModal — pending guard + focus trap (#9524/#9535)', () => {
+  function renderPendingModal() {
+    return render(
+      <I18nextProvider i18n={i18n}>
+        <ConfirmModal
+          isOpen
+          title="Withdraw"
+          message="Sure?"
+          confirmText="Withdraw"
+          isDangerous
+          confirmDisabled
+          onConfirm={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      </I18nextProvider>,
+    )
+  }
+
+  it('disables the confirm button while the confirmed mutation is pending', () => {
+    renderPendingModal()
+    expect(screen.getByRole('button', { name: 'Withdraw' })).toBeDisabled()
+  })
+
+  it('keeps Tab trapped on Cancel when confirm is disabled (#9535 :not(:disabled))', async () => {
+    renderPendingModal()
+    const cancel = screen.getByRole('button', { name: i18n.t('privacy.cancel') })
+    // Initial-focus effect targets the first button (Cancel) after 50ms.
+    await vi.waitFor(() => expect(cancel).toHaveFocus())
+
+    // With confirm disabled, Cancel is first AND last focusable — forward Tab
+    // must be intercepted and focus must stay inside the dialog. Pre-fix,
+    // `last` was the (unfocusable) disabled confirm, no branch fired, and
+    // focus escaped the dialog.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+    expect(cancel).toHaveFocus()
+  })
+})

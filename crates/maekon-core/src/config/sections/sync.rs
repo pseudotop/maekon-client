@@ -6,15 +6,24 @@ use serde::{Deserialize, Serialize};
 /// this floor (prevents excessive network/battery drain).
 pub const MIN_SYNC_INTERVAL_SECS: u64 = 30;
 
-/// OS keychain service + account holding the cross-device sync passphrase
-/// (#8056 P2-2). The passphrase lives in the OS keychain — NOT in config — so a
-/// GUI app launched from Finder / the Start menu (which does not inherit a
-/// shell's `MAEKON_SYNC_PASSPHRASE` env) can still activate sync. Shared between
-/// the read side (`agent_runtime::sync_setup`) and the Settings → Sync write
-/// route so the two never drift on the entry name.
-pub const SYNC_PASSPHRASE_KEYCHAIN_SERVICE: &str = "maekon";
-/// See [`SYNC_PASSPHRASE_KEYCHAIN_SERVICE`].
+/// OS keychain account holding the cross-device sync passphrase (#8056 P2-2).
+/// The passphrase lives in the OS keychain — NOT in config — so a GUI app
+/// launched from Finder / the Start menu (which does not inherit a shell's
+/// `MAEKON_SYNC_PASSPHRASE` env) can still activate sync. Shared between the
+/// read side (`agent_runtime::sync_setup`) and the Settings → Sync write route
+/// so the two never drift on the entry name. The service half of the entry is
+/// no longer a constant: use `config_manager::keychain_service_name()` (#9588
+/// flavor scoping) wherever the old `SYNC_PASSPHRASE_KEYCHAIN_SERVICE` const
+/// (`"maekon"`) was passed.
 pub const SYNC_PASSPHRASE_KEYCHAIN_ACCOUNT: &str = "sync_passphrase";
+
+/// Pre-#9588 fixed service half of the sync-passphrase entry. Kept (deprecated)
+/// because this crate is exported to the public `pseudotop/maekon-client`
+/// repository, so removing a `pub const` is an API break for external
+/// consumers (review #9593 M1). No in-tree caller remains.
+#[deprecated(note = "service names are flavor-scoped since #9588 — use \
+            config_manager::keychain_service_name() instead")]
+pub const SYNC_PASSPHRASE_KEYCHAIN_SERVICE: &str = "maekon";
 
 /// Minimum length for the sync passphrase. Argon2id derives BOTH the AES-256-GCM
 /// payload key and the LAN HMAC challenge-response key from it, so a trivially

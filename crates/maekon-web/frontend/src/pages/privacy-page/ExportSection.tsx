@@ -110,6 +110,19 @@ export default function ExportSection() {
               </ul>
             </div>
           )}
+          {restoreResult.notes && restoreResult.notes.length > 0 && (
+            <div className="mt-2 text-sm">
+              <div className={`${typography.weight.medium}`}>{t('backup.notes', { defaultValue: 'Notes' })}:</div>
+              <ul className="list-inside list-disc">
+                {restoreResult.notes.slice(0, 5).map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+                {restoreResult.notes.length > 5 && (
+                  <li>...{t('backup.moreErrors', { count: restoreResult.notes.length - 5 })}</li>
+                )}
+              </ul>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => setRestoreResult(null)}

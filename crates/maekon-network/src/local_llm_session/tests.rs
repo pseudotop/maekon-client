@@ -60,6 +60,7 @@ fn parse_ndjson_invalid_json_returns_error() {
 #[test]
 fn render_local_message_content_includes_optional_sections() {
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "Summarize this".to_string(),
         attachments: vec![Attachment::File {
@@ -103,6 +104,7 @@ fn render_local_message_content_includes_optional_sections() {
 #[test]
 fn render_local_message_content_skips_binary_attachment_previews() {
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "Summarize this".to_string(),
         attachments: vec![Attachment::File {
@@ -123,6 +125,7 @@ fn render_local_message_content_skips_binary_attachment_previews() {
 #[test]
 fn render_local_message_content_falls_back_to_response_format_when_schema_missing() {
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "Summarize this".to_string(),
         attachments: Vec::new(),
@@ -414,6 +417,7 @@ async fn ollama_404_maps_to_not_found_with_model_hint() {
     );
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -463,6 +467,7 @@ async fn ollama_500_maps_to_network_generic() {
     );
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -516,6 +521,7 @@ async fn repeated_failed_sends_do_not_grow_history() {
     );
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -575,6 +581,7 @@ async fn transport_error_rolls_back_pushed_user_message() {
     assert_eq!(baseline_len, 1);
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -638,6 +645,7 @@ async fn oversized_newline_free_body_is_rejected_not_oomed() {
     );
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -707,6 +715,7 @@ async fn aggregate_accumulated_response_is_capped() {
         Arc::new(AiSessionConfig::default()),
     );
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -772,6 +781,7 @@ async fn local_llm_send_message_serializes_until_stream_drops() {
 
     fn user_message(content: &str) -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: content.to_string(),
             attachments: vec![],

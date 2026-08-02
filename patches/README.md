@@ -283,10 +283,10 @@ matching over `patches/` plus a `Cargo.lock` scan; no `cargo` invocation, no
 GTK/WebKitGTK system packages required) and now runs on a weekly schedule
 in `.github/workflows/maekon-client-patch-audit.yml` (workflow display name
 `Maekon Client Weekly Checks`), in addition to its existing
-`workflow_dispatch` invocations in `maekon-client-private-tests.yml`
-and `e31-linux-gtk4-capture.yml` (both of which bundle it with a full
-Linux GTK4/WebKitGTK6 `cargo check`, too expensive to run unattended on a
-schedule per the repository's CI-cost-minimization policy). The weekly lane
+`workflow_dispatch` invocation in `maekon-client-private-tests.yml`'s
+`e31_linux_capture_only` lane (which bundles it with a full Linux
+GTK4/WebKitGTK6 `cargo check`, too expensive to run unattended on a schedule
+per the repository's CI-cost-minimization policy). The weekly lane
 catches silent drift — e.g. a future dependency bump anywhere in the
 workspace pulling `glib 0.18` back into the Linux target graph through an
 unrelated path — between the infrequent manual `workflow_dispatch` runs.

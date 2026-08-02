@@ -53,10 +53,15 @@ interface OnboardingProps {
 // without touching settings, devices, models, or provider endpoints.
 const TOTAL_STEPS = 7
 
-// The 6 master fields that make up the monitoring consent bundle (identical to MONITORING_FIELDS in ConsentToggleSection).
-// On grant, send a fresh grant where these 6 are true and the other 8 (high-sensitivity / additional opt-in) are false.
+// The first-run monitoring consent bundle. Superset of ConsentToggleSection's
+// 6-field MONITORING_FIELDS by `ocr_processing` (#9631): without OCR consent,
+// captured frames carry no text, so /search finds nothing and scene analysis
+// is empty — the user reads that as "search is broken," not "a consent is
+// off." OCR stays individually revocable in Settings → Privacy. Every other
+// high-sensitivity / additional opt-in field remains false.
 const MONITORING_FIELDS = [
   'screen_capture',
+  'ocr_processing',
   'window_title_collection',
   'app_usage_analytics',
   'process_monitoring',
@@ -64,7 +69,7 @@ const MONITORING_FIELDS = [
   'telemetry',
 ] as const satisfies readonly (keyof ConsentPermissions)[]
 
-/** Builds a fresh grant permission set that starts with all 15 permissions false and turns on only the 6 master fields. */
+/** Builds a fresh grant permission set that starts with every permission false and turns on only the monitoring bundle. */
 function buildMonitoringGrant(): ConsentPermissions {
   const permissions: ConsentPermissions = {
     screen_capture: false,
@@ -82,6 +87,8 @@ function buildMonitoringGrant(): ConsentPermissions {
     memory_graph_enrichment: false,
     microphone: false,
     unredacted_external_ocr: false,
+    memory_graph_retrieval_ranking: false,
+    memory_vault_mirror: false,
   }
   for (const field of MONITORING_FIELDS) {
     permissions[field] = true
@@ -575,6 +582,9 @@ function StepPermissions({ onReadyChange }: { onReadyChange: (ready: boolean) =>
 // So that onboarding completion provisions both OS permissions and GDPR consent, grant only via an explicit click after the informational disclosure.
 const CONSENT_COLLECTED_KEYS = [
   'screenFrames',
+  // #9643 review I1: the grant bundle includes ocr_processing (#9631), so the
+  // disclosure list shown ABOVE the grant button must name text extraction.
+  'ocrText',
   'windowTitles',
   'appUsage',
   'inputActivity',
@@ -881,19 +891,131 @@ function StepAudioDeferred() {
 function StepReady() {
   const { t } = useTranslation()
   const shortcut = IS_MAC ? '⌘K' : 'Ctrl+K'
+  // #9631: the recovery card promised above surfaces in the suggestions
+  // panel (overlay webview), which has no main-window route — without this
+  // disclosure a user who closes the tracking panel can never find it.
+  // #9643 review I6: the registrar may have fallen back to an alternate chord
+  // (Windows screenshot utilities intercept the primary, #4698), so ask the
+  // shortcut registry for the EFFECTIVE accelerator instead of hardcoding —
+  // the static value stays as the non-Tauri/standalone fallback.
+  const [suggestionsShortcut, setSuggestionsShortcut] = useState(IS_MAC ? '⌘⇧S' : 'Ctrl+Shift+S')
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        const status = await invoke<{
+          records: Array<{
+            id: string
+            primary_accelerator: string
+            fallback_accelerator: string | null
+            fallback_status: string | null
+          }>
+        }>('get_global_shortcut_status')
+        const record = status.records.find((r) => r.id === 'suggestions-toggle')
+        if (!record || cancelled) return
+        const effective =
+          record.fallback_status === 'registered' && record.fallback_accelerator
+            ? record.fallback_accelerator
+            : record.primary_accelerator
+        setSuggestionsShortcut(
+          effective
+            .replace('CmdOrCtrl', IS_MAC ? '⌘' : 'Ctrl')
+            .replace('+Shift+', IS_MAC ? '⇧' : '+Shift+')
+            // #9643 re-review M2: the Windows-reason fallback chord renders
+            // correctly on macOS too (⌥, no stray '+').
+            .replace('+Alt+', IS_MAC ? '⌥' : '+Alt+'),
+        )
+      } catch {
+        // Standalone / dev mode — keep the platform default.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  // #9811: the consent step (step 2) does not gate the Next button —
+  // consent must stay
+  // freely refusable — so a user can reach this screen without granting. When
+  // that happens the app collects nothing (`get_capture_status` reports
+  // `consent_granted:false, permitted:false`) and the timeline is empty
+  // forever. Declaring "everything is set up" there is simply false, and it is
+  // the reason a new install looks broken rather than switched off.
+  //
+  // Consent is NOT forced here. The claim is corrected and the grant is offered
+  // in place, so refusing stays a real option that is honestly described.
+  const [consentGranted, setConsentGranted] = useState<boolean | null>(null)
+  const [granting, setGranting] = useState(false)
+  const refreshConsent = useCallback(async () => {
+    try {
+      const snapshot = await getConsent()
+      setConsentGranted(snapshot.status === 'Valid' && snapshot.permissions.screen_capture)
+    } catch {
+      // Standalone / non-Tauri preview has no consent backend to report on.
+      // Treat as "nothing to warn about" rather than accusing the user.
+      setConsentGranted(true)
+    }
+  }, [])
+  useEffect(() => {
+    void refreshConsent()
+  }, [refreshConsent])
+
+  const grantHere = useCallback(async () => {
+    setGranting(true)
+    try {
+      await setConsent(buildMonitoringGrant())
+      await refreshConsent()
+    } finally {
+      setGranting(false)
+    }
+  }, [refreshConsent])
+
+  const collectionOff = consentGranted === false
+
   return (
     <div className="flex flex-col items-center text-center">
       <div className={cn('mb-6 flex items-center justify-center rounded-full bg-brand-signal/15 p-4', motion.opacity)}>
         <Rocket className={cn(iconSize.hero, 'text-brand-text')} />
       </div>
-      <h2 className={cn(typography.h1, colors.text.primary, 'mb-3')}>{t('onboarding.step4Title')}</h2>
-      <p className={cn(typography.body, colors.text.secondary, 'mb-4 max-w-sm')}>{t('onboarding.step4Desc')}</p>
+      <h2 className={cn(typography.h1, colors.text.primary, 'mb-3')}>
+        {collectionOff
+          ? t('onboarding.readyCollectionOffTitle', 'Starting with collection off')
+          : t('onboarding.step4Title')}
+      </h2>
+      <p className={cn(typography.body, colors.text.secondary, 'mb-4 max-w-sm')}>
+        {collectionOff
+          ? t(
+              'onboarding.readyCollectionOffDesc',
+              'You skipped consent, so Maekon is not collecting anything. Your timeline and suggestions will stay empty. Turn it on now, or later in Settings > Privacy.',
+            )
+          : t('onboarding.step4Desc')}
+      </p>
+      {collectionOff && (
+        <div className="mb-4 w-full max-w-sm" data-testid="onboarding-ready-collection-off">
+          <Button type="button" variant="primary" size="md" className="w-full" isLoading={granting} onClick={grantHere}>
+            {t('onboarding.readyGrantNow', 'Turn on collection now')}
+          </Button>
+        </div>
+      )}
       {/* #8686 AC5: set the first-run expectation — the first source-backed
           recovery card surfaces in the tracking panel within ~15 minutes of
           normal work, so a new user knows where to look and when. */}
       <p className={cn(typography.body, colors.text.secondary, 'mb-4 max-w-sm')}>
         {t('onboarding.step4RecoveryCardHint')}
       </p>
+      <div
+        role="note"
+        className={cn(
+          'mb-3 flex items-start gap-2 rounded-lg bg-surface-muted px-4 py-3 text-left',
+          'max-w-sm',
+          motion.colors,
+        )}
+      >
+        <Lightbulb className={cn(iconSize.sm, 'mt-0.5 flex-shrink-0 text-brand-text')} aria-hidden="true" />
+        <p className={cn(typography.small, colors.text.secondary)}>
+          {t('onboarding.step4SuggestionsShortcut', { shortcut: suggestionsShortcut })}
+        </p>
+      </div>
       <div
         role="note"
         className={cn(

@@ -231,6 +231,30 @@ mod tests {
         is_english_compatible_letter,
     };
 
+    /// True when `path` ends with the `/`-separated `suffix`, treating `\` and
+    /// `/` as equivalent separators and requiring the match to begin on a path
+    /// component boundary.
+    ///
+    /// `Finding::path` renders through `Path::to_string_lossy()`, which uses `\`
+    /// on Windows — so comparing it to a hard-coded forward-slash suffix with
+    /// `str::ends_with` never matches there, failing the assertion even though
+    /// the scanner walked the file correctly (#9270). This is the same
+    /// separator-blind comparison fs_scan.rs documents for the removed
+    /// `is_locale_file` guard.
+    ///
+    /// Normalizing separators (rather than comparing `Path::components()`) keeps
+    /// this a pure string operation, so the tests can feed literal Windows paths
+    /// and assert the Windows behaviour from any host. The component-boundary
+    /// requirement stops a bare normalized `ends_with` from matching mid-segment
+    /// (e.g. `xcrates/pkg/src/a.rs`).
+    fn path_ends_with_suffix(path: &str, suffix: &str) -> bool {
+        let normalized = path.replace('\\', "/");
+        normalized == suffix
+            || normalized
+                .strip_suffix(suffix)
+                .is_some_and(|head| head.ends_with('/'))
+    }
+
     #[test]
     fn js_mode_tracks_single_quote_and_template_strings() {
         // JS mode: `//` inside single-quote / template strings is NOT a comment, so
@@ -326,14 +350,94 @@ mod tests {
             .iter()
             .map(|f| f.path.to_string_lossy().into_owned())
             .collect();
+        // #9270: compare separator-agnostically — `p` carries `\` on Windows, so
+        // a raw `str::ends_with` against these forward-slash suffixes fails there
+        // despite a correct scan.
         assert!(
-            paths.iter().any(|p| p.ends_with("crates/pkg/src/a.rs")),
+            paths
+                .iter()
+                .any(|p| path_ends_with_suffix(p, "crates/pkg/src/a.rs")),
             "crates/ must be scanned by default: {paths:?}"
         );
         assert!(
-            paths.iter().any(|p| p.ends_with("src-tauri/src/b.rs")),
+            paths
+                .iter()
+                .any(|p| path_ends_with_suffix(p, "src-tauri/src/b.rs")),
             "src-tauri/ must be scanned by default (#7081 MLINT-3): {paths:?}"
         );
+    }
+
+    #[test]
+    fn path_suffix_match_is_separator_agnostic() {
+        // #9270: `Finding::path` renders with the HOST separator, so the raw
+        // `str::ends_with("crates/pkg/src/a.rs")` shape used by the assertions
+        // above never matched on Windows even though the scan itself was
+        // correct (`CRT-PRV-LINT-ADR013-001`, 99 passed / 1 failed). Same bug
+        // class fs_scan.rs already documents for the removed `is_locale_file`.
+        //
+        // These are pure string comparisons, so the Windows-shaped inputs below
+        // exercise the Windows behaviour on any host (macOS/Linux included) —
+        // no real filesystem and no `#[cfg(windows)]` gating involved.
+        let win_crates = r"C:\repo\crates\pkg\src\a.rs";
+        let win_tauri = r"C:\repo\src-tauri\src\b.rs";
+
+        // The pre-fix assertion shape: silently false on Windows separators.
+        assert!(
+            !win_crates.ends_with("crates/pkg/src/a.rs"),
+            "pins the pre-fix failure: raw str::ends_with cannot match backslashes"
+        );
+        assert!(
+            !win_tauri.ends_with("src-tauri/src/b.rs"),
+            "pins the pre-fix failure for the src-tauri root too"
+        );
+
+        // The fixed comparison matches regardless of host separator.
+        assert!(path_ends_with_suffix(win_crates, "crates/pkg/src/a.rs"));
+        assert!(path_ends_with_suffix(win_tauri, "src-tauri/src/b.rs"));
+
+        // POSIX paths (the shape macOS/Linux CI actually produces) still match.
+        assert!(path_ends_with_suffix(
+            "/tmp/.tmpAbC123/crates/pkg/src/a.rs",
+            "crates/pkg/src/a.rs"
+        ));
+        assert!(path_ends_with_suffix(
+            "/tmp/.tmpAbC123/src-tauri/src/b.rs",
+            "src-tauri/src/b.rs"
+        ));
+
+        // Mixed separators: `repo_root.join("crates/pkg/src")` keeps the literal
+        // forward slashes on Windows, so a scanned path can carry both forms.
+        assert!(path_ends_with_suffix(
+            r"C:\repo\crates/pkg\src/a.rs",
+            "crates/pkg/src/a.rs"
+        ));
+
+        // A relative path that IS the suffix matches (no leading separator).
+        assert!(path_ends_with_suffix(
+            "crates/pkg/src/a.rs",
+            "crates/pkg/src/a.rs"
+        ));
+        assert!(path_ends_with_suffix(
+            r"crates\pkg\src\a.rs",
+            "crates/pkg/src/a.rs"
+        ));
+
+        // The match must land on a component boundary, not mid-segment — a
+        // plain normalized `ends_with` would wrongly accept `xcrates`.
+        assert!(
+            !path_ends_with_suffix(r"C:\repo\xcrates\pkg\src\a.rs", "crates/pkg/src/a.rs"),
+            "suffix must start at a path-component boundary"
+        );
+        assert!(
+            !path_ends_with_suffix(r"C:\repo\crates\pkg\src\zza.rs", "crates/pkg/src/a.rs"),
+            "a longer trailing file name must not match"
+        );
+
+        // A genuinely different path must not match on either separator style.
+        assert!(!path_ends_with_suffix(
+            r"C:\repo\crates\pkg\src\other.rs",
+            "crates/pkg/src/a.rs"
+        ));
     }
 
     #[test]

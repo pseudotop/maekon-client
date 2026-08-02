@@ -295,6 +295,7 @@ pub(crate) mod tests {
         let session = AuditingSession::new(Arc::new(MockSession), audit.clone());
 
         let msg = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "test".to_string(),
             attachments: vec![],
@@ -331,6 +332,7 @@ pub(crate) mod tests {
         });
         let session = AuditingSession::new(Arc::new(MockSession), audit.clone());
         let msg = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "steer it".to_string(),
             attachments: vec![],
@@ -391,6 +393,7 @@ pub(crate) mod tests {
 
     fn user_msg(content: &str) -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: content.to_string(),
             attachments: vec![],

@@ -25,6 +25,7 @@ import {
 } from '../../api/client'
 import { Alert, Button, Card, CardTitle, Spinner } from '../../components/ui'
 import { addToast } from '../../hooks/useToast'
+import { describeIpcError } from '../../i18n/tauriIpcErrors'
 import { colors, elevation, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { buildDeleteRangeRequest } from './deleteRangeRequest'
@@ -53,6 +54,15 @@ interface ConfirmModalProps {
   onCancel: () => void
   /** Optional disclosure rendered as a distinct warning callout below the message. */
   note?: string
+  /**
+   * #9524: disable the confirm button while the confirmed mutation is in
+   * flight. Both erase-path modals stay open on failure as a retry affordance
+   * (#9505), so without this a pending erase could be double-submitted —
+   * concurrent `withdraw_consent`/`erase_all_local_data` runs each hold their
+   * own EraseWindowGuard and the second guard's Drop would clear the `erasing`
+   * barrier while the first erase is still running.
+   */
+  confirmDisabled?: boolean
 }
 
 export function ConfirmModal({
@@ -64,6 +74,7 @@ export function ConfirmModal({
   onConfirm,
   onCancel,
   note,
+  confirmDisabled,
 }: ConfirmModalProps) {
   const { t } = useTranslation()
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -96,8 +107,10 @@ export function ConfirmModal({
       if (e.key !== 'Tab') return
       const dialog = dialogRef.current
       if (!dialog) return
+      // #9535: exclude disabled controls (the pending-guarded confirm button,
+      // #9524) — otherwise `last` is unfocusable and Tab escapes the dialog.
       const focusable = dialog.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
       )
       if (focusable.length === 0) return
       const first = focusable[0]
@@ -137,7 +150,7 @@ export function ConfirmModal({
             <Button variant="secondary" onClick={onCancel}>
               {t('privacy.cancel')}
             </Button>
-            <Button variant={isDangerous ? 'danger' : 'primary'} onClick={onConfirm}>
+            <Button variant={isDangerous ? 'danger' : 'primary'} onClick={onConfirm} disabled={confirmDisabled}>
               {confirmText}
             </Button>
           </div>
@@ -182,7 +195,7 @@ export interface PrivacyContext {
 }
 
 export default function PrivacyLayout() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const DATA_TYPE_LABELS: Record<DataType, string> = {
     events: t('privacy.dataTypes.events'),
     frames: t('privacy.dataTypes.frames'),
@@ -268,8 +281,17 @@ export default function PrivacyLayout() {
       queryClient.invalidateQueries()
       setShowDeleteAllModal(false)
     },
+    // #9492 item 4: `withdraw_consent` fails this mutation with the
+    // `storage.unavailable` IpcError when GDPR Art. 17 frame erasure cannot be
+    // verified (`commands/consent.rs::erase_all_local_data`). `error.message`
+    // put that Rust English literal straight into the toast; route it through
+    // the shared out-of-registry mapping instead. Non-IpcError rejections still
+    // resolve to their own `message`, so nothing else changes.
     onError: (error: Error) => {
-      addToast('error', error.message)
+      addToast(
+        'error',
+        describeIpcError(error, (key) => t(key), i18n.language),
+      )
     },
   })
 
@@ -531,6 +553,7 @@ export default function PrivacyLayout() {
         })}
         confirmText={t('privacy.deleteRange')}
         isDangerous={false}
+        confirmDisabled={deleteRangeMutation.isPending}
         onConfirm={handleDeleteRange}
         onCancel={() => setShowDeleteRangeModal(false)}
       />
@@ -542,6 +565,7 @@ export default function PrivacyLayout() {
         note={t('privacy.deleteAllExportNote')}
         confirmText={t('privacy.deleteAllButton')}
         isDangerous={true}
+        confirmDisabled={deleteAllMutation.isPending}
         onConfirm={handleDeleteAll}
         onCancel={() => setShowDeleteAllModal(false)}
       />

@@ -55,6 +55,18 @@ impl TagsCommandService {
     }
 
     pub async fn create_tag(&self, request: &CreateTagRequest) -> Result<TagResponse, ApiError> {
+        // Same UNIQUE-name pre-check as `update_tag` — see the rationale there.
+        // Leaving create without it would make the two paths disagree: a
+        // duplicate rename returns 409 with a usable message while a duplicate
+        // create still falls through to a 500 whose body is replaced by the
+        // literal "internal server error".
+        if self.name_taken(&request.name, None).await? {
+            return Err(ApiError::Conflict(format!(
+                "Tag name already in use: {}",
+                request.name
+            )));
+        }
+
         let color = request
             .color
             .clone()
@@ -64,11 +76,46 @@ impl TagsCommandService {
         Ok(assemble_tag_response(tag))
     }
 
+    /// True when another tag already holds `name`.
+    ///
+    /// `exclude_id` is the tag being renamed, so a save that keeps the name and
+    /// only changes the colour is not treated as a collision with itself.
+    ///
+    /// Comparison is exact because SQLite's UNIQUE on TEXT is BINARY (no
+    /// `COLLATE NOCASE` on `tags.name`, migration v01_v08.rs:189): "Work" and
+    /// "work" are distinct rows, so a case-insensitive check here would reject
+    /// names the database accepts. Rust `==`, SQLite BINARY, and the client's
+    /// `===` are all byte/code-unit equality with no Unicode normalization, so
+    /// all three layers agree.
+    async fn name_taken(&self, name: &str, exclude_id: Option<i64>) -> Result<bool, ApiError> {
+        Ok(self
+            .ctx
+            .storage
+            .get_all_tags()
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .any(|tag| Some(tag.id) != exclude_id && tag.name == name))
+    }
+
     pub async fn update_tag(
         &self,
         tag_id: i64,
         request: &UpdateTagRequest,
     ) -> Result<TagResponse, ApiError> {
+        // `tags.name` is `NOT NULL UNIQUE` (migration v01_v08.rs:189). Without
+        // this pre-check the constraint violation surfaces as
+        // `StorageError::Internal` -> the catch-all arm of the ApiError mapper
+        // -> HTTP 500 with the body replaced by the literal "internal server
+        // error" — no indication to the caller that the name was taken, in any
+        // locale. A 409 keeps the message and lets the client say what happened.
+        if self.name_taken(&request.name, Some(tag_id)).await? {
+            return Err(ApiError::Conflict(format!(
+                "Tag name already in use: {}",
+                request.name
+            )));
+        }
+
         let updated = self
             .ctx
             .storage

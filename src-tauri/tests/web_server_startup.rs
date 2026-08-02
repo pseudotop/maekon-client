@@ -58,6 +58,50 @@ fn test_required_deps(storage: &Arc<SqliteStorage>) -> WebServerRequiredDeps {
         }
     }
 
+    // ADR-032/033 ports: the production impls are `maekon-analysis` types
+    // whose constructors need the full DI graph — same manual-stub rule as
+    // the two diagnostics ports above. Empty/default returns match the
+    // ports' documented fail-closed "no-op Ok" shape.
+    struct StubMemoryGraphProjection;
+    #[async_trait::async_trait]
+    impl maekon_core::ports::memory_graph_projection::MemoryGraphProjectionPort
+        for StubMemoryGraphProjection
+    {
+        async fn project_edges_for_ranking(
+            &self,
+            _now_secs: i64,
+        ) -> Result<maekon_core::models::memory_graph::EdgeProjection, maekon_core::error::CoreError>
+        {
+            Ok(maekon_core::models::memory_graph::EdgeProjection::default())
+        }
+    }
+
+    struct StubMemoryVaultWriter;
+    #[async_trait::async_trait]
+    impl maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort for StubMemoryVaultWriter {
+        async fn run_mirror_cycle(
+            &self,
+            _now_secs: i64,
+        ) -> Result<maekon_core::models::memory_vault::VaultCycleStats, maekon_core::error::CoreError>
+        {
+            Ok(maekon_core::models::memory_vault::VaultCycleStats::default())
+        }
+
+        async fn snapshot_generated_roots(&self) -> Vec<std::path::PathBuf> {
+            Vec::new()
+        }
+
+        async fn erase_generated_files(
+            &self,
+            _roots: Vec<std::path::PathBuf>,
+        ) -> Result<
+            maekon_core::models::memory_vault::VaultEraseReport,
+            maekon_core::error::CoreError,
+        > {
+            Ok(maekon_core::models::memory_vault::VaultEraseReport::default())
+        }
+    }
+
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let config_manager =
         maekon_core::config_manager::ConfigManager::with_path(temp_dir.path().join("config.json"))
@@ -75,6 +119,8 @@ fn test_required_deps(storage: &Arc<SqliteStorage>) -> WebServerRequiredDeps {
     WebServerRequiredDeps {
         memory_graph: storage.clone()
             as Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
+        memory_graph_projection: Arc::new(StubMemoryGraphProjection),
+        memory_vault_writer: Arc::new(StubMemoryVaultWriter),
         audit_chain_verifier: storage.clone()
             as Arc<dyn maekon_core::ports::audit_chain_verifier::AuditChainVerifierPort>,
         egress_ledger_reader: storage.clone()

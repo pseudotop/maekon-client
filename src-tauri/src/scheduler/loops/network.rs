@@ -536,6 +536,12 @@ mod tests {
             frame_storage: Arc::new(NoopFrameStorage),
             notification_manager,
             focus_analyzer,
+            // ADR-033: same shared SqliteStorage Arc (stateless writer).
+            memory_vault_writer: crate::vault_wiring::build_vault_writer(
+                storage.clone(),
+                None,
+                config_manager.clone(),
+            ),
             config_manager,
             memory_graph: storage.clone() as Arc<dyn MemoryGraphPort>,
             calibration_reader: storage.clone() as Arc<dyn CalibrationReader>,
@@ -549,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn with_required_deps_populates_all_eight_fields_and_shares_arcs() {
+    fn with_required_deps_populates_all_nine_fields_and_shares_arcs() {
         // #7737 C1 PR-2: standalone regression coverage for
         // `with_required_deps` in isolation (the 3 ctors above/below also
         // exercise it, but only implicitly through their own loop-behavior
@@ -579,6 +585,11 @@ mod tests {
         assert!(scheduler.focus_analyzer.is_some());
         assert!(scheduler.config_manager.is_some());
         assert!(scheduler.belief_revision.is_some());
+        assert!(scheduler.calibration_reader.is_some());
+        // ADR-033: the vault writer must land on the Scheduler field the
+        // aggregation loop clones (a mis-wired dep would silently disable
+        // every mirror cycle).
+        assert!(scheduler.memory_vault_writer.is_some());
         let applied_memory_graph = scheduler
             .memory_graph
             .expect("memory_graph must be Some after with_required_deps");

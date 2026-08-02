@@ -158,13 +158,42 @@ impl DigestExporter {
             .peekable();
         if visible.peek().is_some() {
             md.push_str("## Accumulated Claims\n\n");
-            for claim in visible {
-                md.push_str(&format!("- *({})* {}\n", claim.kind.as_str(), claim.text));
-            }
+            Self::push_claim_bullets(&mut md, visible);
             md.push('\n');
         }
         Self::push_footer(&mut md, digest);
         md
+    }
+
+    /// Render the accumulated claims as a standalone Markdown document
+    /// (ADR-033 §1.1 — the vault's `claims.md` file class).
+    ///
+    /// Extraction of the claims-section rendering `to_markdown_with_claims`
+    /// uses: same per-claim line format, same defense-in-depth
+    /// [`ClaimStatus::Retracted`] filter (a retraction must never leak into
+    /// any export surface even if a caller passes an all-status slice). The
+    /// `Active`-only *selection* remains the vault writer's own contract
+    /// obligation (ADR-033 §5.1); this renderer only guarantees the floor.
+    pub fn claims_to_markdown(claims: &[MemoryClaim]) -> String {
+        let mut md = String::with_capacity(1024);
+        md.push_str("# Accumulated Claims\n\n");
+        let mut visible = claims
+            .iter()
+            .filter(|claim| claim.status != ClaimStatus::Retracted)
+            .peekable();
+        if visible.peek().is_none() {
+            md.push_str("_No active claims._\n");
+            return md;
+        }
+        Self::push_claim_bullets(&mut md, visible);
+        md
+    }
+
+    /// Shared per-claim bullet renderer for the claims section/file.
+    fn push_claim_bullets<'a>(md: &mut String, claims: impl Iterator<Item = &'a MemoryClaim>) {
+        for claim in claims {
+            md.push_str(&format!("- *({})* {}\n", claim.kind.as_str(), claim.text));
+        }
     }
 
     /// Shared body renderer: title → insights → timeline → statistics → comparison.

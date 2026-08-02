@@ -17,10 +17,13 @@
 //! projection nor a confirmed reference could persist indefinitely. Revision B1
 //! closed that gap, and the columns below are its implementation.
 //!
-//! **Note**: the `foreign_keys` PRAGMA is OFF workspace-wide. The `REFERENCES`
-//! clauses below are for documentation only and are not enforced by the DB.
-//! Cleanup therefore has to be an explicit application-level DELETE in child →
-//! parent order.
+//! **Note (#9735 CORRECTED)**: the `foreign_keys` PRAGMA is ON workspace-wide
+//! (compile-time default, now also set explicitly in `configure_connection`),
+//! so the `REFERENCES` clauses below ARE enforced. This module used to claim
+//! they were documentation only. The explicit application-level child → parent
+//! DELETE ordering stays as written — it is redundant with the engine rather
+//! than a substitute for it, and it keeps working if a table is ever added
+//! without a declared FK.
 
 use rusqlite::{Connection, Result as SqlResult};
 
@@ -300,9 +303,12 @@ mod tests {
 
     fn open() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        // Production does not enable foreign_keys. If only the tests had it on,
-        // they would verify a constraint that production lacks, so turn it off explicitly.
-        conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+        // #9735: production runs with foreign_keys ON, so the tests do too.
+        // This used to force it OFF on the reasoning that "production does not
+        // enable foreign_keys" — the premise was inverted, and testing under
+        // conditions the product never runs under is what let the
+        // `activity_segments` rejection go unnoticed.
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         migrate_v51(&conn).unwrap();
         conn
     }

@@ -507,6 +507,10 @@ impl Scheduler {
             .map(|d| d.join("logs"))
             .ok();
 
+        // ADR-033 §7.5: vault mirror writer (from SchedulerRequiredDeps —
+        // Port Instance Sharing over the same SqliteStorage Arc).
+        let vault_writer = self.memory_vault_writer.clone();
+
         // Config file mtime tracker — shared into the spawned task.
         let config_mtime: Arc<parking_lot::Mutex<Option<std::time::SystemTime>>> =
             Arc::new(parking_lot::Mutex::new(None));
@@ -521,7 +525,6 @@ impl Scheduler {
             let mut last_reindex_check: Option<chrono::DateTime<Utc>> = None;
             let mut last_index_maintenance: Option<chrono::DateTime<Utc>> = None;
             let mut last_log_cleanup: Option<chrono::DateTime<Utc>> = None;
-            let mut last_sqlite_maintenance: Option<chrono::DateTime<Utc>> = None;
             let mut last_fts_optimize: Option<chrono::DateTime<Utc>> = None;
             // #5810/#7574: regime crash-durability checkpoint runs on its own
             // sub-tick timer, independent of `aggregation_interval` (default
@@ -533,6 +536,15 @@ impl Scheduler {
             let mut regime_checkpoint_interval =
                 super::intervals::coalescing_interval(Duration::from_secs(
                     super::super::config::REGIME_CHECKPOINT_INTERVAL_MINS as u64 * 60,
+                ));
+            // #9635: same #5810/#7574 bug class, sibling block — the SQLite
+            // maintenance gate (5 min) was only ever EVALUATED inside the
+            // hourly aggregation tick, so WAL-checkpoint/FTS-merge/conditional-
+            // VACUUM actually ran once per hour (12x less often than the
+            // constant documents). Own sub-timer, mirroring the regime fix.
+            let mut sqlite_maintenance_interval =
+                super::intervals::coalescing_interval(Duration::from_secs(
+                    super::super::config::SQLITE_MAINTENANCE_INTERVAL_MINS as u64 * 60,
                 ));
 
             loop {
@@ -1151,6 +1163,29 @@ impl Scheduler {
                             }
                         }
 
+                        // ADR-033 §7.5: one vault mirror cycle after the daily
+                        // digest work of this tick. Internally fail-closed
+                        // (disabled/consent/window gates → no-op), so an
+                        // unconditional per-tick call stays cheap; a cycle
+                        // failure never breaks the aggregation loop.
+                        if let Some(ref writer) = vault_writer {
+                            match writer.run_mirror_cycle(Utc::now().timestamp()).await {
+                                Ok(stats) if stats.skipped_reason.is_none() => {
+                                    debug!(
+                                        day_files = stats.day_files_written,
+                                        claims = stats.claims_file_written,
+                                        expired = stats.files_expired,
+                                        conflicts = stats.conflicts,
+                                        "ADR-033: vault mirror cycle ran"
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    warn!(err.code = %e.code(), "vault mirror cycle failed: {e}");
+                                }
+                            }
+                        }
+
                         // [HOUSEKEEPING] Vector index maintenance (count refresh, HNSW
                         // save, IVF rebuild, binary codes). This is just index-structure
                         // maintenance over existing vectors, not new-data collection, so
@@ -1220,44 +1255,10 @@ impl Scheduler {
                             }
                         }
 
-                        // --- SQLite periodic maintenance (WAL checkpoint, FTS merge, conditional VACUUM) ---
-                        // F-RR-06: all four calls acquire a parking_lot write lock — mirror the
-                        // log_retention spawn_blocking pattern immediately below.
-                        // #5809: await the handle so JoinError (including closure panics) is
-                        // visible via warn!. Pre-#5640 these were inline-sequential; await
-                        // restores that observability without blocking the reactor (the
-                        // .await yields to the executor while the blocking thread runs).
-                        {
-                            let should_maintain = last_sqlite_maintenance
-                                .map(|last| (now - last).num_minutes() >= super::super::config::SQLITE_MAINTENANCE_INTERVAL_MINS)
-                                .unwrap_or(true);
-
-                            if should_maintain {
-                                last_sqlite_maintenance = Some(now);
-                                let db = sqlite6.clone();
-                                let fts_pages = super::super::config::FTS_MERGE_PAGES;
-                                let vacuum_threshold = super::super::config::VACUUM_FREELIST_THRESHOLD_PERCENT;
-                                let handle = tokio::task::spawn_blocking(move || {
-                                    // WAL checkpoint (PASSIVE — non-blocking with respect to readers)
-                                    if let Err(e) = db.wal_checkpoint_passive() {
-                                        warn!("WAL checkpoint failure: {e}");
-                                    }
-                                    // FTS5 incremental merge
-                                    if let Err(e) = db.fts_merge(fts_pages) {
-                                        warn!("FTS5 merge failure: {e}");
-                                    }
-                                    // Conditional VACUUM (only when freelist > threshold)
-                                    match db.maybe_vacuum(vacuum_threshold) {
-                                        Ok(true) => info!("VACUUM completed during maintenance"),
-                                        Ok(false) => {}
-                                        Err(e) => warn!("VACUUM check failure: {e}"),
-                                    }
-                                });
-                                if let Err(e) = handle.await {
-                                    warn!("SQLite maintenance task join error: {e}");
-                                }
-                            }
-                        }
+                        // --- SQLite periodic maintenance moved to its own
+                        // `sqlite_maintenance_interval` select arm (#9635) —
+                        // gating it here meant the 5-minute cadence was only
+                        // evaluated once per hourly aggregation tick. ---
 
                         // --- FTS5 daily full optimize ---
                         // F-RR-06: fts_optimize holds the parking_lot write lock for the full
@@ -1342,6 +1343,32 @@ impl Scheduler {
                                     debug!(count = regimes.len(), "regime checkpoint saved");
                                 }
                             }
+                        }
+                    }
+                    // #9635: SQLite periodic maintenance on its documented
+                    // 5-minute cadence (WAL checkpoint PASSIVE, FTS5
+                    // incremental merge, conditional VACUUM). F-RR-06: all
+                    // calls take a parking_lot write lock — spawn_blocking;
+                    // #5809: await the handle so closure panics surface.
+                    _ = sqlite_maintenance_interval.tick() => {
+                        let db = sqlite6.clone();
+                        let fts_pages = super::super::config::FTS_MERGE_PAGES;
+                        let vacuum_threshold = super::super::config::VACUUM_FREELIST_THRESHOLD_PERCENT;
+                        let handle = tokio::task::spawn_blocking(move || {
+                            if let Err(e) = db.wal_checkpoint_passive() {
+                                warn!("WAL checkpoint failure: {e}");
+                            }
+                            if let Err(e) = db.fts_merge(fts_pages) {
+                                warn!("FTS5 merge failure: {e}");
+                            }
+                            match db.maybe_vacuum(vacuum_threshold) {
+                                Ok(true) => info!("VACUUM completed during maintenance"),
+                                Ok(false) => {}
+                                Err(e) => warn!("VACUUM check failure: {e}"),
+                            }
+                        });
+                        if let Err(e) = handle.await {
+                            warn!("SQLite maintenance task join error: {e}");
                         }
                     }
                     _ = shutdown_rx.changed() => {

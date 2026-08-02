@@ -244,17 +244,17 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
 ```
 
 ### リリースアセット
@@ -286,11 +286,13 @@ Maekon はアプリの表示名です。現在のリリースファイル名は�
 
 | 変数 | 説明 | デフォルト |
 |------|------|--------|
-| `MAEKON_EMAIL` | ログインメールアドレス（Connectedモード専用） | （Standaloneでは任意） |
-| `MAEKON_PASSWORD` | ログインパスワード（Connectedモード専用） | （Standaloneでは任意） |
 | `MAEKON_TESSDATA` | Tesseractデータパス | （任意） |
 | `MAEKON_DISABLE_TRAY` | システムトレイ初期化のスキップ（headless CI/リモートGUI smoke専用） | `0` |
 | `RUST_LOG` | ログレベル | `info` |
+
+ログイン資格情報は環境変数から読み込みません。**設定 → 一般 → アカウント**
+からサインインしてください（`--features server` 付きのビルドが必要）。
+サーバーURLは **設定 → 詳細設定 → ネットワークとサーバー** で設定します。
 
 ### 設定ファイル
 

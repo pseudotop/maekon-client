@@ -157,6 +157,9 @@ pub struct Scheduler {
     /// local-LLM-gated + consent-built by the composition root; the aggregation
     /// loop additionally gates each run on consent + `belief_revision_enabled`.
     pub(super) belief_revision: Option<Arc<maekon_analysis::BeliefRevision>>,
+    /// ADR-033 §7.5: vault mirror writer for the aggregation loop.
+    pub(super) memory_vault_writer:
+        Option<Arc<dyn maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort>>,
     /// #5810: periodic regime checkpoint storage port.
     ///
     /// Shares the same `SqliteRegimeManagerStateStore` Arc as the shutdown
@@ -249,13 +252,14 @@ impl Scheduler {
             shared_regime: None,
             memory_graph: None,
             belief_revision: None,
+            memory_vault_writer: None,
             regime_storage: None,
             regime_manager_arc: None,
             calibration_reader: None,
         }
     }
 
-    /// Consume the 8-field VERIFIED-unconditional dependency set (#7737 C1
+    /// Consume the 9-field VERIFIED-unconditional dependency set (#7737 C1
     /// PR-2). Every field is destructured by name (no `..`), so a field
     /// added to `SchedulerRequiredDeps` without a matching line here fails
     /// to compile instead of silently staying unset. Mirrors
@@ -272,6 +276,7 @@ impl Scheduler {
             calibration_reader,
             belief_revision,
             regime_storage,
+            memory_vault_writer,
         } = deps;
         self.frame_storage = Some(frame_storage);
         self.notification_manager = Some(notification_manager);
@@ -281,6 +286,7 @@ impl Scheduler {
         self.calibration_reader = Some(calibration_reader);
         self.belief_revision = Some(belief_revision);
         self.regime_storage = Some(regime_storage);
+        self.memory_vault_writer = Some(memory_vault_writer);
         self
     }
 

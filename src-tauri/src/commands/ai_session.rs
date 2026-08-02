@@ -199,6 +199,7 @@ pub async fn send_session_message(
 
     let user_content = request.message.clone();
     let msg = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: request.message,
         attachments,
@@ -583,12 +584,26 @@ pub async fn rename_ai_session(
 /// Get token usage for the current day across all sessions.
 #[command]
 pub async fn get_token_usage(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AiSessionRuntimeState>,
 ) -> Result<TokenUsageResponse, IpcError> {
+    use tauri::Manager;
     let mgr = require_session_manager_impl(&state)?;
 
     let (input, output) = mgr.get_global_token_usage().await;
     let budget = state.daily_token_budget().unwrap_or(0);
+    // #9466: expose the configured model/provider so the privacy panel can
+    // estimate spend from a local price table (never a network lookup).
+    let llm_api = app
+        .try_state::<crate::runtime_state::ConfigRuntimeState>()
+        .and_then(|cs| cs.config_manager().get().ai_provider.llm_api);
+    let (model, provider) = match llm_api {
+        Some(endpoint) => (
+            endpoint.model.clone(),
+            Some(format!("{:?}", endpoint.provider_type).to_lowercase()),
+        ),
+        None => (None, None),
+    };
     Ok(TokenUsageResponse {
         total_input_tokens: input,
         total_output_tokens: output,
@@ -598,6 +613,8 @@ pub async fn get_token_usage(
         } else {
             Some(budget.saturating_sub(input + output))
         },
+        model,
+        provider,
     })
 }
 
@@ -665,6 +682,7 @@ pub async fn steer_session_turn(
 
     let session = mgr.get_session(&session_id).await.map_err(IpcError::from)?;
     let msg = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: message,
         attachments: vec![],
@@ -718,6 +736,12 @@ pub struct TokenUsageResponse {
     pub total_output_tokens: u64,
     pub daily_budget: u64,
     pub budget_remaining: Option<u64>,
+    /// #9466: configured LLM model (from `config.ai.llm_api`), so the
+    /// privacy panel can price today's usage from a LOCAL reference table
+    /// (no network lookup). `None` when no endpoint/model is configured.
+    pub model: Option<String>,
+    /// #9466: configured provider type label (e.g. `anthropic`), same source.
+    pub provider: Option<String>,
 }
 
 #[cfg(test)]

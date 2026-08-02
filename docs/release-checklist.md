@@ -28,14 +28,24 @@
 - [ ] Required public repository Actions secrets for the intended release scope are configured
 - [ ] Public repository PR, issue, Dependabot, and CodeQL queues were triaged immediately before release/export merge
 - [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in `supply-chain/release-alert-acceptance.json`
+- [ ] `./scripts/check-webdriver-security-isolation.sh` passes, proving any
+  accepted GTK3/glib finding remains confined to the optional WDIO test harness
+  and is absent from the exact shipped Linux feature graph
 - [ ] Provider-owned CLI compatibility gate passes:
   `provider_specs::tests::subprocess_compatibility_matrix_matches_e18_release_gate_contract`,
   `provider_specs::tests::rejects_subprocess_surface_without_compatibility_matrix`, and
   `provider_specs::tests::subprocess_output_contracts_match_e18_matrix`
+- [ ] Windows release binaries use the reviewed static OpenSSL archives and
+  static MSVC CRT, and the PE import-closure validator passes independently for
+  the prebuilt payload, ZIP, MSI administrative extraction, and NSIS extraction
+  (`node scripts/verify-windows-runtime-closure.mjs ...`).
 
 ## Manual Verification
 - [ ] `cargo build --release` succeeds on macOS
 - [ ] `cargo build --release` succeeds on Windows (or cross-compile)
+- [ ] On a clean Windows host without OpenSSL or developer tools, install the
+  MSI and NSIS packages in turn; record successful first launch, sandbox-worker
+  startup, uninstall, and the explicit keep/remove user-data choice for each.
 - [ ] App launches and shows Dashboard with real data
 - [ ] Settings save/load round-trip works
 - [ ] Auto-updater detects the new version (staging)

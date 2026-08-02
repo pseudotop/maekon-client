@@ -58,9 +58,10 @@ ADR 번호는 이 레지스트리 안에서만 의미가 있으며 전역 ONESHI
 | [029](./ADR-029-extension-package-runtime-boundary.ko.md) | Extension Package와 Runtime 경계 | Accepted | `maekon-core` extension 계약, trust 재사용, `src-tauri`, extension-facing UI/API |
 | [030](./ADR-030-work-context-envelope-convergence.ko.md) | Work Context Envelope와 수렴 | Accepted | `maekon-core` work-context 모델/포트, 향후 암호화 ledger, timeline/task/memory evidence projection |
 | [031](./ADR-031-extension-authorization-account-boundary.ko.md) | Extension Authorization과 Account 경계 | Accepted | `maekon-core` authorization broker, account-scoped OAuth/Keychain, readiness UI/API |
-| [032](./ADR-032-memory-graph-generation-input-contract.ko.md) | Memory-Graph Generation-Input 계약 | Proposed | `maekon-analysis`, `maekon-suggestion`, `maekon-core` ports/consent/prompt-assembly, `maekon-network` analysis client |
+| [032](./ADR-032-memory-graph-generation-input-contract.ko.md) | Memory-Graph Generation-Input 계약 | Accepted | `maekon-analysis`, `maekon-suggestion`, `maekon-core` ports/consent/prompt-assembly, `maekon-network` analysis client |
+| [033](./ADR-033-memory-vault-mirror.ko.md) | Memory Vault Mirror — 사용자 소유 로컬 마크다운 표면 | Accepted | `maekon-core` consent/config/port, `maekon-analysis` writer, `maekon-storage` vault_mirror_state, erase 오케스트레이터(`src-tauri`, `maekon-web`) |
 
-**다음 가용 ID**: `ADR-033`.
+**다음 가용 ID**: `ADR-034`.
 
 ## 컨벤션 요약
 

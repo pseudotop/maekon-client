@@ -630,6 +630,14 @@ fn request_tray_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     app.exit(0);
 }
 
+/// #9634: production app-quit entry point for UI surfaces (tracking panel).
+/// The panel's quit button used to invoke the DEBUG-ONLY `simulate_tray_action`
+/// QC command, which is compiled out of release builds — so the shipped quit
+/// button did nothing. Same exit path as the tray "Quit" menu item.
+pub fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    request_tray_quit(app);
+}
+
 fn schedule_debug_tray_quit<R: Runtime>(app: tauri::AppHandle<R>) {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(75));

@@ -8,6 +8,8 @@
 //! discovered by the runtime, so the WebView can never forge provenance, a
 //! manifest, or a trust field.
 
+use crate::ipc_error::IpcError;
+use crate::runtime_state::AppState;
 use chrono::Utc;
 use maekon_core::models::extension::{
     AccountAuthentication, Availability, CapabilityGrant, Enablement, ExtensionProvenance,
@@ -18,10 +20,6 @@ use maekon_core::ports::extension_registry::{
     RollbackRequest, SetEnablementRequest, UninstallRequest, UpdateRequest,
 };
 use serde::Serialize;
-use tauri::command;
-
-use crate::ipc_error::IpcError;
-use crate::runtime_state::AppState;
 
 /// One extension's readiness, reported as separate axes (§5).
 #[derive(Debug, Clone, Serialize)]
@@ -111,7 +109,6 @@ fn to_view(
 }
 
 /// List every registered extension with its eight readiness axes.
-#[command]
 pub async fn list_extensions(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ExtensionView>, IpcError> {
@@ -139,7 +136,6 @@ pub async fn list_extensions(
 }
 
 /// Install a registered extension. Fail-closed gates run server side.
-#[command]
 pub async fn install_extension(
     state: tauri::State<'_, AppState>,
     install_id: String,
@@ -158,7 +154,6 @@ pub async fn install_extension(
 }
 
 /// Enable or disable an installed extension. Disable blocks new work at once.
-#[command]
 pub async fn set_extension_enablement(
     state: tauri::State<'_, AppState>,
     install_id: String,
@@ -179,7 +174,6 @@ pub async fn set_extension_enablement(
 }
 
 /// Activate an update, retaining the previous known-good version.
-#[command]
 pub async fn update_extension(
     state: tauri::State<'_, AppState>,
     install_id: String,
@@ -200,7 +194,6 @@ pub async fn update_extension(
 }
 
 /// Roll back to the previous known-good version.
-#[command]
 pub async fn rollback_extension(
     state: tauri::State<'_, AppState>,
     install_id: String,
@@ -220,7 +213,6 @@ pub async fn rollback_extension(
 
 /// Uninstall, passing the cleanup steps the caller performed. A missing step
 /// returns `cleanup_incomplete` and applies nothing.
-#[command]
 pub async fn uninstall_extension(
     state: tauri::State<'_, AppState>,
     install_id: String,
@@ -274,7 +266,6 @@ fn skill_pack_resolver_for(
 /// activation. The `body_sha256` is derived from disk server-side and the owning
 /// install must clear every §10 availability gate — the WebView can name a skill
 /// and its owning install, never forge a body hash, a version, or provenance.
-#[command]
 pub async fn activate_skill_pack(
     state: tauri::State<'_, AppState>,
     install_id: String,
@@ -294,7 +285,6 @@ pub async fn activate_skill_pack(
 
 /// #8588: clear the current Skill Pack activation (explicit deselection). The
 /// planner then runs with an empty skill region — the fail-closed default.
-#[command]
 pub async fn clear_skill_pack_activation(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), IpcError> {

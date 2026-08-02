@@ -123,7 +123,10 @@ fn default_external_max_connections() -> usize {
     1024
 }
 fn default_external_burst_capacity() -> usize {
-    10
+    // #9643 review I4: 20 = the pre-wiring effective value (the hardcoded
+    // rate_limiter::BURST_CAPACITY) — wiring the knob must not silently halve
+    // default operators' burst allowance.
+    20
 }
 
 /// Authentication mode for external gRPC.
@@ -185,6 +188,8 @@ pub enum ExternalGrpcConfigError {
     MissingTlsKeyPath,
     #[error("external_grpc: port must be non-zero")]
     InvalidPort,
+    #[error("external_grpc: burst_capacity must be non-zero (0 admits no events at all)")]
+    InvalidBurstCapacity,
     #[error("external_grpc: auth_mode includes JWT but jwt_public_key_path not set")]
     MissingJwtPubKey,
     #[error("external_grpc: auth_mode includes JWT but jwt_algorithm not set")]
@@ -208,6 +213,11 @@ impl ExternalGrpcConfig {
         }
         if self.port == 0 {
             return Err(ExternalGrpcConfigError::InvalidPort);
+        }
+        // #9643 review I4: with the knob now actually wired to the event-stream
+        // rate limiter, 0 would admit no events forever (tokens never reach 1).
+        if self.burst_capacity == 0 {
+            return Err(ExternalGrpcConfigError::InvalidBurstCapacity);
         }
         if self.tls_cert_path.is_none() {
             return Err(ExternalGrpcConfigError::MissingTlsCertPath);
@@ -284,7 +294,8 @@ mod tests {
         assert_eq!(cfg.port, 10092);
         assert_eq!(cfg.max_concurrent_streams, 16);
         assert_eq!(cfg.max_connections, 1024);
-        assert_eq!(cfg.burst_capacity, 10);
+        // #9643 review I4: 20 = the pre-wiring effective limiter value.
+        assert_eq!(cfg.burst_capacity, 20);
         assert_eq!(cfg.mtls_max_cert_lifetime_hours, 48);
     }
 

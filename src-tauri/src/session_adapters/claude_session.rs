@@ -419,6 +419,7 @@ mod tests {
         let session = Arc::new(session_with_system_prompt(None));
         let guard = session.turn_lock.clone().lock_owned().await;
         let message = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hello".to_string(),
             attachments: vec![],

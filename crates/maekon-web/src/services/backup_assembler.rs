@@ -148,10 +148,12 @@ pub(crate) fn empty_restore_counts() -> RestoredCounts {
 pub(crate) fn assemble_restore_result(
     restored: RestoredCounts,
     errors: Vec<String>,
+    notes: Vec<String>,
 ) -> RestoreResult {
     RestoreResult {
         success: errors.is_empty(),
         restored,
         errors,
+        notes,
     }
 }

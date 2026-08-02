@@ -298,3 +298,26 @@ fn orphan_backup_removed_on_replace_binary_failure() {
         rollback_files
     );
 }
+
+// #9552: migrated from the retired duplicate test_cases/ module —
+// extract-dir contract tests (restored under #9545).
+
+#[test]
+fn archive_extract_dir_uses_parent_when_present() {
+    use std::path::Path;
+
+    assert_eq!(
+        Updater::archive_extract_dir_for_path(Path::new("/downloads/maekon.zip")),
+        Path::new("/downloads")
+    );
+}
+
+#[test]
+fn archive_extract_dir_falls_back_to_system_temp_dir_without_parent() {
+    use std::path::Path;
+
+    assert_eq!(
+        Updater::archive_extract_dir_for_path(Path::new("maekon.zip")),
+        std::env::temp_dir()
+    );
+}

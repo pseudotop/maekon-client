@@ -2,7 +2,7 @@
 
 # Market Positioning References
 
-> Last updated: 2026-06-18
+> Last updated: 2026-07-30
 
 ## Purpose
 
@@ -37,6 +37,24 @@ DeepMind articulates four design principles for AI Pointer that align closely wi
 Quoted: *"AI capabilities should work across all apps, not force users into 'AI detours' between them."*
 
 Maekon adopts these as the **target experience** for the work-signal layer, while differentiating on four operational axes below.
+
+## OpenHuman (tinyhumansai) — Closest Local-First Comparable (2026-07-29 scan)
+
+**Product**: OpenHuman — a Tauri+Rust+SQLite local-first "personal AI super intelligence" (launched 2026-05, GPL-3.0). Closest stack-and-category comparable to Maekon; its context-acquisition axis is the inverse of ours (it READS ACCOUNTS via 100+ OAuth connectors on a 20-minute pull loop; Maekon OBSERVES ACTIVITY via passive local capture).
+
+**Signal-quality verdict (mandatory reading before citing its metrics)**:
+
+- Its star/trending metrics are NOT community validation. Full-archive verification (2026-07-29): every Hacker News submission about it (5 total, including the maintainer's own Show HN and a launch-day third-party post) died at 2–4 points with ~1 comment total; zero indexed Reddit threads; zero organic X reactions beyond the maintainer. Most English "coverage" is SEO content farms echoing the trending rank. Growth is attributable to non-anglophone channels plus a trending→SEO→stars amplification loop. **Do not cite its stars, trending rank, or Product Hunt position as demand or product evidence.**
+- Valid evidence = two hands-on reviews only: 요즘IT (direct use; yozm.wishket.com/magazine/detail/3870) and OpenAIToolsHub (14-day self-host). Both converge on the same points: the single most-praised property is the **inspectable memory vault** ("you can open the vault and see exactly what the agent knows — nobody else does"); the consistent shortfalls are stability and speed.
+- Its issue tracker's real user signal (~83% of recent traffic is core-team work tickets; top-reacted community issues): the #1 grievance is **forced online accounts in a "local-first" product**; two user-conducted code audits found unconsented phone-home to its own backend and OAuth handshakes routed through a hosted aggregator (Composio). Quote from that thread: *"'local-first' and 'connected to your tools' pull in opposite directions and the marketing copy almost always papers over the seam."*
+
+**What this validates for Maekon** (external evidence for decisions already made):
+
+1. **The vault bet** — ADR-033's user-owned Markdown mirror lands on the property hands-on reviewers praise most, grounded in real usage signal, not star counts.
+2. **No account required** — the community's loudest OpenHuman complaint is exactly the axis Maekon refuses: Maekon's standalone success path requires no online account, no OAuth breadth, no aggregator middleman (MK-EXT-01: first-party read-only connectors only).
+3. **Egress honesty** — OpenHuman's trust collapse came from silent phone-home discovered by user audits; Maekon's egress ledger + receipt-only/non-PII telemetry + ADR-033 §3.4 cloud-path ledger records are the preemptive public answer. State this in public surfaces rather than waiting to be audited.
+
+Source pointers: github.com/tinyhumansai/openhuman (issues #1977, #2020, #2422 for the trust findings).
 
 ## Maekon's 4 Differentiation Axes
 

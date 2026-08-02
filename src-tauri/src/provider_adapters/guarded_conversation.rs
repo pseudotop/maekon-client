@@ -409,6 +409,7 @@ mod tests {
 
     fn msg(content: &str) -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: content.to_string(),
             attachments: vec![],

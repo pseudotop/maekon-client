@@ -69,6 +69,33 @@ export const IDENTICAL_INVARIANTS: readonly InvariantEntry[] = [
     key: 'settingsAutomation.requirementCli',
     rationale: '"{{tool}} CLI" — interpolated tool name + acronym; nothing translatable.',
   },
+
+  // --- ADR-033 memory vault: cloud-provider proper nouns (#9465) ---
+  // The coarse `cloud_provider` labels the §3.2 detector returns are rendered
+  // through these keys. Four are vendor product names used verbatim in
+  // Japanese; `cloudStorage` is the one that IS descriptive and IS translated.
+  { key: 'settings.memoryVault.provider.icloud', rationale: 'Brand/proper noun "iCloud Drive".' },
+  { key: 'settings.memoryVault.provider.onedrive', rationale: 'Brand/proper noun "OneDrive".' },
+  { key: 'settings.memoryVault.provider.dropbox', rationale: 'Brand/proper noun "Dropbox".' },
+  {
+    key: 'settings.memoryVault.provider.googleDrive',
+    rationale: 'Brand/proper noun "Google Drive".',
+  },
+  {
+    key: 'settings.memoryVault.pathInputPlaceholder',
+    rationale: 'Example absolute filesystem path placeholder — no translatable words.',
+  },
+  // #9611 WD-02.3 — context home. Both are pure interpolation with no prose:
+  // translating them could only mean changing the separator or the sign, which
+  // would make the ja build differ from the others for no reader benefit.
+  {
+    key: 'contextHome.actorLine',
+    rationale: 'Interpolation-only: "{{actor}} · {{org}}" carries no translatable words.',
+  },
+  {
+    key: 'contextHome.moreParticipants',
+    rationale: 'Interpolation-only: "+{{count}}" overflow marker carries no translatable words.',
+  },
 ] as const
 
 /** Set of allowlisted keys for O(1) membership checks in the guard test. */

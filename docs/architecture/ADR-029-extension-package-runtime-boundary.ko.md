@@ -7,6 +7,7 @@
 **범위**: `maekon-core` extension 계약, `maekon-automation` trust 재사용, `src-tauri` composition root, extension-facing UI/API
 **관련**: ADR-001 (crate 방향), ADR-002 (실행 경계), ADR-019 (typed error), ADR-026 (consent port), ADR-028 (영속 task provenance)
 **이슈**: #8585 (`MK-EXT-01.S01`)
+**구현 상태**: Registry P01 #8586은 parent main `75d6a1e9af`에서 SQLite V50·core/store·lifecycle IPC·독립 panel까지 구현됐고, Skill Pack activation #8588은 `4b80bf4bdf`에서 SQLite V52·activation IPC로 구현됐다. Panel은 여전히 미장착이고 Skill Pack은 frontend 표면이 없으며, connector·marketplace·third-party runtime은 미구현이다. Source-only readback이며 release·runtime·고객 효과 증거가 아니다.
 
 ---
 
@@ -379,14 +380,21 @@ evidence split을 승인해야 한다. 후속 구현은 다음을 test해야 한
 9. typed UI/API unavailability parity
 10. parent-only threat evidence의 public-export 제외
 
-## 알려진 후속 작업
+## 구현 상태와 알려진 후속 작업
 
 1. **#8583 envelope 계약** — external source identity, revision, tombstone,
    minimized task provenance를 정의한다.
 2. **#8584 permission/OAuth 계약** — account-scoped credential, dynamic grant,
    provider scope reconciliation을 정의한다.
-3. **#8586 registry 구현** — Wave-0 계약 Accepted 뒤에만 lifecycle axis를
-   구현한다.
+3. **#8586 registry P01 구현 완료·미장착** — parent main `75d6a1e9af`에서
+   lifecycle axis, SQLite V50, IPC, frontend hook과 독립
+   `ExtensionRegistryPanel`·component test가 merge됐다. 그 panel은 어떤 route
+   항목에도, 테스트가 아닌 어떤 소스 파일에도 등장하지 않아 extension
+   lifecycle에 도달 가능한 UI가 없다. `4b80bf4bdf`가 Skill Pack
+   catalog/activation과 capability resolver(SQLite V52,
+   `activate_skill_pack`·`clear_skill_pack_activation` IPC, 회귀 수정
+   `26aa185c82`)를 추가했으나 frontend 표면은 전혀 없다. App·route composition과
+   실제 connector/runtime은 별도 후속 범위다.
 4. **Subprocess/WASM ADR** — non-built-in runtime enable 전에 필요하다.
 5. **Action Adapter ADR** — external write contribution 전에 필요하다.
 6. **Relay ADR** — `relay`/`either` available 전 필요하다.

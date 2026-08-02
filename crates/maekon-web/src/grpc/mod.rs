@@ -99,6 +99,11 @@ pub struct DashboardServiceImpl {
     // v2b B3-0 additions (used by B3-6 SubscribeEvents handler):
     pii_sanitizer: Option<Arc<dyn PiiSanitizer>>,
     ai_runtime_status_snapshot: Option<AiRuntimeStatus>,
+    // #9638: SubscribeEvents rate-limiter burst capacity. The external
+    // service takes it from `ExternalGrpcConfig.burst_capacity` (which used
+    // to round-trip through serde and then never reach the limiter — a no-op
+    // operator knob); the loopback service keeps the built-in default.
+    event_stream_burst_capacity: u32,
 }
 
 impl DashboardServiceImpl {
@@ -119,6 +124,7 @@ impl DashboardServiceImpl {
             max_concurrent_streams: cfg.max_concurrent_streams,
             pii_sanitizer: cfg.pii_sanitizer.clone(),
             ai_runtime_status_snapshot: cfg.ai_runtime_status_snapshot.clone(),
+            event_stream_burst_capacity: rate_limiter::BURST_CAPACITY,
         }
     }
 
@@ -156,6 +162,8 @@ impl DashboardServiceImpl {
             max_concurrent_streams: cfg.config.max_concurrent_streams,
             pii_sanitizer: cfg.pii_sanitizer.clone(),
             ai_runtime_status_snapshot: cfg.ai_runtime_status_snapshot.clone(),
+            event_stream_burst_capacity: u32::try_from(cfg.config.burst_capacity)
+                .unwrap_or(rate_limiter::BURST_CAPACITY),
         }
     }
 }
@@ -260,6 +268,7 @@ impl DashboardService for DashboardServiceImpl {
             self.max_concurrent_streams,
             self.pii_sanitizer.clone(),
             self.ai_runtime_status_snapshot.clone(),
+            self.event_stream_burst_capacity,
         )
         .await
     }

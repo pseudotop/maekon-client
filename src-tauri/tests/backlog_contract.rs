@@ -1,6 +1,6 @@
 //! Backlog category contract tests — surface checks for source files declared
-//! in tc-catalog.jsonl entries under the auth-flow / integration-adapters /
-//! ai-providers / automation-control / coaching-engine / vector-rag /
+//! in tc-catalog.jsonl entries under the integration-adapters / ai-providers /
+//! automation-control / coaching-engine / vector-rag /
 //! auto-update / sandbox-worker / audio-stt / grpc-dashboard /
 //! network-resilience / bug-telemetry suites.
 //!
@@ -30,30 +30,6 @@ fn assert_exists(rel_path: &str) {
         rel_path,
         p.display()
     );
-}
-
-// ───────────────── auth-flow ─────────────────
-// CRT-PRV-AUTH-001..005: auth_cli.rs is the entry point
-
-#[test]
-fn crt_prv_auth_001_login() {
-    assert_exists("src-tauri/src/auth_cli.rs");
-}
-#[test]
-fn crt_prv_auth_002_oauth_round_trip() {
-    assert_exists("src-tauri/src/auth_cli.rs");
-}
-#[test]
-fn crt_prv_auth_003_token_refresh() {
-    assert_exists("src-tauri/src/auth_cli.rs");
-}
-#[test]
-fn crt_prv_auth_004_logout_keychain_cleanup() {
-    assert_exists("src-tauri/src/auth_cli.rs");
-}
-#[test]
-fn crt_prv_auth_005_forgot_reset() {
-    assert_exists("src-tauri/src/auth_cli.rs");
 }
 
 // ───────────────── integration-adapters ─────────────────

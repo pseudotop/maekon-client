@@ -86,6 +86,28 @@ pub(super) fn app_dir_name() -> String {
     app_dir_name_for_flavor(flavor.as_deref())
 }
 
+/// #9588: canonical OS keychain service name — the same flavored app identity
+/// the profile directories use (`maekon`, or `maekon-<flavor>` under
+/// `MAEKON_APP_FLAVOR`).
+///
+/// What this DOES fix: flavored dev/test profiles no longer share keychain
+/// items with the unflavored production app (they used to fight over one
+/// hard-coded `"maekon"` service — a flavored test logout could even delete
+/// production tokens). Unflavored production resolves to `"maekon"`,
+/// unchanged, so no migration is needed there.
+///
+/// What this does NOT fix (review #9593 I4): the macOS ACL consent prompt is
+/// keyed on BINARY identity, not the service name — two differently-pathed
+/// debug builds still share a flavor (and its items) and still trip the
+/// prompt. The bounded-op timeout is the mechanism that converts that hang
+/// into an explicit error. Pre-scoping items stored by flavored profiles
+/// under the shared legacy service stay reachable via the read-through
+/// fallback in `maekon-storage`'s keychain layer, so existing flavored
+/// profiles keep decrypting their data.
+pub fn keychain_service_name() -> String {
+    app_dir_name()
+}
+
 pub(super) fn app_dir_name_for_flavor(flavor: Option<&str>) -> String {
     let Some(flavor) = flavor.map(str::trim).filter(|s| !s.is_empty()) else {
         return APP_DIR_NAME.to_string();
@@ -214,6 +236,24 @@ mod tests {
             resolved, env_path,
             "env override applies with no system file"
         );
+    }
+
+    /// #9588: the keychain service namespace must follow the flavored app
+    /// identity exactly — unflavored stays `"maekon"` (existing production
+    /// items remain reachable), flavored profiles get their own namespace.
+    /// Pure-function assertions so no env mutation (and no test ordering
+    /// hazard) is involved.
+    #[test]
+    fn keychain_service_namespace_follows_flavored_app_identity() {
+        assert_eq!(app_dir_name_for_flavor(None), "maekon");
+        assert_eq!(app_dir_name_for_flavor(Some("")), "maekon");
+        assert_eq!(app_dir_name_for_flavor(Some("  ")), "maekon");
+        assert_eq!(app_dir_name_for_flavor(Some("guicheck")), "maekon-guicheck");
+        assert_eq!(app_dir_name_for_flavor(Some("dev_2")), "maekon-dev_2");
+        // Non-identifier characters are stripped; a flavor reduced to nothing
+        // falls back to the unflavored identity.
+        assert_eq!(app_dir_name_for_flavor(Some("a/b:c")), "maekon-abc");
+        assert_eq!(app_dir_name_for_flavor(Some("///")), "maekon");
     }
 
     #[test]

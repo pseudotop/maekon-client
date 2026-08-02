@@ -176,7 +176,7 @@ impl TelemetryConfig {
 
 // ── NotificationConfig ─────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationConfig {
     #[serde(default = "default_notification_enabled")]
     pub enabled: bool,

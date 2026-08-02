@@ -123,7 +123,7 @@ impl BackupStorage for SqliteStorage {
         name: &str,
         color: &str,
         created_at: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<i64>, CoreError> {
         // Move owned data into the Send + 'static closure (no borrowed &str).
         SqliteStorage::upsert_backup_tag_async(
             self,
@@ -141,7 +141,7 @@ impl BackupStorage for SqliteStorage {
         frame_id: i64,
         tag_id: i64,
         created_at: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<bool, CoreError> {
         SqliteStorage::upsert_backup_frame_tag_async(self, frame_id, tag_id, created_at.to_owned())
             .await
             .map_err(Into::into)
@@ -154,7 +154,7 @@ impl BackupStorage for SqliteStorage {
         timestamp: &str,
         app_name: Option<&str>,
         window_title: Option<&str>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<bool, CoreError> {
         SqliteStorage::upsert_backup_event_async(
             self,
             event_id.to_owned(),
@@ -178,7 +178,7 @@ impl BackupStorage for SqliteStorage {
         width: i32,
         height: i32,
         ocr_text: Option<&str>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<i64>, CoreError> {
         SqliteStorage::upsert_backup_frame_async(
             self,
             id,

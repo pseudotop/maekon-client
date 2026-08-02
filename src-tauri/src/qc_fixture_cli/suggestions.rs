@@ -133,7 +133,7 @@ fn persist_suggestion_fixture(
     marker_version: &str,
     suggestion: Suggestion,
 ) -> Result<SuggestionSeedReport> {
-    let db_path = data_dir.join("maekon.db");
+    let db_path = data_dir.join(maekon_storage::encryption::SQLCIPHER_DB_FILENAME);
     let storage = SqliteStorage::open(&db_path, retention_days, Some(&encryption_key))
         .context("open isolated encrypted QC database")?;
 

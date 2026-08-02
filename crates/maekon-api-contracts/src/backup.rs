@@ -178,6 +178,16 @@ pub struct RestoreResult {
     pub success: bool,
     pub restored: RestoredCounts,
     pub errors: Vec<String>,
+    /// Things the caller should know that are NOT failures (#9714).
+    ///
+    /// Kept separate from `errors` because `success` is `errors.is_empty()`:
+    /// an archive that references frames this device no longer has is
+    /// data-hygiene noise, not a failed restore. Frame deletion does not clean
+    /// up `frame_tags` (#9721), so orphan relations are the steady state on any
+    /// device that has run retention — folding them into `errors` would report
+    /// `success: false` for essentially every real install.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

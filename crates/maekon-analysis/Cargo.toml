@@ -22,7 +22,7 @@ serde = { workspace = true, features = ["derive"] }
 usearch = { version = "2", optional = true }
 serde_json.workspace = true
 sha2 = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "fs", "rt"] }
 tracing.workspace = true
 lru.workspace = true
 

@@ -148,6 +148,41 @@ mod tests {
         );
     }
 
+    /// #9785: a settings save must not wipe the handoff allowlist.
+    ///
+    /// `server.allowed_handoff_hosts` is written by the config file, not by the
+    /// settings form — the form has no field for it. The danger is the shape
+    /// this module already documents for `regime_goals` (#8083/#8052): a form
+    /// that does not know about a value round-trips it as absent and clobbers
+    /// what another writer just set. Here the allowlist decides where the app
+    /// may send the user's browser, so a silent reset to empty would break
+    /// handoff for a configured install with nothing in the logs to explain it.
+    #[test]
+    fn a_settings_save_preserves_the_configured_handoff_allowlist() {
+        let mut app_config = AppConfig::default_config();
+        app_config.server.allowed_handoff_hosts = vec![
+            "console.example.com".to_string(),
+            "preview.example.com".to_string(),
+        ];
+
+        // A form payload assembled from an unrelated state, then saved back.
+        let mut settings = AppSettings::default();
+        settings.network.server_base_url = "https://api.example.com".to_string();
+        settings_service::apply_settings_to_config(&mut app_config, &settings).unwrap();
+
+        assert_eq!(
+            app_config.server.allowed_handoff_hosts,
+            vec![
+                "console.example.com".to_string(),
+                "preview.example.com".to_string()
+            ],
+            "a settings save must leave the handoff allowlist exactly as configured"
+        );
+        // The field the form DOES own still applies, so this is not passing by
+        // the save being a no-op.
+        assert_eq!(app_config.server.base_url, "https://api.example.com");
+    }
+
     #[test]
     fn apply_settings_to_config_validates_remote_ai_requirements() {
         let mut app_config = AppConfig::default_config();

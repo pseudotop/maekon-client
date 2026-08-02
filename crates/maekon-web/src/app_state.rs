@@ -27,6 +27,8 @@ use maekon_core::ports::integration::{
     IntegrationOutboxPort, IntegrationRuntimeTelemetryPort, IntegrationSessionPort,
 };
 use maekon_core::ports::memory_graph_port::MemoryGraphPort;
+use maekon_core::ports::memory_graph_projection::MemoryGraphProjectionPort;
+use maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort;
 use maekon_core::ports::override_store::OverrideStore;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use maekon_core::ports::pomodoro_store::PomodoroStorePort;
@@ -61,6 +63,10 @@ pub struct CoreState {
     /// ADR-023: local memory-graph store (the same `SqliteStorage` as `storage`,
     /// as a `MemoryGraphPort`). Lets the digest export render accumulated claims.
     pub memory_graph: Option<Arc<dyn MemoryGraphPort>>,
+    /// ADR-033 §4: vault mirror writer — the web erase orchestrator's Phase-3
+    /// (`data_web_service::delete_all_data`). `Some` on every production
+    /// shape (a required dep); an absent handle fails the erase loud.
+    pub memory_vault_writer: Option<Arc<dyn MemoryVaultWriterPort>>,
     /// #4478 G3: one-shot erasure-propagation signal shared with the SyncEngine;
     /// the "Delete all data" endpoint sets it so a local erasure reaches LAN peers.
     pub erasure_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -250,6 +256,10 @@ pub struct AnalysisState {
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub text_search: Option<Arc<dyn TextSearchProvider>>,
     pub adaptive_search: Option<Arc<dyn AdaptiveSearchPort>>,
+    /// ADR-032 Mode A: bounded memory-graph edge projection for retrieval
+    /// re-ranking. `Some` on every production shape (a required dep); the
+    /// off-by-default state is inside the port (empty projection), not here.
+    pub memory_graph_projection: Option<Arc<dyn MemoryGraphProjectionPort>>,
     pub model_catalog_client: Option<Arc<dyn ProviderModelCatalogPort>>,
     pub override_store: Option<Arc<dyn OverrideStore>>,
     pub recluster_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -345,6 +355,7 @@ impl AppState {
                 config_manager: None,
                 update_control: None,
                 memory_graph: None,
+                memory_vault_writer: None,
                 erasure_requested: None,
                 audit_chain_verifier: None,
                 egress_ledger_reader: None,

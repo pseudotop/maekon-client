@@ -333,10 +333,13 @@ cargo run -p maekon-app
 
 | 변수 | 필수 | 설명 |
 |------|------|------|
-| `MAEKON_EMAIL` | 연결 모드에서만 ✅ | 로그인 이메일 (standalone 모드에서는 선택) |
-| `MAEKON_PASSWORD` | 연결 모드에서만 ✅ | 로그인 비밀번호 (standalone 모드에서는 선택) |
 | `RUST_LOG` | ❌ | 로그 레벨 (기본: `info`) |
 | `MAEKON_CONFIG` | ❌ | 설정 파일 경로 |
+
+로그인 자격 증명은 환경 변수에서 읽지 않습니다. **로그인** 화면(`/login`,
+명령 팔레트에서 접근) 또는 **설정 → 일반 → 계정**에서 로그인하세요 — 두
+경로는 같은 폼을 렌더링하며, 모두 `--features server` 빌드가 필요합니다.
+서버 URL은 **설정 → 고급 → Network & Server**에서 설정합니다.
 
 ## 테스트
 

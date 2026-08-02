@@ -100,6 +100,7 @@ mod tests {
                 frames: 0,
             },
             errors: vec![],
+            notes: vec![],
         };
 
         let json = serde_json::to_string(&result).unwrap();

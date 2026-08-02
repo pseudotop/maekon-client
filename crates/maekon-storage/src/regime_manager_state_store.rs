@@ -184,7 +184,7 @@ impl RegimeStoragePort for SqliteRegimeManagerStateStore {
                 &regimes_snapshot
             {
                 // INSERT OR IGNORE establishes the row with a zero HLC (local-only
-                // origin) if it does not exist yet.  PRAGMA foreign_keys is OFF on
+                // origin) if it does not exist yet.  #9735: PRAGMA foreign_keys is ON on
                 // this connection so the insert never blocks on params_snapshot_id.
                 conn.execute(
                     "INSERT OR IGNORE INTO regimes \

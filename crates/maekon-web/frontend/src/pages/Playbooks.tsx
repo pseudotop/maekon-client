@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   BookOpen,
   ChevronDown,
@@ -18,10 +18,12 @@ import {
   fetchCoachingTemplates,
   fetchPresetLibrary,
   type PresetSummaryDto,
+  runPreset,
 } from '../api/client'
-import { EmptyState, GuidanceEmptyState, ListSkeleton, Select } from '../components/ui'
+import { Button, EmptyState, GuidanceEmptyState, ListSkeleton, Select } from '../components/ui'
 import { Badge } from '../components/ui/Badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card'
+import { addToast } from '../hooks/useToast'
 import { colors, iconSize, motion, typography } from '../styles/tokens'
 import type { BadgeColor } from '../styles/variants'
 import { cn } from '../utils/cn'
@@ -174,7 +176,24 @@ interface PresetCardProps {
 
 function PresetCard({ preset }: PresetCardProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const catColor: BadgeColor = categoryBadgeColor[preset.category] ?? 'default'
+
+  // #9639: the library rendered presets with no way to RUN them — the
+  // execution API (runPreset) had its only consumer in /automation. Same
+  // mutation pattern as CommandsSection; failures (automation disabled,
+  // policy denial) surface via toast.
+  const runMutation = useMutation({
+    mutationFn: runPreset,
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['auditLogs'] })
+      queryClient.invalidateQueries({ queryKey: ['automationStats'] })
+      addToast(result.success ? 'success' : 'error', result.message)
+    },
+    onError: (error: Error) => {
+      addToast('error', error.message)
+    },
+  })
 
   return (
     <Card variant="default" padding="sm">
@@ -202,7 +221,20 @@ function PresetCard({ preset }: PresetCardProps) {
             {preset.builtin ? t(`presets.${preset.id}.description`, preset.description) : preset.description}
           </p>
         </div>
-        <p className={cn('mt-2 text-xs', colors.text.tertiary)}>{t('playbooks.steps', { count: preset.step_count })}</p>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <p className={cn('text-xs', colors.text.tertiary)}>{t('playbooks.steps', { count: preset.step_count })}</p>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            isLoading={runMutation.isPending}
+            aria-label={t('playbooks.runNamed', { name: preset.name })}
+            onClick={() => runMutation.mutate(preset.id)}
+          >
+            <PlayCircle className={cn(iconSize.sm, 'mr-1')} aria-hidden="true" />
+            {t('playbooks.run')}
+          </Button>
+        </div>
       </CardContent>
     </Card>
   )

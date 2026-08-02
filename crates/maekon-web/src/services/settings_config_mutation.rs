@@ -596,6 +596,8 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
             gui_intelligence_enabled,
             text_intelligence_enabled,
             auto_tuner_enabled,
+            tiered_memory_enabled,
+            regime_detection_interval_hours,
         } = &settings.analysis;
         config.analysis.enabled = *enabled;
         config.analysis.interval_secs = *interval_secs;
@@ -606,6 +608,11 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
         config.analysis.gui_intelligence.enabled = *gui_intelligence_enabled;
         config.analysis.text_intelligence.enabled = *text_intelligence_enabled;
         config.analysis.tiered_memory.auto_tuning.enabled = *auto_tuner_enabled;
+        config.analysis.tiered_memory.enabled = *tiered_memory_enabled;
+        config
+            .analysis
+            .tiered_memory
+            .regime_detection_interval_hours = *regime_detection_interval_hours;
     }
 
     // Network

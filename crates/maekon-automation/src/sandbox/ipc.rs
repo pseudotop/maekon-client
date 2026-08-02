@@ -240,4 +240,39 @@ mod tests {
     fn worker_file_name() -> String {
         format!("{}{}", WORKER_BASE_NAME, worker_extension())
     }
+
+    // #9573 (CRT-PRV-SBX-006): the catalog named a filter that never matched
+    // any test. Adjacent-worker acceptance was already pinned under a
+    // different name (#4059, `worker_path_resolution_accepts_adjacent_worker_
+    // only`); genuinely new here: the target-triple SIDECAR candidate and the
+    // empty-dir behavioral assertion (the directory-parameterized API itself
+    // is the no-PATH-fallback guarantee).
+    #[test]
+    fn resolve_worker_path_in_dir_accepts_target_triple_sidecar() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sidecar = dir.path().join(format!(
+            "{}-{}{}",
+            WORKER_BASE_NAME,
+            target_triple(),
+            worker_extension()
+        ));
+        std::fs::write(&sidecar, b"sidecar-binary").expect("stage sidecar");
+
+        let resolved = resolve_worker_path_in_dir(dir.path())
+            .expect("Tauri target-triple sidecar must be accepted");
+        assert_eq!(resolved, sidecar);
+    }
+
+    #[test]
+    fn resolve_worker_path_in_dir_resolves_nothing_from_empty_dir() {
+        // Candidates are built ONLY from the given directory, so an empty dir
+        // must yield None — no PATH or environment lookup can intervene.
+        // (Out-of-dir REJECTION is pinned by the pre-existing
+        // `worker_candidate_rejects_path_outside_executable_dir`.)
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert!(
+            resolve_worker_path_in_dir(dir.path()).is_none(),
+            "empty executable dir must resolve nothing (no PATH fallback)"
+        );
+    }
 }

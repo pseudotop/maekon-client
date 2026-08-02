@@ -56,7 +56,7 @@ const mockedSettings = {
     excluded_app_patterns: [],
     excluded_title_patterns: [],
     auto_exclude_sensitive: true,
-    pii_filter_level: 'standard',
+    pii_filter_level: 'Standard',
   },
   schedule: {
     active_hours_enabled: false,
@@ -71,7 +71,7 @@ const mockedSettings = {
   },
   sandbox: {
     enabled: true,
-    profile: 'balanced',
+    profile: 'Standard',
     allowed_read_paths: [],
     allowed_write_paths: [],
     allow_network: false,
@@ -79,9 +79,9 @@ const mockedSettings = {
     max_cpu_time_ms: 30000,
   },
   ai_provider: {
-    ocr_provider: 'local',
-    llm_provider: 'local',
-    external_data_policy: 'disabled',
+    ocr_provider: 'Local',
+    llm_provider: 'Local',
+    external_data_policy: 'PiiFilterStrict',
     bypass_pii_filter_for_external_ocr: false,
     ocr_validation: {
       enabled: true,

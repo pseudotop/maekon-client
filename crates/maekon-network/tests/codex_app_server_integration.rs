@@ -68,6 +68,7 @@ fn thread_config() -> ThreadConfig {
 
 fn user_msg(content: &str) -> SessionMessage {
     SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: content.to_string(),
         attachments: vec![],

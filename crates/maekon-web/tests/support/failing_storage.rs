@@ -690,7 +690,7 @@ impl BackupStorage for FailingStorage {
         name: &str,
         color: &str,
         created_at: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<i64>, CoreError> {
         BackupStorage::upsert_backup_tag(&*self.inner, id, name, color, created_at).await
     }
 
@@ -699,7 +699,7 @@ impl BackupStorage for FailingStorage {
         frame_id: i64,
         tag_id: i64,
         created_at: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<bool, CoreError> {
         BackupStorage::upsert_backup_frame_tag(&*self.inner, frame_id, tag_id, created_at).await
     }
 
@@ -710,7 +710,7 @@ impl BackupStorage for FailingStorage {
         timestamp: &str,
         app_name: Option<&str>,
         window_title: Option<&str>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<bool, CoreError> {
         BackupStorage::upsert_backup_event(
             &*self.inner,
             event_id,
@@ -733,7 +733,7 @@ impl BackupStorage for FailingStorage {
         width: i32,
         height: i32,
         ocr_text: Option<&str>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<i64>, CoreError> {
         BackupStorage::upsert_backup_frame(
             &*self.inner,
             id,

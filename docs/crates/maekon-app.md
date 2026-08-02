@@ -326,10 +326,14 @@ cargo run -p maekon-app
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MAEKON_EMAIL` | Connected mode only ✅ | Login email (optional in standalone mode) |
-| `MAEKON_PASSWORD` | Connected mode only ✅ | Login password (optional in standalone mode) |
 | `RUST_LOG` | ❌ | Log level (default: `info`) |
 | `MAEKON_CONFIG` | ❌ | Config file path |
+
+Sign-in credentials are not read from the environment. Sign in from the
+**Sign in** screen (`/login`, reachable from the command palette) or from
+**Settings → General → Account** — both render the same form, and both require a
+build with `--features server`. The server URL is configured under
+**Settings → Advanced → Network & Server**.
 
 ## Tests
 

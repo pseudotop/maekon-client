@@ -26,12 +26,19 @@ function mockTauriIpc(page: Page, opts?: { createDelay?: number }) {
           if (cmd === 'list_ai_sessions') {
             return Promise.resolve([])
           }
-          if (cmd === 'get_token_usage_today') {
+          // #9517: the real command is `get_token_usage` (the old
+          // `get_token_usage_today` name never existed, so this mock was dead
+          // and the real call fell through to the catch-all null). Payload
+          // mirrors the current TokenUsageResponse camelCase contract
+          // (model/provider added by #9466).
+          if (cmd === 'get_token_usage') {
             return Promise.resolve({
               totalInputTokens: 0,
               totalOutputTokens: 0,
               dailyBudget: 10000,
               budgetRemaining: 10000,
+              model: 'test-model',
+              provider: 'anthropic',
             })
           }
           if (cmd === 'create_ai_session') {
