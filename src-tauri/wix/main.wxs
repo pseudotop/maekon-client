@@ -44,6 +44,16 @@
                             Name='maekon-sandbox-worker.exe'
                             DiskId='1'
                             Source='$(var.CargoTargetBinDir)\maekon-sandbox-worker.exe'/>
+                        <File
+                            Id='vcruntime140'
+                            Name='vcruntime140.dll'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\vcruntime140.dll'/>
+                        <File
+                            Id='vcruntime140_1'
+                            Name='vcruntime140_1.dll'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\vcruntime140_1.dll'/>
                         <RemoveFolder Id='CleanUpApplicationFolder' On='uninstall'/>
                         <RegistryValue Root='HKCU'
                             Key='Software\Maekon'

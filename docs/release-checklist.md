@@ -35,9 +35,11 @@
   `provider_specs::tests::subprocess_compatibility_matrix_matches_e18_release_gate_contract`,
   `provider_specs::tests::rejects_subprocess_surface_without_compatibility_matrix`, and
   `provider_specs::tests::subprocess_output_contracts_match_e18_matrix`
-- [ ] Windows release binaries use the reviewed static OpenSSL archives and
-  static MSVC CRT, and the PE import-closure validator passes independently for
-  the prebuilt payload, ZIP, MSI administrative extraction, and NSIS extraction
+- [ ] Windows release binaries use the reviewed static OpenSSL archives; any
+  residual retail Microsoft VC runtime imports are staged from the signed
+  Visual Studio redistributable directory into the application-local payload.
+  The PE import-closure validator passes independently for the
+  prebuilt payload, ZIP, MSI administrative extraction, and NSIS extraction
   (`node scripts/verify-windows-runtime-closure.mjs ...`).
 
 ## Manual Verification

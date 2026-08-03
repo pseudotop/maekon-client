@@ -701,6 +701,13 @@ jobs:
           fi
           ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features "$FEATURES"
 
+      - name: Stage signed Microsoft VC runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/stage-windows-vc-runtime.ps1 `
+            -PayloadRoot "target/${{ matrix.target }}/release"
+
       - name: Verify prebuilt Windows runtime DLL closure
         if: runner.os == 'Windows'
         shell: pwsh
@@ -762,7 +769,9 @@ jobs:
         run: |
           set -euo pipefail
           CONFIG_PATH="${RUNNER_TEMP}/tauri-nsis-ci-config.json"
-          printf '{"build":{"beforeBuildCommand":""}}\n' > "$CONFIG_PATH"
+          RUNTIME_ROOT="$(cygpath -m "$(pwd)/target/${{ matrix.target }}/release")"
+          printf '{"build":{"beforeBuildCommand":""},"bundle":{"resources":{"%s/vcruntime140.dll":"vcruntime140.dll","%s/vcruntime140_1.dll":"vcruntime140_1.dll"}}}\n' \
+            "$RUNTIME_ROOT" "$RUNTIME_ROOT" > "$CONFIG_PATH"
           ./scripts/cargo-cache.sh tauri build \
             --bundles nsis \
             --target ${{ matrix.target }} \
@@ -801,7 +810,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe,target/${{ matrix.target }}/release/maekon-sandbox-worker.exe -DestinationPath dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}
+          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe,target/${{ matrix.target }}/release/maekon-sandbox-worker.exe,target/${{ matrix.target }}/release/vcruntime140.dll,target/${{ matrix.target }}/release/vcruntime140_1.dll -DestinationPath dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}
 
       - name: Verify packaged Windows runtime DLL closure
         if: runner.os == 'Windows'
