@@ -54,6 +54,29 @@ withPayload(
 )
 
 withPayload(
+  [
+    'maekon.exe',
+    'maekon-sandbox-worker.exe',
+    'vcruntime140.dll',
+    'vcruntime140_1.dll',
+  ],
+  {
+    'maekon.exe': ['KERNEL32.dll', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll'],
+    'maekon-sandbox-worker.exe': ['KERNEL32.dll'],
+    'vcruntime140.dll': ['KERNEL32.dll', 'api-ms-win-crt-runtime-l1-1-0.dll'],
+    'vcruntime140_1.dll': ['KERNEL32.dll', 'VCRUNTIME140.dll'],
+  },
+  (verify) => {
+    const result = verify()
+    assert.equal(result.result, 'pass')
+    assert.deepEqual(result.bundled_dependencies, [
+      'VCRUNTIME140.dll',
+      'VCRUNTIME140_1.dll',
+    ])
+  },
+)
+
+withPayload(
   ['maekon.exe', 'maekon-sandbox-worker.exe', 'nested/libcrypto-3-x64.dll'],
   {
     'maekon.exe': ['libcrypto-3-x64.dll'],

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows ZIP, MSI, and NSIS payloads now carry the Microsoft-signed retail
+  VC runtime DLLs required by the final PE, and CI verifies the recursive
+  import closure before publishing an artifact.
+
 ## [0.0.1-rc.7] - 2026-07-23
 
 ### Added

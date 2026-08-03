@@ -956,6 +956,27 @@ jobs:
         # this feature set. The shipped app build is maekon-app + grpc.
         run: ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc
 
+      - name: Stage and verify signed Microsoft VC runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/stage-windows-vc-runtime.ps1 `
+            -PayloadRoot "target/${{ matrix.target }}/release"
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
+          $dumpbin = Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse |
+            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$dumpbin) { throw "x64 dumpbin.exe was not found under $installation" }
+          node scripts/verify-windows-runtime-closure.mjs `
+            --payload-root "target/${{ matrix.target }}/release" `
+            --dependency-tool $dumpbin.FullName `
+            --binary maekon.exe
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -966,7 +987,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe -DestinationPath ${{ matrix.artifact_name }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe,target/${{ matrix.target }}/release/vcruntime140.dll,target/${{ matrix.target }}/release/vcruntime140_1.dll -DestinationPath ${{ matrix.artifact_name }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
