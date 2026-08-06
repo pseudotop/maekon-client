@@ -7,13 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Windows ZIP, MSI, and NSIS payloads now carry the Microsoft-signed retail
-  VC runtime DLLs required by the final PE, and CI verifies the recursive
-  import closure before publishing an artifact.
-
-## [0.0.1-rc.7] - 2026-07-23
+## [0.0.1-rc.7] - 2026-08-06
 
 ### Added
 
@@ -51,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - /support destination with recovery affordances and an integrations tab;
   locale-aware backend user-facing strings with expanded i18n coverage;
   Codex subprocess sessions default to GPT-5.6 Sol.
+- iCal and Toggl work-session exports in the reports UI — each in the fixed
+  format its receiving tool requires, across all five locales.
+- Built-in connector registry with per-connector feature flags ("essential
+  tools only" as a compile-time fact); the Google Calendar connector's OAuth
+  provider is registered and activates once its desktop client id is
+  provisioned.
 
 ### Changed
 
@@ -60,9 +60,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration runtime backstop polls use quiet backoff; local storage schema
   advanced V46 → V52 with erasure and search wiring for newly persisted data
   types.
+- Outbound HTTP mechanics extracted to a foundation crate
+  (`maekon-http-core`) and third-party connectors to their own adapter crate
+  (`maekon-integration`), so the read-only connector boundary is enforced at
+  compile time (ADR-034).
+- maekon-core mutation score raised from a measured 63% to 74% via targeted
+  mutation-guard tests across the safety, persistence, and classifier
+  surfaces; the release gate now requires a durable whole-crate score
+  receipt pinned to the exact source commit.
 
 ### Fixed
 
+- Windows: SQLCipher now links a vendored, statically built OpenSSL,
+  removing the runtime dependency on a system `libcrypto-3-x64.dll` that
+  prevented first launch on clean hosts.
+- Windows ZIP, MSI, and NSIS payloads now carry the Microsoft-signed retail
+  VC runtime DLLs required by the final PE, and CI verifies the recursive
+  import closure before publishing an artifact.
+- Server-pushed suggestions are now persisted to local storage; they
+  previously lived only in the in-memory queue and were lost on restart —
+  the local store is the system of record.
+- Bundled Pretendard font removed: it shipped without its OFL license text
+  and was unreferenced by the client. A baseline guard prevents licensed
+  assets from re-entering unnoticed.
 - 370+ fixes across capture/consent state reflection, suggestion panel
   hierarchy and tracking badges, chat suggestion contract restoration,
   Windows release checks and VM readiness probes, Windows app-identity

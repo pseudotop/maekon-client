@@ -51,7 +51,7 @@ async fn list_sessions_empty() {
 fn with_breaker_registry_shares_the_exact_arc() {
     // #7947: reference the crate-local alias, not `maekon_network` directly, so
     // this test compiles in the `--no-default-features` cell too. Under
-    // `analysis` the alias IS `maekon_network::CircuitBreakerRegistry` (a
+    // `analysis` the alias IS `maekon_http_core::circuit_breaker::CircuitBreakerRegistry` (a
     // re-export), so this is byte-for-byte identical there while also keeping
     // the Arc-identity coverage alive when the network dep is absent.
     let shared = crate::breaker_registry::CircuitBreakerRegistry::new();

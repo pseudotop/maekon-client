@@ -159,6 +159,24 @@ pub enum TokenEvent {
     },
 }
 
+// ---------------------------------------------------------------------------
+// Provider identity constants (ADR-034 P3)
+// ---------------------------------------------------------------------------
+// These live in maekon-core because TWO adapter crates need the same literal
+// and adapters may not depend on each other: the Google Calendar connector
+// (maekon-integration) uses them as its SecretStore namespace and requested
+// scope, and the OAuth provider registry (maekon-network) uses them to build
+// the matching provider config. A drift between the two copies would break
+// token lookup silently, so there is exactly one copy, here.
+
+/// Google Calendar OAuth provider id (SecretStore/keychain namespace).
+pub const GOOGLE_CALENDAR_PROVIDER_ID: &str = "google_calendar";
+
+/// Google Calendar minimal read-only OAuth scope.
+/// **A write scope is never requested** (MK-EXT read-only invariant, #8582).
+pub const GOOGLE_CALENDAR_READONLY_SCOPE: &str =
+    "https://www.googleapis.com/auth/calendar.events.readonly";
+
 #[cfg(test)]
 mod tests {
     use super::*;

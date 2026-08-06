@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import { Card, CardTitle, FieldHint, Select } from '../../../components/ui'
 import { form } from '../../../styles/tokens'
+import { IS_WINDOWS } from '../../../utils/platform'
 import ToggleRow from '../ToggleRow'
 import type { SandboxConfigProps } from './types'
 
@@ -29,10 +30,18 @@ export default function SandboxConfig({ formData, onSandboxChange }: SandboxConf
               onChange={(e) => onSandboxChange('profile', e.target.value)}
             >
               <option value="Permissive">{t('settingsAutomation.sandboxProfilePermissive')}</option>
-              <option value="Standard">{t('settingsAutomation.sandboxProfileStandard')}</option>
-              <option value="Strict">{t('settingsAutomation.sandboxProfileStrict')}</option>
+              <option value="Standard" disabled={IS_WINDOWS}>
+                {t('settingsAutomation.sandboxProfileStandard')}
+                {IS_WINDOWS ? ` — ${t('settingsAutomation.sandboxProfileUnavailable')}` : ''}
+              </option>
+              <option value="Strict" disabled={IS_WINDOWS}>
+                {t('settingsAutomation.sandboxProfileStrict')}
+                {IS_WINDOWS ? ` — ${t('settingsAutomation.sandboxProfileUnavailable')}` : ''}
+              </option>
             </Select>
-            <FieldHint>{t('settingsAutomation.sandboxProfileHint')}</FieldHint>
+            <FieldHint>
+              {t(IS_WINDOWS ? 'settingsAutomation.sandboxProfileWindowsHint' : 'settingsAutomation.sandboxProfileHint')}
+            </FieldHint>
           </div>
 
           <ToggleRow

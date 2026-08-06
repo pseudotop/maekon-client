@@ -87,6 +87,7 @@ import type {
   SemanticSearchCapabilities,
   SemanticSearchResult,
   Session,
+  SessionExportKind,
   StartPomodoroRequest,
   StorageStats,
   SuggestionDto,
@@ -566,6 +567,29 @@ export async function exportData(
   params.set('format', format)
 
   const res = await fetchWithRetry(`${BASE_URL}/export/${dataType}?${params}`)
+  if (!res.ok) {
+    throw await apiErrorFromResponse(res)
+  }
+  return res.blob()
+}
+
+/**
+ * Download work sessions in a third-party interchange format (#9854).
+ *
+ * `GET /api/export/{ical,toggl}` has existed and been contract-frozen since
+ * before this call site — the server, handlers and OpenAPI entries were all in
+ * place with zero frontend callers, so the feature was unreachable.
+ *
+ * No `format` parameter: each endpoint emits one fixed format the receiving
+ * tool requires, and passing one would imply a choice the server ignores.
+ */
+export async function exportSessions(kind: SessionExportKind, from?: string, to?: string): Promise<Blob> {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+
+  const query = params.toString()
+  const res = await fetchWithRetry(`${BASE_URL}/export/${kind}${query ? `?${query}` : ''}`)
   if (!res.ok) {
     throw await apiErrorFromResponse(res)
   }

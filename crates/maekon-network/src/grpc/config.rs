@@ -492,7 +492,7 @@ fn endpoint_is_loopback(endpoint: &str) -> bool {
     } else {
         format!("http://{endpoint}")
     };
-    crate::http_client::host_is_loopback(&normalized)
+    maekon_http_core::outbound::host_is_loopback(&normalized)
 }
 
 fn default_grpc_endpoint() -> String {

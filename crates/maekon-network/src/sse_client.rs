@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 use crate::auth::TokenManager;
 use crate::error::NetworkError;
 use crate::http_client::build_reqwest_client_for_url;
-use crate::resilience::jittered_backoff_delay;
+use maekon_http_core::resilience::jittered_backoff_delay;
 
 /// Default SSE activity timeout — triggers a reconnect when no message arrives
 /// for 5 minutes.
@@ -153,7 +153,7 @@ impl SseStreamClient {
             // brackets before parsing, so `[::1]` was rejected on the SSE path
             // while the REST path accepted it — a live consistency divergence
             // (fail-closed direction, not a security hole, but still a bug).
-            "http" if !tls.enabled && crate::http_client::host_is_loopback(trimmed) => {
+            "http" if !tls.enabled && maekon_http_core::outbound::host_is_loopback(trimmed) => {
                 Ok(trimmed.to_string())
             }
             "http" => Err(NetworkError::Config(
@@ -635,7 +635,7 @@ mod tests {
         // Bracketed IPv6 loopback: the REST-path helper already accepts this URL.
         let loopback_url = "http://[::1]:9999";
         assert!(
-            crate::http_client::host_is_loopback(loopback_url),
+            maekon_http_core::outbound::host_is_loopback(loopback_url),
             "canonical REST helper must accept bracketed IPv6 loopback"
         );
         let accepted = SseStreamClient::validated_base_url(loopback_url, &tls).expect(
@@ -645,7 +645,7 @@ mod tests {
 
         // Genuinely-remote cleartext IPv6 host must still be rejected on both paths.
         let remote_url = "http://[2001:db8::1]:9999";
-        assert!(!crate::http_client::host_is_loopback(remote_url));
+        assert!(!maekon_http_core::outbound::host_is_loopback(remote_url));
         let rejected = SseStreamClient::validated_base_url(remote_url, &tls).unwrap_err();
         assert!(
             matches!(rejected, crate::error::NetworkError::Config(_)),

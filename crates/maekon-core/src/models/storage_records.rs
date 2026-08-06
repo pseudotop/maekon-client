@@ -586,4 +586,230 @@ mod tests {
         record.created_at = "not-a-timestamp".to_string();
         assert!(record.try_into_suggestion().is_none());
     }
+
+    /// #10197 Wave 2: mutation guards. 48 mutants survived here — the two
+    /// deletion `total()` sums, the record->domain match arms (the SQLite read
+    /// path: a deleted arm silently drops stored suggestions/feedback on
+    /// restart), the context-scope conjunction, and the egress-ledger
+    /// recipient-count default. Nested in `tests` to reuse
+    /// `record_with_expires_at`.
+    mod mutation_guard {
+        use super::*;
+        use crate::models::suggestion::{FeedbackType, Priority, SuggestionType};
+
+        /// Powers of two make every term independently visible: any single
+        /// `+` -> `-`/`*` changes the total, and no two subsets collide.
+        #[test]
+        fn deleted_range_total_counts_every_table_exactly_once() {
+            let counts = DeletedRangeCounts {
+                events_deleted: 1,
+                frames_deleted: 2,
+                metrics_deleted: 4,
+                process_snapshots_deleted: 8,
+                idle_periods_deleted: 16,
+                activity_segments_deleted: 32,
+                embedding_vectors_deleted: 64,
+                local_suggestions_deleted: 128,
+                transcripts_deleted: 256,
+            };
+            assert_eq!(
+                counts.total(),
+                511,
+                "every table term must add exactly once"
+            );
+        }
+
+        #[test]
+        fn app_deletion_total_counts_every_table_exactly_once() {
+            let counts = AppDeletionCounts {
+                events_deleted: 1,
+                frames_deleted: 2,
+                activity_segments_deleted: 4,
+                embedding_vectors_deleted: 8,
+            };
+            assert_eq!(counts.total(), 15);
+        }
+
+        /// Both stored spellings of every suggestion-type arm must parse.
+        /// These strings are what SQLite rows actually contain; a deleted arm
+        /// makes every stored suggestion of that type vanish on read.
+        #[test]
+        fn suggestion_type_arms_parse_both_stored_spellings() {
+            let cases: &[(&str, &str, SuggestionType)] = &[
+                (
+                    "WORK_GUIDANCE",
+                    "WorkGuidance",
+                    SuggestionType::WorkGuidance,
+                ),
+                ("EMAIL_DRAFT", "EmailDraft", SuggestionType::EmailDraft),
+                (
+                    "PRODUCTIVITY_TIP",
+                    "ProductivityTip",
+                    SuggestionType::ProductivityTip,
+                ),
+                (
+                    "WORKFLOW_OPTIMIZATION",
+                    "WorkflowOptimization",
+                    SuggestionType::WorkflowOptimization,
+                ),
+                (
+                    "CONTEXT_BASED",
+                    "ContextBased",
+                    SuggestionType::ContextBased,
+                ),
+                (
+                    "BREAK_REMINDER",
+                    "BreakReminder",
+                    SuggestionType::BreakReminder,
+                ),
+                ("FOCUS_MODE", "FocusMode", SuggestionType::FocusMode),
+                ("TAKE_BREAK", "TakeBreak", SuggestionType::TakeBreak),
+                (
+                    "NEED_FOCUS_TIME",
+                    "NeedFocusTime",
+                    SuggestionType::NeedFocusTime,
+                ),
+                (
+                    "RESTORE_CONTEXT",
+                    "RestoreContext",
+                    SuggestionType::RestoreContext,
+                ),
+            ];
+            for (screaming, pascal, expected) in cases {
+                for spelling in [screaming, pascal] {
+                    let mut record = record_with_expires_at(None);
+                    record.suggestion_type = (*spelling).to_string();
+                    let suggestion = record
+                        .try_into_suggestion()
+                        .unwrap_or_else(|| panic!("{spelling} must parse"));
+                    assert_eq!(suggestion.suggestion_type, *expected, "{spelling}");
+                }
+            }
+            let mut record = record_with_expires_at(None);
+            record.suggestion_type = "NO_SUCH_TYPE".to_string();
+            assert!(
+                record.try_into_suggestion().is_none(),
+                "unknown type is a None, not a default"
+            );
+        }
+
+        #[test]
+        fn priority_and_source_arms_parse_both_stored_spellings() {
+            use crate::models::suggestion::SuggestionSource;
+            let priorities: &[(&str, &str, Priority)] = &[
+                ("LOW", "Low", Priority::Low),
+                ("HIGH", "High", Priority::High),
+                ("CRITICAL", "Critical", Priority::Critical),
+            ];
+            for (screaming, pascal, expected) in priorities {
+                for spelling in [screaming, pascal] {
+                    let mut record = record_with_expires_at(None);
+                    record.priority = (*spelling).to_string();
+                    let suggestion = record.try_into_suggestion().expect("valid record");
+                    assert_eq!(suggestion.priority, *expected, "{spelling}");
+                }
+            }
+            // Unknown priority deliberately falls back to Medium (not None).
+            let mut record = record_with_expires_at(None);
+            record.priority = "NO_SUCH_PRIORITY".to_string();
+            assert_eq!(
+                record.try_into_suggestion().expect("valid record").priority,
+                Priority::Medium
+            );
+
+            let sources: &[(&str, SuggestionSource)] = &[
+                (
+                    SuggestionSource::LLM_SERVER_STR,
+                    SuggestionSource::LlmServer,
+                ),
+                ("LlmServer", SuggestionSource::LlmServer),
+                (SuggestionSource::LLM_LOCAL_STR, SuggestionSource::LlmLocal),
+                ("LlmLocal", SuggestionSource::LlmLocal),
+            ];
+            for (spelling, expected) in sources {
+                let mut record = record_with_expires_at(None);
+                record.source = (*spelling).to_string();
+                let suggestion = record.try_into_suggestion().expect("valid record");
+                assert_eq!(suggestion.source, *expected, "{spelling}");
+            }
+        }
+
+        /// The scope vanishes only when ALL THREE axes are empty — each `&&`
+        /// arm alone must keep a one-axis scope alive. `&&` -> `||` would drop
+        /// a scope the moment ANY axis is empty, silently widening every
+        /// context-scoped suggestion to global.
+        #[test]
+        fn context_scope_survives_on_any_single_axis() {
+            let one_axis = [
+                (Some("app".to_string()), None, None),
+                (None, Some("window".to_string()), None),
+                (None, None, Some("target".to_string())),
+            ];
+            for (app, window, target) in one_axis {
+                let scope = suggestion_context_scope_from_record(
+                    app.clone(),
+                    window.clone(),
+                    target.clone(),
+                );
+                assert!(
+                    scope.is_some(),
+                    "a single populated axis must keep the scope: {app:?}/{window:?}/{target:?}"
+                );
+            }
+            assert!(
+                suggestion_context_scope_from_record(None, None, None).is_none(),
+                "all-empty must be None, not an empty scope object"
+            );
+        }
+
+        #[test]
+        fn feedback_arms_parse_both_stored_spellings() {
+            let cases: &[(&str, FeedbackType)] = &[
+                ("Accepted", FeedbackType::Accepted),
+                ("ACCEPTED", FeedbackType::Accepted),
+                ("Rejected", FeedbackType::Rejected),
+                ("REJECTED", FeedbackType::Rejected),
+                ("Deferred", FeedbackType::Deferred),
+                ("DEFERRED", FeedbackType::Deferred),
+            ];
+            for (spelling, expected) in cases {
+                let record = PendingFeedbackRecord {
+                    id: Some(1),
+                    suggestion_id: "sug-9".to_string(),
+                    feedback_type: (*spelling).to_string(),
+                    comment: Some("note".to_string()),
+                    attempts: 3,
+                    next_retry_at: "2026-01-02T03:04:05Z".to_string(),
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                };
+                let (suggestion_id, ft, comment, attempts, next_retry) =
+                    record.into_domain_parts().expect("known feedback type");
+                assert_eq!(ft, *expected, "{spelling}");
+                // Field pass-through — a `-> None` replacement or a swapped
+                // tuple slot fails one of these.
+                assert_eq!(suggestion_id, "sug-9");
+                assert_eq!(comment.as_deref(), Some("note"));
+                assert_eq!(attempts, 3);
+                assert_eq!(next_retry.to_rfc3339(), "2026-01-02T03:04:05+00:00");
+            }
+
+            let unknown = PendingFeedbackRecord {
+                id: None,
+                suggestion_id: "sug-9".to_string(),
+                feedback_type: "Shrugged".to_string(),
+                comment: None,
+                attempts: 0,
+                next_retry_at: "2026-01-02T03:04:05Z".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            };
+            assert!(unknown.into_domain_parts().is_none());
+        }
+
+        /// Egress-ledger rows predating V40 count as ONE recipient — 0 would
+        /// erase their audited volume (`bytes * recipients`), -1 would negate it.
+        #[test]
+        fn recipient_count_default_is_exactly_one() {
+            assert_eq!(default_recipient_count(), 1);
+        }
+    }
 }

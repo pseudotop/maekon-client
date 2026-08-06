@@ -43,11 +43,11 @@ impl ProviderSource {
 // Ollama base URL is loopback (no egress gate needed) or an external host
 // (must route through `guard_external_llm_provider`).
 //
-// Reuses `maekon_network::http_client::host_is_loopback` which is already
+// Reuses `maekon_http_core::outbound::host_is_loopback` which is already
 // fail-closed: unparseable / empty host → returns `false` (treated as external).
 #[cfg(feature = "analysis")]
 pub(super) fn endpoint_is_loopback(url: &str) -> bool {
-    maekon_network::http_client::host_is_loopback(url)
+    maekon_http_core::outbound::host_is_loopback(url)
 }
 
 #[cfg(not(feature = "analysis"))]

@@ -19,6 +19,8 @@ lan-sync = ["rcgen", "mdns-sd", "axum-server", "rustls-pki-types", "rustls", "re
 
 [dependencies]
 maekon-core = { workspace = true }
+# ADR-034: shared outbound-HTTP substrate (hardened client, backoff, breaker).
+maekon-http-core = { workspace = true }
 maekon-api-contracts = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }

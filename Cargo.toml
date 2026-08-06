@@ -4,6 +4,8 @@ members = [
     "crates/maekon-audio",
     "crates/maekon-lint",
     "crates/maekon-core",
+    "crates/maekon-http-core",
+    "crates/maekon-integration",
     "crates/maekon-monitor",
     "crates/maekon-vision",
     "crates/maekon-network",
@@ -143,7 +145,33 @@ tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 sysinfo = "0.38"
 
 # 로컬 DB
-rusqlite = { version = "0.40", features = ["bundled-sqlcipher", "fallible_uint"] }
+#
+# #9884: `bundled-sqlcipher-vendored-openssl`, NOT plain `bundled-sqlcipher`.
+# SQLCipher needs libcrypto. Under plain `bundled-sqlcipher`,
+# `libsqlite3-sys/build.rs` takes this branch on Windows:
+#
+#     if is_windows && !cfg!(feature = "bundled-sqlcipher-vendored-openssl") {
+#
+# i.e. it locates a SYSTEM OpenSSL on the build host and links it DYNAMICALLY.
+# The CI runner has OpenSSL, so the build succeeds — and the shipped
+# `maekon.exe` then imports `libcrypto-3-x64.dll`, which is absent on a clean
+# user machine. A real user hit exactly that launch failure on v0.0.1-rc.6.
+#
+# The vendored variant compiles OpenSSL from source and links it STATICALLY, so
+# the binary is self-contained: nothing to bundle into MSI/NSIS/ZIP, nothing to
+# sign, and no "which OpenSSL did the runner happen to have" supply-chain
+# question. This is the first (preferred) option in #9884's acceptance criteria
+# — "make the Windows release binary self-contained" — rather than the fallback
+# "or bundle the reviewed OpenSSL runtime DLL".
+#
+# Cost: OpenSSL is compiled during the build (needs perl + a C toolchain, both
+# present on GitHub-hosted runners). Do NOT revert to `bundled-sqlcipher`
+# without re-solving the clean-host DLL closure; `scripts/verify-windows-runtime-closure.mjs`
+# is the gate that catches a regression here.
+rusqlite = { version = "0.40", features = [
+    "bundled-sqlcipher-vendored-openssl",
+    "fallible_uint",
+] }
 
 # 압축
 flate2 = "1"
@@ -323,6 +351,13 @@ windows = { version = "0.62", features = ["Win32_UI_Accessibility", "Win32_Syste
 
 # 내부 크레이트
 maekon-core = { path = "crates/maekon-core" }
+# ADR-034: shared outbound-HTTP substrate. Sits below the adapters so a future
+# maekon-integration can reuse the hardened client/breaker without depending on
+# maekon-network (adapter→adapter is forbidden).
+maekon-http-core = { path = "crates/maekon-http-core" }
+# ADR-034 P3: third-party connector adapter (read-only Context Sources). Depends
+# only on maekon-core + maekon-http-core — never on maekon-network.
+maekon-integration = { path = "crates/maekon-integration" }
 maekon-audio = { path = "crates/maekon-audio" }
 maekon-api-contracts = { path = "crates/maekon-api-contracts" }
 maekon-monitor = { path = "crates/maekon-monitor" }

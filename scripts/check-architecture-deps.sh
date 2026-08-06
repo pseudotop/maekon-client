@@ -26,11 +26,16 @@ const workspaceNames = new Set(packages.map((pkg) => pkg.name));
 const allowedRuntimeEdges = new Map([
   ["maekon-core", []],
   ["maekon-api-contracts", ["maekon-core"]],
+  // ADR-034: foundation HTTP substrate sits below the adapters; it may depend
+  // only on maekon-core. Adapters may additionally depend on it.
+  ["maekon-http-core", ["maekon-core"]],
   ["maekon-lint", []],
   ["maekon-audio", ["maekon-core"]],
   ["maekon-monitor", ["maekon-core"]],
   ["maekon-vision", ["maekon-core"]],
-  ["maekon-network", ["maekon-core", "maekon-api-contracts"]],
+  ["maekon-network", ["maekon-core", "maekon-api-contracts", "maekon-http-core"]],
+  // ADR-034 P3: third-party connectors — foundation-only deps, never another adapter.
+  ["maekon-integration", ["maekon-core", "maekon-api-contracts", "maekon-http-core"]],
   ["maekon-storage", ["maekon-core"]],
   ["maekon-suggestion", ["maekon-core"]],
   ["maekon-web", ["maekon-core", "maekon-api-contracts"]],
@@ -53,6 +58,8 @@ const allowedRuntimeEdges = new Map([
       "maekon-automation",
       "maekon-analysis",
       "maekon-embedding",
+      "maekon-http-core",
+      "maekon-integration",
     ],
   ],
 ]);
@@ -127,11 +134,13 @@ workspace_names = {pkg["name"] for pkg in packages}
 allowed_runtime_edges = {
     "maekon-core": set(),
     "maekon-api-contracts": {"maekon-core"},
+    "maekon-http-core": {"maekon-core"},
     "maekon-lint": set(),
     "maekon-audio": {"maekon-core"},
     "maekon-monitor": {"maekon-core"},
     "maekon-vision": {"maekon-core"},
-    "maekon-network": {"maekon-core", "maekon-api-contracts"},
+    "maekon-network": {"maekon-core", "maekon-api-contracts", "maekon-http-core"},
+    "maekon-integration": {"maekon-core", "maekon-api-contracts", "maekon-http-core"},
     "maekon-storage": {"maekon-core"},
     "maekon-suggestion": {"maekon-core"},
     "maekon-web": {"maekon-core", "maekon-api-contracts"},
@@ -152,6 +161,8 @@ allowed_runtime_edges = {
         "maekon-automation",
         "maekon-analysis",
         "maekon-embedding",
+        "maekon-http-core",
+        "maekon-integration",
     },
 }
 

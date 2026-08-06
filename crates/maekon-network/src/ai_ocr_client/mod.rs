@@ -12,9 +12,9 @@ use maekon_core::ports::ocr_provider::{OcrProvider, OcrResult};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
-use crate::provider_error_body::provider_error_message;
-use crate::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
+use maekon_http_core::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
+use maekon_http_core::provider_error_body::provider_error_message;
+use maekon_http_core::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
 
 mod ollama;
 mod parsers;
@@ -143,8 +143,8 @@ impl RemoteOcrProvider {
         // #6892: redirect=none — prevents provider 30x responses from leaking the api-key header + screen/prompt body.
         // #8045 C3: https_only backstop derived from the target endpoint (loopback
         // local OCR like Ollama keeps cleartext; remote providers are HTTPS-only).
-        let http_client = crate::outbound::hardened_client_builder(
-            crate::outbound::TransportPolicy::for_endpoint(&config.endpoint),
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&config.endpoint),
         )
         .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .build()
@@ -270,8 +270,8 @@ impl RemoteOcrProvider {
         // #6892: redirect=none — prevents provider 30x responses from leaking the api-key header + screen/prompt body.
         // #8045 C3: https_only backstop derived from the target endpoint (loopback
         // local OCR like Ollama keeps cleartext; remote providers are HTTPS-only).
-        let http_client = crate::outbound::hardened_client_builder(
-            crate::outbound::TransportPolicy::for_endpoint(&config.endpoint),
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&config.endpoint),
         )
         .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .build()
@@ -484,25 +484,29 @@ impl OcrProvider for RemoteOcrProvider {
         // #6939: cap the response body before buffering — a compromised/MITM OCR
         // provider could otherwise stream multi-GB and OOM the agent. Preserve the
         // timeout split on the transport read error.
-        let body =
-            crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-                .await
-                .map_err(|e| match e {
-                    crate::outbound::BodyReadError::Transport(err) if err.is_timeout() => {
-                        CoreError::RequestTimeout {
-                            code: maekon_core::error_codes::NetworkCode::Timeout,
-                            timeout_ms: self.timeout_secs * 1000,
-                        }
-                    }
-                    crate::outbound::BodyReadError::Transport(err) => CoreError::Network {
-                        code: maekon_core::error_codes::NetworkCode::Generic,
-                        message: format!("OCR API response read failure: {}", err),
-                    },
-                    crate::outbound::BodyReadError::TooLarge { len, cap } => CoreError::Network {
-                        code: maekon_core::error_codes::NetworkCode::Generic,
-                        message: format!("OCR API response exceeded cap {cap} bytes (len {len})"),
-                    },
-                })?;
+        let body = maekon_http_core::outbound::read_text_capped(
+            response,
+            maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|e| match e {
+            maekon_http_core::outbound::BodyReadError::Transport(err) if err.is_timeout() => {
+                CoreError::RequestTimeout {
+                    code: maekon_core::error_codes::NetworkCode::Timeout,
+                    timeout_ms: self.timeout_secs * 1000,
+                }
+            }
+            maekon_http_core::outbound::BodyReadError::Transport(err) => CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!("OCR API response read failure: {}", err),
+            },
+            maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
+                CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: format!("OCR API response exceeded cap {cap} bytes (len {len})"),
+                }
+            }
+        })?;
         if !status.is_success() {
             warn!(status = %status, "OCR API error response");
             let message = provider_error_message("OCR API", status, Some(&body));

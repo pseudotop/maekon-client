@@ -1,0 +1,29 @@
+[package]
+name = "maekon-http-core"
+description = "아웃바운드 HTTP 기반 — 하드닝 클라이언트, 재시도/백오프, 서킷 브레이커 (ADR-034)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# ADR-034: this crate sits BELOW the adapters. It may depend on maekon-core
+# (domain + ports) but must never depend on an adapter crate — that is the
+# whole point of extracting it.
+maekon-core = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+mockito = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

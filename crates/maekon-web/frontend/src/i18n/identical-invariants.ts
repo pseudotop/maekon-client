@@ -27,6 +27,10 @@ export interface InvariantEntry {
 export const IDENTICAL_INVARIANTS: readonly InvariantEntry[] = [
   // --- Brand / product name ---
   { key: 'trayDashboard.title', rationale: 'Brand name "Maekon" — never localized.' },
+  {
+    key: 'reports.exportToggl',
+    rationale: 'Brand name "Toggl Track" — export target product, never localized (#9854).',
+  },
 
   // --- Language endonyms (shown in their own script in every locale) ---
   { key: 'settings.english', rationale: 'Language endonym "English" — displayed natively in all locales.' },

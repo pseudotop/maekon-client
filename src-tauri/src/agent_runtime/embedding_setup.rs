@@ -85,7 +85,7 @@ pub(super) struct RemoteEmbeddingTarget {
 /// This is a pure function — no I/O, no side effects — so it is unit-testable
 /// without network access.
 ///
-/// Requires the `analysis` feature because it calls `maekon_network::http_client::host_is_loopback`.
+/// Requires the `analysis` feature because it calls `maekon_http_core::outbound::host_is_loopback`.
 #[cfg(feature = "analysis")]
 pub(super) fn resolve_remote_embedding_target(
     embedding_cfg: &maekon_core::config::EmbeddingConfig,
@@ -97,7 +97,7 @@ pub(super) fn resolve_remote_embedding_target(
         .clone()
         .unwrap_or_else(|| OLLAMA_LOOPBACK_ENDPOINT.to_string());
 
-    let is_loopback = maekon_network::http_client::host_is_loopback(&endpoint);
+    let is_loopback = maekon_http_core::outbound::host_is_loopback(&endpoint);
 
     let (default_model, default_dims, credential) = if is_loopback {
         // Loopback invariant: remote_credential is intentionally ignored here.

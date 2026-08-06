@@ -59,10 +59,11 @@ pub(crate) fn build_job_limits(config: &SandboxConfig) -> JobObjectLimits {
 /// Resolve the restricted-token policy for `config`'s profile. `disable_admin_sid`
 /// is always set (admin SID dropped on every tier — enforced as a deny-only SID
 /// via `SidsToDisable` in `super::windows::create_restricted_token`, #7071);
-/// Standard and Strict additionally declare `disable_most_sids` and strip
-/// privileges. `disable_most_sids` is policy intent only for now: the Win32
-/// layer does not pass `SidsToRestrict` yet (#7979), and Standard/Strict fail
-/// closed on Windows before spawn, so no reachable profile depends on it.
+/// Standard and Strict additionally set `disable_most_sids` and strip
+/// privileges. The Win32 layer maps `disable_most_sids` to the Windows
+/// Write Restricted Code SID through `SidsToRestrict` + `WRITE_RESTRICTED`
+/// (#7979). Standard/Strict still fail closed until their filesystem, syscall,
+/// and network containment is real.
 pub(crate) fn build_token_restrictions(config: &SandboxConfig) -> TokenRestrictions {
     match config.profile {
         SandboxProfile::Permissive => TokenRestrictions {

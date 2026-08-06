@@ -1152,4 +1152,174 @@ mod tests {
         let back: ExtensionManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(back, m);
     }
+
+    /// #10197 Wave 2: mutation guards. 51 mutants survived here — every
+    /// `from_sql_str` delete-arm (these strings are the SQLite persistence
+    /// format: a dropped arm makes a stored state unreadable after restart),
+    /// the paired `as_sql_str` constant replacements, the `is_ready` axis, the
+    /// host-API window comparisons, and three `summary_label` arms. Nested in
+    /// `tests` to reuse `builtin_manifest()` / `readiness()`.
+    mod mutation_guard {
+        use super::*;
+
+        /// Round-trips kill both sides at once: a deleted `from_sql_str` arm
+        /// returns None for its own spelling, and a replaced `as_sql_str`
+        /// constant ("", "xyzzy") no longer parses back.
+        macro_rules! sql_round_trip {
+            ($name:ident, $ty:ident, [$($variant:expr),+ $(,)?]) => {
+                #[test]
+                fn $name() {
+                    for v in [$($variant),+] {
+                        let s = v.as_sql_str();
+                        assert!(!s.is_empty(), "{v:?} must have a wire spelling");
+                        assert_eq!(
+                            $ty::from_sql_str(s),
+                            Some(v.clone()),
+                            "{v:?} must round-trip through {s:?} — this is the \
+                             SQLite persistence format, not a display string"
+                        );
+                    }
+                    assert_eq!($ty::from_sql_str("NO_SUCH_STATE"), None);
+                }
+            };
+        }
+
+        sql_round_trip!(
+            provenance_round_trips,
+            ExtensionProvenance,
+            [
+                ExtensionProvenance::Bundled,
+                ExtensionProvenance::CuratedLocal
+            ]
+        );
+        sql_round_trip!(
+            signature_state_round_trips,
+            SignatureState,
+            [
+                SignatureState::AppBundleTrusted,
+                SignatureState::Verified,
+                SignatureState::Unverified,
+                SignatureState::Absent,
+            ]
+        );
+        sql_round_trip!(
+            installation_state_round_trips,
+            InstallationState,
+            [
+                InstallationState::NotInstalled,
+                InstallationState::Installing,
+                InstallationState::Installed,
+                InstallationState::InstallFailed,
+                InstallationState::Uninstalling,
+                InstallationState::Uninstalled,
+            ]
+        );
+        sql_round_trip!(
+            enablement_round_trips,
+            Enablement,
+            [Enablement::Disabled, Enablement::Enabled]
+        );
+        sql_round_trip!(
+            account_authentication_round_trips,
+            AccountAuthentication,
+            [
+                AccountAuthentication::NotRequired,
+                AccountAuthentication::Unauthenticated,
+                AccountAuthentication::Authenticating,
+                AccountAuthentication::Authenticated,
+                AccountAuthentication::Revoked,
+                AccountAuthentication::AuthError,
+            ]
+        );
+        sql_round_trip!(
+            capability_grant_round_trips,
+            CapabilityGrant,
+            [
+                CapabilityGrant::NotRequested,
+                CapabilityGrant::Pending,
+                CapabilityGrant::Granted,
+                CapabilityGrant::Denied,
+                CapabilityGrant::Revoked,
+                CapabilityGrant::Expired,
+            ]
+        );
+        sql_round_trip!(
+            update_state_round_trips,
+            UpdateState,
+            [
+                UpdateState::Current,
+                UpdateState::UpdateAvailable,
+                UpdateState::Staged,
+                UpdateState::Activating,
+                UpdateState::UpdateFailed,
+                UpdateState::RollbackAvailable,
+            ]
+        );
+
+        #[test]
+        fn is_ready_permits_exactly_the_two_operable_states() {
+            assert!(AccountAuthentication::NotRequired.is_ready());
+            assert!(AccountAuthentication::Authenticated.is_ready());
+            assert!(!AccountAuthentication::Unauthenticated.is_ready());
+            assert!(!AccountAuthentication::Revoked.is_ready());
+            assert!(!AccountAuthentication::AuthError.is_ready());
+        }
+
+        /// The host-API window is `min <= CURRENT < max`, and empty/inverted
+        /// ranges fail closed. Each disjunct is exercised where IT alone
+        /// rejects, so `||` -> `&&` and the `<` flip both surface.
+        #[test]
+        fn host_api_window_rejections_are_each_sufficient() {
+            // Empty range (min == max == CURRENT): only the inverted-range
+            // disjunct is true — CURRENT < min is false.
+            let mut manifest = builtin_manifest();
+            manifest.host_api_min = CURRENT_HOST_API;
+            manifest.host_api_max = CURRENT_HOST_API;
+            assert_eq!(
+                manifest.evaluate_availability(),
+                Availability::Unavailable {
+                    reason: UnavailableReason::HostApiIncompatible
+                },
+                "an empty window must fail closed on its own"
+            );
+
+            // Too-new manifest (min > CURRENT, well-formed range): only the
+            // `CURRENT < min` disjunct is true.
+            let mut manifest = builtin_manifest();
+            manifest.host_api_min = CURRENT_HOST_API + 1;
+            manifest.host_api_max = CURRENT_HOST_API + 2;
+            assert_eq!(
+                manifest.evaluate_availability(),
+                Availability::Unavailable {
+                    reason: UnavailableReason::HostApiIncompatible
+                },
+                "a future-only window must fail closed on its own"
+            );
+        }
+
+        /// Three summary_label arms whose deletion falls through to a
+        /// DIFFERENT label (the wildcard below each), so exact-label
+        /// assertions are the only thing keeping them.
+        #[test]
+        fn summary_label_arms_that_shadow_a_wildcard() {
+            // ManagedPolicyDenied -> "revoked"; the wildcard says "incompatible".
+            let mut r = readiness(InstallationState::Installed, Enablement::Enabled);
+            r.availability = Availability::Unavailable {
+                reason: UnavailableReason::ManagedPolicyDenied,
+            };
+            assert_eq!(r.summary_label(), Some("revoked"));
+
+            // Authenticating -> "authorizing"; the wildcard says "enabled".
+            let mut r = readiness(InstallationState::Installed, Enablement::Enabled);
+            r.authentication = AccountAuthentication::Authenticating;
+            assert_eq!(r.summary_label(), Some("authorizing"));
+
+            // Unhealthy -> "stale"; the wildcard says "ready".
+            let mut r = readiness(InstallationState::Installed, Enablement::Enabled);
+            r.health = Health::Unhealthy {
+                reason: HealthReason::UpstreamError,
+            };
+            assert_eq!(r.summary_label(), Some("stale"));
+        }
+    }
 }

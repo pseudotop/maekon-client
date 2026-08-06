@@ -12,13 +12,18 @@ timeouts, retries, evidence, and result semantics. The validator rejects
 configuration that could turn a locked/background session, unverified release
 artifact, missing evidence, or manual prompt into an automated pass.
 
+The runner-routing and private-repository billing boundary is documented in
+[Windows CI cost control](./windows-ci-cost-control.md). Hosted Windows lint,
+public artifact closure, and clean-VM interaction are deliberately separate
+lanes; none may claim evidence owned by another lane.
+
 ## Tier boundary
 
 | Tier | Primary scope | Environment | Timeout / retry | Evidence |
 | --- | --- | --- | --- | --- |
 | PR | Rust contracts, renderer CDP, minimal real-Tauri smoke | Ephemeral CI; no native Windows claim | 60 min; no retry | source SHA, structured result, sanitized logs |
 | Nightly | Full real-Tauri plus adopted UIA single-instance, shortcut, native-dialog, tray, and notification-activation cases | Restored Windows 11 VM, isolated user/profile, unlocked serialized desktop | 180 min; one infrastructure-only retry | snapshot identity, admission receipt, JSONL, product receipts, UIA evidence |
-| Release candidate | Install/update/rollback, DPI/locale/topology, lock/sleep, proxy/offline, protected manual gates | Clean VM reset and the exact signed artifact | 360 min; no retry | source/artifact SHA, Authenticode, lifecycle before/after, manual decisions |
+| Release candidate | Install/update/rollback, Run-key reboot persistence, UAC persistence, DPI/locale/topology, lock/sleep, proxy/offline, protected manual gates | Clean VM reset and the exact signed artifact | 360 min; no retry | source/artifact SHA, artifact URI, Authenticode, lifecycle before/after, manual decisions |
 
 Production Windows notification activation uses the WinRT `Activated` callback,
 an explicit internal-route allowlist, and a durable sanitized audit receipt.
@@ -42,7 +47,8 @@ coordinate input or debug simulation.
    image/version and snapshot identifier in run evidence.
 5. Before every nightly or release-candidate run, stop the runner service,
    revert to the baseline, boot, sign in to the isolated account, verify the
-   interactive desktop, and start exactly one runner.
+   interactive desktop, confirm `confirm_clean_snapshot_restored`, and start
+   exactly one runner.
 6. After evidence upload, stop the runner, discard the run profile, and revert
    to the baseline. Never promote a mutated run state into the next baseline.
 
@@ -69,7 +75,9 @@ dispatch cannot overlap or terminate an active desktop run.
 
 Release-candidate execution requires the exact artifact URI, source SHA,
 SHA-256, and a valid Authenticode signature before install. Rebuilt or
-similarly named binaries are not substitutes.
+similarly named binaries are not substitutes. Admission records all four
+identity fields, and execution rejects an artifact whose admitted source SHA
+does not match the checked-out executor SHA.
 
 Evidence may include bounded app/dialog captures, sanitized logs, structured
 state receipts, UIA selectors, hashes, and pass/fail/blocked decisions. It must
@@ -102,13 +110,40 @@ receipt, and activation audit receipt together. Because `fail` outranks
 declared product blocker remains.
 Release-candidate lifecycle and protected surfaces use reviewed manual receipt
 keys; missing or invalid receipts are blocked or failed, never inferred as
-pass. The executor never accepts UAC, credentials, security, or privacy
-prompts.
+pass. A passing receipt is bound to its TC, receipt key, exact source and
+artifact SHA, VM snapshot identity, reviewer, timestamp, and existing relative
+evidence files. Protected receipts must enumerate every declared surface; an
+aggregate `pass` cannot silently omit UAC, credential, security, or privacy
+coverage. The executor never accepts those prompts.
+
+The reviewed receipt is a versioned JSON document. Evidence paths are relative
+to the receipt directory and must resolve to existing files beneath it:
+
+```json
+{
+  "schema_version": "maekon.windows-manual-decisions.v1",
+  "decisions": [
+    {
+      "tc_id": "CRT-PRV-PERM-006",
+      "receipt_key": "windows-uac-persistence",
+      "result": "pass",
+      "reviewed_by": "operator-id",
+      "recorded_at_utc": "2026-08-03T00:00:00Z",
+      "source_sha": "40-character-git-sha",
+      "artifact_sha256": "64-character-artifact-sha256",
+      "vm_snapshot_identity": "clean-windows-11-baseline-id",
+      "surfaces": ["uac"],
+      "evidence_paths": ["receipts/PERM-006-postconditions.json"]
+    }
+  ]
+}
+```
 
 An operator must still provide all external prerequisites:
 
 1. the isolated snapshot and exact reviewed runner labels;
 2. the runner marker and non-sensitive snapshot identity;
 3. a passing admission receipt;
-4. an exact nightly application path or signed release-candidate artifact;
+4. an exact nightly application path or a signed release-candidate artifact
+   with immutable URI, source SHA, and artifact SHA-256;
 5. reviewed manual receipts for lifecycle or protected actions.

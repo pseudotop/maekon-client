@@ -842,3 +842,468 @@ mod tests {
         assert_eq!(config2.n_clusters, 1);
     }
 }
+
+/// #10197 Wave 1: mutation guards for the IVF index internals.
+///
+/// The full-crate measurement (run 31027028682) left 66 surviving mutants
+/// here. The existing tests assert clustering OUTCOMES loosely (members end up
+/// together), which k-means reaches even with a perturbed interior — so the
+/// arithmetic inside the seeded pipeline could flip without a failure. These
+/// guards pin the pure helpers with known-answer cases and the seeded builder
+/// with an exact-determinism snapshot: the algorithm is documented as
+/// "reproducible k-means++", so exact same-seed output is contract, not
+/// implementation accident.
+#[cfg(test)]
+mod mutation_guard_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    // ---- Rng: xorshift64 is a known-answer function ----------------------
+
+    #[test]
+    fn rng_zero_seed_is_coerced_to_one() {
+        // state 0 is a xorshift fixed point (would emit zeros forever).
+        let mut zero_seeded = Rng::new(0);
+        let mut one_seeded = Rng::new(1);
+        assert_eq!(zero_seeded.next_u64(), one_seeded.next_u64());
+    }
+
+    #[test]
+    fn rng_next_u64_matches_the_xorshift64_reference() {
+        // Reference values computed from the xorshift64 definition
+        // (x ^= x<<13; x ^= x>>7; x ^= x<<17) starting at state 1. Any flip of
+        // a shift direction, constant, or xor collapses this.
+        let mut rng = Rng::new(1);
+        assert_eq!(rng.next_u64(), 1_082_269_761);
+        assert_eq!(rng.next_u64(), 1_152_992_998_833_853_505);
+    }
+
+    #[test]
+    fn rng_next_f64_is_the_53_bit_unit_interval_projection() {
+        // next_f64 = (next_u64 >> 11) / 2^53 — pinned exactly for seed 1, and
+        // range-checked over a run so constant-replacement mutants die.
+        let mut rng = Rng::new(1);
+        let expected = (1_082_269_761u64 >> 11) as f64 / (1u64 << 53) as f64;
+        let got = rng.next_f64();
+        assert!(
+            (got - expected).abs() < f64::EPSILON,
+            "got {got}, want {expected}"
+        );
+
+        let mut rng = Rng::new(42);
+        for _ in 0..64 {
+            let v = rng.next_f64();
+            assert!((0.0..1.0).contains(&v), "next_f64 out of [0,1): {v}");
+        }
+    }
+
+    // ---- l2_normalize ----------------------------------------------------
+
+    #[test]
+    fn l2_normalize_produces_exact_unit_components() {
+        let mut v = vec![3.0f32, 4.0];
+        l2_normalize(&mut v);
+        assert!((v[0] - 0.6).abs() < 1e-6, "3/5 component, got {}", v[0]);
+        assert!((v[1] - 0.8).abs() < 1e-6, "4/5 component, got {}", v[1]);
+    }
+
+    #[test]
+    fn l2_normalize_leaves_a_zero_vector_untouched() {
+        // The norm guard must be a strict `>`-style comparison against EPSILON:
+        // dividing a zero vector by its zero norm would produce NaNs that then
+        // poison every cosine similarity downstream.
+        let mut v = vec![0.0f32, 0.0, 0.0];
+        l2_normalize(&mut v);
+        assert_eq!(v, vec![0.0, 0.0, 0.0]);
+    }
+
+    // ---- cosine_sim_f32 --------------------------------------------------
+
+    #[test]
+    fn cosine_sim_hits_the_three_reference_angles() {
+        assert!((cosine_sim_f32(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
+        assert!(cosine_sim_f32(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
+        assert!((cosine_sim_f32(&[1.0, 0.0], &[-1.0, 0.0]) + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_sim_pins_a_non_trivial_quotient() {
+        // ([1,2]·[3,4]) / (|[1,2]|·|[3,4]|) = 11 / (√5·5) ≈ 0.98386991.
+        // A dot-product `*`->`+`, a norm `x*x` flip, or the final `/` mutation
+        // all move this value; the three reference angles alone would not
+        // catch every one of them.
+        let sim = cosine_sim_f32(&[1.0, 2.0], &[3.0, 4.0]);
+        assert!((sim - 0.983_87).abs() < 1e-5, "got {sim}");
+    }
+
+    #[test]
+    fn cosine_sim_zero_norm_guards_are_each_sufficient() {
+        // Each `||` arm alone must force 0.0 — a zero on either side.
+        assert_eq!(cosine_sim_f32(&[0.0, 0.0], &[1.0, 2.0]), 0.0);
+        assert_eq!(cosine_sim_f32(&[1.0, 2.0], &[0.0, 0.0]), 0.0);
+    }
+
+    // ---- farthest_untaken_vector ----------------------------------------
+
+    #[test]
+    fn farthest_untaken_prefers_the_largest_distance_and_respects_taken() {
+        // One centroid at [1,0]. Vector 0 sits on it (dist 0), vector 1 is
+        // orthogonal (dist 1), vector 2 is opposite (dist 2). Farthest is 2;
+        // with 2 taken, the next farthest is 1; with all taken, None.
+        let dequantized = vec![vec![1.0f32, 0.0], vec![0.0, 1.0], vec![-1.0, 0.0]];
+        let assignments = vec![0usize, 0, 0];
+        let centroids = vec![vec![1.0f32, 0.0]];
+
+        let mut taken = HashSet::new();
+        assert_eq!(
+            farthest_untaken_vector(&dequantized, &assignments, &centroids, &taken),
+            Some(2)
+        );
+        taken.insert(2);
+        assert_eq!(
+            farthest_untaken_vector(&dequantized, &assignments, &centroids, &taken),
+            Some(1)
+        );
+        taken.insert(1);
+        taken.insert(0);
+        assert_eq!(
+            farthest_untaken_vector(&dequantized, &assignments, &centroids, &taken),
+            None
+        );
+    }
+
+    // ---- build: seeded determinism is the contract -----------------------
+
+    fn quantize(values: &[f32]) -> QuantizedVector {
+        ScalarQuantizer::quantize(values).unwrap()
+    }
+
+    /// Two tight, well-separated 2-D clusters. Small enough that the exact
+    /// assignment is forced, not statistical.
+    fn two_cluster_fixture() -> Vec<(i64, QuantizedVector)> {
+        vec![
+            (10, quantize(&[1.0, 0.02])),
+            (11, quantize(&[0.98, 0.05])),
+            (12, quantize(&[0.99, -0.03])),
+            (20, quantize(&[0.02, 1.0])),
+            (21, quantize(&[-0.03, 0.97])),
+            (22, quantize(&[0.05, 0.99])),
+        ]
+    }
+
+    #[test]
+    fn build_is_deterministic_for_a_fixed_seed() {
+        // "Reproducible k-means++" is the documented contract. Any interior
+        // arithmetic flip (the weighted-sampling `-`/`*`, the `+=` accumulators,
+        // the comparison directions) changes the seeded trajectory, and this
+        // equality is the net that catches whichever branch it lands in.
+        let config = IvfBuildConfig {
+            n_clusters: 2,
+            n_iterations: 10,
+            seed: 7,
+        };
+        let a = IvfIndex::build(&two_cluster_fixture(), &config).unwrap();
+        let b = IvfIndex::build(&two_cluster_fixture(), &config).unwrap();
+        for id in [10, 11, 12, 20, 21, 22] {
+            assert_eq!(
+                a.assignments().get(&id),
+                b.assignments().get(&id),
+                "same seed must yield the same assignment for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_separates_the_two_obvious_clusters_completely() {
+        let config = IvfBuildConfig {
+            n_clusters: 2,
+            n_iterations: 10,
+            seed: 7,
+        };
+        let index = IvfIndex::build(&two_cluster_fixture(), &config).unwrap();
+
+        let cluster_of = |id: i64| *index.assignments().get(&id).expect("assigned");
+        // The x-axis trio must share a cluster, the y-axis trio the other.
+        assert_eq!(cluster_of(10), cluster_of(11));
+        assert_eq!(cluster_of(10), cluster_of(12));
+        assert_eq!(cluster_of(20), cluster_of(21));
+        assert_eq!(cluster_of(20), cluster_of(22));
+        assert_ne!(cluster_of(10), cluster_of(20), "clusters must be distinct");
+
+        // get_cluster_members inverts the same map: each cluster reports
+        // exactly its trio.
+        let mut members = index.get_cluster_members(cluster_of(10));
+        members.sort_unstable();
+        assert_eq!(members, vec![10, 11, 12]);
+        let mut members = index.get_cluster_members(cluster_of(20));
+        members.sort_unstable();
+        assert_eq!(members, vec![20, 21, 22]);
+    }
+
+    // ---- Round 2 (#10197): the first-round nets had two real holes ------
+    //
+    // The re-measurement (34 survivors) exposed both:
+    // 1. `build_is_deterministic_for_a_fixed_seed` compared two runs of the
+    //    SAME binary — a deterministic mutant is wrong identically in both, so
+    //    a == b held. Determinism cannot kill deterministic mutations; only
+    //    values pinned against the ORIGINAL trajectory can.
+    // 2. `build_separates_...` asserted grouping (same/different cluster),
+    //    which is invariant under label swap — `>` -> `<` in the assignment
+    //    loop sends each trio to the OPPOSITE centroid and the grouping still
+    //    passes. The centroid CONTENT has to be asserted too.
+
+    /// Line 121 boundary: exactly n == k vectors is legal (one vector per
+    /// cluster); `<` -> `<=` would reject it.
+    #[test]
+    fn build_accepts_exactly_as_many_vectors_as_clusters() {
+        let vectors = vec![(1, quantize(&[1.0, 0.0])), (2, quantize(&[0.0, 1.0]))];
+        let config = IvfBuildConfig {
+            n_clusters: 2,
+            n_iterations: 1,
+            seed: 3,
+        };
+        let index = IvfIndex::build(&vectors, &config).expect("n == k must be buildable");
+        assert_eq!(index.n_clusters(), 2);
+        assert!(
+            !index.centroids().is_empty(),
+            "centroids accessor must expose the built set"
+        );
+    }
+
+    /// With ZERO Lloyd iterations the produced centroids ARE the k-means++
+    /// seed picks, so the seeding arithmetic (min-dist update, d*d weights,
+    /// cumulative walk, threshold comparison) is pinned directly: for this
+    /// fixture every pick lands in a distinct group, whichever seed is used,
+    /// because the weighted walk makes a same-group second pick (weight ~0)
+    /// unreachable. A flipped `-`, `*`, `+=` or `>=` in that walk collapses
+    /// the picks into one group.
+    #[test]
+    fn kmeanspp_seeding_picks_centroids_from_distinct_groups() {
+        // Three tight groups far apart on the sphere.
+        let vectors = vec![
+            (1, quantize(&[1.0, 0.0, 0.0])),
+            (2, quantize(&[0.99, 0.01, 0.0])),
+            (3, quantize(&[0.0, 1.0, 0.0])),
+            (4, quantize(&[0.01, 0.99, 0.0])),
+            (5, quantize(&[0.0, 0.0, 1.0])),
+            (6, quantize(&[0.0, 0.01, 0.99])),
+        ];
+        for seed in [1, 7, 42, 1234] {
+            let config = IvfBuildConfig {
+                n_clusters: 3,
+                n_iterations: 0,
+                seed,
+            };
+            let index = IvfIndex::build(&vectors, &config).expect("build");
+            // Identify each seeded centroid's dominant axis; all three axes
+            // must be represented — that is only true when the distance-
+            // weighted walk actually walks.
+            let mut axes: Vec<usize> = index
+                .centroids()
+                .iter()
+                .map(|c| {
+                    let v = ScalarQuantizer::dequantize(&c.vector);
+                    let mut best = 0;
+                    for (d, x) in v.iter().enumerate() {
+                        if x.abs() > v[best].abs() {
+                            best = d;
+                        }
+                    }
+                    best
+                })
+                .collect();
+            axes.sort_unstable();
+            assert_eq!(
+                axes,
+                vec![0, 1, 2],
+                "seed {seed}: seeding must cover all three groups"
+            );
+        }
+    }
+
+    /// The `total < EPSILON` degenerate branch: all vectors identical means
+    /// zero total weight, and the fallback picks SOME vector — which is the
+    /// same vector. The centroids must all equal it.
+    #[test]
+    fn kmeanspp_seeding_survives_an_all_identical_input() {
+        let vectors = vec![
+            (1, quantize(&[0.6, 0.8])),
+            (2, quantize(&[0.6, 0.8])),
+            (3, quantize(&[0.6, 0.8])),
+        ];
+        let config = IvfBuildConfig {
+            n_clusters: 2,
+            n_iterations: 0,
+            seed: 9,
+        };
+        let index = IvfIndex::build(&vectors, &config).expect("degenerate build");
+        for c in index.centroids() {
+            let v = ScalarQuantizer::dequantize(&c.vector);
+            assert!((v[0] - 0.6).abs() < 0.02 && (v[1] - 0.8).abs() < 0.02);
+        }
+    }
+
+    /// One cluster, one Lloyd round: the final centroid is exactly
+    /// normalize(mean(inputs)) — [1,0] and [0,1] average to [0.5,0.5] and
+    /// normalize to [0.7071,0.7071]. This pins the accumulation `+=` (a `-=`
+    /// negates a component, a `*=` zeroes the sum) and the count divide.
+    #[test]
+    fn lloyd_round_computes_the_normalized_mean_centroid() {
+        let vectors = vec![(1, quantize(&[1.0, 0.0])), (2, quantize(&[0.0, 1.0]))];
+        let config = IvfBuildConfig {
+            n_clusters: 1,
+            n_iterations: 1,
+            seed: 5,
+        };
+        let index = IvfIndex::build(&vectors, &config).expect("build");
+        let centroid = ScalarQuantizer::dequantize(&index.centroids()[0].vector);
+        let expected = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (centroid[0] - expected).abs() < 0.02 && (centroid[1] - expected).abs() < 0.02,
+            "centroid must be the normalized mean [{expected}, {expected}], got {centroid:?}"
+        );
+    }
+
+    /// Label-swap-proof assignment check: the cluster containing the x-axis
+    /// trio must have an x-dominant CENTROID. `>` -> `<` in the best-sim
+    /// scan assigns every vector to its FARTHEST centroid; grouping-only
+    /// assertions survive that (labels swap), content assertions do not.
+    #[test]
+    fn assignment_sends_vectors_to_the_centroid_that_matches_them() {
+        let config = IvfBuildConfig {
+            n_clusters: 2,
+            n_iterations: 10,
+            seed: 7,
+        };
+        let index = IvfIndex::build(&two_cluster_fixture(), &config).expect("build");
+        let cluster_of = |id: i64| *index.assignments().get(&id).expect("assigned");
+
+        let x_cluster = cluster_of(10);
+        let x_centroid = ScalarQuantizer::dequantize(&index.centroids()[x_cluster].vector);
+        assert!(
+            x_centroid[0] > 0.9,
+            "the x-trio's centroid must be x-dominant, got {x_centroid:?}"
+        );
+
+        let y_cluster = cluster_of(20);
+        let y_centroid = ScalarQuantizer::dequantize(&index.centroids()[y_cluster].vector);
+        assert!(
+            y_centroid[1] > 0.9,
+            "the y-trio's centroid must be y-dominant, got {y_centroid:?}"
+        );
+    }
+
+    /// Norm-guard boundaries sit exactly AT f32::EPSILON:
+    /// - `l2_normalize` must leave an epsilon-norm vector untouched (`>` not `>=`),
+    /// - `cosine_sim_f32` must still COMPUTE at epsilon norms (`<` not `<=`) —
+    ///   an epsilon-length vector along +x has similarity 1.0 with +x, and the
+    ///   mutant's early 0.0 is unmistakable.
+    #[test]
+    fn epsilon_norm_boundaries_are_exclusive() {
+        let mut v = vec![f32::EPSILON, 0.0];
+        l2_normalize(&mut v);
+        assert_eq!(
+            v,
+            vec![f32::EPSILON, 0.0],
+            "epsilon norm must not be scaled"
+        );
+
+        let sim = cosine_sim_f32(&[f32::EPSILON, 0.0], &[1.0, 0.0]);
+        assert!(
+            (sim - 1.0).abs() < 1e-6,
+            "epsilon-norm lhs must still compute, got {sim}"
+        );
+        let sim = cosine_sim_f32(&[1.0, 0.0], &[f32::EPSILON, 0.0]);
+        assert!(
+            (sim - 1.0).abs() < 1e-6,
+            "epsilon-norm rhs must still compute, got {sim}"
+        );
+    }
+
+    /// A distance TIE keeps the FIRST candidate (`>` is strict); `>=` would
+    /// return the last.
+    #[test]
+    fn farthest_untaken_keeps_the_first_of_tied_candidates() {
+        let dequantized = vec![vec![0.0f32, 1.0], vec![0.0, -1.0]];
+        let assignments = vec![0usize, 0];
+        let centroids = vec![vec![1.0f32, 0.0]];
+        let taken = HashSet::new();
+        assert_eq!(
+            farthest_untaken_vector(&dequantized, &assignments, &centroids, &taken),
+            Some(0),
+            "equal distances must keep the first index"
+        );
+    }
+
+    // ---- Round 3 (#10197): three killable clusters remained --------------
+
+    /// Kills the k-means++ weighting mutants (168 `-`->`/`, 181 `*`->`/`,
+    /// 185 `*`->`+`) with one crafted draw. Seed 1's xorshift trajectory is
+    /// pinned above: first pick = 1_082_269_761 % 3 = index 0, second draw
+    /// next_f64 ≈ 0.0625. With A=[1,0] (dist 0), B=[0.8,0.6] (dist 0.2) and
+    /// C=[-1,0] (dist 2), the weighted walk has total = 0.04 + 4 = 4.04 and
+    /// threshold ≈ 0.2525, which the walk first crosses AT C — so the second
+    /// centroid must be −x-dominant. Under each mutant the walk crosses at A
+    /// or B instead (`/`: C's weight collapses to max(0, 1/−1) = 0; `d/d`:
+    /// NaN total freezes the walk at index 0; `+`: the threshold lands inside
+    /// B's doubled band), so the −x centroid disappears.
+    #[test]
+    fn kmeanspp_weighted_walk_prefers_the_far_opposite_vector() {
+        let vectors = vec![
+            (1, quantize(&[1.0, 0.0])),
+            (2, quantize(&[0.8, 0.6])),
+            (3, quantize(&[-1.0, 0.0])),
+        ];
+        let config = IvfBuildConfig {
+            n_clusters: 2,
+            n_iterations: 0,
+            seed: 1,
+        };
+        let index = IvfIndex::build(&vectors, &config).expect("build");
+        let dequantized: Vec<Vec<f32>> = index
+            .centroids()
+            .iter()
+            .map(|c| ScalarQuantizer::dequantize(&c.vector))
+            .collect();
+        assert!(
+            dequantized.iter().any(|v| v[0] > 0.9),
+            "seed 1's first pick is A=[1,0]: {dequantized:?}"
+        );
+        assert!(
+            dequantized.iter().any(|v| v[0] < -0.9),
+            "the weighted walk must select the far opposite vector C=[-1,0]: {dequantized:?}"
+        );
+    }
+
+    /// Kills 232 `>`->`>=` (the empty-cluster guard). All-identical input
+    /// with TWO clusters and ONE Lloyd round: both seeds are the same vector,
+    /// every vector ties to cluster 0, cluster 1 ends EMPTY and must take the
+    /// reseed branch. The mutant instead divides the zero accumulator by a
+    /// zero count, and the NaN centroid survives normalization (NaN
+    /// comparisons are false), so finiteness is the tell.
+    #[test]
+    fn empty_cluster_is_reseeded_not_divided_by_zero() {
+        let vectors = vec![
+            (1, quantize(&[0.6, 0.8])),
+            (2, quantize(&[0.6, 0.8])),
+            (3, quantize(&[0.6, 0.8])),
+        ];
+        let config = IvfBuildConfig {
+            n_clusters: 2,
+            n_iterations: 1,
+            seed: 9,
+        };
+        let index = IvfIndex::build(&vectors, &config).expect("build");
+        for c in index.centroids() {
+            let v = ScalarQuantizer::dequantize(&c.vector);
+            assert!(
+                v.iter().all(|x| x.is_finite()),
+                "an empty cluster must be reseeded, never divided by zero: {v:?}"
+            );
+            assert!(
+                (v[0] - 0.6).abs() < 0.02 && (v[1] - 0.8).abs() < 0.02,
+                "every centroid of an identical set is that vector: {v:?}"
+            );
+        }
+    }
+}

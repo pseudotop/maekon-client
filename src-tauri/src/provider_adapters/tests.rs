@@ -314,7 +314,7 @@ fn resolves_local_providers_by_default() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Failed to resolve default configuration");
@@ -377,7 +377,7 @@ fn resolves_remote_providers_when_configured() {
         Some(privacy_guard),
         Some(remote_secret_stores()),
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Failed to resolve remote configuration");
@@ -407,7 +407,7 @@ fn falls_back_to_local_when_remote_config_missing() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Fallback configuration resolution should not fail");
@@ -443,7 +443,7 @@ fn returns_error_when_remote_config_missing_and_fallback_disabled() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     ) {
         Ok(_) => panic!("Expected an error"),
@@ -481,7 +481,7 @@ fn local_mode_forces_local_adapters_even_if_remote_is_requested() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("LocalModel arm must never return Err (ok-degrade invariant)");
@@ -539,7 +539,7 @@ fn cli_subscription_mode_marks_cli_source() {
         Some(privacy_guard),
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Failed to resolve CLI mode");
@@ -636,7 +636,7 @@ fn cli_subscription_mode_keeps_direct_remote_ocr_when_configured() {
         Some(privacy_guard),
         Some(remote_secret_stores()),
         &[],
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     )
     .expect("CLI mode should allow direct remote OCR");
 
@@ -687,7 +687,7 @@ fn cli_subscription_mode_uses_subprocess_ocr_when_supported() {
             auth_status: SubprocessCliAuthStatus::Authenticated,
             auth_detail: Some("cli_authenticated".to_string()),
         }],
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     )
     .expect("expected OCR subprocess runtime to resolve");
 
@@ -728,7 +728,7 @@ fn cli_subscription_subprocess_ocr_requires_privacy_guard() {
             auth_status: SubprocessCliAuthStatus::Authenticated,
             auth_detail: Some("cli_authenticated".to_string()),
         }],
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     ) {
         Ok(_) => panic!("expected CLI OCR resolution to fail without a privacy guard"),
         Err(err) => err,
@@ -935,7 +935,7 @@ fn provider_api_key_config_reuses_direct_remote_sources() {
         Some(privacy_guard),
         Some(remote_secret_stores()),
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Failed to resolve provider API key config");
@@ -1615,7 +1615,7 @@ fn remote_ocr_requires_runtime_privacy_guard() {
         None,
         Some(remote_secret_stores()),
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     );
     let err = result
@@ -1638,7 +1638,7 @@ fn oauth_mode_requires_oauth_port() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     );
     let err = result
@@ -1662,7 +1662,7 @@ fn oauth_mode_allows_local_llm_when_no_managed_llm_surface_is_selected() {
         None,
         None,
         Some(oauth),
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("ProviderOAuth mode should allow local LLM when no managed LLM surface is selected");
@@ -1710,7 +1710,7 @@ fn oauth_mode_defaults_to_openai_model() {
         Some(privacy_guard),
         None,
         Some(oauth),
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("OAuth mode should resolve when a port is provided");
@@ -1745,7 +1745,7 @@ fn remote_ocr_falls_back_when_selected_managed_ocr_surface_lacks_runtime() {
         PiiFilterLevel::Standard,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     )
     .expect("managed OCR surface should fall back to local when enabled");
 
@@ -1793,7 +1793,7 @@ fn oauth_mode_resolves_google_managed_ocr_surface() {
         Some(privacy_guard),
         None,
         Some(oauth),
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Google OCR managed OAuth should resolve when an OAuth port is available");
@@ -1863,7 +1863,7 @@ fn resolves_remote_providers_from_secret_binding_with_plaintext_empty() {
         Some(privacy_guard),
         Some(secret_stores),
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Secret-bound API key configuration should resolve");
@@ -2528,7 +2528,7 @@ fn local_model_arm_resolves_ollama_source() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("LocalModel arm must not return Err");
@@ -2559,7 +2559,7 @@ fn local_model_arm_never_returns_err_with_guard_present() {
         Some(guard),
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     );
     result.expect("LocalModel arm must not return Err when guard is present");
@@ -2578,7 +2578,7 @@ fn local_model_arm_never_returns_err_without_guard() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     );
     result.expect("LocalModel arm must not return Err (ok-degrade)");
@@ -2598,7 +2598,7 @@ fn local_model_arm_llm_is_not_external_for_catalog_default() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("LocalModel arm must not return Err");
@@ -2630,7 +2630,7 @@ fn local_model_remote_cleartext_ollama_degrades_to_local_without_egress() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None,
     )
     .expect("LocalModel cleartext guard must ok-degrade");
@@ -2666,7 +2666,7 @@ fn resolve_local_model_llm_provider_direct_loopback() {
     let (llm, source, reason) = resolve_local_model_llm_provider(
         &config,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // Decision 2: no health flag in unit tests
     )
     .expect("resolver must not return Err");
@@ -2688,7 +2688,7 @@ fn resolve_local_model_llm_provider_not_analysis_twin() {
     let (_, source, _) = resolve_local_model_llm_provider(
         &config,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // Decision 2: no health flag in unit tests
     )
     .expect("must not err");
@@ -2733,9 +2733,12 @@ async fn behavioral_mock_http_ollama_intent_succeeds() {
         surface_id: Some("provider_surface.ollama.local_http".to_string()),
         credential: None,
     };
-    let provider = RemoteLlmProvider::new(&endpoint, maekon_network::CircuitBreakerRegistry::new())
-        .expect("provider init")
-        .with_token_budget(2048); // Decision 4 seam exercised
+    let provider = RemoteLlmProvider::new(
+        &endpoint,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    )
+    .expect("provider init")
+    .with_token_budget(2048); // Decision 4 seam exercised
 
     let ctx = ScreenContext {
         visible_texts: vec!["File".to_string(), "Save".to_string()],
@@ -2784,7 +2787,7 @@ async fn behavioral_connection_refused_falls_back_to_rule_matcher() {
         credential: None,
     };
     // Fresh registry — isolated from any module-global breaker state.
-    let registry = maekon_network::CircuitBreakerRegistry::new();
+    let registry = maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new();
     let remote =
         RemoteLlmProvider::new(&refused_endpoint, registry).expect("provider construction ok");
     // Wrap in LoopbackLlmProvider (is_external=false), matching the resolver path.
@@ -2845,11 +2848,11 @@ async fn behavioral_breaker_open_falls_back_to_rule_matcher() {
         .await;
 
     // Configure a fast breaker: threshold=3, cooldown=100ms.
-    let registry = maekon_network::CircuitBreakerRegistry::new();
-    let key = maekon_network::resilience::endpoint_authority(&server.url()).unwrap();
+    let registry = maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new();
+    let key = maekon_http_core::resilience::endpoint_authority(&server.url()).unwrap();
     let _ = registry.get_with_config(
         &key,
-        maekon_network::circuit_breaker::CircuitBreakerConfig {
+        maekon_http_core::circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 3,
             initial_cooldown: std::time::Duration::from_millis(100),
             max_cooldown: std::time::Duration::from_millis(500),
@@ -2921,7 +2924,7 @@ fn local_model_arm_ocr_source_unchanged_by_c3() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("LocalModel arm must not return Err");

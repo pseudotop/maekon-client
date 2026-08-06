@@ -3,7 +3,7 @@ use serde_json::Value;
 use maekon_core::error::CoreError;
 use maekon_core::ports::llm_provider::InterpretedAction;
 
-use crate::provider_error_body::provider_parse_error_message;
+use maekon_http_core::provider_error_body::provider_parse_error_message;
 
 pub(super) fn parse_claude_response(body: &str) -> Result<InterpretedAction, CoreError> {
     let response: Value = serde_json::from_str(body).map_err(CoreError::from)?;
