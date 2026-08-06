@@ -71,10 +71,11 @@ pub mod ai_ocr_client;
 pub mod analysis_client;
 pub mod auth;
 pub mod batch_uploader;
-pub mod circuit_breaker;
-pub use circuit_breaker::{
-    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerRegistry, CircuitState,
-};
+// ADR-034: the outbound-HTTP substrate (circuit_breaker / outbound /
+// resilience) lives in `maekon-http-core` so a future integration crate can
+// share it without an adapter→adapter dependency. P1 kept transitional
+// re-exports here; P2 repointed every caller to `maekon_http_core::…` and
+// removed them — reach the substrate directly, not through this crate.
 pub mod codex_app_server;
 pub mod codex_app_server_session;
 pub mod compression;
@@ -83,20 +84,12 @@ pub mod context_home;
 pub mod feature_perf_uploader;
 pub mod http_api_session;
 pub mod http_client;
-pub mod integration;
 pub mod local_llm_session;
 pub(crate) mod mutex_ext;
 pub mod oauth;
 pub mod ollama_discovery;
-// #7724: promoted from `pub(crate)` — `hardened_client_builder`/`read_body_capped`/
-// `read_text_capped`/`BodyReadError` are network's public hardened-HTTP-primitive
-// API (see the module doc-comment in `outbound.rs` for which consumers can and
-// cannot reach it).
-pub mod outbound;
-mod provider_error_body;
 pub mod provider_model_catalog_client;
 pub mod remote_embedding_client;
-pub mod resilience;
 pub mod sse_client;
 
 pub mod sync;

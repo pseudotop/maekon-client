@@ -6,9 +6,9 @@ use maekon_core::ports::credential_source::CredentialSource;
 use maekon_core::ports::embedding_provider::EmbeddingProvider;
 use maekon_core::ports::llm_provider::{LlmProvider, ScreenContext};
 use maekon_core::ports::ocr_provider::OcrProvider;
+use maekon_http_core::circuit_breaker::CircuitBreakerRegistry;
 use maekon_network::ai_llm_client::RemoteLlmProvider;
 use maekon_network::ai_ocr_client::RemoteOcrProvider;
-use maekon_network::circuit_breaker::CircuitBreakerRegistry;
 use maekon_network::remote_embedding_client::RemoteEmbeddingProvider;
 use tokio::time::sleep;
 
@@ -57,8 +57,11 @@ async fn ai_provider_live_smoke() {
 
 async fn run_llm_smoke() {
     let endpoint = build_endpoint(SmokeTarget::Llm);
-    let provider = RemoteLlmProvider::new(&endpoint, maekon_network::CircuitBreakerRegistry::new())
-        .expect("LLM provider setup failed");
+    let provider = RemoteLlmProvider::new(
+        &endpoint,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    )
+    .expect("LLM provider setup failed");
 
     let screen_context = ScreenContext {
         visible_texts: vec![
@@ -110,8 +113,11 @@ async fn run_llm_smoke() {
 
 async fn run_ocr_smoke() {
     let endpoint = build_endpoint(SmokeTarget::Ocr);
-    let provider = RemoteOcrProvider::new(&endpoint, maekon_network::CircuitBreakerRegistry::new())
-        .expect("OCR provider setup failed");
+    let provider = RemoteOcrProvider::new(
+        &endpoint,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    )
+    .expect("OCR provider setup failed");
 
     let mut last_err = None;
     for attempt in 1..=2 {

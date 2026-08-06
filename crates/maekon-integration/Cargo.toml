@@ -1,0 +1,61 @@
+[package]
+name = "maekon-integration"
+description = "외부 업무 도구 커넥터 — read-only Context Source 어댑터 (MK-EXT, ADR-030/ADR-034)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# ADR-034 P4: one feature per built-in connector, default-on for the essential
+# set. "Essential tools only" is a compile-time fact: without a connector's
+# feature the build contains neither its registry row nor its OAuth wiring.
+default = ["connector-google-calendar"]
+connector-google-calendar = []
+
+[dependencies]
+# ADR-034 P3: this adapter depends ONLY on the foundation crates. In particular
+# it must never depend on maekon-network (adapter->adapter is forbidden) — the
+# shared outbound-HTTP mechanics it needs live in maekon-http-core, which is
+# the reason that crate exists.
+maekon-core = { workspace = true }
+maekon-api-contracts = { workspace = true }
+maekon-http-core = { workspace = true }
+
+async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+# `FakePiiSanitizer` lives next to the `PiiSanitizer` port, gated `test-support`
+# (same pattern as maekon-network).
+maekon-core = { workspace = true, features = ["test-support"] }
+axum = { workspace = true }
+mockito = { workspace = true }
+# Integration tests seed a real SqliteStorage / FileIntegrationStateStore.
+# Dev-only: the boundary gate exempts dev-dependencies (test fixtures do not
+# couple the shipped artifact).
+maekon-storage = { workspace = true }
+parking_lot = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

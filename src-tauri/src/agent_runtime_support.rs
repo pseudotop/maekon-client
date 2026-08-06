@@ -517,6 +517,12 @@ impl<'a> AgentSupportContextBuilder<'a> {
                         Some(notifier),
                         queue,
                         scorer,
+                        // #10112: local storage is the client's system of record.
+                        // Without this the receiver wrote only to the in-memory
+                        // queue and server-pushed suggestions were lost on
+                        // restart. `AgentRuntime::run` always calls
+                        // `.with_storage(...)`, so this is Some in production.
+                        self.storage.clone(),
                     ),
                 ))
             } else {

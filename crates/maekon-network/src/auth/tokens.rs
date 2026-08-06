@@ -150,8 +150,8 @@ impl TokenManager {
             // #8045 C3: even this deprecated/test constructor gets the https_only
             // backstop derived from `base_url` — loopback stub servers (mockito)
             // keep cleartext, any remote base_url is HTTPS-only.
-            client: crate::outbound::hardened_client_builder(
-                crate::outbound::TransportPolicy::for_endpoint(base_url),
+            client: maekon_http_core::outbound::hardened_client_builder(
+                maekon_http_core::outbound::TransportPolicy::for_endpoint(base_url),
             )
                 .build()
                 .unwrap_or_else(|error| {

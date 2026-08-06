@@ -33,12 +33,12 @@ impl ProviderModelCatalogPort for ReqwestProviderModelCatalogClient {
         let pinned_all_loopback = !request.resolved_addrs.is_empty()
             && request.resolved_addrs.iter().all(|a| a.ip().is_loopback());
         let transport_policy = if pinned_all_loopback {
-            crate::outbound::TransportPolicy::AllowLoopbackCleartext
+            maekon_http_core::outbound::TransportPolicy::AllowLoopbackCleartext
         } else {
-            crate::outbound::TransportPolicy::for_endpoint(&request.endpoint)
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&request.endpoint)
         };
-        let mut builder =
-            crate::outbound::hardened_client_builder(transport_policy).timeout(request.timeout);
+        let mut builder = maekon_http_core::outbound::hardened_client_builder(transport_policy)
+            .timeout(request.timeout);
 
         // #6902: when the caller (maekon-web SSRF guard) has already resolved and validated
         // the endpoint host and passed it via `resolved_addrs`, pin that host to these
@@ -79,17 +79,19 @@ impl ProviderModelCatalogPort for ReqwestProviderModelCatalogClient {
         // MITM provider (this carries the api-key/Bearer) could otherwise stream
         // multi-GB and OOM the agent. The multiline `.text().await` here evaded the
         // single-line grep in the #6939/#6940 sweep (the recurring blind spot).
-        let body =
-            crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-                .await
-                .map_err(|e| {
-                    ProviderModelCatalogError::ResponseBody(match e {
-                        crate::outbound::BodyReadError::Transport(error) => error.to_string(),
-                        crate::outbound::BodyReadError::TooLarge { len, cap } => {
-                            format!("response too large: {len} bytes exceeds cap {cap}")
-                        }
-                    })
-                })?;
+        let body = maekon_http_core::outbound::read_text_capped(
+            response,
+            maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|e| {
+            ProviderModelCatalogError::ResponseBody(match e {
+                maekon_http_core::outbound::BodyReadError::Transport(error) => error.to_string(),
+                maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
+                    format!("response too large: {len} bytes exceeds cap {cap}")
+                }
+            })
+        })?;
 
         Ok(ProviderModelCatalogResponse { status, body })
     }

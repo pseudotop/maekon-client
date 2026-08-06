@@ -9,6 +9,12 @@ type MaekonWindow = Window & {
   __TAURI_INTERNALS__?: TauriBridge
 }
 
+type TauriAwareBrowser = WebdriverIO.Browser & {
+  tauri?: {
+    switchWindow(label: string): Promise<void>
+  }
+}
+
 /**
  * Tauri IPC command invocation — wraps window.__TAURI_INTERNALS__.invoke()
  * Runs inside the browser context via WebdriverIO's executeAsync
@@ -40,6 +46,12 @@ export async function invokeIpc<T = unknown>(command: string, args?: Record<stri
 }
 
 export async function switchToMainWindow(): Promise<void> {
+  const tauri = (browser as TauriAwareBrowser).tauri
+  if (tauri?.switchWindow) {
+    await tauri.switchWindow('main')
+    return
+  }
+
   await browser.waitUntil(
     async () => {
       const handles = await browser.getWindowHandles()

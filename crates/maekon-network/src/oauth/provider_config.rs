@@ -90,17 +90,15 @@ impl OAuthProviderConfig {
     /// not publish a shared public client id for third-party desktop apps.
     ///
     /// The connector built on this preset has no Calendar write path
-    /// (see `crate::integration::google_calendar`).
+    /// (see `maekon-integration`'s `google_calendar` module).
     pub fn google_calendar_readonly(client_id: impl Into<String>) -> Self {
         Self {
-            provider_id: crate::integration::google_calendar::GOOGLE_CALENDAR_PROVIDER_ID.into(),
+            provider_id: maekon_core::ports::oauth::GOOGLE_CALENDAR_PROVIDER_ID.into(),
             issuer: "https://accounts.google.com".into(),
             client_id: client_id.into(),
             authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth".into(),
             token_endpoint: "https://oauth2.googleapis.com/token".into(),
-            scopes: vec![
-                crate::integration::google_calendar::GOOGLE_CALENDAR_READONLY_SCOPE.into(),
-            ],
+            scopes: vec![maekon_core::ports::oauth::GOOGLE_CALENDAR_READONLY_SCOPE.into()],
             callback_port: 1457,
             callback_path: "/auth/callback".into(),
             api_base_url: "https://www.googleapis.com/calendar/v3".into(),

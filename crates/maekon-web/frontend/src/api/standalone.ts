@@ -759,6 +759,18 @@ export async function handleStandaloneRequest(
       max_value: 0,
     })
   }
+  // #9854: the session-interchange exports have FIXED formats. Returning the
+  // generic JSON blob below would hand a `.ics` download a JSON body, so the
+  // standalone demo would "work" while producing a file no calendar can open.
+  if (path.startsWith('/api/export/ical') && method === 'GET') {
+    return textBlobResponse(
+      ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Maekon//standalone//EN', 'END:VCALENDAR'].join('\r\n'),
+      'text/calendar; charset=utf-8',
+    )
+  }
+  if (path.startsWith('/api/export/toggl') && method === 'GET') {
+    return textBlobResponse('Email,Project,Description,Start date,Start time,Duration\n', 'text/csv; charset=utf-8')
+  }
   if (path.startsWith('/api/export/') && method === 'GET') {
     return textBlobResponse(
       JSON.stringify({ mode: 'standalone', exported_at: new Date().toISOString() }, null, 2),

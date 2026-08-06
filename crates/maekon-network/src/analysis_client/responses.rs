@@ -1,10 +1,9 @@
 use maekon_core::config::AiProviderType;
 use maekon_core::models::memory_graph::{ClaimStatusChange, RelationEdgeProposal};
-use maekon_core::models::suggestion::{Priority, Suggestion, SuggestionSource, SuggestionType};
-use serde::Deserialize;
+use maekon_core::models::suggestion::Suggestion;
 
 use crate::error::NetworkError;
-use crate::provider_error_body::provider_parse_error_message;
+use maekon_http_core::provider_error_body::provider_parse_error_message;
 
 /// Extract the first top-level JSON array substring from an LLM text response
 /// (tolerant of ```` ```json ```` fences and surrounding prose).
@@ -44,16 +43,12 @@ pub(crate) fn parse_status_changes(text: &str) -> Vec<ClaimStatusChange> {
         .unwrap_or_default()
 }
 
-/// Private struct for parsing LLM suggestion candidates from JSON.
-#[derive(Debug, Deserialize)]
-pub(crate) struct SuggestionCandidate {
-    #[serde(rename = "type")]
-    pub(crate) suggestion_type: String,
-    pub(crate) content: String,
-    pub(crate) confidence: f64,
-    #[serde(default)]
-    pub(crate) reasoning: Option<String>,
-}
+/// LLM suggestion candidate wire shape.
+///
+/// #10050 AC3: this is an alias onto the shared `maekon-core` type rather than a
+/// local copy, so the HTTP adapter here and the subprocess-CLI analysis provider
+/// in `src-tauri` cannot drift into different wire shapes.
+pub(crate) type SuggestionCandidate = maekon_core::models::suggestion::LlmSuggestionCandidate;
 
 /// Extract text content from provider-specific response format.
 pub(crate) fn extract_text(
@@ -140,34 +135,8 @@ pub(crate) fn parse_candidates(text: &str) -> Result<Vec<SuggestionCandidate>, N
 /// D5 iter-5: sanitization happens in the caller
 /// (`candidate_to_suggestion_sanitized`) because the sanitizer is instance state.
 pub(crate) fn candidate_to_suggestion(candidate: SuggestionCandidate) -> Suggestion {
-    let suggestion_type = match candidate.suggestion_type.as_str() {
-        "ProductivityTip" => SuggestionType::ProductivityTip,
-        "WorkflowOptimization" => SuggestionType::WorkflowOptimization,
-        "ContextBased" => SuggestionType::ContextBased,
-        "WorkGuidance" => SuggestionType::WorkGuidance,
-        _ => SuggestionType::ContextBased,
-    };
-
-    let priority = if candidate.confidence >= 0.9 {
-        Priority::High
-    } else if candidate.confidence >= 0.7 {
-        Priority::Medium
-    } else {
-        Priority::Low
-    };
-
-    Suggestion {
-        suggestion_id: maekon_core::generate_id("sug"),
-        suggestion_type,
-        content: candidate.content,
-        priority,
-        confidence_score: candidate.confidence,
-        relevance_score: candidate.confidence,
-        is_actionable: true,
-        created_at: chrono::Utc::now(),
-        expires_at: None,
-        source: SuggestionSource::LlmLocal,
-        reasoning: candidate.reasoning,
-        context_scope: None,
-    }
+    // #10050 AC3: delegate to the shared mapping in `maekon-core` so this HTTP
+    // adapter and the subprocess-CLI analysis provider apply identical type and
+    // priority rules. Do NOT re-inline the match/threshold logic here.
+    Suggestion::from_llm_candidate(candidate)
 }

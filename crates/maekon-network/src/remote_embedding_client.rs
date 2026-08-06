@@ -11,10 +11,10 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
-use crate::http_client::host_is_loopback;
-use crate::provider_error_body::provider_error_message;
-use crate::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
+use maekon_http_core::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
+use maekon_http_core::outbound::host_is_loopback;
+use maekon_http_core::provider_error_body::provider_error_message;
+use maekon_http_core::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
 
 /// Egress-ledger destination for remote embedding uploads (mirrors the
 /// `EGRESS_DESTINATION_FEATURE_PERF` const pattern). Distinct `external.*`
@@ -116,8 +116,8 @@ impl RemoteEmbeddingProvider {
         // reqwest::Client::default().
         // #8045 C3: https_only backstop derived from the target endpoint (a
         // loopback local-embedding server keeps cleartext; remote is HTTPS-only).
-        let http_client = crate::outbound::hardened_client_builder(
-            crate::outbound::TransportPolicy::for_endpoint(&endpoint),
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&endpoint),
         )
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
@@ -296,10 +296,12 @@ impl RemoteEmbeddingProvider {
             // a non-2xx with a multi-GB body to OOM the agent on the error path. The
             // body is only used to classify the failure, so a cap breach/read error
             // degrades to None (no body marker), never an unbounded buffer.
-            let error_body =
-                crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-                    .await
-                    .ok();
+            let error_body = maekon_http_core::outbound::read_text_capped(
+                response,
+                maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+            )
+            .await
+            .ok();
             let message = provider_error_message("Embedding API", status, error_body.as_deref());
             // Semantic HTTP status mapping per iter-54/55 pattern.
             return Err(match status.as_u16() {
@@ -333,20 +335,22 @@ impl RemoteEmbeddingProvider {
 
         // #6939: cap the provider response body before buffering/parse — a
         // compromised/MITM provider could otherwise stream multi-GB and OOM the agent.
-        let body_bytes =
-            crate::outbound::read_body_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-                .await
-                .map_err(|e| CoreError::Network {
-                    code: maekon_core::error_codes::NetworkCode::Generic,
-                    message: match e {
-                        crate::outbound::BodyReadError::Transport(err) => {
-                            format!("Failed to read embedding response: {err}")
-                        }
-                        crate::outbound::BodyReadError::TooLarge { len, cap } => {
-                            format!("embedding response exceeded cap {cap} bytes (len {len})")
-                        }
-                    },
-                })?;
+        let body_bytes = maekon_http_core::outbound::read_body_capped(
+            response,
+            maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|e| CoreError::Network {
+            code: maekon_core::error_codes::NetworkCode::Generic,
+            message: match e {
+                maekon_http_core::outbound::BodyReadError::Transport(err) => {
+                    format!("Failed to read embedding response: {err}")
+                }
+                maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
+                    format!("embedding response exceeded cap {cap} bytes (len {len})")
+                }
+            },
+        })?;
         let mut parsed: EmbeddingResponse =
             serde_json::from_slice(&body_bytes).map_err(|e| CoreError::Network {
                 code: maekon_core::error_codes::NetworkCode::Generic,
@@ -939,7 +943,7 @@ mod tests {
         let key = endpoint_authority(&server_url).unwrap();
         let _ = registry.get_with_config(
             &key,
-            crate::circuit_breaker::CircuitBreakerConfig {
+            maekon_http_core::circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 3,
                 initial_cooldown: std::time::Duration::from_millis(50),
                 max_cooldown: std::time::Duration::from_millis(200),

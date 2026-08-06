@@ -1038,3 +1038,141 @@ mod tests {
         assert!(err.contains("throttle_secs"), "got: {err}");
     }
 }
+
+/// #10197 Wave 1: mutation guards for the analysis config defaults and clamps.
+///
+/// The full-crate measurement (run 31027028682) left 72 surviving mutants
+/// here, 67 of them constant-replacements of `default_*` functions — nothing
+/// asserted any default's VALUE, so `0`/`1`/`Default::default()` all passed.
+/// These defaults govern analysis cadence, retention, and PII extraction; a
+/// silent change ships as a behaviour change for every fresh install
+/// (the #10131 `default_*` pattern, at scale).
+#[cfg(test)]
+mod mutation_guard_tests {
+    use super::*;
+
+    /// Every default function's exact value, asserted individually. This is
+    /// deliberately a value table, not `AnalysisConfig::default()` field
+    /// checks: serde `#[serde(default = "…")]` calls these functions directly
+    /// on deserialization, so a function whose Default-impl wiring differs
+    /// would still be covered here.
+    #[test]
+    fn every_default_function_value_is_pinned() {
+        assert_eq!(default_aggregation_window_secs(), 300);
+        assert!(default_auto_tuning_enabled());
+        assert_eq!(default_buffer_capacity(), 100);
+        assert_eq!(default_buffer_flush_interval_secs(), 30);
+        assert_eq!(default_calibration_max_rows(), 500_000);
+        assert_eq!(default_calibration_retention_days(), 14);
+        assert!((default_drift_threshold() - 2.0).abs() < f32::EPSILON);
+        assert!((default_ema_alpha() - 0.05).abs() < f32::EPSILON);
+        assert_eq!(default_embedding_provider(), EmbeddingProviderType::Local);
+        assert_eq!(default_embedding_retention_days(), 90);
+        assert_eq!(default_generation_window_days(), 30);
+        assert!(!default_gui_enabled());
+        assert_eq!(default_index_strategy(), "auto");
+        assert_eq!(default_local_model(), "all-MiniLM-L6-v2-Q");
+        assert_eq!(default_max_events_per_segment(), 500);
+        assert_eq!(default_max_search_results(), 5);
+        assert_eq!(default_max_segment_secs(), 600);
+        assert_eq!(default_max_suggestions(), 3);
+        assert!((default_min_confidence() - 0.6).abs() < f64::EPSILON);
+        assert!((default_min_input_confidence() - 0.5).abs() < f64::EPSILON);
+        assert_eq!(default_min_segment_for_summary(), 300);
+        assert_eq!(default_min_segment_secs(), 120);
+        assert_eq!(default_mirror_window_days(), 90);
+        assert_eq!(default_oversample_factor(), 10);
+        assert_eq!(
+            default_pii_extraction_level(),
+            crate::config::enums::PiiFilterLevel::Standard,
+            "PII extraction floor is Standard — weakening this default is a privacy change"
+        );
+        assert_eq!(default_projection_max_claims(), 64);
+        assert_eq!(default_projection_max_edges(), 256);
+        assert_eq!(default_proximity_threshold_px(), 40);
+        assert!(default_quantization_float32_retention());
+        assert_eq!(default_regime_detection_interval_hours(), 2);
+        assert_eq!(default_server_coexistence_lookback_secs(), 300);
+        assert!((default_supersede_confidence_threshold() - 0.9).abs() < f64::EPSILON);
+        assert!((default_time_decay_hours() - 168.0).abs() < f32::EPSILON);
+    }
+
+    /// clamp_bounds' comparisons are strict on purpose: a value AT the floor
+    /// is legal and must pass through untouched. `<` -> `<=` would clamp (and
+    /// report) a legal config on every startup.
+    #[test]
+    fn clamp_bounds_leaves_exact_floor_values_untouched() {
+        let mut config = AnalysisConfig {
+            interval_secs: ANALYSIS_INTERVAL_SECS_FLOOR,
+            full_interval_secs: ANALYSIS_INTERVAL_SECS_FLOOR, // == interval: legal
+            throttle_secs: ANALYSIS_THROTTLE_SECS_FLOOR,
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_FLOOR,
+            ..AnalysisConfig::default()
+        };
+
+        let clamped = config.clamp_bounds();
+        assert!(
+            clamped.is_empty(),
+            "at-floor values are legal and must not be clamped: {clamped:?}"
+        );
+        assert_eq!(config.interval_secs, ANALYSIS_INTERVAL_SECS_FLOOR);
+        assert_eq!(config.full_interval_secs, ANALYSIS_INTERVAL_SECS_FLOOR);
+    }
+
+    #[test]
+    fn clamp_bounds_raises_each_sub_floor_field_independently() {
+        // One field below floor at a time, so each comparison is individually
+        // load-bearing rather than shadowed by a sibling clamp.
+        let mut config = AnalysisConfig {
+            interval_secs: ANALYSIS_INTERVAL_SECS_FLOOR - 1,
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.interval_secs"));
+        assert_eq!(config.interval_secs, ANALYSIS_INTERVAL_SECS_FLOOR);
+
+        let default_interval = AnalysisConfig::default().interval_secs;
+        let mut config = AnalysisConfig {
+            full_interval_secs: default_interval - 1,
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.full_interval_secs"));
+        assert_eq!(config.full_interval_secs, config.interval_secs);
+
+        let mut config = AnalysisConfig {
+            throttle_secs: ANALYSIS_THROTTLE_SECS_FLOOR - 1,
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.throttle_secs"));
+        assert_eq!(config.throttle_secs, ANALYSIS_THROTTLE_SECS_FLOOR);
+
+        let mut config = AnalysisConfig {
+            max_suggestions: 0, // FLOOR is 1, so 0 is the only sub-floor value
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.max_suggestions"));
+        assert_eq!(config.max_suggestions, ANALYSIS_MAX_SUGGESTIONS_FLOOR);
+    }
+
+    #[test]
+    fn clamp_bounds_caps_max_suggestions_exclusively_at_the_cap() {
+        // AT the cap is legal; one past it clamps down. `>` -> `>=` would
+        // clamp (and report) the exact-cap config.
+        let mut config = AnalysisConfig {
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_CAP,
+            ..AnalysisConfig::default()
+        };
+        assert!(config.clamp_bounds().is_empty(), "exact cap is legal");
+
+        let mut config = AnalysisConfig {
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_CAP + 1,
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.max_suggestions"));
+        assert_eq!(config.max_suggestions, ANALYSIS_MAX_SUGGESTIONS_CAP);
+    }
+}

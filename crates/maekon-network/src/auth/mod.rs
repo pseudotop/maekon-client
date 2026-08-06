@@ -66,10 +66,12 @@ impl TokenManager {
         if !resp.status().is_success() {
             let status = resp.status();
             // #6949: cap the login error response body (OOM guard)
-            let text =
-                crate::outbound::read_text_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
-                    .await
-                    .unwrap_or_default();
+            let text = maekon_http_core::outbound::read_text_capped(
+                resp,
+                maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
+            )
+            .await
+            .unwrap_or_default();
             let message = format!("login failure ({status}): {text}");
             // Semantic status mapping per iter-54..60. For login specifically,
             // 401/403 are definitive auth failures, but 429/503/504 indicate
@@ -96,21 +98,21 @@ impl TokenManager {
         }
 
         // #6949: cap the login token response body (OOM guard)
-        let token_bytes =
-            crate::outbound::read_body_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
-                .await
-                .map_err(|e| match e {
-                    crate::outbound::BodyReadError::Transport(te) => CoreError::Auth {
-                        code: maekon_core::error_codes::AuthCode::Failed,
-                        message: format!("Token parsing failed: {te}"),
-                    },
-                    crate::outbound::BodyReadError::TooLarge { len, cap } => CoreError::Auth {
-                        code: maekon_core::error_codes::AuthCode::Failed,
-                        message: format!(
-                            "Token parsing failed: response too large ({len} > {cap})"
-                        ),
-                    },
-                })?;
+        let token_bytes = maekon_http_core::outbound::read_body_capped(
+            resp,
+            maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|e| match e {
+            maekon_http_core::outbound::BodyReadError::Transport(te) => CoreError::Auth {
+                code: maekon_core::error_codes::AuthCode::Failed,
+                message: format!("Token parsing failed: {te}"),
+            },
+            maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => CoreError::Auth {
+                code: maekon_core::error_codes::AuthCode::Failed,
+                message: format!("Token parsing failed: response too large ({len} > {cap})"),
+            },
+        })?;
         let token_resp: tokens::TokenResponse =
             serde_json::from_slice(&token_bytes).map_err(|e| CoreError::Auth {
                 code: maekon_core::error_codes::AuthCode::Failed,

@@ -16,7 +16,7 @@ mod tests {
         parse_retry_after, REFRESH_INITIAL_BACKOFF_MS, REFRESH_MAX_BACKOFF_MS, REFRESH_MAX_RETRIES,
     };
     use crate::auth::tokens::{TokenManager, TokenState, MAX_TOKEN_TTL_SECS};
-    use crate::resilience::jittered_backoff_delay;
+    use maekon_http_core::resilience::jittered_backoff_delay;
 
     // ── Password fixtures ─────────────────────────────────────────────────────
 

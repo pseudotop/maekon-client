@@ -33,47 +33,47 @@ fn assert_exists(rel_path: &str) {
 }
 
 // ───────────────── integration-adapters ─────────────────
-// CRT-PRV-INT-001..010: crates/maekon-network/src/integration/
+// CRT-PRV-INT-001..010: crates/maekon-integration/src/ (ADR-034 P3 move)
 
 #[test]
 fn crt_prv_int_001_oidc_device_flow() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_002_http_transport() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_003_cloudevents() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_004_egress_coordinator() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_005_inbox_coordinator() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_006_live_channel() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_007_policy_egress() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_008_producer_loop() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_009_static_auth() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_010_permission_audit() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 
 // ───────────────── ai-providers ─────────────────
@@ -407,11 +407,11 @@ fn crt_prv_grpc_005_policy_loading() {
 
 #[test]
 fn crt_prv_net_001_circuit_breaker() {
-    assert_exists("crates/maekon-network/src/circuit_breaker.rs");
+    assert_exists("crates/maekon-http-core/src/circuit_breaker.rs");
 }
 #[test]
 fn crt_prv_net_002_jittered_backoff() {
-    assert_exists("crates/maekon-network/src/resilience.rs");
+    assert_exists("crates/maekon-http-core/src/resilience.rs");
 }
 #[test]
 fn crt_prv_net_003_sse_reconnect() {

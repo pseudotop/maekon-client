@@ -26,9 +26,31 @@ pub struct SubprocessLlmProvider {
     pub(super) provider_name: String,
     pub(super) model: String,
     pub(super) timeout: Duration,
+    /// Structured-output schema handed to the CLI (`--json-schema` /
+    /// `--output-schema`). #10050: parameterized so the same one-shot runner
+    /// serves both the action port (`ACTION_SCHEMA_JSON`) and the analysis port
+    /// (`SUGGESTION_SCHEMA_JSON`) without a second copy of the invocation
+    /// contract. Gemini ignores it — that surface has no schema flag and steers
+    /// via the prompt instead.
+    pub(super) schema: &'static str,
 }
 
 impl SubprocessLlmProvider {
+    /// #10050: run this provider's one-shot CLI contract for the ANALYSIS port
+    /// and return the raw stdout/envelope. Dispatch goes through the same
+    /// per-surface runtime table as `interpret_intent`, so a surface added there
+    /// works for both ports automatically.
+    pub(super) async fn run_analysis_oneshot(&self, prompt: &str) -> Result<String, CoreError> {
+        let runtime = invocation_runtime_for_surface(&self.surface.surface_id)?;
+        (runtime.llm_invoke)(self, prompt).await
+    }
+
+    /// Construct with a non-default structured-output schema (#10050).
+    pub fn with_schema(mut self, schema: &'static str) -> Self {
+        self.schema = schema;
+        self
+    }
+
     pub fn new(surface: DetectedSubprocessCli, config: &AiProviderConfig) -> Self {
         let model = config
             .llm_api
@@ -56,6 +78,7 @@ impl SubprocessLlmProvider {
             surface,
             model,
             timeout: Duration::from_secs(timeout_secs),
+            schema: ACTION_SCHEMA_JSON,
         }
     }
 
@@ -80,7 +103,7 @@ impl SubprocessLlmProvider {
         let schema_path = temp_dir.path().join("action.schema.json");
         let output_path = temp_dir.path().join("codex-output.json");
         // F-RC-10: use tokio::fs::write in async context
-        tokio::fs::write(&schema_path, ACTION_SCHEMA_JSON)
+        tokio::fs::write(&schema_path, self.schema)
             .await
             .map_err(|err| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
@@ -153,7 +176,7 @@ impl SubprocessLlmProvider {
             .arg("--output-format")
             .arg("json")
             .arg("--json-schema")
-            .arg(ACTION_SCHEMA_JSON)
+            .arg(self.schema)
             .current_dir(temp_dir.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

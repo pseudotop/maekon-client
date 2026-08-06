@@ -1,6 +1,7 @@
 use maekon_core::models::suggestion::Suggestion;
 use maekon_core::ports::api_client::{SseClient, SseEvent};
 use maekon_core::ports::notifier::DesktopNotifier;
+use maekon_core::ports::storage::StorageService;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
@@ -19,6 +20,19 @@ pub struct SuggestionReceiver {
     notifier: Option<Arc<dyn DesktopNotifier>>,
     queue: Arc<Mutex<SuggestionQueue>>,
     scorer: Arc<Mutex<FeedbackScorer>>,
+    /// #10112: local persistence for server-pushed suggestions.
+    ///
+    /// Without this the remote producer wrote only to the in-memory `queue`
+    /// (cap 50) and every server suggestion vanished on restart, while the
+    /// local producer persisted through `save_suggestion`. The local store is
+    /// the client's system of record — a suggestion the server produced is
+    /// still part of the user's history and must survive a restart and be
+    /// readable offline.
+    ///
+    /// `None` disables persistence (tests, and any future embedding that has
+    /// no store); the queue path still works so a missing store degrades
+    /// rather than drops suggestions.
+    storage: Option<Arc<dyn StorageService>>,
     on_new: Mutex<Option<OnNewSuggestion>>,
     /// Sender half of the shutdown channel. Sending (or dropping) signals the
     /// background SSE task spawned in `run` to stop. Stored so callers can
@@ -32,17 +46,26 @@ pub struct SuggestionReceiver {
 }
 
 impl SuggestionReceiver {
+    /// #10112: `storage` is a required positional parameter rather than a
+    /// `with_storage()` builder on purpose. The defect this fixes was a *wiring
+    /// omission* — the store existed and `save_suggestion` documented itself as
+    /// "the site that persists server-issued suggestions", but nothing ever
+    /// called it from here. A required parameter makes the compiler force every
+    /// construction site to make that choice explicitly; a builder would let the
+    /// same omission recur silently.
     pub fn new(
         sse_client: Arc<dyn SseClient>,
         notifier: Option<Arc<dyn DesktopNotifier>>,
         queue: Arc<Mutex<SuggestionQueue>>,
         scorer: Arc<Mutex<FeedbackScorer>>,
+        storage: Option<Arc<dyn StorageService>>,
     ) -> Self {
         Self {
             sse_client,
             notifier,
             queue,
             scorer,
+            storage,
             on_new: Mutex::new(None),
             shutdown_tx: Mutex::new(None),
             stream_task: Mutex::new(None),
@@ -186,6 +209,30 @@ impl SuggestionReceiver {
     // races where the queue is pushed to twice with stale expiry state.
     #[allow(clippy::significant_drop_tightening)]
     async fn handle_suggestion(&self, mut suggestion: Suggestion) {
+        // 0. #10112: persist BEFORE any gating, mirroring the local producer
+        //    (`spawn_analysis_*` saves every suggestion it produces and only
+        //    then applies relevance gates). Suppression is a *presentation*
+        //    decision — a suggestion the server sent is received data either
+        //    way, and dropping it here would leave the local store a biased
+        //    subset of what the user was actually offered, which also skews the
+        //    FeedbackScorer history that reads back from it.
+        //
+        //    `save_suggestion` is INSERT OR REPLACE keyed on suggestion_id, so
+        //    a redelivery after reconnect upserts instead of duplicating.
+        //
+        //    A storage failure is logged, never fatal: the in-memory queue path
+        //    below still runs, so a wedged disk degrades persistence rather than
+        //    silently swallowing live suggestions.
+        if let Some(storage) = &self.storage {
+            if let Err(e) = storage.save_suggestion(&suggestion).await {
+                warn!(
+                    err.code = %e.code(),
+                    id = %suggestion.suggestion_id,
+                    "server-pushed suggestion failed to persist locally: {e}"
+                );
+            }
+        }
+
         // 1. Feedback-based relevance adjustment
         let should_queue = {
             let scorer = self.scorer.lock().await;
@@ -255,7 +302,9 @@ mod tests {
         assert_eq!(queue.len(), 0);
     }
 
-    struct MockSseClient;
+    // #10112: pub(super) so the sibling `local_persistence_tests` module can
+    // reuse the same fixture instead of keeping a second copy that could drift.
+    pub(super) struct MockSseClient;
     #[async_trait::async_trait]
     impl SseClient for MockSseClient {
         async fn connect(
@@ -284,7 +333,7 @@ mod tests {
         }
     }
 
-    fn make_suggestion() -> Suggestion {
+    pub(super) fn make_suggestion() -> Suggestion {
         Suggestion {
             suggestion_id: "test-1".to_string(),
             suggestion_type: SuggestionType::WorkGuidance,
@@ -313,6 +362,7 @@ mod tests {
             Some(notifier.clone() as Arc<dyn DesktopNotifier>),
             queue.clone(),
             scorer,
+            None,
         );
 
         receiver.handle_suggestion(make_suggestion()).await;
@@ -330,6 +380,7 @@ mod tests {
             None,
             queue.clone(),
             scorer,
+            None,
         );
 
         receiver.handle_suggestion(make_suggestion()).await;
@@ -346,6 +397,7 @@ mod tests {
             None,
             queue.clone(),
             scorer,
+            None,
         );
 
         {
@@ -374,6 +426,7 @@ mod tests {
             None,
             queue.clone(),
             scorer,
+            None,
         );
 
         receiver.handle_suggestion(make_suggestion()).await;
@@ -394,6 +447,7 @@ mod tests {
             None,
             queue.clone(),
             scorer,
+            None,
         );
 
         // Wire callback after construction (matches production pattern)
@@ -448,6 +502,7 @@ mod tests {
             None,
             queue,
             scorer,
+            None,
         ));
 
         let receiver_clone = receiver.clone();
@@ -501,6 +556,7 @@ mod tests {
             None,
             queue,
             scorer,
+            None,
         )
     }
 
@@ -577,6 +633,7 @@ mod tests {
             None,
             queue.clone(),
             scorer,
+            None,
         );
 
         let mut suggestion = make_suggestion();
@@ -585,5 +642,178 @@ mod tests {
         receiver.handle_suggestion(suggestion).await;
 
         assert_eq!(queue.lock().await.len(), 0);
+    }
+}
+
+/// #10112: the remote producer must persist to the local store, not just to the
+/// in-memory queue.
+///
+/// Before this, `SuggestionReceiver` had no storage dependency at all, so every
+/// server-pushed suggestion lived only in the queue (cap 50) and vanished on
+/// restart — while the local producer persisted via `save_suggestion`. These
+/// tests pin the asymmetry closed.
+#[cfg(test)]
+mod local_persistence_tests {
+    use super::tests::*;
+    use super::*;
+    use chrono::{DateTime, Utc};
+    use maekon_core::error::CoreError;
+    use maekon_core::models::event::Event;
+    use maekon_core::models::tiered_memory::SegmentSummary;
+    use std::sync::Mutex as StdMutex;
+
+    /// Records what reached the store. `fail` makes `save_suggestion` return an
+    /// error so the degradation path can be asserted.
+    struct RecordingStorage {
+        saved: StdMutex<Vec<Suggestion>>,
+        fail: bool,
+    }
+
+    impl RecordingStorage {
+        fn new(fail: bool) -> Arc<Self> {
+            Arc::new(Self {
+                saved: StdMutex::new(Vec::new()),
+                fail,
+            })
+        }
+
+        fn saved_ids(&self) -> Vec<String> {
+            self.saved
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|s| s.suggestion_id.clone())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StorageService for RecordingStorage {
+        async fn save_suggestion(&self, suggestion: &Suggestion) -> Result<(), CoreError> {
+            if self.fail {
+                return Err(CoreError::Storage {
+                    code: maekon_core::error_codes::StorageCode::Failed,
+                    message: "disk wedged".to_string(),
+                });
+            }
+            self.saved.lock().unwrap().push(suggestion.clone());
+            Ok(())
+        }
+
+        async fn save_event(&self, _event: &Event) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn get_events(
+            &self,
+            _from: DateTime<Utc>,
+            _to: DateTime<Utc>,
+            _limit: usize,
+        ) -> Result<Vec<Event>, CoreError> {
+            Ok(Vec::new())
+        }
+        async fn get_pending_events(&self, _limit: usize) -> Result<Vec<Event>, CoreError> {
+            Ok(Vec::new())
+        }
+        async fn mark_as_sent(&self, _event_ids: &[String]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn enforce_retention(&self) -> Result<usize, CoreError> {
+            Ok(0)
+        }
+        async fn save_activity_segment(&self, _summary: &SegmentSummary) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn update_segment_llm_summary(
+            &self,
+            _segment_id: &str,
+            _llm_summary: &str,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn receiver_with(
+        storage: Option<Arc<dyn StorageService>>,
+    ) -> (SuggestionReceiver, Arc<Mutex<SuggestionQueue>>) {
+        let queue = Arc::new(Mutex::new(SuggestionQueue::new(50)));
+        let scorer = Arc::new(Mutex::new(FeedbackScorer::new()));
+        let receiver = SuggestionReceiver::new(
+            Arc::new(MockSseClient) as Arc<dyn SseClient>,
+            None,
+            queue.clone(),
+            scorer,
+            storage,
+        );
+        (receiver, queue)
+    }
+
+    /// The core regression: a server-pushed suggestion reaches the local store.
+    #[tokio::test]
+    async fn server_pushed_suggestion_is_persisted_locally() {
+        let storage = RecordingStorage::new(false);
+        let (receiver, queue) = receiver_with(Some(storage.clone() as Arc<dyn StorageService>));
+
+        receiver.handle_suggestion(make_suggestion()).await;
+
+        assert_eq!(
+            storage.saved_ids(),
+            vec!["test-1".to_string()],
+            "the suggestion must reach local storage, not just the in-memory queue"
+        );
+        assert_eq!(queue.lock().await.len(), 1, "queueing must still happen");
+    }
+
+    /// Persistence happens BEFORE the relevance gate, mirroring the local
+    /// producer. A suppressed suggestion was still *received*; dropping it would
+    /// make the local store a biased subset of what the server actually sent.
+    #[tokio::test]
+    async fn suppressed_suggestion_is_still_persisted() {
+        let storage = RecordingStorage::new(false);
+        let (receiver, queue) = receiver_with(Some(storage.clone() as Arc<dyn StorageService>));
+
+        let mut suggestion = make_suggestion();
+        suggestion.relevance_score = 0.0;
+        receiver.handle_suggestion(suggestion).await;
+
+        assert_eq!(
+            queue.lock().await.len(),
+            0,
+            "precondition: this suggestion is suppressed from the queue"
+        );
+        assert_eq!(
+            storage.saved_ids(),
+            vec!["test-1".to_string()],
+            "suppression is a presentation decision — the receipt still persists"
+        );
+    }
+
+    /// A wedged store must degrade, never swallow the suggestion: the queue path
+    /// still runs so the user keeps seeing live suggestions.
+    #[tokio::test]
+    async fn storage_failure_does_not_drop_the_suggestion() {
+        let storage = RecordingStorage::new(true);
+        let (receiver, queue) = receiver_with(Some(storage.clone() as Arc<dyn StorageService>));
+
+        receiver.handle_suggestion(make_suggestion()).await;
+
+        assert!(
+            storage.saved_ids().is_empty(),
+            "precondition: the save failed"
+        );
+        assert_eq!(
+            queue.lock().await.len(),
+            1,
+            "a storage failure must not cost the user a live suggestion"
+        );
+    }
+
+    /// `None` storage stays functional — the queue path is independent.
+    #[tokio::test]
+    async fn absent_storage_still_queues() {
+        let (receiver, queue) = receiver_with(None);
+
+        receiver.handle_suggestion(make_suggestion()).await;
+
+        assert_eq!(queue.lock().await.len(), 1);
     }
 }

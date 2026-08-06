@@ -27,7 +27,7 @@ const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 // #7725: the escalation/cap/jitter delay math itself is NOT re-implemented
 // here. It used to be (a ~85% re-implementation of
-// `maekon_network::resilience::jittered_backoff_delay`); it is now computed
+// `maekon_http_core::resilience::jittered_backoff_delay`); it is now computed
 // directly via that shared helper at the `spawn_suggestion_sse_loop` call
 // site below. `maekon-network` is already a dependency whenever the `server`
 // feature (which gates this whole module) is enabled, via
@@ -180,7 +180,7 @@ pub(crate) fn spawn_suggestion_sse_loop(
                 // #7725: `consecutive_failures` here is 1-based (>= 1, guarded
                 // by the branch above), while `jittered_backoff_delay` takes a
                 // 0-based `attempt`.
-                maekon_network::resilience::jittered_backoff_delay(
+                maekon_http_core::resilience::jittered_backoff_delay(
                     consecutive_failures - 1,
                     RECONNECT_BASE_DELAY,
                     RECONNECT_MAX_DELAY,
@@ -520,7 +520,7 @@ mod tests {
     // #7725: these tests used to exercise a hand-rolled `next_reconnect_delay`
     // free function local to this module. That function has been removed —
     // the call site now delegates directly to
-    // `maekon_network::resilience::jittered_backoff_delay` — so the tests
+    // `maekon_http_core::resilience::jittered_backoff_delay` — so the tests
     // below exercise the shared helper with this module's own tuning
     // (`RECONNECT_BASE_DELAY` / `RECONNECT_MAX_DELAY`), pinning this call
     // site's envelope rather than the (now-deleted) private function.
@@ -532,7 +532,7 @@ mod tests {
     /// (1s → 2s → 4s → 8s → 16s) until it saturates at the 30s cap.
     #[test]
     fn next_delay_escalates_exponentially_no_jitter() {
-        use maekon_network::resilience::exponential_delay;
+        use maekon_http_core::resilience::exponential_delay;
         assert_eq!(exponential_delay(0, BASE, MAX), Duration::from_secs(1));
         assert_eq!(exponential_delay(1, BASE, MAX), Duration::from_secs(2));
         assert_eq!(exponential_delay(2, BASE, MAX), Duration::from_secs(4));
@@ -544,7 +544,7 @@ mod tests {
     /// the attempt count grows, with or without jitter applied.
     #[test]
     fn next_delay_is_capped_at_max() {
-        use maekon_network::resilience::{exponential_delay, jittered_backoff_delay};
+        use maekon_http_core::resilience::{exponential_delay, jittered_backoff_delay};
         for failures in [6u32, 10, 32, 63, u32::MAX] {
             let attempt = failures.saturating_sub(1);
             // No-jitter: exponential alone already exceeds MAX from failure 6 on.
@@ -564,7 +564,7 @@ mod tests {
     /// stays within [exp, exp * 1.25] and never below the exponential floor.
     #[test]
     fn next_delay_jitter_stays_within_bounds() {
-        use maekon_network::resilience::{exponential_delay, jittered_backoff_delay};
+        use maekon_http_core::resilience::{exponential_delay, jittered_backoff_delay};
         // Failure 3 -> attempt 2 (exp = 4s), where exp + 25% = 5s < MAX, so
         // jitter is observable and not clamped by the cap.
         let attempt = 2;
@@ -588,7 +588,7 @@ mod tests {
     /// rather than panicking or overflowing.
     #[test]
     fn next_delay_degenerate_inputs_yield_zero() {
-        use maekon_network::resilience::jittered_backoff_delay;
+        use maekon_http_core::resilience::jittered_backoff_delay;
         assert_eq!(
             jittered_backoff_delay(4, Duration::ZERO, MAX),
             Duration::ZERO
@@ -654,6 +654,7 @@ mod tests {
             None,
             queue,
             scorer,
+            None,
         ));
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -908,6 +909,7 @@ mod tests {
             None,
             queue,
             scorer,
+            None,
         ));
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

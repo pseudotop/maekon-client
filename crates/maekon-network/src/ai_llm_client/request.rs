@@ -1,13 +1,13 @@
 use super::parsers;
 use super::RemoteLlmProvider;
-use crate::circuit_breaker::CircuitState;
-use crate::provider_error_body::provider_error_message;
-use crate::resilience::{classify_for_breaker, BreakerSignal};
 use maekon_api_contracts::provider_specs::ProviderAuthScheme;
 use maekon_api_contracts::provider_specs::ProviderRequestShape;
 use maekon_core::error::CoreError;
 use maekon_core::models::prompt_assembly::{RenderedPrompt, SegmentedPrompt, UntrustedContent};
 use maekon_core::ports::llm_provider::{InterpretedAction, ScreenContext, SkillContext};
+use maekon_http_core::circuit_breaker::CircuitState;
+use maekon_http_core::provider_error_body::provider_error_message;
+use maekon_http_core::resilience::{classify_for_breaker, BreakerSignal};
 use tracing::{debug, warn};
 pub(super) fn system_prompt() -> &'static str {
     r#"You are a UI automation agent.
@@ -229,25 +229,29 @@ impl RemoteLlmProvider {
         // #6939: cap the response body — a compromised/MITM LLM provider could
         // otherwise stream multi-GB and OOM the agent. Preserve the timeout split
         // (Iter-90: body-read timeout maps to RequestTimeout).
-        let body =
-            crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-                .await
-                .map_err(|e| match e {
-                    crate::outbound::BodyReadError::Transport(err) if err.is_timeout() => {
-                        CoreError::RequestTimeout {
-                            code: maekon_core::error_codes::NetworkCode::Timeout,
-                            timeout_ms: 0,
-                        }
-                    }
-                    crate::outbound::BodyReadError::Transport(err) => CoreError::Network {
-                        code: maekon_core::error_codes::NetworkCode::Generic,
-                        message: format!("LLM API response read failure: {}", err),
-                    },
-                    crate::outbound::BodyReadError::TooLarge { len, cap } => CoreError::Network {
-                        code: maekon_core::error_codes::NetworkCode::Generic,
-                        message: format!("LLM API response exceeded cap {cap} bytes (len {len})"),
-                    },
-                })?;
+        let body = maekon_http_core::outbound::read_text_capped(
+            response,
+            maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|e| match e {
+            maekon_http_core::outbound::BodyReadError::Transport(err) if err.is_timeout() => {
+                CoreError::RequestTimeout {
+                    code: maekon_core::error_codes::NetworkCode::Timeout,
+                    timeout_ms: 0,
+                }
+            }
+            maekon_http_core::outbound::BodyReadError::Transport(err) => CoreError::Network {
+                code: maekon_core::error_codes::NetworkCode::Generic,
+                message: format!("LLM API response read failure: {}", err),
+            },
+            maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
+                CoreError::Network {
+                    code: maekon_core::error_codes::NetworkCode::Generic,
+                    message: format!("LLM API response exceeded cap {cap} bytes (len {len})"),
+                }
+            }
+        })?;
         if !status.is_success() {
             if let Some(ref handle) = self.call_health {
                 handle.record_failed();

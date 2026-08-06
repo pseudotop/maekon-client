@@ -17,7 +17,7 @@ use super::http_body::{
     read_body_capped, read_text_capped, MAX_CONTROL_RESPONSE_BYTES, MAX_PULL_RESPONSE_BYTES,
 };
 use super::sync_crypto;
-use crate::resilience::{extract_retry_after, jittered_backoff_delay};
+use maekon_http_core::resilience::{extract_retry_after, jittered_backoff_delay};
 
 const MAX_RETRIES: u32 = 3;
 const REQUEST_TIMEOUT_SECS: u64 = 30;
@@ -46,7 +46,7 @@ fn credential_egresses_cleartext(endpoint: &str, credential: &str) -> bool {
             .trim_start()
             .to_ascii_lowercase()
             .starts_with("https://")
-        && !crate::http_client::host_is_loopback(endpoint)
+        && !maekon_http_core::outbound::host_is_loopback(endpoint)
 }
 
 impl RemoteSyncTransport {
@@ -64,8 +64,8 @@ impl RemoteSyncTransport {
         // #8045 C3: https_only backstop derived from the endpoint (a loopback dev
         // relay keeps cleartext; a remote sync relay is HTTPS-only), layered on top
         // of the cleartext-credential guard below.
-        let client = crate::outbound::hardened_client_builder(
-            crate::outbound::TransportPolicy::for_endpoint(&endpoint),
+        let client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&endpoint),
         )
         .timeout(timeout)
         .build()

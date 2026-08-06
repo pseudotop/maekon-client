@@ -7,7 +7,7 @@ use maekon_core::error::CoreError;
 use tracing::warn;
 
 use super::tokens::{TokenManager, TokenState, MAX_TOKEN_TTL_SECS};
-use crate::resilience::jittered_backoff_delay;
+use maekon_http_core::resilience::jittered_backoff_delay;
 
 /// Retry ceiling for [`TokenManager::refresh`]. Hoisted to module scope
 /// (rather than a `fn`-local `const`) so tests can pin the backoff envelope
@@ -94,17 +94,17 @@ impl TokenManager {
 
                     if status.is_success() {
                         // #6949: cap the token-refresh success response body (OOM guard)
-                        let token_bytes = crate::outbound::read_body_capped(
+                        let token_bytes = maekon_http_core::outbound::read_body_capped(
                             resp,
-                            crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+                            maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
                         )
                         .await
                         .map_err(|e| match e {
-                            crate::outbound::BodyReadError::Transport(te) => CoreError::Auth {
+                            maekon_http_core::outbound::BodyReadError::Transport(te) => CoreError::Auth {
                                 code: maekon_core::error_codes::AuthCode::Failed,
                                 message: format!("refresh Token parsing failed: {te}"),
                             },
-                            crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                            maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
                                 CoreError::Auth {
                                     code: maekon_core::error_codes::AuthCode::Failed,
                                     message: format!(
@@ -199,9 +199,9 @@ impl TokenManager {
                     let is_retryable = status.is_server_error() || status.as_u16() == 429;
 
                     // #6949: cap the token-refresh error response body (OOM guard)
-                    let text = crate::outbound::read_text_capped(
+                    let text = maekon_http_core::outbound::read_text_capped(
                         resp,
-                        crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+                        maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
                     )
                     .await
                     .unwrap_or_default();

@@ -12,8 +12,8 @@ use maekon_core::ports::llm_provider::{
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
-use crate::resilience::endpoint_authority;
+use maekon_http_core::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
+use maekon_http_core::resilience::endpoint_authority;
 
 mod parsers;
 mod request;
@@ -125,8 +125,8 @@ impl RemoteLlmProvider {
         // #6892: redirect=none — prevents a provider 30x redirect from leaking the api-key header + prompt body.
         // #8045 C3: https_only backstop derived from the target endpoint (loopback
         // local LLM like Ollama keeps cleartext; remote providers are HTTPS-only).
-        let http_client = crate::outbound::hardened_client_builder(
-            crate::outbound::TransportPolicy::for_endpoint(&config.endpoint),
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&config.endpoint),
         )
         .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .build()
@@ -251,8 +251,8 @@ impl RemoteLlmProvider {
         // #6892: redirect=none — prevents a provider 30x redirect from leaking the api-key header + prompt body.
         // #8045 C3: https_only backstop derived from the target endpoint (loopback
         // local LLM like Ollama keeps cleartext; remote providers are HTTPS-only).
-        let http_client = crate::outbound::hardened_client_builder(
-            crate::outbound::TransportPolicy::for_endpoint(&config.endpoint),
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&config.endpoint),
         )
         .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .build()
