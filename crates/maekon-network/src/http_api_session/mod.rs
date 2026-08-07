@@ -37,7 +37,7 @@ use maekon_core::models::ai_session::{
 use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
 use maekon_core::ports::credential_source::CredentialSource;
 
-use crate::provider_error_body::provider_error_message;
+use maekon_http_core::provider_error_body::provider_error_message;
 
 /// Direct HTTP API session adapter for Anthropic and OpenAI providers.
 ///
@@ -71,7 +71,7 @@ pub struct HttpApiSession {
     /// per spec O2: initial HTTP status is the breaker signal; mid-stream
     /// disconnects are not recorded (matches BatchUploader's
     /// "server-acknowledged" = success pattern).
-    breaker: Arc<crate::circuit_breaker::CircuitBreaker>,
+    breaker: Arc<maekon_http_core::circuit_breaker::CircuitBreaker>,
 }
 
 pub struct HttpApiSessionInit {
@@ -86,7 +86,7 @@ pub struct HttpApiSessionInit {
     /// D7: Shared per-endpoint circuit breaker registry (resolved by
     /// constructor using `endpoint`). Allows a single workspace registry
     /// to feed multiple session instances.
-    pub breaker_registry: Arc<crate::circuit_breaker::CircuitBreakerRegistry>,
+    pub breaker_registry: Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry>,
 }
 
 #[derive(Debug, Default)]
@@ -181,8 +181,8 @@ impl HttpApiSession {
         // redirect-following client.
         // #8045 C3: https_only backstop derived from the session endpoint (loopback
         // local LLM like Ollama keeps cleartext; remote providers are HTTPS-only).
-        let http_client = crate::outbound::hardened_client_builder(
-            crate::outbound::TransportPolicy::for_endpoint(&init.endpoint),
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&init.endpoint),
         )
         .build()
         .unwrap_or_else(|error| {
@@ -199,7 +199,7 @@ impl HttpApiSession {
         }
 
         // D7: resolve per-endpoint breaker.
-        let breaker_key = crate::resilience::endpoint_authority(&init.endpoint)
+        let breaker_key = maekon_http_core::resilience::endpoint_authority(&init.endpoint)
             .unwrap_or_else(|_| format!("malformed::{}", init.endpoint));
         let breaker = init.breaker_registry.get(&breaker_key);
 
@@ -418,7 +418,7 @@ impl ConversationSession for HttpApiSession {
         // request assembly.
         if matches!(
             self.breaker.check(),
-            crate::circuit_breaker::CircuitState::Open { .. }
+            maekon_http_core::circuit_breaker::CircuitState::Open { .. }
         ) {
             return Err(CoreError::ServiceUnavailable {
                 code: maekon_core::error_codes::ServiceCode::CircuitOpen,
@@ -487,15 +487,16 @@ impl ConversationSession for HttpApiSession {
         // status ONLY. Mid-stream disconnects in the returned stream do NOT
         // affect breaker state (indistinguishable from client-side cancel).
         let signal = match &send_result {
-            Ok(resp) => {
-                crate::resilience::classify_for_breaker(Some(resp.status().as_u16()), false)
-            }
-            Err(_) => crate::resilience::classify_for_breaker(None, true),
+            Ok(resp) => maekon_http_core::resilience::classify_for_breaker(
+                Some(resp.status().as_u16()),
+                false,
+            ),
+            Err(_) => maekon_http_core::resilience::classify_for_breaker(None, true),
         };
         match signal {
-            crate::resilience::BreakerSignal::Success => self.breaker.record_success(),
-            crate::resilience::BreakerSignal::Failure => self.breaker.record_failure(),
-            crate::resilience::BreakerSignal::Neutral => {}
+            maekon_http_core::resilience::BreakerSignal::Success => self.breaker.record_success(),
+            maekon_http_core::resilience::BreakerSignal::Failure => self.breaker.record_failure(),
+            maekon_http_core::resilience::BreakerSignal::Neutral => {}
         }
         let response = send_result.map_err(|e| {
             *self.state.lock() = SessionState::Failed;
@@ -516,9 +517,9 @@ impl ConversationSession for HttpApiSession {
         let status = response.status();
         if !status.is_success() {
             // #6949: cap the HTTP API session error response body (OOM guard)
-            let body = crate::outbound::read_text_capped(
+            let body = maekon_http_core::outbound::read_text_capped(
                 response,
-                crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+                maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
             )
             .await
             .ok();

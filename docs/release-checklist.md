@@ -8,7 +8,16 @@
 ## Automated Gates (must be green)
 - [ ] Quick suite (PR CI) — all green
 - [ ] `release-smoke.yml` — last run green on branch head
-- [ ] cargo-mutants score ≥ 70% on maekon-core
+- [ ] cargo-mutants score ≥ 70% on maekon-core, proven by a linked
+  `Maekon Mutation Score` (`maekon-client-mutants.yml`) aggregate run. Record the
+  run URL here. The run's receipt must satisfy ALL of:
+  - `source_sha` equals the exact commit to be tagged
+  - `scope` is empty (whole crate) — a scoped run is NOT a crate score and the
+    receipt records it as such
+  - the aggregate job succeeded, which means the shard set was complete
+    (`enumerated == merged_total`) and the viable score cleared the threshold
+  This box must not be ticked from a local run, a partial run, a scoped run, or
+  a run at a different SHA (#10003).
 - [ ] Zero P0/P1 flaky tests in quarantine
 - [ ] Public repository checks for the exported snapshot are green
 - [ ] Public export provenance manifest was generated and verified from the
@@ -35,7 +44,19 @@
   `provider_specs::tests::subprocess_compatibility_matrix_matches_e18_release_gate_contract`,
   `provider_specs::tests::rejects_subprocess_surface_without_compatibility_matrix`, and
   `provider_specs::tests::subprocess_output_contracts_match_e18_matrix`
-- [ ] Windows release binaries use the reviewed static OpenSSL archives; any
+- [ ] Windows release binaries link OpenSSL **vendored from source** via
+  `openssl-src` (`rusqlite`'s `bundled-sqlcipher-vendored-openssl`), NOT a
+  system OpenSSL SDK. Plain `bundled-sqlcipher` links the system OpenSSL
+  *dynamically* on Windows, which is what shipped rc.6 without
+  `libcrypto-3-x64.dll` (#9884). The Windows setup action must not export
+  `OPENSSL_DIR`/`OPENSSL_LIB_DIR`/`OPENSSL_LIBS`/`OPENSSL_STATIC`/
+  `OPENSSL_NO_VENDOR` — any of them defeats vendoring
+  (`scripts/test-release-workflow-governance.sh` enforces this).
+- [ ] The `openssl-src` exemption in `supply-chain/config.toml` still covers the
+  vendored version in `Cargo.lock` and its `review-by` date has not passed
+  (currently `300.5.5+3.5.5`, review-by 2027-02-04). Vendoring builds OpenSSL
+  from source, so a version bump changes what actually ships.
+- [ ] Any
   residual retail Microsoft VC runtime imports are staged from the signed
   Visual Studio redistributable directory into the application-local payload.
   The PE import-closure validator passes independently for the

@@ -1573,3 +1573,211 @@ mod tests {
         assert_eq!(watch.observe(true), None);
     }
 }
+
+/// #10106: window-boundary guards for `should_run_now_with_time`.
+///
+/// The first real mutation measurement (#10003, run 30965619494) left six
+/// mutants alive in this function — all of them comparison flips (`<` → `<=`,
+/// `<` → `>`, `<` → `==`). Existing tests only probed hours well INSIDE or well
+/// OUTSIDE a window, so no test could distinguish an inclusive bound from an
+/// exclusive one. Capture gating is a privacy boundary: an off-by-one here means
+/// capturing for a whole hour outside the window the user configured.
+#[cfg(test)]
+mod window_boundary_tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::config::Weekday;
+    use chrono::TimeZone;
+    use std::time::Duration;
+
+    /// Build a config with one schedule window. `days` are the allowed weekdays.
+    fn cfg(start: u8, end: u8, days: &[Weekday]) -> AppConfig {
+        let mut c = AppConfig::default_config();
+        c.schedule.active_hours_enabled = true;
+        c.schedule.active_start_hour = start;
+        c.schedule.active_end_hour = end;
+        c.schedule.active_days = days.to_vec();
+        c
+    }
+
+    /// 2026-08-05 is a Wednesday; hour is local.
+    fn wed_at(hour: u32) -> DateTime<Local> {
+        Local
+            .with_ymd_and_hms(2026, 8, 5, hour, 0, 0)
+            .single()
+            .expect("unambiguous local time")
+    }
+
+    fn tue_at(hour: u32) -> DateTime<Local> {
+        Local
+            .with_ymd_and_hms(2026, 8, 4, hour, 0, 0)
+            .single()
+            .expect("unambiguous local time")
+    }
+
+    /// Non-wrapping window 09:00–17:00. The END bound is EXCLUSIVE: 17:00 is
+    /// already outside. Kills `hour < end` → `hour <= end`.
+    #[test]
+    fn non_wrapping_window_end_hour_is_exclusive() {
+        let c = cfg(9, 17, &[Weekday::Wed]);
+        assert!(
+            should_run_now_with_time(&c, wed_at(16)),
+            "16:00 is inside 09-17"
+        );
+        assert!(
+            !should_run_now_with_time(&c, wed_at(17)),
+            "17:00 must be OUTSIDE an exclusive end bound"
+        );
+    }
+
+    /// The START bound is INCLUSIVE: 09:00 is already inside.
+    #[test]
+    fn non_wrapping_window_start_hour_is_inclusive() {
+        let c = cfg(9, 17, &[Weekday::Wed]);
+        assert!(
+            should_run_now_with_time(&c, wed_at(9)),
+            "09:00 must be INSIDE an inclusive start bound"
+        );
+        assert!(
+            !should_run_now_with_time(&c, wed_at(8)),
+            "08:00 is before the window"
+        );
+    }
+
+    /// `start == end` is a DEGENERATE (empty) window — never active, at any
+    /// hour. Kills `end < start` → `end <= start`, which would otherwise route a
+    /// degenerate window into the overnight branch and report it active.
+    #[test]
+    fn degenerate_window_start_equals_end_is_never_active() {
+        let c = cfg(9, 9, &[Weekday::Wed]);
+        for hour in [0, 8, 9, 10, 23] {
+            assert!(
+                !should_run_now_with_time(&c, wed_at(hour)),
+                "start==end is an empty window; hour {hour} must be inactive"
+            );
+        }
+    }
+
+    /// Overnight window 22:00–06:00. The post-midnight tail belongs to the
+    /// PREVIOUS day's entry, and its end bound is exclusive. Kills the three
+    /// `hour < end` flips (`<=`, `>`, `==`) in the wrapping branch.
+    #[test]
+    fn overnight_window_post_midnight_tail_is_exclusive_and_uses_previous_day() {
+        // Only Tuesday is allowed, so the Wednesday 00:00–06:00 tail is active
+        // (it belongs to Tuesday's window) but Wednesday evening is not.
+        let c = cfg(22, 6, &[Weekday::Tue]);
+
+        assert!(
+            should_run_now_with_time(&c, wed_at(5)),
+            "05:00 Wed is inside Tuesday's 22-06 window"
+        );
+        assert!(
+            !should_run_now_with_time(&c, wed_at(6)),
+            "06:00 must be OUTSIDE an exclusive end bound"
+        );
+        assert!(
+            !should_run_now_with_time(&c, wed_at(7)),
+            "07:00 is well past the window"
+        );
+        assert!(
+            !should_run_now_with_time(&c, wed_at(22)),
+            "22:00 Wed is not allowed — only Tuesday evenings are"
+        );
+        assert!(
+            should_run_now_with_time(&c, tue_at(22)),
+            "22:00 Tue opens Tuesday's window"
+        );
+    }
+
+    // ── evaluate_and_notify_transitions ──────────────────────────────────────
+
+    struct SpyNotifier {
+        calls: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    impl SpyNotifier {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        fn titles(&self) -> Vec<String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(t, _)| t.clone())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TsNotifier for SpyNotifier {
+        async fn notify_ts(&self, title: &str, body: &str) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((title.to_string(), body.to_string()));
+        }
+    }
+
+    fn notifying_cfg() -> AppConfig {
+        let mut c = AppConfig::default_config();
+        c.notification.tracking_schedule_enabled = true;
+        c
+    }
+
+    /// The debounce is `elapsed < 60` — STRICTLY less. At exactly 60s the
+    /// notification must fire; only under 60s is it suppressed. `last_notified_at`
+    /// is a parameter, so the boundary is reachable without a clock seam — the
+    /// mutant survived only because no test sat on it.
+    #[tokio::test]
+    async fn debounce_boundary_fires_at_exactly_sixty_seconds() {
+        let cfg = notifying_cfg();
+
+        // 59s → suppressed.
+        let spy = SpyNotifier::new();
+        let mut last = Some(Instant::now() - Duration::from_secs(59));
+        evaluate_and_notify_transitions(&cfg, false, true, &mut last, Some(&spy)).await;
+        assert!(
+            spy.titles().is_empty(),
+            "under 60s the transition notification must be debounced"
+        );
+
+        // Exactly 60s → fires. Kills `< 60` -> `<= 60`.
+        let spy = SpyNotifier::new();
+        let mut last = Some(Instant::now() - Duration::from_secs(60));
+        evaluate_and_notify_transitions(&cfg, false, true, &mut last, Some(&spy)).await;
+        assert_eq!(
+            spy.titles().len(),
+            1,
+            "at exactly 60s the debounce must EXPIRE and the notification fire"
+        );
+    }
+
+    /// The "ended" branch distinguishes a real schedule end from the schedule
+    /// being switched off entirely, via
+    /// `tracking_schedule.enabled && !windows.is_empty()`. Both shipped configs
+    /// keep those two in agreement, so an `&&` → `||` flip is only observable
+    /// when exactly one holds: enabled with NO windows must take the fallback
+    /// message, not the "Ended" one.
+    #[tokio::test]
+    async fn ended_branch_requires_both_enabled_and_a_configured_window() {
+        let mut cfg = notifying_cfg();
+        cfg.tracking_schedule.enabled = true;
+        cfg.tracking_schedule.windows.clear();
+
+        let spy = SpyNotifier::new();
+        let mut last = None;
+        // active -> inactive transition takes the "ended" path.
+        evaluate_and_notify_transitions(&cfg, true, false, &mut last, Some(&spy)).await;
+
+        let titles = spy.titles();
+        assert_eq!(titles.len(), 1, "the transition must notify exactly once");
+        assert_ne!(
+            titles[0], "Tracking Schedule Ended",
+            "enabled-but-no-windows is NOT a schedule end; under `||` this would \
+             wrongly claim the window closed"
+        );
+    }
+}

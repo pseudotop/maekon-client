@@ -42,8 +42,8 @@ use maekon_core::models::context_home::ContextHomeSnapshot;
 use maekon_core::ports::context_home_client::ContextHomeClient;
 
 use crate::http_client::HttpApiClient;
-use crate::outbound::{read_text_capped, BodyReadError};
-use crate::resilience::extract_retry_after;
+use maekon_http_core::outbound::{read_text_capped, BodyReadError};
+use maekon_http_core::resilience::extract_retry_after;
 
 /// Server path. A constant with no query string — see the module note on why
 /// there is no identity parameter.

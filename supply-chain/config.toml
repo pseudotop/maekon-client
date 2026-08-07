@@ -1441,6 +1441,15 @@ review-by: 2026-11-08
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
 """
 
+[[exemptions.openssl-src]]
+version = "300.5.5+3.5.5"
+criteria = "safe-to-deploy"
+notes = """
+reason: #9884 vendored-openssl (rusqlite bundled-sqlcipher -> bundled-sqlcipher-vendored-openssl to remove the shipped Windows libcrypto-3-x64.dll dynamic dependency that broke first launch on clean hosts)
+review-by: 2027-02-04
+follow-up: NOT hand-audited in this pass and deliberately not certified as such — this crate vendors the upstream OpenSSL 3.5.5 C tarball plus build glue, which is far outside the scope of a targeted Rust diff audit. It is published by the rust-openssl project, the same maintainers as openssl-sys/openssl already present in this tree, and is pulled only transitively by libsqlite3-sys's bundled-sqlcipher-vendored-openssl feature. Re-review on the next OpenSSL major bump or by 2027-02-04: confirm the vendored tarball version against upstream OpenSSL release notes/CVE status and re-evaluate whether static vendoring is still preferred over a signed platform runtime. category:vendored-native-toolchain
+"""
+
 [[exemptions.pango]]
 version = "0.18.3"
 criteria = "safe-to-deploy"

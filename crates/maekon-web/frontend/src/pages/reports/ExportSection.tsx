@@ -20,8 +20,8 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { downloadBlob, exportData, type ReportResponse } from '../../api/client'
-import type { ExportDataType, ExportFormat } from '../../api/contracts'
+import { downloadBlob, exportData, exportSessions, type ReportResponse } from '../../api/client'
+import type { ExportDataType, ExportFormat, SessionExportKind } from '../../api/contracts'
 import { getCaptureReauthStatus, type ReauthStatus, requiresCaptureReauthForExport } from '../../api/reauth'
 import { CaptureReauthDialog } from '../../components/CaptureReauthGate'
 import { Alert, Button, Card, CardTitle, Input, Select } from '../../components/ui'
@@ -60,6 +60,12 @@ export function serializeReportSummary(report: ReportResponse): string {
   return JSON.stringify(report, null, 2)
 }
 
+/** Build the download filename for a work-session interchange export (#9854). */
+export function buildSessionExportFilename(kind: SessionExportKind, from?: string, to?: string): string {
+  const extension = kind === 'ical' ? 'ics' : 'csv'
+  return `maekon_sessions_${kind}${rangeSuffix(from, to)}.${extension}`
+}
+
 interface RawExportOption {
   key: ExportDataType
   labelKey: string
@@ -70,6 +76,36 @@ const RAW_EXPORTS: RawExportOption[] = [
   { key: 'metrics', labelKey: 'reports.exportMetrics', descKey: 'reports.exportMetricsDesc' },
   { key: 'events', labelKey: 'reports.exportEvents', descKey: 'reports.exportEventsDesc' },
   { key: 'frames', labelKey: 'reports.exportFrames', descKey: 'reports.exportFramesDesc' },
+]
+
+interface SessionExportOption {
+  key: SessionExportKind
+  labelKey: string
+  descKey: string
+  /** Shown next to the button so the fixed format is visible before clicking. */
+  formatLabel: string
+}
+
+/**
+ * Work-session exports for third-party tools (#9854).
+ *
+ * Kept out of RAW_EXPORTS because these ignore the JSON/CSV toggle: each
+ * endpoint emits the one format its consumer requires. Listing them alongside
+ * the toggle-driven exports would suggest the format selector applies.
+ */
+const SESSION_EXPORTS: SessionExportOption[] = [
+  {
+    key: 'ical',
+    labelKey: 'reports.exportIcal',
+    descKey: 'reports.exportIcalDesc',
+    formatLabel: '.ics',
+  },
+  {
+    key: 'toggl',
+    labelKey: 'reports.exportToggl',
+    descKey: 'reports.exportTogglDesc',
+    formatLabel: 'CSV',
+  },
 ]
 
 export default function ExportSection() {
@@ -114,6 +150,21 @@ export default function ExportSection() {
       } else {
         setError(e instanceof Error ? e.message : t('reports.exportFailed', 'Export failed'))
       }
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleSessionExport = async (kind: SessionExportKind) => {
+    setBusy(kind)
+    setError(null)
+    try {
+      const blob = await exportSessions(kind, from || undefined, to || undefined)
+      downloadBlob(blob, buildSessionExportFilename(kind, from, to))
+    } catch (e) {
+      // No capture-reauth branch here: these export work sessions (start/end
+      // times and titles), never frames, so the capture gate does not apply.
+      setError(e instanceof Error ? e.message : t('reports.exportFailed', 'Export failed'))
     } finally {
       setBusy(null)
     }
@@ -217,6 +268,43 @@ export default function ExportSection() {
               data-testid={`export-${option.key}`}
             >
               {busy === option.key ? t('reports.exporting', 'Exporting…') : t('reports.exportDownload', 'Download')}
+            </Button>
+          </div>
+        ))}
+      </div>
+
+      {/* Work-session interchange exports (#9854). Fixed formats — the JSON/CSV
+          toggle above does not apply, so the format is labelled per row. */}
+      <div className="mt-4 space-y-3 border-border-subtle border-t pt-4">
+        <div>
+          <span className={`block ${typography.weight.medium} text-content-strong text-sm`}>
+            {t('reports.exportSessionsTitle', 'Time tracking')}
+          </span>
+          <p className="mt-1 text-content-tertiary text-xs">
+            {t(
+              'reports.exportSessionsDesc',
+              'Send your work sessions to a calendar or time-tracking tool. Each format is fixed by the receiving tool, so the format selector above does not apply.',
+            )}
+          </p>
+        </div>
+        {SESSION_EXPORTS.map((option) => (
+          <div key={option.key} className="flex items-center justify-between gap-4">
+            <div>
+              <span className={`block ${typography.weight.medium} text-content-strong text-sm`}>
+                {t(option.labelKey)}
+              </span>
+              <p className="mt-1 text-content-tertiary text-xs">{t(option.descKey)}</p>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => handleSessionExport(option.key)}
+              isLoading={busy === option.key}
+              data-testid={`export-${option.key}`}
+            >
+              {busy === option.key
+                ? t('reports.exporting', 'Exporting…')
+                : t('reports.exportDownloadAs', 'Download {{format}}', { format: option.formatLabel })}
             </Button>
           </div>
         ))}

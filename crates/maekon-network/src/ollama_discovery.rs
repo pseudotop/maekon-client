@@ -60,13 +60,15 @@ pub async fn probe_ollama(base_url: &str, timeout: Duration) -> OllamaProbe {
         return OllamaProbe::NotOllama;
     }
     // #6949: cap Ollama version-probe response body (OOM guard)
-    let body =
-        match crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-            .await
-        {
-            Ok(b) => b,
-            Err(_) => return OllamaProbe::NotOllama,
-        };
+    let body = match maekon_http_core::outbound::read_text_capped(
+        response,
+        maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(_) => return OllamaProbe::NotOllama,
+    };
     // Ollama returns e.g. {"version":"0.6.8"}.  Any JSON object with a
     // non-empty string `version` field is accepted.
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -97,9 +99,12 @@ pub async fn list_installed_models(base_url: &str, timeout: Duration) -> Option<
         return None;
     }
     // #6949: cap Ollama model-list response body (OOM guard)
-    let body = crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-        .await
-        .ok()?;
+    let body = maekon_http_core::outbound::read_text_capped(
+        response,
+        maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+    )
+    .await
+    .ok()?;
     // Ollama response: {"models":[{"name":"qwen3:8b",...},...]}
     let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
     let models = parsed.get("models")?.as_array()?;

@@ -1,3 +1,4 @@
+use maekon_api_contracts::provider_specs::ProviderAuthScheme;
 use maekon_core::config::AiProviderType;
 use reqwest::RequestBuilder;
 use serde_json::Value;
@@ -38,22 +39,42 @@ pub(crate) fn build_request_body(
 }
 
 /// Apply provider-specific auth headers to a request builder.
+/// #10055 AC1: apply the auth header for a CATALOG-RESOLVED scheme.
+///
+/// Previously this matched on `AiProviderType` with a catch-all `_ => Bearer`,
+/// which ignored `surface_id` entirely — so a `x_goog_api_key` surface got
+/// `Authorization: Bearer` and the `Generic` surface's `bearer`/`none` split was
+/// flattened. Mirrors `ai_llm_client::request`'s scheme arms so the suggestion
+/// path and the automation path authenticate identically.
+///
+/// `AwsSignatureV4` is unreachable here: `dispatch` rejects Bedrock before
+/// building a request (ADR-019 §3). It is still handled explicitly rather than
+/// via a catch-all, so adding a future scheme is a compile error instead of a
+/// silent Bearer.
 pub(crate) fn apply_auth_headers(
     mut builder: RequestBuilder,
-    provider_type: AiProviderType,
+    auth_scheme: ProviderAuthScheme,
     api_key: &str,
 ) -> RequestBuilder {
-    match provider_type {
-        AiProviderType::Anthropic => {
+    match auth_scheme {
+        ProviderAuthScheme::None => {}
+        ProviderAuthScheme::XApiKey => {
             builder = builder
                 .header("x-api-key", api_key)
                 .header("anthropic-version", crate::ANTHROPIC_API_VERSION);
         }
-        _ => {
+        ProviderAuthScheme::XGoogApiKey => {
+            builder = builder.header("x-goog-api-key", api_key);
+        }
+        ProviderAuthScheme::Bearer => {
+            // Preserve the historical empty-key behaviour: NoAuth credentials
+            // resolve to an empty token, and adding `Bearer ` with nothing after
+            // it would be worse than sending no header at all.
             if !api_key.is_empty() {
                 builder = builder.header("Authorization", format!("Bearer {}", api_key));
             }
         }
+        ProviderAuthScheme::AwsSignatureV4 => {}
     }
     builder
 }

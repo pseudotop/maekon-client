@@ -251,6 +251,151 @@ mod suggestion_type_tests {
     }
 }
 
+/// Raw LLM-emitted suggestion candidate, before it becomes a [`Suggestion`].
+///
+/// This is the SSOT wire shape for **every** LLM-backed analysis adapter — the
+/// HTTP `AnalysisClient` (`maekon-network`) and the subprocess-CLI analysis
+/// provider (`src-tauri`) both parse into this and then call
+/// [`Suggestion::from_llm_candidate`]. Keeping one struct + one mapping here
+/// prevents the two adapters from drifting into different type/priority rules
+/// (#10050 AC3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmSuggestionCandidate {
+    #[serde(rename = "type")]
+    pub suggestion_type: String,
+    pub content: String,
+    pub confidence: f64,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+}
+
+impl Suggestion {
+    /// Map an LLM-emitted candidate onto a [`Suggestion`] (#10050 AC3 SSOT).
+    ///
+    /// Unknown `type` strings degrade to [`SuggestionType::ContextBased`] rather
+    /// than erroring — a model that invents a label still produced usable
+    /// content, and dropping it would silently lose a suggestion. Priority is
+    /// derived from confidence with the historical thresholds (>=0.9 High,
+    /// >=0.7 Medium, else Low) so existing scorer/queue behaviour is unchanged.
+    ///
+    /// `confidence` is clamped into `0.0..=1.0`: it feeds `FeedbackScorer`
+    /// ranking, and an out-of-range value from a misbehaving model would
+    /// otherwise let one suggestion dominate the queue permanently.
+    pub fn from_llm_candidate(candidate: LlmSuggestionCandidate) -> Self {
+        let suggestion_type = match candidate.suggestion_type.as_str() {
+            "ProductivityTip" => SuggestionType::ProductivityTip,
+            "WorkflowOptimization" => SuggestionType::WorkflowOptimization,
+            "ContextBased" => SuggestionType::ContextBased,
+            "WorkGuidance" => SuggestionType::WorkGuidance,
+            _ => SuggestionType::ContextBased,
+        };
+
+        let confidence = candidate.confidence.clamp(0.0, 1.0);
+
+        let priority = if confidence >= 0.9 {
+            Priority::High
+        } else if confidence >= 0.7 {
+            Priority::Medium
+        } else {
+            Priority::Low
+        };
+
+        Suggestion {
+            suggestion_id: crate::generate_id("sug"),
+            suggestion_type,
+            content: candidate.content,
+            priority,
+            confidence_score: confidence,
+            relevance_score: confidence,
+            is_actionable: true,
+            created_at: Utc::now(),
+            expires_at: None,
+            source: SuggestionSource::LlmLocal,
+            reasoning: candidate.reasoning,
+            context_scope: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod llm_candidate_tests {
+    use super::*;
+
+    fn candidate(type_str: &str, confidence: f64) -> LlmSuggestionCandidate {
+        LlmSuggestionCandidate {
+            suggestion_type: type_str.to_string(),
+            content: "do the thing".to_string(),
+            confidence,
+            reasoning: Some("because".to_string()),
+        }
+    }
+
+    #[test]
+    fn maps_known_types() {
+        for (wire, expected) in [
+            ("ProductivityTip", SuggestionType::ProductivityTip),
+            ("WorkflowOptimization", SuggestionType::WorkflowOptimization),
+            ("ContextBased", SuggestionType::ContextBased),
+            ("WorkGuidance", SuggestionType::WorkGuidance),
+        ] {
+            let s = Suggestion::from_llm_candidate(candidate(wire, 0.5));
+            assert_eq!(s.suggestion_type, expected, "wire type {wire}");
+        }
+    }
+
+    #[test]
+    fn unknown_type_degrades_to_context_based() {
+        let s = Suggestion::from_llm_candidate(candidate("TotallyMadeUp", 0.5));
+        assert_eq!(s.suggestion_type, SuggestionType::ContextBased);
+        assert_eq!(s.content, "do the thing", "content must survive");
+    }
+
+    #[test]
+    fn priority_thresholds_match_historical_rules() {
+        assert!(matches!(
+            Suggestion::from_llm_candidate(candidate("ContextBased", 0.9)).priority,
+            Priority::High
+        ));
+        assert!(matches!(
+            Suggestion::from_llm_candidate(candidate("ContextBased", 0.7)).priority,
+            Priority::Medium
+        ));
+        assert!(matches!(
+            Suggestion::from_llm_candidate(candidate("ContextBased", 0.69)).priority,
+            Priority::Low
+        ));
+    }
+
+    /// A misbehaving model must not be able to pin a suggestion at the top of
+    /// the queue forever with an out-of-range confidence.
+    #[test]
+    fn confidence_is_clamped_into_unit_range() {
+        let high = Suggestion::from_llm_candidate(candidate("ContextBased", 42.0));
+        assert_eq!(high.confidence_score, 1.0);
+        assert_eq!(high.relevance_score, 1.0);
+
+        let low = Suggestion::from_llm_candidate(candidate("ContextBased", -3.0));
+        assert_eq!(low.confidence_score, 0.0);
+        assert!(matches!(low.priority, Priority::Low));
+    }
+
+    #[test]
+    fn source_is_llm_local_and_reasoning_survives() {
+        let s = Suggestion::from_llm_candidate(candidate("ContextBased", 0.5));
+        assert_eq!(s.source, SuggestionSource::LlmLocal);
+        assert_eq!(s.reasoning.as_deref(), Some("because"));
+        assert!(s.is_actionable);
+    }
+
+    #[test]
+    fn deserializes_from_llm_wire_shape() {
+        let raw = r#"{"type":"ProductivityTip","content":"c","confidence":0.8}"#;
+        let candidate: LlmSuggestionCandidate = serde_json::from_str(raw).unwrap();
+        assert_eq!(candidate.suggestion_type, "ProductivityTip");
+        assert_eq!(candidate.reasoning, None, "reasoning is optional");
+    }
+}
+
 /// Suggestion with feedback data, used for few-shot prompt construction.
 /// Distinct from `RelevantHistoryEntry` (RAG-based activity history in maekon-analysis).
 #[derive(Debug, Clone)]

@@ -21,7 +21,7 @@ fn test_session(
         system_prompt,
         config,
         default_tools,
-        breaker_registry: crate::CircuitBreakerRegistry::new(),
+        breaker_registry: maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     })
 }
 
@@ -1173,12 +1173,14 @@ mod http_status_mapping {
 
     // ── D7 Circuit breaker behavior ───────────────────────────────────────
 
-    fn fast_breaker_registry(server_url: &str) -> Arc<crate::CircuitBreakerRegistry> {
-        let registry = crate::CircuitBreakerRegistry::new();
-        let key = crate::resilience::endpoint_authority(server_url).unwrap();
+    fn fast_breaker_registry(
+        server_url: &str,
+    ) -> Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry> {
+        let registry = maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new();
+        let key = maekon_http_core::resilience::endpoint_authority(server_url).unwrap();
         let _ = registry.get_with_config(
             &key,
-            crate::circuit_breaker::CircuitBreakerConfig {
+            maekon_http_core::circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 3,
                 initial_cooldown: std::time::Duration::from_millis(50),
                 max_cooldown: std::time::Duration::from_millis(200),
@@ -1190,7 +1192,7 @@ mod http_status_mapping {
 
     fn breaker_test_session(
         server_url: String,
-        registry: Arc<crate::CircuitBreakerRegistry>,
+        registry: Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry>,
     ) -> HttpApiSession {
         HttpApiSession::new(HttpApiSessionInit {
             surface_id: "provider_surface.anthropic.direct_api".to_string(),
@@ -1264,7 +1266,7 @@ mod http_status_mapping {
         tokio::time::sleep(std::time::Duration::from_millis(70)).await;
         let _ = session.send_message(&test_user_message()).await;
 
-        let key = crate::resilience::endpoint_authority(&server.url()).unwrap();
+        let key = maekon_http_core::resilience::endpoint_authority(&server.url()).unwrap();
         let breaker = registry.get(&key);
         assert_eq!(
             breaker.stats().current_cooldown,
@@ -1404,12 +1406,12 @@ mod http_status_mapping {
         // record success. Drain the result.
         let _ = session.send_message(&test_user_message()).await;
 
-        let key = crate::resilience::endpoint_authority(&server.url()).unwrap();
+        let key = maekon_http_core::resilience::endpoint_authority(&server.url()).unwrap();
         let breaker = registry.get(&key);
         assert!(
             matches!(
                 breaker.check(),
-                crate::circuit_breaker::CircuitState::Closed
+                maekon_http_core::circuit_breaker::CircuitState::Closed
             ),
             "initial 200 should leave breaker Closed even with unreadable stream body"
         );
@@ -1455,7 +1457,7 @@ mod streaming_history {
             system_prompt: None,
             config: Arc::new(AiSessionConfig::default()),
             default_tools: None,
-            breaker_registry: crate::CircuitBreakerRegistry::new(),
+            breaker_registry: maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         })
     }
 

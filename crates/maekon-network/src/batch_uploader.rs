@@ -1,12 +1,12 @@
 // OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 847
-use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 use crate::error::NetworkError;
-use crate::resilience::jittered_backoff_delay;
 use crossbeam::queue::SegQueue;
 use maekon_core::error::CoreError;
 use maekon_core::models::event::EventBatch;
 use maekon_core::ports::api_client::ApiClient;
 use maekon_core::ports::batch_sink::QueuedUpload;
+use maekon_http_core::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
+use maekon_http_core::resilience::jittered_backoff_delay;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

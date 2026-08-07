@@ -1,92 +1,76 @@
 name: Setup Windows OpenSSL
-description: Locate the preinstalled OpenSSL SDK on GitHub Windows runners for SQLCipher builds.
+description: >-
+  Configure the Windows MSVC build for SQLCipher's VENDORED OpenSSL. Does not
+  locate or link any system OpenSSL SDK — see the note below.
+
+# WHY THIS NO LONGER PROBES FOR A SYSTEM OpenSSL SDK (#9884 / #10060)
+# -------------------------------------------------------------------
+# `rusqlite` is built with `bundled-sqlcipher-vendored-openssl`, which makes
+# `libsqlite3-sys` pull `openssl-sys` with its `vendored` feature and compile
+# OpenSSL from source via `openssl-src`. That switch is the fix for #9884:
+# plain `bundled-sqlcipher` linked the SYSTEM OpenSSL *dynamically* on Windows
+# (libsqlite3-sys build.rs gates on this exact feature), so shipped artifacts
+# needed `libcrypto-3-x64.dll` on the target host and could not launch without it.
+#
+# This action previously staged the SDK's static archives and exported:
+#
+#     OPENSSL_DIR / OPENSSL_INCLUDE_DIR / OPENSSL_LIB_DIR
+#     OPENSSL_LIBS=ssl:crypto
+#     OPENSSL_STATIC=1
+#     OPENSSL_NO_VENDOR=1      <-- the fatal one
+#
+# `OPENSSL_NO_VENDOR=1` makes openssl-sys skip vendoring even when the feature
+# is enabled, so it fell back to the system probe and asked rustc to link
+# `ssl`/`crypto` — while the staged files were named `libssl.lib`/`libcrypto.lib`.
+# The build failed with:
+#
+#     error: could not find native static library `ssl`, perhaps an -L flag is missing?
+#
+# Setting those variables now actively defeats the fix. The only consumer of
+# `openssl-sys` in this workspace is `libsqlite3-sys`
+# (`cargo tree --workspace -i openssl-sys`), so nothing else needs a system SDK
+# and requiring one would be a build failure with no upside.
+#
+# What DOES still matter is the MSVC CRT: the release contract links it
+# statically, and `openssl-src` reads the same `crt-static` target feature to
+# build OpenSSL with a matching runtime.
 
 runs:
   using: composite
   steps:
-    - name: Locate OpenSSL SDK
+    - name: Configure vendored OpenSSL build
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
 
-        $candidateRoots = New-Object System.Collections.Generic.List[string]
-
-        if ($env:OPENSSL_ROOT_DIR) {
-          $candidateRoots.Add($env:OPENSSL_ROOT_DIR)
-        }
-        if ($env:OPENSSL_DIR) {
-          $candidateRoots.Add($env:OPENSSL_DIR)
-        }
-
-        $opensslCommand = Get-Command openssl -ErrorAction SilentlyContinue
-        if ($opensslCommand -and $opensslCommand.Source) {
-          $binDir = Split-Path -Parent $opensslCommand.Source
-          $candidateRoots.Add((Split-Path -Parent $binDir))
+        # Fail closed if an ambient OPENSSL_NO_VENDOR would silently re-break the
+        # build. Treat only "0" as disabled, matching openssl-sys's own check.
+        if ($env:OPENSSL_NO_VENDOR -and $env:OPENSSL_NO_VENDOR -ne "0") {
+          Write-Error ("the no-vendor override is set to '$($env:OPENSSL_NO_VENDOR)' " +
+            "in the environment. SQLCipher requires vendored OpenSSL (#9884); with " +
+            "it set, openssl-sys falls back to a system SDK and the link fails.")
         }
 
-        @(
-          "C:\Program Files\OpenSSL",
-          "C:\Program Files\OpenSSL-Win64",
-          "C:\OpenSSL-Win64"
-        ) | ForEach-Object { $candidateRoots.Add($_) }
+        "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=+crt-static" |
+          Out-File -FilePath $env:GITHUB_ENV -Append
 
-        $uniqueRoots = @(
-          $candidateRoots |
-            Where-Object { $_ -and (Test-Path $_) } |
-            ForEach-Object { (Resolve-Path $_).Path } |
-            Select-Object -Unique
-        )
-
-        foreach ($root in $uniqueRoots) {
-          $includeDir = Join-Path $root "include"
-          if (!(Test-Path (Join-Path $includeDir "openssl\ssl.h"))) {
-            continue
-          }
-
-          # Release artifacts must not inherit the SDK's import libraries. The
-          # previous probe accepted libcrypto.lib/libssl.lib, which link the
-          # OpenSSL DLLs even while OPENSSL_STATIC=1 is set. Stage only the
-          # reviewed static archives under the names openssl-sys expects.
-          $libCandidates = @(
-            (Join-Path $root "lib\VC\x64\MT"),
-            (Join-Path $root "lib"),
-            (Join-Path $root "lib64"),
-            (Join-Path $root "lib\VC\x64\MD"),
-            (Join-Path $root "lib\x64")
-          )
-
-          foreach ($libDir in $libCandidates) {
-            $staticSsl = Join-Path $libDir "libssl_static.lib"
-            $staticCrypto = Join-Path $libDir "libcrypto_static.lib"
-            if ((Test-Path $staticSsl) -and (Test-Path $staticCrypto)) {
-              $stagingRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
-              $stagingDir = Join-Path $stagingRoot "maekon-openssl-static-lib"
-              New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
-              Copy-Item -LiteralPath $staticSsl -Destination (Join-Path $stagingDir "libssl.lib") -Force
-              Copy-Item -LiteralPath $staticCrypto -Destination (Join-Path $stagingDir "libcrypto.lib") -Force
-
-              "OPENSSL_DIR=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "OPENSSL_INCLUDE_DIR=$includeDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "OPENSSL_LIB_DIR=$stagingDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "OPENSSL_LIBS=ssl:crypto" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "OPENSSL_NO_VENDOR=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=+crt-static" | Out-File -FilePath $env:GITHUB_ENV -Append
-              Write-Host "OpenSSL root: $root"
-              Write-Host "OpenSSL include: $includeDir"
-              Write-Host "OpenSSL static source: $libDir"
-              Write-Host "OpenSSL staged static lib: $stagingDir"
-              Write-Host "MSVC CRT: statically linked"
-              exit 0
-            }
-          }
+        # openssl-src runs `perl ./Configure`, and WHICH perl it finds decides
+        # the build. Cargo steps under `shell: bash` resolve Git-Bash's MSYS
+        # perl first, which no longer ships Locale::Maketext::Simple /
+        # Params::Check (dropped from perl core in 5.32) — Configure dies with
+        # "Can't locate Locale/Maketext/Simple.pm" (first hit: the rc.7 public
+        # export, the first Windows leg to actually compile openssl-src).
+        # openssl-src honors OPENSSL_SRC_PERL before consulting PATH, so pin
+        # the runner's full Strawberry Perl explicitly; fail closed if the
+        # image ever drops it rather than silently falling back to MSYS perl.
+        $perl = "C:\Strawberry\perl\bin\perl.exe"
+        if (-not (Test-Path $perl)) {
+          Write-Error ("Strawberry Perl not found at $perl. openssl-src needs a full " +
+            "perl distribution (Git-Bash's MSYS perl lacks the core modules its " +
+            "Configure imports); install one or update this pin.")
         }
+        "OPENSSL_SRC_PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-        if ($opensslCommand -and $opensslCommand.Source) {
-          Write-Host "OpenSSL command: $($opensslCommand.Source)"
-        } else {
-          Write-Host "OpenSSL command: not found on PATH"
-        }
-        Write-Host "Candidate roots:"
-        $uniqueRoots | ForEach-Object { Write-Host " - $_" }
-        Write-Error "Unable to locate OpenSSL headers and static libraries on this Windows runner."
+        Write-Host "OpenSSL: vendored via openssl-src (no system SDK used)"
+        Write-Host "OpenSSL Configure perl: $perl"
+        Write-Host "MSVC CRT: statically linked"

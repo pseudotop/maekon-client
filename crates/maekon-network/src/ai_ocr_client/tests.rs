@@ -11,7 +11,10 @@ fn new_remote_ocr_empty_key_error() {
         surface_id: None,
         credential: None,
     };
-    let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
+    let result = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    );
     let err = result.unwrap_err().to_string();
     assert!(err.contains("not configured"));
 }
@@ -27,8 +30,11 @@ fn new_remote_ocr_with_key() {
         surface_id: None,
         credential: None,
     };
-    let provider = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new())
-        .expect("non-empty api_key must produce a valid RemoteOcrProvider");
+    let provider = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    )
+    .expect("non-empty api_key must produce a valid RemoteOcrProvider");
     // Pin that the stored endpoint and provider type match what was configured.
     assert_eq!(
         provider.endpoint, "https://api.example.com",
@@ -52,8 +58,11 @@ fn generic_ocr_uses_spec_shape_and_default_model() {
         credential: None,
     };
 
-    let provider = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new())
-        .expect("generic OCR provider should build");
+    let provider = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    )
+    .expect("generic OCR provider should build");
     assert_eq!(
         provider.ocr_request_shape().expect("shape should resolve"),
         ProviderRequestShape::OpenAiVisionChatCompletions
@@ -73,8 +82,11 @@ fn ollama_ocr_initializes_without_api_key() {
         credential: None,
     };
 
-    let provider = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new())
-        .expect("ollama OCR provider should build");
+    let provider = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    )
+    .expect("ollama OCR provider should build");
     assert_eq!(
         provider.ocr_request_shape().expect("shape should resolve"),
         ProviderRequestShape::OpenAiVisionChatCompletions
@@ -94,7 +106,10 @@ fn ollama_ocr_rejects_known_text_only_model() {
         credential: None,
     };
 
-    let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
+    let result = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    );
     let err = result.unwrap_err().to_string();
     assert!(err.contains("OCR-capable"));
 }
@@ -111,7 +126,10 @@ fn local_openai_compatible_ocr_requires_explicit_model_selection() {
         credential: None,
     };
 
-    let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
+    let result = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    );
     assert!(result
         .unwrap_err()
         .to_string()
@@ -130,7 +148,10 @@ fn local_openai_compatible_ocr_rejects_model_without_structured_output() {
         credential: None,
     };
 
-    let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
+    let result = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    );
     let message = result.unwrap_err().to_string();
     assert!(
         message.contains("structured JSON output")
@@ -151,7 +172,10 @@ fn new_remote_ocr_rejects_retired_model_by_policy() {
         credential: None,
     };
 
-    let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
+    let result = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    );
     let err = result.unwrap_err().to_string();
     assert!(err.contains("retired as of"));
 }
@@ -168,8 +192,11 @@ fn google_surface_uses_surface_transport_shape() {
         credential: None,
     };
 
-    let provider = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new())
-        .expect("google OCR provider should build");
+    let provider = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    )
+    .expect("google OCR provider should build");
     assert_eq!(
         provider.ocr_request_shape().expect("shape should resolve"),
         ProviderRequestShape::GoogleVisionAnnotate
@@ -188,7 +215,10 @@ fn new_remote_ocr_rejects_known_non_ocr_model() {
         credential: None,
     };
 
-    let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
+    let result = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    );
     let err = result.unwrap_err().to_string();
     assert!(err.contains("not marked as OCR-capable"));
 }
@@ -205,7 +235,10 @@ fn google_ocr_rejects_explicit_model_selection() {
         credential: None,
     };
 
-    let result = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new());
+    let result = RemoteOcrProvider::new(
+        &config,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    );
     let err = result.unwrap_err().to_string();
     assert!(err.contains("does not support configurable model selection"));
 }
@@ -447,8 +480,11 @@ mod http_status_mapping {
             surface_id: None,
             credential: None,
         };
-        let provider = RemoteOcrProvider::new(&config, crate::CircuitBreakerRegistry::new())
-            .expect("provider init");
+        let provider = RemoteOcrProvider::new(
+            &config,
+            maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+        )
+        .expect("provider init");
         // Minimal valid PNG (1x1 transparent pixel) for request body.
         let tiny_png = vec![
             0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
@@ -534,12 +570,12 @@ mod http_status_mapping {
 
     fn breaker_registry_with_fast_config_ocr(
         server_url: &str,
-    ) -> std::sync::Arc<crate::CircuitBreakerRegistry> {
-        let registry = crate::CircuitBreakerRegistry::new();
-        let key = crate::resilience::endpoint_authority(server_url).unwrap();
+    ) -> std::sync::Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry> {
+        let registry = maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new();
+        let key = maekon_http_core::resilience::endpoint_authority(server_url).unwrap();
         let _ = registry.get_with_config(
             &key,
-            crate::circuit_breaker::CircuitBreakerConfig {
+            maekon_http_core::circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 3,
                 initial_cooldown: std::time::Duration::from_millis(50),
                 max_cooldown: std::time::Duration::from_millis(200),
@@ -551,7 +587,7 @@ mod http_status_mapping {
 
     fn make_ocr_provider(
         server_url: &str,
-        registry: std::sync::Arc<crate::CircuitBreakerRegistry>,
+        registry: std::sync::Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry>,
     ) -> RemoteOcrProvider {
         let config = ExternalApiEndpoint {
             endpoint: server_url.to_string(),
@@ -629,7 +665,7 @@ mod http_status_mapping {
         tokio::time::sleep(std::time::Duration::from_millis(70)).await;
         let _ = provider.extract_elements(&tiny_png(), "png").await;
 
-        let key = crate::resilience::endpoint_authority(&server.url()).unwrap();
+        let key = maekon_http_core::resilience::endpoint_authority(&server.url()).unwrap();
         let breaker = registry.get(&key);
         assert_eq!(
             breaker.stats().current_cooldown,
@@ -654,12 +690,12 @@ mod http_status_mapping {
         for _ in 0..5 {
             let _ = provider.extract_elements(&tiny_png(), "png").await;
         }
-        let key = crate::resilience::endpoint_authority(&server.url()).unwrap();
+        let key = maekon_http_core::resilience::endpoint_authority(&server.url()).unwrap();
         let breaker = registry.get(&key);
         assert!(
             matches!(
                 breaker.check(),
-                crate::circuit_breaker::CircuitState::Closed
+                maekon_http_core::circuit_breaker::CircuitState::Closed
             ),
             "400s should NOT trip the shared breaker (caller bug, not endpoint health)"
         );

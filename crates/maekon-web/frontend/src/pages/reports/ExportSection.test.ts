@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import type { ReportResponse } from '../../api/client'
 import { ApiClientError } from '../../api/client'
 import { requiresCaptureReauthForExport } from '../../api/reauth'
-import { buildReportExportFilename, buildReportSummaryFilename, serializeReportSummary } from './ExportSection'
+import {
+  buildReportExportFilename,
+  buildReportSummaryFilename,
+  buildSessionExportFilename,
+  serializeReportSummary,
+} from './ExportSection'
 
 // #8081-A: /reports/export is now a real export surface. These guard the
 // download filenames (scope-encoded, non-colliding) and the report-summary
@@ -50,6 +55,31 @@ describe('reports export helpers (#8081-A)', () => {
     expect(JSON.parse(serialized)).toEqual(report)
     // Pretty-printed for human readability.
     expect(serialized).toContain('\n')
+  })
+
+  // #9854: the session-interchange exports carry a FIXED extension each,
+  // independent of the JSON/CSV toggle. A shared extension would hand a
+  // calendar importer a `.csv` (or Toggl a `.ics`) and fail at the receiver.
+  it('names session exports with the extension the receiving tool requires', () => {
+    expect(buildSessionExportFilename('ical', '2026-07-01', '2026-07-08')).toBe(
+      'maekon_sessions_ical_2026-07-01_2026-07-08.ics',
+    )
+    expect(buildSessionExportFilename('toggl', '2026-07-01', '2026-07-08')).toBe(
+      'maekon_sessions_toggl_2026-07-01_2026-07-08.csv',
+    )
+  })
+
+  it('omits the range suffix from session exports when no dates are supplied', () => {
+    expect(buildSessionExportFilename('ical')).toBe('maekon_sessions_ical.ics')
+    expect(buildSessionExportFilename('toggl')).toBe('maekon_sessions_toggl.csv')
+  })
+
+  it('never treats a session export as capture-protected', () => {
+    // These export session start/end times and titles, never frames, so the
+    // capture re-auth gate must not fire for them.
+    const locked = new ApiClientError('auth.reauth_required', 'Re-authentication required', 403)
+    expect(requiresCaptureReauthForExport('ical' as never, locked)).toBe(false)
+    expect(requiresCaptureReauthForExport('toggl' as never, locked)).toBe(false)
   })
 
   it('requests capture re-auth only for a protected frame export', () => {

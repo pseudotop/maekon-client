@@ -467,3 +467,114 @@ mod tests {
         }
     }
 }
+
+/// #10106: operator guards for the two address predicates that decide the egress
+/// boundary.
+///
+/// The first real mutation measurement (#10003, run 30965619494) left `&&` → `||`
+/// alive in `is_link_local_ipv6` and `||` → `&&` alive in `is_internal_v4`.
+/// Both flips widen or narrow "is this address internal?", which is the check
+/// that keeps user data off the public network — the existing tests all used
+/// addresses where BOTH sides of the operator agreed, so neither flip changed an
+/// outcome.
+#[cfg(test)]
+mod operator_guard_tests {
+    use super::*;
+
+    /// `is_link_local_ipv6` is `octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80`.
+    /// Killing `&&` → `||` needs addresses where exactly ONE side holds.
+    #[test]
+    fn link_local_ipv6_requires_both_octet_conditions() {
+        // Both hold → link-local.
+        assert!(
+            is_link_local_ipv6(&Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            "fe80::1 is link-local"
+        );
+
+        // First holds, second does NOT (0xfc → 0xfc & 0xc0 == 0xc0, not 0x80).
+        // Under `||` this would wrongly report link-local.
+        assert!(
+            !is_link_local_ipv6(&Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1)),
+            "fc00::1 is unique-local, NOT link-local — first octet alone is not enough"
+        );
+
+        // Second holds, first does NOT (0x28 != 0xfe, 0x80 & 0xc0 == 0x80).
+        // Under `||` this would wrongly report link-local.
+        assert!(
+            !is_link_local_ipv6(&Ipv6Addr::new(0x2880, 0, 0, 0, 0, 0, 0, 1)),
+            "2880::1 is a public address — second octet alone is not enough"
+        );
+
+        // Neither holds.
+        assert!(
+            !is_link_local_ipv6(&Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+            "2001:db8::1 is not link-local"
+        );
+    }
+
+    /// `is_internal_v4` is a disjunction. Killing `||` → `&&` needs an address
+    /// that satisfies exactly ONE arm: under `&&` it would be reported EXTERNAL,
+    /// which is the direction that leaks.
+    #[test]
+    fn internal_v4_arms_are_independently_sufficient() {
+        let policy = InternalRangePolicy::minimal();
+
+        // Loopback only — not private, not link-local, not unspecified.
+        assert!(
+            policy.is_internal_v4(Ipv4Addr::new(127, 0, 0, 1)),
+            "127.0.0.1 is internal on the loopback arm ALONE"
+        );
+        // Private only — not loopback.
+        assert!(
+            policy.is_internal_v4(Ipv4Addr::new(10, 0, 0, 1)),
+            "10.0.0.1 is internal on the private arm ALONE"
+        );
+        // Link-local only.
+        assert!(
+            policy.is_internal_v4(Ipv4Addr::new(169, 254, 0, 1)),
+            "169.254.0.1 is internal on the link-local arm ALONE"
+        );
+        // Unspecified only.
+        assert!(
+            policy.is_internal_v4(Ipv4Addr::UNSPECIFIED),
+            "0.0.0.0 is internal on the unspecified arm ALONE"
+        );
+
+        // Negative control: a public address satisfies no arm.
+        assert!(
+            !policy.is_internal_v4(Ipv4Addr::new(93, 184, 216, 34)),
+            "a public address must not be internal"
+        );
+    }
+
+    /// The OPTIONAL arms must also be independently sufficient. Both shipped
+    /// presets set `include_broadcast` and `include_documentation` to the same
+    /// value, so a `||` → `&&` flip between them is invisible under either — the
+    /// two must be split with the builders to observe it. Under `&&` a
+    /// broadcast-only policy would report 255.255.255.255 as EXTERNAL, which is
+    /// the leaking direction.
+    #[test]
+    fn optional_internal_v4_arms_do_not_depend_on_each_other() {
+        let broadcast_only = InternalRangePolicy::minimal().with_broadcast();
+        assert!(
+            broadcast_only.is_internal_v4(Ipv4Addr::BROADCAST),
+            "255.255.255.255 is internal on the broadcast arm ALONE, with documentation off"
+        );
+
+        let documentation_only = InternalRangePolicy::minimal().with_documentation();
+        assert!(
+            documentation_only.is_internal_v4(Ipv4Addr::new(192, 0, 2, 1)),
+            "192.0.2.1 is internal on the documentation arm ALONE, with broadcast off"
+        );
+
+        // Cross-checks: each arm stays OFF when its own flag is off.
+        assert!(
+            !documentation_only.is_internal_v4(Ipv4Addr::BROADCAST),
+            "broadcast must not be internal when only documentation is enabled"
+        );
+        assert!(
+            !broadcast_only.is_internal_v4(Ipv4Addr::new(192, 0, 2, 1)),
+            "documentation must not be internal when only broadcast is enabled"
+        );
+    }
+}

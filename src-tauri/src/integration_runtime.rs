@@ -18,7 +18,7 @@ use maekon_core::ports::integration::{
 };
 use maekon_core::ports::secret_store::SecretStore;
 use maekon_core::{error_codes::ConsentCode, models::integration::IntegrationAckCursor};
-use maekon_network::integration::{
+use maekon_integration::{
     assemble_https_transport, EnvIntegrationAuthPort, IntegrationEgressCoordinator,
     IntegrationInboxCoordinator, IntegrationInsightProducerCoordinator,
     IntegrationProducerRuntimeLoop, IntegrationProducerRuntimeLoopProfile, IntegrationRuntimeLoop,
@@ -319,7 +319,7 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
             IntegrationAuthProfileKind::OidcDeviceFlow => false,
         };
 
-        let dpop_proof_factory = maekon_network::integration::build_proof_factory(
+        let dpop_proof_factory = maekon_integration::build_proof_factory(
             &supported_auth_schemes,
             self.secret_store.clone(),
         );

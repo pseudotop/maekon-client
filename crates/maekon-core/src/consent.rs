@@ -291,11 +291,23 @@ impl ConsentManager {
     /// both `check_consent` and `effective_permissions` — evaluating within one
     /// guard means there is no TOCTOU window between the two methods.
     fn check_consent_locked(st: &ConsentState) -> ConsentStatus {
+        Self::check_consent_locked_at(st, Utc::now())
+    }
+
+    /// Clock seam for [`Self::check_consent_locked`] (#10106).
+    ///
+    /// The expiry comparison is a strict `>`, so consent is still VALID at the
+    /// exact instant it expires. Distinguishing that from `>=` requires calling
+    /// with `now == expires_at`, which is unreachable while the function reads
+    /// the wall clock itself — the boundary mutant survived every test for that
+    /// reason. This mirrors the `should_run_now_with_time` seam already used in
+    /// `capture_gate`.
+    fn check_consent_locked_at(st: &ConsentState, now: DateTime<Utc>) -> ConsentStatus {
         match &st.current_consent {
             None => ConsentStatus::NotGranted,
             Some(record) => {
                 if let Some(expires) = record.expires_at {
-                    if Utc::now() > expires {
+                    if now > expires {
                         return ConsentStatus::Expired;
                     }
                 }
@@ -1737,6 +1749,158 @@ mod tests {
         assert!(
             !mgr_expired.effective_permissions().screen_capture,
             "sanity: effective_permissions DOES zero on Expired (the distinction we preserve)"
+        );
+    }
+}
+
+/// #10106: kills the surviving mutants in this file's safety-decision logic.
+///
+/// The first real mutation measurement (#10003, run 30965619494) showed the
+/// `ConsentManagerPort` impl was ENTIRELY unverified: every existing test calls
+/// the inherent methods, so each delegating trait body could be replaced by a
+/// constant and still pass. `has_pending_deletion` survived in BOTH directions
+/// (`-> true` and `-> false`), i.e. it had zero behavioural coverage. ADR-026
+/// PR-1 documents this port as the future `Arc<dyn ...>` DI path, so a mis-wired
+/// delegation is reachable, not theoretical.
+#[cfg(test)]
+mod mutation_guard_tests {
+    use super::*;
+    use crate::ports::consent_manager::ConsentManagerPort;
+
+    fn manager() -> (tempfile::TempDir, ConsentManager) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mgr = ConsentManager::new(dir.path().join("consent.json"));
+        (dir, mgr)
+    }
+
+    fn capture_permission() -> ConsentPermissions {
+        ConsentPermissions {
+            screen_capture: true,
+            ..Default::default()
+        }
+    }
+
+    /// Every port method must OBSERVABLY follow the manager's real state.
+    /// Assertions go through `&dyn ConsentManagerPort` on purpose — reaching for
+    /// the inherent methods is exactly what let the delegation rot undetected.
+    #[test]
+    fn consent_port_delegates_every_method_to_real_state() {
+        let (_dir, mgr) = manager();
+        let port: &dyn ConsentManagerPort = &mgr;
+
+        assert_eq!(port.check_consent(), ConsentStatus::NotGranted);
+        assert!(
+            port.current_consent().is_none(),
+            "current_consent must be None before a grant"
+        );
+        assert!(
+            !port.has_pending_deletion(),
+            "no deletion pending initially"
+        );
+
+        // Kills `current_consent -> None`.
+        port.grant_consent(capture_permission(), 30).expect("grant");
+        let record = port
+            .current_consent()
+            .expect("current_consent must be Some after grant");
+        assert!(
+            record.permissions.screen_capture,
+            "the granted permission must round-trip through the port"
+        );
+        assert_eq!(port.check_consent(), ConsentStatus::Valid);
+        assert!(
+            port.effective_permissions().screen_capture,
+            "effective_permissions must reflect the grant"
+        );
+        let (status, perms) = port.status_and_permissions();
+        assert_eq!(status, ConsentStatus::Valid);
+        assert!(perms.screen_capture);
+        // Together with the post-revoke assertion below, this pins BOTH
+        // directions of `has_pending_deletion`.
+        assert!(
+            !port.has_pending_deletion(),
+            "granting must not arm the deletion flag"
+        );
+
+        port.revoke_consent().expect("revoke");
+        assert!(
+            port.has_pending_deletion(),
+            "revoke must arm the pending-deletion flag"
+        );
+        assert!(
+            port.pending_erasure_id().is_some(),
+            "revoke must record an erasure id"
+        );
+
+        // Kills `clear_pending_deletion -> ()` (a no-op body).
+        port.clear_pending_deletion();
+        assert!(
+            !port.has_pending_deletion(),
+            "clear_pending_deletion must actually clear the flag"
+        );
+    }
+
+    /// `deletion_flag`/`erasing` must hand back the manager's OWN shared handles.
+    /// An `Arc::new(Default::default())` body returns a detached flag that still
+    /// reads correctly when fresh — so IDENTITY, not value, is what pins it.
+    #[test]
+    fn consent_port_shared_flags_are_the_managers_own_handles() {
+        let (_dir, mgr) = manager();
+        let port: &dyn ConsentManagerPort = &mgr;
+
+        port.deletion_flag().store(true, Ordering::SeqCst);
+        assert!(
+            port.deletion_flag().load(Ordering::SeqCst),
+            "deletion_flag must hand back the same Arc, not a fresh default"
+        );
+
+        port.erasing().store(true, Ordering::SeqCst);
+        assert!(
+            port.erasing().load(Ordering::SeqCst),
+            "erasing must hand back the same Arc, not a fresh default"
+        );
+    }
+
+    fn record_expiring_at(expires: DateTime<Utc>) -> ConsentRecord {
+        ConsentRecord {
+            consent_id: "test-consent".to_string(),
+            version: CURRENT_POLICY_VERSION.to_string(),
+            granted_at: expires - chrono::Duration::days(1),
+            expires_at: Some(expires),
+            revoked_at: None,
+            data_deletion_requested: false,
+            erasure_nonce: None,
+            permissions: capture_permission(),
+            data_retention_days: 30,
+        }
+    }
+
+    /// Expiry uses a STRICT `>`, so consent is still Valid at the exact instant
+    /// it expires and Expired only past it. Without the
+    /// `check_consent_locked_at` clock seam that boundary is unreachable — which
+    /// is precisely why `> -> >=` survived every test.
+    #[test]
+    fn consent_expiry_boundary_is_exclusive() {
+        let expires = Utc::now();
+        let st = ConsentState {
+            current_consent: Some(record_expiring_at(expires)),
+            pending_deletion: false,
+            pending_erasure_at: None,
+            pending_erasure_nonce: None,
+        };
+
+        assert_eq!(
+            ConsentManager::check_consent_locked_at(&st, expires),
+            ConsentStatus::Valid,
+            "AT the expiry instant consent is still valid (strict >)"
+        );
+        assert_eq!(
+            ConsentManager::check_consent_locked_at(
+                &st,
+                expires + chrono::Duration::nanoseconds(1)
+            ),
+            ConsentStatus::Expired,
+            "one unit past expiry it must be Expired"
         );
     }
 }

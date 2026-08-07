@@ -1,3 +1,4 @@
+mod analysis_provider;
 mod auth_probe;
 mod llm_provider;
 mod ocr_provider;
@@ -28,6 +29,7 @@ use maekon_api_contracts::provider_specs::{
 
 // ── Re-exports ────────────────────────────────────────────────
 
+pub use analysis_provider::SubprocessAnalysisProvider;
 pub use llm_provider::SubprocessLlmProvider;
 pub use ocr_provider::SubprocessOcrProvider;
 pub(crate) use runtime::cli_id_for_surface_id;
@@ -68,6 +70,35 @@ const ACTION_SCHEMA_JSON: &str = r#"{
   "required": ["target_text", "target_role", "action_type", "confidence"],
   "additionalProperties": false
 }"#;
+/// #10050: structured-output schema for the CLI-backed `AnalysisProvider`.
+///
+/// The object wrapper (`{"suggestions": [...]}`) is deliberate — Claude Code's
+/// `--json-schema` and Codex's `--output-schema` both take a JSON **object**
+/// schema, so a bare top-level array is not expressible. `parse_suggestions_output`
+/// unwraps it and also tolerates a bare array, matching the remote path's
+/// tolerant `parse_candidates`.
+const SUGGESTION_SCHEMA_JSON: &str = r#"{
+  "type": "object",
+  "properties": {
+    "suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["ProductivityTip", "WorkflowOptimization", "ContextBased", "WorkGuidance"] },
+          "content": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+          "reasoning": { "type": ["string", "null"] }
+        },
+        "required": ["type", "content", "confidence", "reasoning"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["suggestions"],
+  "additionalProperties": false
+}"#;
+
 const OCR_SCHEMA_JSON: &str = r#"{
   "type": "object",
   "properties": {

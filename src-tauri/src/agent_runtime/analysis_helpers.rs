@@ -17,6 +17,64 @@ use maekon_network::analysis_client::AnalysisClient;
 use crate::breaker_registry::CircuitBreakerRegistry;
 use crate::provider_adapters::ExternalOcrPrivacyGuard;
 
+/// #10050: resolve a CLI-subscription-backed [`AnalysisProvider`], or `None`
+/// when this config/host cannot serve one.
+///
+/// Returns `None` — leaving every existing path untouched (AC4) — unless BOTH:
+/// 1. the user selected [`AiAccessMode::ProviderSubscriptionCli`], and
+/// 2. a provider CLI is installed AND its auth probe says it is usable.
+///
+/// Condition 2 is what `select_cli_surface_for_capability` enforces, so a CLI
+/// that is present but logged out does not produce a provider that would fail on
+/// every call — the caller falls through to the HTTP path or to `None`, which is
+/// the pre-#10050 behaviour.
+#[cfg(feature = "analysis")]
+fn build_cli_subscription_analysis_provider(
+    config: &AiProviderConfig,
+) -> Option<Arc<dyn AnalysisProvider>> {
+    use maekon_core::config::AiAccessMode;
+
+    if config.access_mode.normalized_for_ai_surfaces() != AiAccessMode::ProviderSubscriptionCli {
+        // Mode gate first: a non-CLI config must never pay the probe's
+        // subprocess spawns.
+        return None;
+    }
+
+    let probed = crate::subprocess_provider::probe_known_cli_surfaces();
+    build_cli_subscription_analysis_provider_with_detected(config, &probed)
+}
+
+/// Probe-injected core of [`build_cli_subscription_analysis_provider`], mirroring
+/// `resolve_cli_subscription_llm_provider_with_detected`. Split out so surface
+/// selection is testable without spawning the real CLIs installed on the host.
+#[cfg(feature = "analysis")]
+fn build_cli_subscription_analysis_provider_with_detected(
+    config: &AiProviderConfig,
+    probed: &[crate::subprocess_provider::ProbedSubprocessCli],
+) -> Option<Arc<dyn AnalysisProvider>> {
+    use maekon_api_contracts::provider_specs::SurfaceCapabilityKind;
+
+    // Suggestion generation is an LLM task, so it selects on the LLM capability —
+    // the same surface the action port resolves. A surface that cannot serve LLM
+    // is not eligible here either.
+    let surface = crate::subprocess_provider::select_cli_surface_for_capability(
+        config,
+        probed,
+        SurfaceCapabilityKind::Llm,
+    )?;
+
+    tracing::info!(
+        surface_id = %surface.surface_id,
+        "analysis provider resolved to CLI subscription (no API key required)"
+    );
+
+    Some(
+        Arc::new(crate::subprocess_provider::SubprocessAnalysisProvider::new(
+            surface, config,
+        )) as Arc<dyn AnalysisProvider>,
+    )
+}
+
 /// Build an AnalysisProvider with automatic fallback chaining.
 ///
 /// Returns `None` when no primary `llm_api` is configured.
@@ -69,6 +127,22 @@ pub fn build_analysis_provider_with_flag(
     // other adapter targeting the same endpoint (iter-011 consolidation done).
     breaker_registry: Arc<CircuitBreakerRegistry>,
 ) -> Option<(Arc<dyn AnalysisProvider>, Arc<AtomicBool>)> {
+    // #10050 AC1: CLI-subscription path. The sibling ports (`LlmProvider`,
+    // `OcrProvider`) already resolve to an installed provider CLI in this mode;
+    // analysis used to fall through to the `llm_api?` below and return `None`,
+    // so `build_context_analyzer_sync` built no ContextAnalyzer at all and the
+    // suggestion surface stayed permanently empty. An authenticated CLI is a
+    // complete credential here — no API key is required.
+    //
+    // Checked BEFORE the `llm_api?` bail because a CLI-mode config legitimately
+    // has no `llm_api` endpoint at all.
+    if let Some(provider) = build_cli_subscription_analysis_provider(config) {
+        // The CLI provider is its own primary with no HTTP fallback, so the
+        // health flag starts healthy and is not wired to a fallback chain.
+        let health_flag = external_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(true)));
+        return Some((provider, health_flag));
+    }
+
     let llm_api = config.llm_api.as_ref()?;
     let sanitizer: Arc<dyn PiiSanitizer> = Arc::new(maekon_vision::privacy::VisionPiiSanitizer);
 
@@ -370,5 +444,99 @@ mod tests {
             ai_config.llm_api.is_some(),
             "llm_api must be Some when configured, preventing fallback"
         );
+    }
+
+    // ── #10050 CLI-subscription analysis provider ────────────────────────────
+
+    /// AC4 (regression guard): every non-CLI access mode must leave the analysis
+    /// path exactly as it was. This also proves the mode gate short-circuits
+    /// BEFORE `probe_known_cli_surfaces`, so the default API-key config never
+    /// pays a CLI-probe subprocess spawn at startup.
+    #[test]
+    fn cli_analysis_provider_is_none_for_non_cli_access_modes() {
+        use maekon_core::config::{AiAccessMode, AiProviderConfig};
+
+        for mode in [
+            AiAccessMode::ProviderApiKey,
+            AiAccessMode::LocalModel,
+            AiAccessMode::ProviderOAuth,
+        ] {
+            let config = AiProviderConfig {
+                access_mode: mode,
+                ..Default::default()
+            };
+            assert!(
+                build_cli_subscription_analysis_provider(&config).is_none(),
+                "access mode {mode:?} must not resolve a CLI analysis provider"
+            );
+        }
+    }
+
+    fn authenticated_claude_surface() -> crate::subprocess_provider::ProbedSubprocessCli {
+        crate::subprocess_provider::ProbedSubprocessCli {
+            detected: crate::subprocess_provider::DetectedSubprocessCli {
+                surface_id: "provider_surface.anthropic.subprocess_cli".to_string(),
+                executable_path: std::path::PathBuf::from("/usr/local/bin/claude"),
+            },
+            auth_status: crate::subprocess_provider::SubprocessCliAuthStatus::Authenticated,
+            auth_detail: Some("cli_authenticated".to_string()),
+        }
+    }
+
+    /// AC1 — THE headline contract: an authenticated CLI alone resolves an
+    /// analysis provider with `llm_api: None`. Before #10050 this returned
+    /// `None`, so no ContextAnalyzer was built and no suggestion could ever be
+    /// generated without BYOK.
+    #[test]
+    fn cli_analysis_provider_resolves_without_any_llm_api() {
+        use maekon_core::config::{AiAccessMode, AiProviderConfig};
+
+        let config = AiProviderConfig {
+            access_mode: AiAccessMode::ProviderSubscriptionCli,
+            llm_api: None,
+            ..Default::default()
+        };
+
+        let provider = build_cli_subscription_analysis_provider_with_detected(
+            &config,
+            &[authenticated_claude_surface()],
+        );
+        assert!(
+            provider.is_some(),
+            "an authenticated CLI must be a complete credential — no API key required"
+        );
+    }
+
+    /// A CLI that is installed but NOT logged in must not produce a provider that
+    /// would fail on every call — the caller falls back to the pre-#10050 path.
+    #[test]
+    fn cli_analysis_provider_is_none_when_cli_is_unauthenticated() {
+        use maekon_core::config::{AiAccessMode, AiProviderConfig};
+
+        let mut surface = authenticated_claude_surface();
+        surface.auth_status = crate::subprocess_provider::SubprocessCliAuthStatus::Unauthenticated;
+
+        let config = AiProviderConfig {
+            access_mode: AiAccessMode::ProviderSubscriptionCli,
+            llm_api: None,
+            ..Default::default()
+        };
+
+        assert!(
+            build_cli_subscription_analysis_provider_with_detected(&config, &[surface]).is_none(),
+            "a logged-out CLI must not be selected"
+        );
+    }
+
+    /// No CLI installed at all → `None`, i.e. exactly the pre-#10050 behaviour.
+    #[test]
+    fn cli_analysis_provider_is_none_when_nothing_is_detected() {
+        use maekon_core::config::{AiAccessMode, AiProviderConfig};
+
+        let config = AiProviderConfig {
+            access_mode: AiAccessMode::ProviderSubscriptionCli,
+            ..Default::default()
+        };
+        assert!(build_cli_subscription_analysis_provider_with_detected(&config, &[]).is_none());
     }
 }

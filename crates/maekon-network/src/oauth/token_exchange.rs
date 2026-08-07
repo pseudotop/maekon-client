@@ -62,22 +62,23 @@ pub async fn exchange_code(
 
     let status = resp.status();
     // #6949: cap OAuth token exchange response body (OOM guard)
-    let body = crate::outbound::read_text_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
-        .await
-        .map_err(|e| match e {
-            crate::outbound::BodyReadError::Transport(te) => CoreError::OAuthError {
-                code: maekon_core::error_codes::OAuthCode::Failed,
-                provider: config.provider_id.clone(),
-                message: format!("failed to read token response: {te}"),
-            },
-            crate::outbound::BodyReadError::TooLarge { len, cap } => CoreError::OAuthError {
-                code: maekon_core::error_codes::OAuthCode::Failed,
-                provider: config.provider_id.clone(),
-                message: format!(
-                    "failed to read token response: response too large ({len} > {cap})"
-                ),
-            },
-        })?;
+    let body = maekon_http_core::outbound::read_text_capped(
+        resp,
+        maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
+    )
+    .await
+    .map_err(|e| match e {
+        maekon_http_core::outbound::BodyReadError::Transport(te) => CoreError::OAuthError {
+            code: maekon_core::error_codes::OAuthCode::Failed,
+            provider: config.provider_id.clone(),
+            message: format!("failed to read token response: {te}"),
+        },
+        maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => CoreError::OAuthError {
+            code: maekon_core::error_codes::OAuthCode::Failed,
+            provider: config.provider_id.clone(),
+            message: format!("failed to read token response: response too large ({len} > {cap})"),
+        },
+    })?;
 
     if !status.is_success() {
         if let Ok(err) = serde_json::from_str::<TokenErrorResponse>(&body) {
@@ -175,24 +176,29 @@ pub async fn refresh_token(
 
     let status = resp.status().as_u16();
     // #6949: cap OAuth token refresh response body (OOM guard)
-    let body = crate::outbound::read_text_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
-        .await
-        .map_err(|e| match e {
-            crate::outbound::BodyReadError::Transport(_) => CoreError::OAuthRefreshError {
-                code: maekon_core::error_codes::OAuthCode::RefreshFailed,
-                provider: config.provider_id.clone(),
-                kind: OAuthErrorKind::NetworkError,
-                message: "failed to read refresh response".to_string(),
-            },
-            crate::outbound::BodyReadError::TooLarge { len, cap } => CoreError::OAuthRefreshError {
+    let body = maekon_http_core::outbound::read_text_capped(
+        resp,
+        maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
+    )
+    .await
+    .map_err(|e| match e {
+        maekon_http_core::outbound::BodyReadError::Transport(_) => CoreError::OAuthRefreshError {
+            code: maekon_core::error_codes::OAuthCode::RefreshFailed,
+            provider: config.provider_id.clone(),
+            kind: OAuthErrorKind::NetworkError,
+            message: "failed to read refresh response".to_string(),
+        },
+        maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
+            CoreError::OAuthRefreshError {
                 code: maekon_core::error_codes::OAuthCode::RefreshFailed,
                 provider: config.provider_id.clone(),
                 kind: OAuthErrorKind::NetworkError,
                 message: format!(
                     "failed to read refresh response: response too large ({len} > {cap})"
                 ),
-            },
-        })?;
+            }
+        }
+    })?;
 
     if !(200..300).contains(&status) {
         let kind = classify_error_response(status, &body);

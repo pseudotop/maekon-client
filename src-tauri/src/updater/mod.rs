@@ -168,7 +168,7 @@ pub enum UpdateCheckResult {
 /// allowlist; that gap is pre-existing and out of scope here).
 ///
 /// This helper (and the read-capped body helper in `install/download.rs`)
-/// intentionally does NOT delegate to `maekon_network::outbound`: `updater` is
+/// intentionally does NOT delegate to `maekon_http_core::outbound`: `updater` is
 /// compiled unconditionally (not feature-gated) while `maekon-network` is only
 /// pulled in by the `analysis` feature, which CI's `--no-default-features`
 /// build cell excludes.

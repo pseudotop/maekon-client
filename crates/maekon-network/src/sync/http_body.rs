@@ -22,22 +22,24 @@ pub(crate) const MAX_CONTROL_RESPONSE_BYTES: u64 = 1024 * 1024; // 1 MiB
 
 /// Reads the HTTP response body into memory with a `cap`-byte upper bound. See the module doc for the full rationale.
 ///
-/// #6939/#6940: The implementation delegates to `crate::outbound::read_body_capped` (shared
+/// #6939/#6940: The implementation delegates to `maekon_http_core::outbound::read_body_capped` (shared
 /// network-wide) and maps its `BodyReadError` to sync's existing `CoreError::Network` —
 /// consolidated into a single source so each pass leaves no sibling behind.
 pub(crate) async fn read_body_capped(
     resp: reqwest::Response,
     cap: u64,
 ) -> Result<Vec<u8>, CoreError> {
-    crate::outbound::read_body_capped(resp, cap)
+    maekon_http_core::outbound::read_body_capped(resp, cap)
         .await
         .map_err(map_body_read_error)
 }
 
-fn map_body_read_error(e: crate::outbound::BodyReadError) -> CoreError {
+fn map_body_read_error(e: maekon_http_core::outbound::BodyReadError) -> CoreError {
     let message = match e {
-        crate::outbound::BodyReadError::Transport(err) => format!("read response body: {err}"),
-        crate::outbound::BodyReadError::TooLarge { len, cap } => {
+        maekon_http_core::outbound::BodyReadError::Transport(err) => {
+            format!("read response body: {err}")
+        }
+        maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
             format!("response exceeded cap {cap} bytes (len {len})")
         }
     };

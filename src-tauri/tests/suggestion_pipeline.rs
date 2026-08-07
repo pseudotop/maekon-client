@@ -206,6 +206,7 @@ async fn sse_to_receiver_queue_notifier_live_e2e() {
         Some(notifier.clone() as Arc<dyn DesktopNotifier>),
         queue.clone(),
         scorer,
+        None,
     );
 
     // 4. Drive receiver.run — the mock stream emits events in connection →

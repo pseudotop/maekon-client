@@ -121,8 +121,8 @@ impl OAuthClient {
             // 30x threat it guards is already closed by redirect=none; cleartext
             // egress to a remote token endpoint stays out of scope for the shared
             // builder here.
-            http: crate::outbound::hardened_client_builder(
-                crate::outbound::TransportPolicy::AllowLoopbackCleartext,
+            http: maekon_http_core::outbound::hardened_client_builder(
+                maekon_http_core::outbound::TransportPolicy::AllowLoopbackCleartext,
             )
             // #9504 review (A3): the token-exchange/refresh POSTs run while the
             // per-provider refresh lock is held, and `revoke()` now waits on

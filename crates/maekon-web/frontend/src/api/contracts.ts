@@ -814,6 +814,17 @@ export type ExportFormat = 'json' | 'csv'
 
 export type ExportDataType = 'metrics' | 'events' | 'frames'
 
+/**
+ * Work-session exports in a third-party interchange format (#9854).
+ *
+ * Deliberately a SEPARATE type from `ExportDataType`: these endpoints ignore
+ * the JSON/CSV toggle because each carries a fixed format the receiving tool
+ * requires — `.ics` for calendars, Toggl's own CSV column order for its
+ * importer. Folding them into `ExportDataType` would let the UI offer a format
+ * choice the server does not honour.
+ */
+export type SessionExportKind = 'ical' | 'toggl'
+
 export interface Tag {
   id: number
   name: string

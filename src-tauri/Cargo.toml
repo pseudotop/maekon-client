@@ -46,6 +46,16 @@ maekon-automation = { workspace = true }
 maekon-monitor = { workspace = true }
 maekon-vision = { workspace = true }
 maekon-network = { workspace = true, optional = true }
+# ADR-034 P2: unconditional on purpose. The breaker registry + backoff live
+# here now; every third-party crate this pulls (reqwest, parking_lot, rand,
+# url) is already unconditional in this manifest, so the minimal build gains
+# no supply-chain surface — and the old cfg-branched CircuitBreakerRegistry
+# stub (#5032/#7743) could be deleted because the real type now exists in
+# every feature-matrix cell.
+maekon-http-core = { workspace = true }
+# ADR-034 P3: connector adapter (read-only Context Sources). `integration_runtime`
+# is compiled unconditionally (lib.rs:88), so this is unconditional too.
+maekon-integration = { workspace = true }
 maekon-storage = { workspace = true }
 maekon-suggestion = { workspace = true }
 maekon-web = { workspace = true }
