@@ -1,8 +1,15 @@
 # Windows interactive validation topology
 
-Status: admission and versioned tier executor are wired; execution remains
-fail-closed when the reviewed runner, app artifact, VM snapshot identity, or
-manual receipts are absent. Tracking: #9144, #9190, and #9837.
+> **Archived contract (#10161).** The private parent repository no longer
+> exposes a dispatchable self-hosted Windows workflow. Release validation uses
+> bounded GitHub-hosted Windows lint and E19 desktop-smoke lanes. Consumer Windows 11,
+> unlocked-desktop UIA, snapshot restoration, and lifecycle claims remain
+> explicitly unverified. This document is retained only as the historical
+> evidence boundary for any future dedicated-runner decision.
+
+Status: the admission and versioned tier executor remain as non-executable
+contract artifacts, while the dispatchable parent workflow was retired by
+#10161. Tracking: #9144, #9190, and #9837.
 
 The source of truth is the parent repository's internal validation-tier
 manifest, `windows-validation-tiers.v1.json` (maintained outside this
@@ -92,9 +99,10 @@ prompt content is captured.
 
 ## Executor boundary
 
-`.github/workflows/maekon-client-windows-interactive.yml` remains
-dispatch-only. After admission, `Invoke-WindowsInteractiveTier.ps1` resolves
-the versioned manifest plan and executes entries serially. Nightly owns full
+The retired `.github/workflows/maekon-client-windows-interactive.yml` is not an
+executable route. `Invoke-WindowsInteractiveTier.ps1` remains only as a
+versioned archival contract artifact. In the archived design it resolved the
+manifest plan and executed entries serially. Nightly owned full
 WDIO plus the single-instance, global-shortcut, native-dialog, tray, and
 notification-activation UIA
 scenarios. Every entry writes a per-TC JSONL row, bounded driver receipts, the
