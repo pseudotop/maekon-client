@@ -29,6 +29,78 @@
       "accepted_until": "2026-08-15",
       "accepted_at": "2026-07-28",
       "reason": "glib 0.18.5 is reachable only through the optional webdriver feature and tauri-plugin-wdio-webdriver 1.2.0; the exact Linux release feature graph excludes the plugin, WebKit2GTK, and glib 0.18.x. Upstream 1.2.0 is the latest published plugin and its Linux backend still fixes webkit2gtk 2.0/GTK3, so no compatible patched release exists. scripts/check-webdriver-security-isolation.sh fails closed if this dependency enters a shipped graph or escapes the reviewed plugin path. Re-triage immediately when upstream publishes a GTK4/WebKitGTK 6-compatible backend and no later than 2026-08-15."
+    },
+    {
+      "advisory": "GHSA-5p4m-2wfm-xmqj",
+      "package": "js-yaml",
+      "reason": "js-yaml prototype-pollution advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-4cwx-7wf7-3272",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain (Node fetch client used by test/build tooling). Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-8xcm-r25x-g524",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-v3r7-h72x-cjcm",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-jr45-8vmc-qm54",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-m8rv-5g2x-5cg5",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-mwp4-54f8-5fhr",
+      "package": "ip-address",
+      "reason": "ip-address advisory in the dev tool chain (socks/proxy-agent under test tooling). Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-22jq-vg5j-6vgg",
+      "package": "ip-address",
+      "reason": "ip-address advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-4xrf-jv44-h6hh",
+      "package": "ip-address",
+      "reason": "ip-address advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
     }
   ],
   "codeql": []

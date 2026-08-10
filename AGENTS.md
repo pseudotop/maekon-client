@@ -1,51 +1,47 @@
-# AGENTS.md
+# Maekon Client AGENTS.md
 
-Repository guardrails for humans and AI agents.
-This project is a 15-package Cargo workspace (14 crates under `crates/` + `src-tauri`) following Hexagonal Architecture (Ports & Adapters). Keep boundaries explicit. (The parent MAEKON project additionally uses DDD on the server side; this `client-rust` workspace is Hexagonal-only.)
+`clients/maekon-client/`에 적용되는 Rust/Tauri 경로 계약이다. Root `AGENTS.md`를 함께 적용한다.
 
-## Scope
+## Source of truth
 
-These rules apply to the entire repository unless a subdirectory adds stricter guidance.
+- 이 디렉터리가 Maekon Client의 내부 source of truth다.
+- 공개 `pseudotop/maekon-client`는 검증된 snapshot export 대상이다. 공개 저장소에서 직접 개발하지
+  않는다.
+- workspace 구성과 crate 목록은 `Cargo.toml`의 `[workspace].members`를 현재 값으로 읽는다. 지침에
+  개수를 고정하지 않는다.
 
-## Architecture Summary
+## Architecture
 
-1. `maekon-core` is the domain contract layer (ports, models, errors). 57 port files / 95 public traits / 38 `CoreError` variants typed per [ADR-019](docs/architecture/ADR-019-error-code-infrastructure.md).
-2. Adapter crates (`maekon-network`, `maekon-storage`, `maekon-monitor`, `maekon-vision`, `maekon-suggestion`, `maekon-automation`, `maekon-analysis`, `maekon-embedding`, `maekon-audio`, `maekon-web`, `maekon-api-contracts`) implement ports from `maekon-core`.
-3. `src-tauri/` (package name `maekon-app`) is the composition root + runtime orchestrator. The former `crates/maekon-app/` is DEPRECATED and removed from the workspace.
-4. `maekon-sandbox-worker` is a standalone binary crate (stdin JSON → stdout JSON under platform sandbox). Spawned out-of-process by `src-tauri` to execute `AutomationAction` with Windows Job Objects / Linux seccomp+Landlock / macOS App Sandbox constraints — isolates the main process from action-side crashes.
-5. `maekon-lint` is a standalone workspace tool (language-check binary) with no `maekon-core` dependency.
-6. `maekon-web` is a delivery layer (HTTP handlers + frontend), not a domain layer.
-7. `maekon-automation` enforces policy, sandbox, audit, and action execution flows.
+- 이 workspace는 Hexagonal Architecture만 사용한다. 서버의 DDD 규칙을 Rust client에 투영하지
+  않는다.
+- `maekon-core`가 ports, models, errors를 소유한다.
+- adapter crate는 `maekon-core` port를 구현하며 승인된 예외 외에 adapter끼리 직접 결합하지 않는다.
+- `src-tauri/`는 composition root와 runtime orchestration을 소유한다.
+- `maekon-web` handler는 transport mapping, validation, service orchestration만 수행한다.
+- automation과 external integration은 policy, privacy, consent, audit gate를 유지한다.
 
-See:
-- `docs/architecture/ADR-001-rust-client-architecture-patterns.md`
-- `docs/crates/README.md`
+## Language and UI
 
-## Non-Negotiable Rules
+- Rust 주석, doc comment, `tracing` message는 영어로 쓴다.
+- 사용자 문자열은 i18n resource로 관리하고 locale 문자열을 selector로 사용하지 않는다.
+- frontend component는 shared tokens와 primitives를 사용한다.
 
-1. Preserve dependency direction.
-2. Do not introduce direct adapter-to-adapter coupling outside approved exceptions.
-3. Use `maekon-core` ports/traits for cross-layer access instead of concrete adapter types.
-4. Keep domain invariants in domain/application services, not in web handlers or UI code.
-5. Keep web handlers thin: transport mapping, validation, and service orchestration only.
-6. Keep orchestration responsibilities split; do not centralize unrelated concerns into a single large controller/scheduler method.
-7. Privacy by default: external egress must pass policy + privacy gates, consent checks, and audit logging.
-8. Do not send raw sensitive source data externally unless explicit policy/consent override paths allow it.
-9. Frontend shared UI must use design tokens and shared UI primitives for consistency.
-10. Frontend text must be i18n-driven; avoid hardcoded locale strings in test selectors.
+## Validation from repository root
 
-## Language Policy
+```bash
+(cd clients/maekon-client && cargo fmt --all -- --check)
+(cd clients/maekon-client && cargo test -p <touched-crate>)
+(cd clients/maekon-client && cargo clippy -p <touched-crate> --all-targets -- -D warnings)
+```
 
-1. Primary language for code comments is English.
-2. Primary language for logs (`tracing` and runtime diagnostics) is English.
-3. User-facing UI text should be localized through i18n resources.
+- crate 경계를 바꾸면 `(cd clients/maekon-client && cargo metadata --no-deps)`로 workspace
+  membership과 dependency direction을 확인한다.
+- proto consumer contract를 바꾸면 root에서 `./scripts/sync-client-protos.sh`를 실행하고
+  `./scripts/sync-client-protos.sh --check`로 readback한다.
+- public export와 release evidence는 별도 release issue와 승인 절차 없이는 실행하지 않는다.
 
-## Change Checklist
+## References
 
-Before finalizing a change, verify:
-
-1. Layer boundaries still match Hexagonal (Ports & Adapters) intent — this workspace is Hexagonal-only; DDD belongs to the parent-project server side.
-2. New dependencies do not violate crate direction rules.
-3. Policy/privacy/audit paths are preserved for automation and external integrations.
-4. UI changes follow tokenized components and i18n conventions.
-5. Relevant tests and build checks for touched modules are run.
+- `clients/maekon-client/docs/architecture/ADR-001-rust-client-architecture-patterns.md`
+- `clients/maekon-client/docs/crates/README.md`
+- `.github/SSOT_PR_GOVERNANCE.md`
