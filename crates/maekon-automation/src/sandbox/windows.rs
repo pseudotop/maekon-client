@@ -1125,9 +1125,15 @@ mod tests {
         // cmd.exe child during DLL init (STATUS_DLL_INIT_FAILED) — deterministic
         // across image builds, code unchanged since the last green run on
         // 20260714. Skip ONLY that exact signature, and only on GitHub-hosted
-        // CI; every other failure mode (and every other environment) still
-        // asserts at full strength.
-        if outcome.exit_code == 0xC000_0142 && std::env::var_os("GITHUB_ACTIONS").is_some() {
+        // CI. The bounded #10288 diagnostic lane sets the strict override to
+        // expose the real exit code instead of taking this release-unblock path.
+        // Every other failure mode and environment also asserts at full strength.
+        let strict_ci_probe =
+            std::env::var("MAEKON_STRICT_WINDOWS_RESTRICTED_TOKEN_PROBE").as_deref() == Ok("1");
+        if outcome.exit_code == 0xC000_0142
+            && std::env::var_os("GITHUB_ACTIONS").is_some()
+            && !strict_ci_probe
+        {
             eprintln!(
                 "SKIP restricted_token_launch probe: STATUS_DLL_INIT_FAILED on \
                  GitHub-hosted runner image (known image regression, #10288)"

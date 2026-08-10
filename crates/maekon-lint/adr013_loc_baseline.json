@@ -96,5 +96,5 @@
   "src-tauri/src/subprocess_provider/parsing.rs": 1246,
   "src-tauri/src/tray.rs": 1171,
   "src-tauri/src/web_server_runtime.rs": 1285,
-  "src-tauri/src/windows_gui_session_benchmark.rs": 1451
+  "src-tauri/src/windows_gui_session_benchmark.rs": 1531
 }
