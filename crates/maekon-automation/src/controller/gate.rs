@@ -77,7 +77,10 @@ impl CommandExecutionGate {
     ) -> (SandboxConfig, AuditLevel) {
         if Self::is_trusted_internal(cmd.origin, &cmd.policy_token) {
             return (
-                resolver::default_strict_config(&self.base_sandbox_config),
+                resolver::enforceable_strict_config(
+                    &self.base_sandbox_config,
+                    &self.action_dispatcher.sandbox_capabilities(),
+                ),
                 AuditLevel::Basic,
             );
         }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use maekon_core::config::SandboxConfig;
 use maekon_core::error::CoreError;
 use maekon_core::ports::input_driver::InputDriver;
-use maekon_core::ports::sandbox::Sandbox;
+use maekon_core::ports::sandbox::{Sandbox, SandboxCapabilities};
 
 use crate::controller::{AutomationAction, CommandResult};
 use crate::sandbox::is_permissive_noop;
@@ -12,6 +12,28 @@ use crate::sandbox::is_permissive_noop;
 #[async_trait]
 pub trait AutomationActionDispatcher: Send + Sync {
     async fn dispatch(&self, action: &AutomationAction, config: &SandboxConfig) -> CommandResult;
+
+    /// What the wired sandbox can actually enforce.
+    ///
+    /// The gate asks this before naming a profile for a trusted internal
+    /// command, so it can request the strongest profile this platform can
+    /// honor instead of one the adapter will refuse (#10665).
+    ///
+    /// The default claims full containment, which keeps the previous behavior
+    /// for any dispatcher that does not answer: the gate then names `Strict`
+    /// exactly as before, and an adapter that cannot deliver it still fails
+    /// closed. Over-claiming here therefore cannot weaken containment — it can
+    /// only reproduce today's refusal.
+    fn sandbox_capabilities(&self) -> SandboxCapabilities {
+        SandboxCapabilities {
+            filesystem_isolation: true,
+            syscall_filtering: true,
+            network_isolation: true,
+            resource_limits: true,
+            process_isolation: true,
+            privilege_restriction: true,
+        }
+    }
 }
 
 pub struct SandboxActionDispatcher {
@@ -89,6 +111,10 @@ impl SandboxActionDispatcher {
 
 #[async_trait]
 impl AutomationActionDispatcher for SandboxActionDispatcher {
+    fn sandbox_capabilities(&self) -> SandboxCapabilities {
+        self.sandbox.capabilities()
+    }
+
     async fn dispatch(&self, action: &AutomationAction, config: &SandboxConfig) -> CommandResult {
         if !config.enabled {
             return match &self.inline_driver {

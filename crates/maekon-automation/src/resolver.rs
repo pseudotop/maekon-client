@@ -3,6 +3,7 @@ use maekon_core::config::{
     PermissionNetworkDecision, PermissionNetworkMode, PermissionProfileV2, SandboxConfig,
     SandboxProfile,
 };
+use maekon_core::ports::sandbox::SandboxCapabilities;
 
 /// Resolve the effective sandbox profile for an execution policy.
 ///
@@ -130,6 +131,67 @@ pub fn validate_sandbox_config_permission_profile_v2_runtime_support(
 ) -> Result<(), String> {
     let profile = PermissionProfileV2::from_legacy_sandbox(config);
     validate_permission_profile_v2_runtime_support(&profile)
+}
+
+/// The strongest profile the wired sandbox can actually enforce.
+///
+/// `Standard` and `Strict` both promise filesystem, syscall, network and
+/// privilege containment (see `missing_required_containment_for_profile`), so a
+/// platform missing any of them can honor only `Permissive`. Windows is that
+/// platform: it enforces a restricted token and Job Object limits but no
+/// filesystem, syscall or network isolation.
+///
+/// This exists because naming an unenforceable profile does not produce more
+/// safety — the adapter refuses, and the user-confirmed action simply does not
+/// run (#10665). Naming the strongest ENFORCEABLE profile keeps the audit
+/// honest, because the profile recorded against the action is the one that was
+/// applied, while leaving the feature reachable on the platform.
+pub fn strongest_enforceable_profile(capabilities: &SandboxCapabilities) -> SandboxProfile {
+    if capabilities.filesystem_isolation
+        && capabilities.syscall_filtering
+        && capabilities.network_isolation
+        && capabilities.privilege_restriction
+    {
+        return SandboxProfile::Strict;
+    }
+
+    // Clamping down is only safe when the sandbox still contains the child in
+    // the ways Permissive relies on: a separate process running with reduced
+    // privilege. A sandbox offering neither (NoOpSandbox, FailClosedSandbox —
+    // every capability false) would turn Permissive into in-process execution
+    // with no containment at all, so those keep naming Strict and keep failing
+    // closed, which is the correct answer for "we cannot contain this".
+    if capabilities.process_isolation && capabilities.privilege_restriction {
+        SandboxProfile::Permissive
+    } else {
+        SandboxProfile::Strict
+    }
+}
+
+/// `default_strict_config` clamped to what the platform can enforce.
+///
+/// Used for trusted internal commands, where refusing outright means the
+/// confirmed GUI action never executes at all.
+pub fn enforceable_strict_config(
+    base_config: &SandboxConfig,
+    capabilities: &SandboxCapabilities,
+) -> SandboxConfig {
+    let profile = strongest_enforceable_profile(capabilities);
+    if !matches!(profile, SandboxProfile::Strict) {
+        tracing::warn!(
+            applied_profile = ?profile,
+            filesystem_isolation = capabilities.filesystem_isolation,
+            syscall_filtering = capabilities.syscall_filtering,
+            network_isolation = capabilities.network_isolation,
+            privilege_restriction = capabilities.privilege_restriction,
+            "platform cannot enforce Strict; applying the strongest enforceable profile \
+             and auditing the action under it"
+        );
+    }
+    SandboxConfig {
+        profile,
+        ..default_strict_config(base_config)
+    }
 }
 
 pub fn default_strict_config(base_config: &SandboxConfig) -> SandboxConfig {
@@ -411,5 +473,103 @@ mod tests {
             .expect_err("legacy runtime cannot express V2 local/private network target rules");
 
         assert!(err.contains("network"));
+    }
+
+    fn capabilities(isolation: bool) -> SandboxCapabilities {
+        SandboxCapabilities {
+            filesystem_isolation: isolation,
+            syscall_filtering: isolation,
+            network_isolation: isolation,
+            resource_limits: true,
+            process_isolation: true,
+            privilege_restriction: true,
+        }
+    }
+
+    #[test]
+    fn a_sandbox_that_contains_nothing_keeps_failing_closed() {
+        // NoOpSandbox/FailClosedSandbox report every capability false. Clamping
+        // those to Permissive would run the action in-process with no
+        // containment, so they must keep naming Strict and refusing.
+        let nothing = SandboxCapabilities {
+            filesystem_isolation: false,
+            syscall_filtering: false,
+            network_isolation: false,
+            resource_limits: false,
+            process_isolation: false,
+            privilege_restriction: false,
+        };
+        assert!(matches!(
+            strongest_enforceable_profile(&nothing),
+            SandboxProfile::Strict
+        ));
+        let config = enforceable_strict_config(&SandboxConfig::default(), &nothing);
+        assert!(matches!(config.profile, SandboxProfile::Strict));
+    }
+
+    #[test]
+    fn full_containment_still_yields_strict() {
+        assert!(matches!(
+            strongest_enforceable_profile(&capabilities(true)),
+            SandboxProfile::Strict
+        ));
+        let config = enforceable_strict_config(&SandboxConfig::default(), &capabilities(true));
+        assert!(matches!(config.profile, SandboxProfile::Strict));
+    }
+
+    #[test]
+    fn windows_shaped_capabilities_yield_the_enforceable_profile() {
+        // Windows: restricted token + Job Object, but no filesystem, syscall or
+        // network isolation. Naming Strict there means the adapter refuses and
+        // the user-confirmed action never runs (#10665).
+        let windows = SandboxCapabilities {
+            filesystem_isolation: false,
+            syscall_filtering: false,
+            network_isolation: false,
+            resource_limits: true,
+            process_isolation: true,
+            privilege_restriction: true,
+        };
+        assert!(matches!(
+            strongest_enforceable_profile(&windows),
+            SandboxProfile::Permissive
+        ));
+        let config = enforceable_strict_config(&SandboxConfig::default(), &windows);
+        assert!(matches!(config.profile, SandboxProfile::Permissive));
+    }
+
+    #[test]
+    fn clamping_changes_only_the_profile() {
+        // Everything else must still come from default_strict_config, so the
+        // clamp cannot quietly widen writes, network or the operator's switch.
+        let base = SandboxConfig {
+            enabled: true,
+            max_cpu_time_ms: 4_242,
+            ..SandboxConfig::default()
+        };
+        let strict = default_strict_config(&base);
+        let clamped = enforceable_strict_config(&base, &capabilities(false));
+
+        assert!(matches!(clamped.profile, SandboxProfile::Permissive));
+        assert_eq!(clamped.enabled, strict.enabled);
+        assert_eq!(clamped.allowed_write_paths, strict.allowed_write_paths);
+        assert!(clamped.allowed_write_paths.is_empty());
+        assert_eq!(clamped.allow_network, strict.allow_network);
+        assert!(!clamped.allow_network);
+        assert_eq!(clamped.max_cpu_time_ms, strict.max_cpu_time_ms);
+        assert_eq!(clamped.allowed_read_paths, strict.allowed_read_paths);
+    }
+
+    #[test]
+    fn a_disabled_sandbox_switch_survives_clamping() {
+        // The operator's off switch is preserved exactly as default_strict_config
+        // preserves it (#7476): clamping must not turn a disabled sandbox into an
+        // enabled permissive one.
+        let base = SandboxConfig {
+            enabled: false,
+            ..SandboxConfig::default()
+        };
+        let clamped = enforceable_strict_config(&base, &capabilities(false));
+        assert!(!clamped.enabled);
     }
 }

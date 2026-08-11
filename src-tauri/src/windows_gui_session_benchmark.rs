@@ -223,9 +223,27 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
     let overlay_driver = crate::platform_overlay::create_platform_overlay_driver();
     let input_driver: Arc<dyn InputDriver> = Arc::from(create_platform_input_driver());
     let audit_logger = Arc::new(RwLock::new(AuditLogger::new(200, 20)));
+    // Permissive is the only profile that reaches the Windows spawn path, and
+    // it is not a relaxation here — it is the containment Windows can actually
+    // enforce. `Standard`/`Strict` advertise filesystem, syscall and network
+    // isolation; Windows provides none of those, so
+    // `missing_required_containment_for_profile` fails them CLOSED rather than
+    // audit a resource-limited child as contained (#6422/#6734, 2026-06-23).
+    // Under Permissive the action still runs out-of-process in
+    // maekon-sandbox-worker under a restricted token (deny-only Administrators,
+    // write-restricted SID, privileges removed) inside a Job Object with the
+    // limits below — the containment this platform has.
+    //
+    // Asking for Strict here tested the guard, not the feature: the benchmark
+    // could not pass on Windows from the moment that guard landed, ten days
+    // after rc.6 was tagged, and the E19 lane had no runner afterwards (#10161)
+    // so nothing reported it. The profile in force is recorded in the readiness
+    // stage so the report states which containment the evidence was produced
+    // under rather than leaving it implied.
+    let sandbox_profile = SandboxProfile::Permissive;
     let sandbox_config = SandboxConfig {
         enabled: true,
-        profile: SandboxProfile::Strict,
+        profile: sandbox_profile,
         max_cpu_time_ms: 10_000,
         ..SandboxConfig::default()
     };
@@ -738,6 +756,35 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
         .map(|result| result.result.success && result.outcome.succeeded)
         .unwrap_or(false);
 
+    // Why the reason is reported: with the right element now selected, a failed
+    // execution said only `controller_success: false` — the audit log recorded
+    // "started" then "failed" while the report carried no cause at all, on both
+    // a hosted runner and a Windows 11 client. IntentResult::error and
+    // GuiExecutionOutcome::detail already hold it; surface them (sanitized,
+    // like every other message here) so the next run names the failure instead
+    // of only proving it happened.
+    let (execute_error, execute_detail, execute_steps, execute_retries, execute_verification) =
+        match execute_result.as_ref() {
+            Ok(result) => (
+                result.result.error.as_deref().map(sanitize_error),
+                result.outcome.detail.as_deref().map(sanitize_error),
+                Some((result.outcome.steps_completed, result.outcome.total_steps)),
+                Some(result.result.retry_count),
+                result
+                    .result
+                    .verification
+                    .as_ref()
+                    .map(|v| json!({ "screen_changed": v.screen_changed, "changed_regions": v.changed_regions })),
+            ),
+            Err(error) => (
+                Some(sanitize_error(&error.to_string())),
+                None,
+                None,
+                None,
+                None,
+            ),
+        };
+
     stages.push(json!({
         "stage": "execute",
         "controller_result_ok": execute_result.is_ok(),
@@ -747,6 +794,15 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
         "before_text_len": fixture_state_text_len(&before_state),
         "after_text_len": after_state.ok().as_ref().map(|state| fixture_state_text_len(state)),
         "raw_text_hash": short_hash(&expected_text),
+        // States the containment the evidence was produced under, rather than
+        // leaving it implied by the platform.
+        "sandbox_profile": format!("{sandbox_profile:?}"),
+        "sandbox_containment": "out-of-process worker under a restricted token (deny-only Administrators, write-restricted SID, privileges removed) inside a Job Object; Windows enforces no filesystem, syscall or network isolation",
+        "execute_error": execute_error,
+        "execute_detail": execute_detail,
+        "execute_steps": execute_steps.map(|(done, total)| json!({ "completed": done, "total": total })),
+        "execute_retry_count": execute_retries,
+        "execute_verification": execute_verification,
         "computer_use_separation": "fixture launch/focus only; confirmed GUI action executed through Maekon gui_execute",
     }));
 
