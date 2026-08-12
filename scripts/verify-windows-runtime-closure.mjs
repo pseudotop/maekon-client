@@ -26,6 +26,12 @@ const SYSTEM_DLLS = new Set([
   'iphlpapi.dll',
   'kernel32.dll',
   'kernelbase.dll',
+  // Windows Multimedia Device API — the WASAPI enumerator cpal opens for audio
+  // capture. Ships in %SystemRoot%\System32 on every supported Windows version
+  // and is never redistributable, so it belongs with winmm.dll rather than in
+  // the payload. It entered the import table when cpal moved to 0.18 (#7207,
+  // 2026-06-30), after rc.6 was tagged, and the release lane had not run since.
+  'mmdevapi.dll',
   'msimg32.dll',
   'ncrypt.dll',
   'netapi32.dll',

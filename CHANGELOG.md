@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.8] - 2026-08-12
+
+### Fixed
+
+- Windows release artifacts are published again. `v0.0.1-rc.7` was tagged but
+  produced no downloads: the release build failed its Windows PE closure check
+  on `maekon.exe -> mmdevapi.dll`, so `Create GitHub Release` never ran.
+  `mmdevapi.dll` is the Windows Multimedia Device API that the WASAPI capture
+  enumerator imports. It ships in `%SystemRoot%\System32` on every supported
+  Windows version and is never redistributable, so it now belongs to the
+  closure validator's system allowlist beside `winmm.dll` rather than to the
+  payload. The guard is not weakened — it still fails closed on any
+  redistributable import, including the `libcrypto-3-x64.dll` omission that
+  made rc.6 unlaunchable.
+- Release verification now inspects the binary that actually ships. The
+  pre-tag CI build compiled `--features grpc` while the release build compiled
+  the full shipped feature set, so the very same closure check passed on a
+  binary that never links the audio/STT subsystem and failed for the first
+  time after the tag was already irreversible. CI, `build-smoke` and
+  `release-smoke` now build the shipped per-OS feature set and verify the
+  Windows PE closure of what they built, and `pre-release-check.sh` refuses to
+  clear a tag unless all four shipped-platform builds are already green on the
+  exact commit being tagged.
+
+There is no application behaviour change relative to `v0.0.1-rc.7`; this
+release publishes the artifacts that tag was meant to deliver.
+
 ## [0.0.1-rc.7] - 2026-08-06
 
 ### Added

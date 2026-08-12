@@ -1,6 +1,6 @@
 {
   "name": "maekon-dashboard",
-  "version": "0.0.1-rc.7",
+  "version": "0.0.1-rc.8",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5273 --strictPort",
