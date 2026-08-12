@@ -1231,11 +1231,21 @@ follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pa
 """
 
 [[exemptions.lru]]
-version = "0.18.1"
+version = "0.18.2"
 criteria = "safe-to-deploy"
 notes = """
 cycle22-grace-F-SC-C22-01 review-by:2026-10-31
 refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 0.18.0->0.18.1, disposition unchanged
+refreshed: 2026-08-12 #10714 RUSTSEC-2026-0253 — version pin 0.18.1->0.18.2, disposition unchanged.
+0.18.1->0.18.2 delta reviewed directly against the vendored sources: the only
+source change is in LruCache::pop(), which now calls self.detach(node_ptr)
+BEFORE Box::from_raw + ptr::drop_in_place(key), so unwinding out of a panicking
+key Drop can no longer leave dangling prev/next pointers in the intrusive list
+(CWE-416/CWE-415). One regression test was added
+(test_pop_panicking_key_drop_keeps_list_consistent). Everything else in the
+delta is metadata: Cargo.toml version, Cargo.lock, CHANGELOG, .cargo_vcs_info.
+No new dependencies, no added unsafe surface beyond the reordered operations,
+no new filesystem/network/process capability.
 """
 
 [[exemptions.lru-slab]]

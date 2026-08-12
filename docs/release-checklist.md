@@ -27,6 +27,16 @@
   `MAEKON_UPDATE_PUBLIC_KEY`) or an equivalent GitHub artifact attestation
   before treating the manifest `ssot.source_sha` as authoritative
 - [ ] Public branch `CI` was manually dispatched for the exported branch when the change affects Rust, CI, release scripts, or packaged artifacts; all `Build (${{ matrix.target }})` rows are green
+- [ ] All four `Build (${{ matrix.target }})` rows are green **on the exact commit
+  to be tagged**, not merely on the export PR head. These build the shipped
+  feature set (`stt,download,lan-sync` + the per-OS sandbox feature) and run the
+  Windows PE closure check on the binary that actually ships. If the commit has
+  no Build matrix, dispatch `Build Smoke Test` with `ref=<exact SHA>`; it
+  publishes the same check-run names and the same closure verification.
+  `pre-release-check.sh` enforces this and fails closed (#10698: v0.0.1-rc.7 was
+  tagged while this gate ran only against a `--features grpc` binary, so
+  `maekon.exe -> mmdevapi.dll` first appeared in `release.yml` — after the tag
+  was irreversible, leaving a signed tag with no artifacts).
 - [ ] Fresh-checkout source checks follow `docs/testing/source-build-prerequisites.md`
 - [ ] `./scripts/check-config-sync.sh --require-artifacts` passes after `pnpm build` (or
   `MAEKON_RELEASE_REQUIRE_ARTIFACTS=1 ./scripts/pre-release-check.sh <VERSION>` is run

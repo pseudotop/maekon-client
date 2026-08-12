@@ -111,7 +111,7 @@ expect_used = "warn"
 
 [workspace.package]
 edition = "2021"
-version = "0.0.1-rc.7"
+version = "0.0.1-rc.8"
 license = "Apache-2.0"
 rust-version = "1.88.0"  # jsonwebtoken 10.4.0 MSRV (cycle 32 F-SC-C33-02)
 repository = "https://github.com/pseudotop/maekon-client"

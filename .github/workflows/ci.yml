@@ -950,11 +950,57 @@ jobs:
 
       - name: Build release
         shell: bash
-        # Match release.yml/release-smoke.yml. A workspace-wide release build
-        # pulls optional maekon-embedding dependencies, including ort-sys,
-        # which has no x86_64-apple-darwin prebuilt ONNX Runtime artifact for
-        # this feature set. The shipped app build is maekon-app + grpc.
-        run: ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc
+        # Builds the SHIPPED feature set per OS, identical to release.yml and
+        # pinned against it by scripts/test-release-workflow-governance.sh.
+        #
+        # This parity is not cosmetic. The Windows PE closure check below only
+        # means something if it inspects the binary that actually ships. Until
+        # #10698 this step built `--features grpc` alone, so `stt` — and with
+        # it cpal's WASAPI import of `mmdevapi.dll` — was never linked here.
+        # The closure gate therefore passed on every export PR and failed for
+        # the first time on the v0.0.1-rc.7 tag build, when the tag was already
+        # irreversible and the release had no artifacts.
+        #
+        # `-p maekon-app` (rather than `--workspace`) stays: a workspace-wide
+        # release build pulls optional maekon-embedding dependencies including
+        # ort-sys, which has no x86_64-apple-darwin prebuilt ONNX Runtime
+        # artifact. That is the reason for the package scope, and it never
+        # required narrowing features — release.yml builds all four targets at
+        # full parity, and did so successfully for rc.7.
+        #
+        # RUSTFLAGS is the SECOND parity axis, and matching features alone was
+        # not enough. Cargo's extra-flag sources are mutually exclusive and
+        # `RUSTFLAGS` outranks `target.<triple>.rustflags`, so this workflow's
+        # top-level `RUSTFLAGS: -W warnings` silently discarded the
+        # `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C
+        # target-feature=+crt-static` that setup-windows-openssl exports — the
+        # release contract's static MSVC CRT. release.yml sets no workflow-level
+        # RUSTFLAGS, so there the flag applies. CI therefore linked the CRT
+        # dynamically and imported `MSVCP140.dll`, which the shipped binary does
+        # not; the closure gate failed on a binary that still was not the one
+        # that ships (#10698, rc.8 export PR maekon-client#160).
+        #
+        # So reproduce release.yml's EFFECTIVE flags per OS rather than
+        # inheriting this job's linting flags: Windows gets exactly the
+        # static-CRT flag, the other targets get none (release.yml has no
+        # RUSTFLAGS and `.cargo/config.toml` sets no `rustflags`). Dropping
+        # `-W warnings` here changes nothing that matters — `warnings` is at
+        # warn by default, and the first-party deny lives in `Cargo.toml`'s
+        # `[workspace.lints.rust]`, not in this env var.
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            FEATURES="grpc,systemd-notify,linux-sandbox,lan-sync,stt,download"
+            export RUSTFLAGS=""
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            FEATURES="grpc,windows-sandbox,lan-sync,stt,download"
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          else
+            FEATURES="grpc,lan-sync,stt,download"
+            export RUSTFLAGS=""
+          fi
+          echo "effective RUSTFLAGS: '${RUSTFLAGS}'"
+          ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features "$FEATURES"
 
       - name: Stage and verify signed Microsoft VC runtime (Windows)
         if: runner.os == 'Windows'
