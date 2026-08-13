@@ -101,6 +101,14 @@
       "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
       "accepted_until": "2026-09-30",
       "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-jmr9-qjv8-65gv",
+      "package": "extract-zip",
+      "reason": "extract-zip 2.0.1 unvalidated symlink path traversal, reachable only through the Puppeteer browser downloader: @puppeteer/browsers@2.13.2 -> extract-zip@2.0.1. That importer fetches a Chrome build for local and CI browser automation and is never installed into, bundled with, or executed by shipped client artifacts (DMG/MSI/DEB), which embed only the vite `dist` output via rust-embed. Dependabot classifies the affected node as development scope. Bound to this advisory rather than to the package so a future extract-zip advisory re-blocks instead of inheriting this decision. Re-triage with the post-rc.8 dependency-update wave before 2026-09-30 (#10829).",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-13"
     }
   ],
   "codeql": []
