@@ -45,6 +45,8 @@ use url::Url;
 
 use crate::ipc_error::IpcError;
 
+mod mailto;
+
 /// Upper bound on an accepted URL, in characters.
 ///
 /// Chosen at the low end of what real handlers accept rather than at any spec
@@ -52,7 +54,7 @@ use crate::ipc_error::IpcError;
 /// mail draft, and an oversized argument is the interesting half of a hostile
 /// input. `mailto:` bodies large enough to matter belong in the mail app, not in
 /// an argv entry.
-pub const MAX_HANDOFF_URL_CHARS: usize = 2_000;
+pub const MAX_HANDOFF_URL_CHARS: usize = 8_000;
 
 /// Every policy refusal. One wire code, because reaching any of these means the
 /// caller had a bug or the value was tampered with — none is a path a user can
@@ -80,23 +82,7 @@ pub const CODE_LAUNCH_FAILED: &str = "handoff.launch_failed";
 // deny-by-default in the direction that matters: a misconfigured client refuses
 // to open anything rather than opening the wrong thing. #9628 is the consumer.
 
-/// Second-level domains reserved for documentation and examples (RFC 2606 §3).
-const RESERVED_MAILTO_DOMAINS: &[&str] = &["example.com", "example.org", "example.net"];
-
-/// Reserved top-level domains (RFC 2606 §2, RFC 6761).
-///
-/// `localhost` is deliberately absent: unlike the others it can genuinely
-/// deliver, to a local MTA. A reserved-domain rule that admits a delivering
-/// domain is not a reserved-domain rule.
-const RESERVED_MAILTO_TLDS: &[&str] = &["example", "invalid", "test"];
-
-/// Percent-encoded octets refused anywhere in the input.
-///
-/// CR and LF terminate a header in every mail-adjacent format, and NUL
-/// terminates a string in the C APIs this eventually reaches. The raw forms are
-/// caught separately by [`has_control_character`]; these are the encoded forms,
-/// which survive URL parsing intact and are therefore the ones that actually
-/// travel.
+/// Percent-encoded octets refused in header-bearing URL positions.
 const REFUSED_ENCODED_OCTETS: &[&str] = &["%0a", "%0d", "%00"];
 
 /// Why a URL was refused.
@@ -118,6 +104,7 @@ pub enum Rejection {
     MailtoRecipientMissing,
     MailtoRecipientMalformed,
     MailtoDomainNotReserved { domain: String },
+    MailtoHeaderNotAllowed,
 }
 
 impl fmt::Display for Rejection {
@@ -156,6 +143,9 @@ impl fmt::Display for Rejection {
                 f,
                 "mailto domain `{domain}` is not an RFC 2606/6761 reserved domain"
             ),
+            Self::MailtoHeaderNotAllowed => {
+                write!(f, "mailto query permits one subject and one body only")
+            }
         }
     }
 }
@@ -185,36 +175,6 @@ fn has_control_character(input: &str) -> bool {
     input.chars().any(|c| c.is_control())
 }
 
-/// Split a `mailto:` path into its recipient addresses.
-///
-/// `Url::path()` for `mailto:` is the comma-separated `to` list, before the
-/// `?`-introduced header block.
-fn mailto_recipients(url: &Url) -> Vec<&str> {
-    url.path()
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-/// True if `domain` is reserved by RFC 2606 / RFC 6761.
-///
-/// Case-folds first: domain names are case-insensitive, and the reserved lists
-/// are written lowercase, so comparing raw would reject `a@EXAMPLE.COM` — a
-/// perfectly reserved address — while accepting nothing extra. A rule that is
-/// wrong only in the safe direction is still wrong, and here it would have made
-/// #9627's own synthetic recipients depend on how they happened to be cased.
-fn is_reserved_mail_domain(domain: &str) -> bool {
-    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
-    if RESERVED_MAILTO_DOMAINS.contains(&domain.as_str()) {
-        return true;
-    }
-    domain
-        .rsplit('.')
-        .next()
-        .is_some_and(|tld| RESERVED_MAILTO_TLDS.contains(&tld))
-}
-
 /// Apply the whole policy to a caller-supplied string.
 ///
 /// Pure: no filesystem, no process, no state. Every acceptance criterion about
@@ -242,18 +202,17 @@ pub fn validate(input: &str, allowed_hosts: &[String]) -> Result<ValidatedTarget
         return Err(Rejection::ControlCharacter);
     }
 
-    let lowered = trimmed.to_ascii_lowercase();
-    if REFUSED_ENCODED_OCTETS
-        .iter()
-        .any(|octet| lowered.contains(octet))
-    {
-        return Err(Rejection::EncodedControlOctet);
-    }
-
     let url = Url::parse(trimmed).map_err(|_| Rejection::Unparsable)?;
 
     match url.scheme() {
         "https" => {
+            let lowered = trimmed.to_ascii_lowercase();
+            if REFUSED_ENCODED_OCTETS
+                .iter()
+                .any(|octet| lowered.contains(octet))
+            {
+                return Err(Rejection::EncodedControlOctet);
+            }
             let host = url
                 .host_str()
                 .ok_or(Rejection::HostMissing)?
@@ -269,23 +228,7 @@ pub fn validate(input: &str, allowed_hosts: &[String]) -> Result<ValidatedTarget
             }
         }
         "mailto" => {
-            let recipients = mailto_recipients(&url);
-            if recipients.is_empty() {
-                return Err(Rejection::MailtoRecipientMissing);
-            }
-            for recipient in recipients {
-                let mut parts = recipient.rsplitn(2, '@');
-                let domain = parts.next().unwrap_or_default();
-                let local = parts.next().unwrap_or_default();
-                if local.is_empty() || domain.is_empty() || domain.contains('@') {
-                    return Err(Rejection::MailtoRecipientMalformed);
-                }
-                if !is_reserved_mail_domain(domain) {
-                    return Err(Rejection::MailtoDomainNotReserved {
-                        domain: domain.to_ascii_lowercase(),
-                    });
-                }
-            }
+            mailto::validate(&url)?;
         }
         other => {
             return Err(Rejection::SchemeNotAllowed {
@@ -704,6 +647,11 @@ mod tests {
             "mailto:?subject=hi",
             "mailto:@example.com",
             "mailto:nobody",
+            "mailto:a%20b@example.com",
+            "mailto:.a@example.com",
+            "mailto:a..b@example.com",
+            "mailto:a@-vendor.example",
+            "mailto:a@vendor..example",
         ] {
             let err = validate(input, &allowed()).unwrap_err();
             assert!(
@@ -733,6 +681,30 @@ mod tests {
                 validate(input, &allowed()).unwrap_err(),
                 Rejection::EncodedControlOctet,
                 "{input} should be refused for an encoded control octet"
+            );
+        }
+    }
+
+    #[test]
+    fn permits_encoded_newlines_only_inside_body() {
+        let target = validate(
+            "mailto:a@example.com?subject=Review&body=Line%201%0D%0ALine%202",
+            &allowed(),
+        )
+        .expect("body line breaks are message content, not headers");
+        assert!(target.as_str().contains("body=Line%201%0D%0ALine%202"));
+
+        for input in [
+            "mailto:a@example.com?cc=real@gmail.com",
+            "mailto:a@example.com?bcc=real@gmail.com",
+            "mailto:a@example.com?to=real@gmail.com",
+            "mailto:a@example.com?subject=one&subject=two",
+            "mailto:a@example.com?body=one&body=two",
+        ] {
+            assert_eq!(
+                validate(input, &allowed()).unwrap_err(),
+                Rejection::MailtoHeaderNotAllowed,
+                "{input} must not add recipients or duplicate fields"
             );
         }
     }

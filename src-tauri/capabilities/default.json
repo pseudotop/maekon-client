@@ -160,6 +160,9 @@
     "allow-get-vault-mirror-settings",
     "allow-set-vault-mirror-path",
     "allow-open-external-target",
-    "allow-fetch-context-home"
+    "allow-fetch-context-home",
+    "allow-generate-assignment-email-draft",
+    "allow-load-assignment-email-draft",
+    "allow-regenerate-assignment-email-draft"
   ]
 }

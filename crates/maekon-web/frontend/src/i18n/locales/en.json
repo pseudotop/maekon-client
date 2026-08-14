@@ -102,7 +102,8 @@
     "groupManage": "Manage",
     "groupSystem": "System",
     "tasks": "Tasks",
-    "contextHome": "Context home"
+    "contextHome": "Context home",
+    "assignmentEmailDraft": "Assignment email draft"
   },
   "dashboard": {
     "metricsError": "Failed to load system metrics",
@@ -3296,6 +3297,49 @@
     "continueWithoutSignIn": "Continue without signing in",
     "localFirstNote": "Maekon works fully without an account. Signing in only adds connected-mode features.",
     "continueToHome": "Continue to your context"
+  },
+  "assignmentEmailDraft": {
+    "title": "Assignment email draft",
+    "description": "Review and edit a synthetic assignment draft locally, then open it in your mail app for a final human decision.",
+    "providerZero": "Loading, editing, and saving never call an email provider. Only the explicit review action asks the OS to open a compose window; Maekon never sends.",
+    "externalBadge": "external synthetic contact",
+    "source": { "title": "Load from a confirmed assignment", "receipt": "Assignment receipt ID" },
+    "fields": {
+      "organization": "External organization",
+      "contact": "External contact",
+      "recipient": "Synthetic recipient",
+      "subject": "Subject",
+      "body": "Body"
+    },
+    "editor": {
+      "title": "Local editable draft",
+      "saved": "Saved locally for this app session",
+      "unsaved": "Unsaved local changes"
+    },
+    "stale": {
+      "body": "The assignment or counterparty relationship changed. Editing and handoff are locked; regenerate from the latest confirmed receipt or cancel.",
+      "latestReceipt": "Latest confirmed assignment receipt ID"
+    },
+    "review": {
+      "title": "Human handoff gate",
+      "body": "Confirm the external synthetic organization, contact, recipient, subject, and body shown above. The mail app opens a compose window only; sending remains a human action there.",
+      "confirm": "I reviewed the synthetic recipient, subject, and body",
+      "noAttachment": "No XLSX or other file is attached automatically.",
+      "opened": "The OS accepted the compose request. Maekon did not send the message."
+    },
+    "actions": {
+      "generate": "Generate draft",
+      "regenerate": "Regenerate from latest receipt",
+      "reviewInMail": "Review in mail app"
+    },
+    "errors": {
+      "load": "The draft could not be loaded or regenerated. Check the signed-in account, consent, and receipt state.",
+      "save": "The local session copy could not be saved.",
+      "validation": "Save valid subject and body changes, then confirm the review before handoff.",
+      "noHandler": "No mail application is registered for compose links. Install or configure a default mail app, then try again.",
+      "handoff": "The OS could not open the compose window. Your local draft is still saved; retry when ready.",
+      "bridge": "OS handoff is available only in the Maekon desktop app."
+    }
   },
   "contextHome": {
     "title": "Your context",

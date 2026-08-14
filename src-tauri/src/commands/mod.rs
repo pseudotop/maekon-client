@@ -6,6 +6,7 @@ pub(crate) mod audit;
 // `auth_status_mapping` integration test can drive `auth_status_inner` against a
 // live login round trip. Every item inside the module was already `pub`; only
 // the module gate was crate-private.
+pub mod assignment_email_draft;
 pub mod auth;
 pub(crate) mod automation;
 pub(crate) mod autostart;

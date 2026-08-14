@@ -69,6 +69,7 @@ pub mod ai_llm_client;
 pub use maekon_core::ports::llm_provider::LlmCallHealth;
 pub mod ai_ocr_client;
 pub mod analysis_client;
+pub mod assignment_email_draft;
 pub mod auth;
 pub mod batch_uploader;
 // ADR-034: the outbound-HTTP substrate (circuit_breaker / outbound /

@@ -94,11 +94,41 @@ jobs:
         if: runner.os == 'Windows'
         uses: ./.github/actions/setup-windows-openssl
 
+      # Must cover the SHIPPED Linux feature set, not just the webview stack.
+      # `stt` pulls cpal -> PipeWire SPA and whisper -> bindgen, so a list
+      # without libspa/libpipewire/libasound/libclang fails the build outright:
+      #   error: failed to run custom build command for `libspa-sys v0.9.2`
+      # (#10838, run 31679073940). This lane has compiled `stt` since #8053 and
+      # is dispatch-only, so nothing exercised it until the rc.8 tag point.
+      # Keep in step with ci.yml's Build job list.
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-6.0-dev
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libwebkitgtk-6.0-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libdbus-1-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libudev-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            patchelf
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
@@ -128,17 +158,43 @@ jobs:
             chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
           fi
 
+      # Each build sets its EFFECTIVE RUSTFLAGS rather than inheriting this
+      # workflow's `RUSTFLAGS: -W warnings`. Cargo's extra-flag sources are
+      # mutually exclusive and `RUSTFLAGS` outranks `target.<triple>.rustflags`,
+      # so the top-level lint flag silently discarded the
+      # `-C target-feature=+crt-static` that setup-windows-openssl exports — the
+      # release contract's static MSVC CRT. The CRT then linked dynamically,
+      # `MSVCP140.dll` entered the import table, and the PE closure check below
+      # failed on a binary that is not the shipped one (#10838).
+      #
+      # release.yml sets no RUSTFLAGS at all and `.cargo/config.toml` sets no
+      # `rustflags`, so its effective flags are: Windows `+crt-static`, every
+      # other target none. Reproduce exactly that. Feature parity alone is not
+      # parity — every dimension that changes the import table has to match.
       - name: Build release binary (macOS release feature parity)
         if: runner.os == 'macOS'
-        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,lan-sync,stt,download
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS=""
+          cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,lan-sync,stt,download
 
       - name: Build release binary (Windows release feature parity)
         if: runner.os == 'Windows'
-        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,windows-sandbox,lan-sync,stt,download
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS="-C target-feature=+crt-static"
+          echo "effective RUSTFLAGS: '${RUSTFLAGS}'"
+          cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,windows-sandbox,lan-sync,stt,download
 
       - name: Build release binary (Linux release feature parity)
         if: runner.os == 'Linux'
-        run: cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,systemd-notify,linux-sandbox,lan-sync,stt,download
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS=""
+          cargo build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc,systemd-notify,linux-sandbox,lan-sync,stt,download
 
       # Feature parity above is only half the rehearsal: a binary that compiles
       # can still fail to launch on a clean host. This lane built the shipped

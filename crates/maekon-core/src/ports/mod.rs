@@ -5,6 +5,7 @@ pub mod analysis_provider;
 pub mod ann_index;
 pub mod annotation_storage;
 pub mod api_client;
+pub mod assignment_email_draft_client;
 pub mod audio_capture;
 pub mod audit_chain_verifier;
 pub mod audit_log;

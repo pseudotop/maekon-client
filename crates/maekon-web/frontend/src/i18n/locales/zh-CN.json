@@ -102,7 +102,8 @@
     "groupManage": "管理",
     "groupSystem": "系统",
     "tasks": "任务",
-    "contextHome": "上下文主页"
+    "contextHome": "上下文主页",
+    "assignmentEmailDraft": "分配邮件草稿"
   },
   "dashboard": {
     "metricsError": "加载系统指标失败",
@@ -3296,6 +3297,41 @@
     "continueWithoutSignIn": "不登录，继续使用",
     "localFirstNote": "Maekon 无需账户即可完整运行。登录只会增加联网模式功能。",
     "continueToHome": "前往你的上下文"
+  },
+  "assignmentEmailDraft": {
+    "title": "分配邮件草稿",
+    "description": "在本地审核和编辑合成分配草稿，然后打开邮件撰写窗口供人工最终决定。",
+    "providerZero": "加载、编辑和保存不会调用邮件提供商。只有明确的审核操作会请求系统打开撰写窗口；Maekon绝不发送。",
+    "externalBadge": "外部合成联系人",
+    "source": { "title": "从已确认分配加载", "receipt": "分配回执ID" },
+    "fields": {
+      "organization": "外部组织",
+      "contact": "外部联系人",
+      "recipient": "合成收件人",
+      "subject": "主题",
+      "body": "正文"
+    },
+    "editor": { "title": "本地可编辑草稿", "saved": "已保存到当前应用会话", "unsaved": "未保存的本地更改" },
+    "stale": {
+      "body": "分配或合作方关系已更改。编辑和交接已锁定；请用最新确认回执重新生成或取消。",
+      "latestReceipt": "最新确认分配回执ID"
+    },
+    "review": {
+      "title": "人工交接门",
+      "body": "请确认上方外部合成组织、联系人、收件人、主题和正文。邮件应用只打开撰写窗口，发送仍由人工决定。",
+      "confirm": "我已审核合成收件人、主题和正文",
+      "noAttachment": "不会自动附加XLSX或其他文件。",
+      "opened": "系统已接受撰写请求。Maekon没有发送消息。"
+    },
+    "actions": { "generate": "生成草稿", "regenerate": "用最新回执重新生成", "reviewInMail": "在邮件应用中审核" },
+    "errors": {
+      "load": "无法加载或重新生成草稿。请检查登录账户、同意状态和回执。",
+      "save": "无法保存本地会话副本。",
+      "validation": "请保存有效主题和正文，并在交接前确认审核。",
+      "noHandler": "没有处理撰写链接的邮件应用。请配置默认邮件应用后重试。",
+      "handoff": "系统无法打开撰写窗口。本地草稿仍已保存。",
+      "bridge": "系统交接仅在Maekon桌面应用中可用。"
+    }
   },
   "contextHome": {
     "title": "你的上下文",

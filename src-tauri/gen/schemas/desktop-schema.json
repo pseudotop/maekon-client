@@ -369,6 +369,12 @@
           "markdownDescription": "Enables the forget_sync_peer command without any pre-configured scope."
         },
         {
+          "description": "Enables the generate_assignment_email_draft command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-generate-assignment-email-draft",
+          "markdownDescription": "Enables the generate_assignment_email_draft command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_allowed_setting_keys command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-allowed-setting-keys",
@@ -621,6 +627,12 @@
           "markdownDescription": "Enables the list_todos command without any pre-configured scope."
         },
         {
+          "description": "Enables the load_assignment_email_draft command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-assignment-email-draft",
+          "markdownDescription": "Enables the load_assignment_email_draft command without any pre-configured scope."
+        },
+        {
           "description": "Enables the load_session_messages command without any pre-configured scope.",
           "type": "string",
           "const": "allow-load-session-messages",
@@ -727,6 +739,12 @@
           "type": "string",
           "const": "allow-refresh-detection-overlay",
           "markdownDescription": "Enables the refresh_detection_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the regenerate_assignment_email_draft command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-regenerate-assignment-email-draft",
+          "markdownDescription": "Enables the regenerate_assignment_email_draft command without any pre-configured scope."
         },
         {
           "description": "Enables the register_capture_reauth_pin command without any pre-configured scope.",
@@ -1209,6 +1227,12 @@
           "markdownDescription": "Denies the forget_sync_peer command without any pre-configured scope."
         },
         {
+          "description": "Denies the generate_assignment_email_draft command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-generate-assignment-email-draft",
+          "markdownDescription": "Denies the generate_assignment_email_draft command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_allowed_setting_keys command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-allowed-setting-keys",
@@ -1461,6 +1485,12 @@
           "markdownDescription": "Denies the list_todos command without any pre-configured scope."
         },
         {
+          "description": "Denies the load_assignment_email_draft command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-assignment-email-draft",
+          "markdownDescription": "Denies the load_assignment_email_draft command without any pre-configured scope."
+        },
+        {
           "description": "Denies the load_session_messages command without any pre-configured scope.",
           "type": "string",
           "const": "deny-load-session-messages",
@@ -1567,6 +1597,12 @@
           "type": "string",
           "const": "deny-refresh-detection-overlay",
           "markdownDescription": "Denies the refresh_detection_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the regenerate_assignment_email_draft command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-regenerate-assignment-email-draft",
+          "markdownDescription": "Denies the regenerate_assignment_email_draft command without any pre-configured scope."
         },
         {
           "description": "Denies the register_capture_reauth_pin command without any pre-configured scope.",

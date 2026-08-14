@@ -1,4 +1,4 @@
-//! Tauri IPC command contract tests — CRT-PRV-IPC-001..044.
+//! Tauri IPC command contract tests — CRT-PRV-IPC-001..049.
 //!
 //! Each `#[test]` asserts that the named IPC command module exists +
 //! declares at least one `#[tauri::command]` function. These are SMOKE /
@@ -211,6 +211,7 @@ const HELPER_MODULES: &[&str] = &[
 const COVERED_COMMAND_MODULES: &[&str] = &[
     "ai_session",
     "analysis",
+    "assignment_email_draft",
     "audio",
     "audit",
     "auth",
@@ -799,6 +800,48 @@ fn crt_prv_ipc_048_context_home_takes_no_identity_argument() {
              not from the caller. Signature was: {signature}"
         );
     }
+}
+
+/// #9627: the WebView may identify only persisted receipts and drafts.
+/// Authority-bearing identity, recipient, editable content, and provider
+/// selection must remain behind the authenticated Rust/server boundary.
+#[test]
+fn crt_prv_ipc_049_assignment_email_draft_is_receipt_only() {
+    assert_command_module("assignment_email_draft");
+    let path = commands_dir().join("assignment_email_draft.rs");
+    let src = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+
+    let signature = |name: &str| {
+        src.split(&format!("pub async fn {name}("))
+            .nth(1)
+            .unwrap_or_else(|| panic!("assignment_email_draft must declare {name}"))
+            .split(") ->")
+            .next()
+            .expect("the command signature must close")
+    };
+
+    let signatures = [
+        signature("generate_assignment_email_draft"),
+        signature("load_assignment_email_draft"),
+        signature("regenerate_assignment_email_draft"),
+    ];
+    for forbidden in [
+        "organization_id",
+        "actor_id",
+        "user_id",
+        "recipient",
+        "subject",
+        "body",
+        "provider",
+        "token",
+    ] {
+        assert!(
+            signatures.iter().all(|value| !value.contains(forbidden)),
+            "assignment email draft IPC must not accept `{forbidden}`"
+        );
+    }
+    assert_eq!(src.matches("#[command]").count(), 3);
 }
 
 /// #8199: native fullscreen-policy diagnostics must remain debug-gated rather

@@ -15,6 +15,7 @@ import {
   Lightbulb,
   ListChecks,
   LogIn,
+  Mail,
   MessageCircle,
   MessageSquare,
   Monitor,
@@ -87,6 +88,7 @@ const TasksPage = lazy(() => import('../pages/tasks/TasksPage'))
 const SupportPage = lazy(() => import('../pages/support/SupportPage'))
 const LoginPage = lazy(() => import('../pages/auth/LoginPage'))
 const ContextHomePage = lazy(() => import('../pages/home/ContextHomePage'))
+const AssignmentEmailDraftPage = lazy(() => import('../pages/assignment-email-draft/AssignmentEmailDraftPage'))
 
 // --- Lazy imports: Settings sub-routes ---
 const GeneralTab = lazy(() => import('../pages/setting-tabs/GeneralTab'))
@@ -442,6 +444,14 @@ export const routeTree: RouteNode[] = [
     labelKey: 'nav.contextHome',
     icon: Home,
     component: ContextHomePage,
+  },
+  // #9627 WD-04.4: receipt-only local editor and explicit OS compose handoff.
+  // It stays off the permanent rail but remains command-palette reachable.
+  {
+    path: '/assignment-email-draft',
+    labelKey: 'nav.assignmentEmailDraft',
+    icon: Mail,
+    component: AssignmentEmailDraftPage,
   },
 ]
 

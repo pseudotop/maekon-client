@@ -102,7 +102,8 @@
     "groupManage": "管理",
     "groupSystem": "システム",
     "tasks": "タスク",
-    "contextHome": "コンテキストホーム"
+    "contextHome": "コンテキストホーム",
+    "assignmentEmailDraft": "割り当てメール下書き"
   },
   "dashboard": {
     "metricsError": "システムメトリクスの読み込みに失敗しました",
@@ -3296,6 +3297,45 @@
     "continueWithoutSignIn": "サインインせずに続ける",
     "localFirstNote": "Maekon はアカウントなしでもすべての機能が動作します。サインインは接続モードの機能を追加するだけです。",
     "continueToHome": "コンテキストへ進む"
+  },
+  "assignmentEmailDraft": {
+    "title": "割り当てメール下書き",
+    "description": "合成割り当て下書きをローカルで確認・編集し、最終判断のためメール作成画面を開きます。",
+    "providerZero": "読み込み・編集・保存ではメールプロバイダーを呼び出しません。明示的な確認操作だけがOSの作成画面を開き、Maekonは送信しません。",
+    "externalBadge": "外部の合成担当者",
+    "source": { "title": "確定割り当てから読み込む", "receipt": "割り当て領収ID" },
+    "fields": {
+      "organization": "外部組織",
+      "contact": "外部担当者",
+      "recipient": "合成受信者",
+      "subject": "件名",
+      "body": "本文"
+    },
+    "editor": {
+      "title": "ローカル編集下書き",
+      "saved": "このアプリセッションに保存済み",
+      "unsaved": "未保存のローカル変更"
+    },
+    "stale": {
+      "body": "割り当てまたは取引先関係が変更されました。編集と引き渡しはロックされています。最新の確定領収で再生成するかキャンセルしてください。",
+      "latestReceipt": "最新の確定割り当て領収ID"
+    },
+    "review": {
+      "title": "人による引き渡しゲート",
+      "body": "外部合成組織・担当者・受信者・件名・本文を確認してください。メールアプリは作成画面のみを開き、送信は人が判断します。",
+      "confirm": "合成受信者・件名・本文を確認しました",
+      "noAttachment": "XLSXなどのファイルは自動添付されません。",
+      "opened": "OSが作成要求を受け付けました。Maekonは送信していません。"
+    },
+    "actions": { "generate": "下書きを生成", "regenerate": "最新領収から再生成", "reviewInMail": "メールアプリで確認" },
+    "errors": {
+      "load": "下書きを読み込みまたは再生成できませんでした。アカウント、同意、領収状態を確認してください。",
+      "save": "ローカルセッションのコピーを保存できませんでした。",
+      "validation": "有効な件名と本文を保存し、引き渡し前に確認してください。",
+      "noHandler": "作成リンクを処理するメールアプリがありません。既定のメールアプリを設定して再試行してください。",
+      "handoff": "OSが作成画面を開けませんでした。ローカル下書きは保持されています。",
+      "bridge": "OS引き渡しはMaekonデスクトップアプリでのみ利用できます。"
+    }
   },
   "contextHome": {
     "title": "あなたのコンテキスト",

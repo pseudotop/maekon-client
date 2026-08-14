@@ -3,6 +3,7 @@ pub mod ai_session;
 pub mod analysis;
 pub mod annotation;
 pub mod app_registry;
+pub mod assignment_email_draft;
 pub mod audio;
 pub mod audit;
 pub mod automation;

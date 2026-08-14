@@ -123,6 +123,11 @@
   checksum verifies against the generated SBOM
 - [ ] Signature sidecars are present when signature verification is advertised
 - [ ] macOS artifacts are signed, notarized, and stapled when applicable
+- [ ] Stapling was confirmed **on the published release assets**, not on the
+  notarization run's own output:
+  `./scripts/verify-published-macos-notarization.sh <TAG>`. A green Release
+  workflow does not imply notarization succeeded — `Notarize macOS Release
+  Assets` runs separately and can fail on its own (#10935)
 - [ ] The final notarized bytes for `maekon-macos-universal.dmg` and
   `maekon-macos-universal.pkg` were republished with regenerated `.sha256`,
   `.sig`, and provenance after stapling

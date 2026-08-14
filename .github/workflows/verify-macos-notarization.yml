@@ -1,0 +1,144 @@
+name: Verify Published macOS Notarization
+
+# Independent of notarize-macos-release-assets.yml on purpose (#10935).
+#
+# That workflow verifies the bytes it produces, but it cannot report a problem
+# when it fails before reaching its checks, and it reports nothing at all when
+# it never runs. v0.0.1-rc.8 published signed-but-unnotarized macOS assets for
+# ~13 hours for exactly that reason: the notarization run failed on its own
+# while the Release workflow stayed green.
+#
+# This workflow reads the release page instead, so the same finding surfaces
+# regardless of why the assets are unstapled.
+
+on:
+  schedule:
+    # Daily, offset off the hour to avoid the top-of-hour Actions queue.
+    - cron: "37 6 * * *"
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: "Space-separated release tags to check (default: 5 most recent)"
+        required: false
+        type: string
+
+concurrency:
+  group: verify-macos-notarization
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify-published-notarization:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MAEKON_PUBLIC_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Verify published macOS assets are stapled
+        id: verify
+        shell: bash
+        env:
+          # Never interpolate workflow inputs into the script body; pass them
+          # through the environment and validate before use.
+          TAGS_INPUT: ${{ inputs.tags }}
+        run: |
+          set -uo pipefail
+
+          REQUESTED="${TAGS_INPUT:-}"
+          if [[ -n "${REQUESTED// /}" ]]; then
+            if [[ ! "$REQUESTED" =~ ^[A-Za-z0-9._+-][A-Za-z0-9._+ -]*$ ]]; then
+              echo "::error::tags input contains characters outside the release-tag charset"
+              exit 1
+            fi
+            # Word splitting is intentional: the input is a tag list.
+            # shellcheck disable=SC2086
+            ./scripts/verify-published-macos-notarization.sh $REQUESTED \
+              >notarization-report.txt 2>&1
+          else
+            ./scripts/verify-published-macos-notarization.sh --latest 5 \
+              >notarization-report.txt 2>&1
+          fi
+          status=$?
+
+          cat notarization-report.txt
+          exit "$status"
+
+      # "This release is not notarized" is maintainer news before it is public
+      # news, so the finding goes to the SSOT (#10948). Scoped to issues:write
+      # on that one repository — no wider grant than the alert needs.
+      - name: Mint an SSOT-scoped token for issue filing
+        id: ssot_token
+        if: failure()
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        with:
+          client-id: ${{ secrets.MAEKON_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MAEKON_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: pseudotop
+          repositories: oneshim
+          permission-issues: write
+
+      - name: Open or update the unstapled-release issue
+        if: failure()
+        shell: bash
+        env:
+          ISSUE_TITLE: "release(maekon): published macOS assets are not stapled"
+          SSOT_TOKEN: ${{ steps.ssot_token.outputs.token }}
+          PUBLIC_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # An unstapled release that nobody hears about is the condition this
+          # workflow exists to prevent, so a failed mint degrades to the public
+          # repo rather than to silence.
+          SSOT_ISSUE_REPO="pseudotop/oneshim"
+          FALLBACK_NOTE=""
+          if [[ -n "${SSOT_TOKEN:-}" ]]; then
+            TARGET_REPO="$SSOT_ISSUE_REPO"
+            export GH_TOKEN="$SSOT_TOKEN"
+          else
+            TARGET_REPO="$GITHUB_REPOSITORY"
+            export GH_TOKEN="$PUBLIC_TOKEN"
+            FALLBACK_NOTE="yes"
+            echo "::error::Could not mint the ${SSOT_ISSUE_REPO} token; filing publicly so the finding is not lost."
+          fi
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "\`verify-published-macos-notarization.sh\` found macOS release assets that are not stapled."
+            echo
+            echo "Gatekeeper refuses these on a user machine. Re-run \`Notarize macOS Release Assets\` for the affected tag, then re-run this workflow to confirm."
+            echo
+            echo '```'
+            cat notarization-report.txt 2>/dev/null || echo "(report unavailable)"
+            echo '```'
+            if [[ -n "$FALLBACK_NOTE" ]]; then
+              echo
+              echo "> Filed here rather than in ${SSOT_ISSUE_REPO} because the automation App token could not be minted. Check the App installation and its private key."
+            fi
+            echo
+            echo "Detected by [run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) — see #10935."
+          } > "$BODY_FILE"
+
+          EXISTING="$(gh issue list \
+            --repo "$TARGET_REPO" \
+            --state open \
+            --search "\"$ISSUE_TITLE\" in:title" \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ -n "$EXISTING" ]]; then
+            gh issue comment "$EXISTING" --repo "$TARGET_REPO" --body-file "$BODY_FILE"
+          else
+            gh issue create \
+              --repo "$TARGET_REPO" \
+              --title "$ISSUE_TITLE" \
+              --body-file "$BODY_FILE"
+          fi

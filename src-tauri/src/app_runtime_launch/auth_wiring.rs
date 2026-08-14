@@ -109,6 +109,9 @@ fn install_context_home_client(
     use tauri::Manager;
     app_handle
         .state::<crate::commands::context_home::ContextHomeState>()
+        .set(client.clone());
+    app_handle
+        .state::<crate::commands::assignment_email_draft::AssignmentEmailDraftState>()
         .set(client);
 }
 
