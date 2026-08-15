@@ -85,8 +85,36 @@ verify_tag() {
   return "$status"
 }
 
+# Charset a release tag may use. Held in a variable rather than written inline
+# after `=~`: this pattern contains a space, and bash requires the right-hand
+# side of `=~` to be a single word, so the inline form is a PARSE error that
+# fires on every run regardless of input (#10963).
+TAG_LIST_CHARSET='^[A-Za-z0-9._+-][A-Za-z0-9._+ -]*$'
+
+# Tag selection lives here, not in the workflow. The sweep runs only on a
+# schedule and on dispatch, so no PR check ever executes its step — bash
+# embedded in that YAML is unreviewable by any gate, which is exactly how
+# #10963 shipped broken. Everything below runs locally and under the script
+# guard suite instead.
+select_tags_from_env() {
+  local requested="${MAEKON_NOTARIZATION_TAGS:-}"
+  if [ -z "${requested// /}" ]; then
+    resolve_latest_tags "${MAEKON_NOTARIZATION_LATEST_COUNT:-5}"
+    return
+  fi
+  if [[ ! "$requested" =~ $TAG_LIST_CHARSET ]]; then
+    die "tag list contains characters outside the release-tag charset"
+  fi
+  printf '%s\n' $requested
+}
+
 TAGS=()
-if [ "${1:-}" = "--latest" ]; then
+if [ "${1:-}" = "--from-env" ]; then
+  while IFS= read -r tag; do
+    [ -n "$tag" ] && TAGS+=("$tag")
+  done < <(select_tags_from_env)
+  [ "${#TAGS[@]}" -gt 0 ] || die "no tags selected from MAEKON_NOTARIZATION_TAGS or ${REPO} releases"
+elif [ "${1:-}" = "--latest" ]; then
   count="${2:-5}"
   while IFS= read -r tag; do
     [ -n "$tag" ] && TAGS+=("$tag")
@@ -95,7 +123,7 @@ if [ "${1:-}" = "--latest" ]; then
 elif [ "$#" -gt 0 ]; then
   TAGS=("$@")
 else
-  die "usage: $0 <tag> [<tag>...] | --latest [count]"
+  die "usage: $0 <tag> [<tag>...] | --latest [count] | --from-env"
 fi
 
 overall=0

@@ -45,27 +45,16 @@ jobs:
         shell: bash
         env:
           # Never interpolate workflow inputs into the script body; pass them
-          # through the environment and validate before use.
-          TAGS_INPUT: ${{ inputs.tags }}
+          # through the environment. Selection and charset validation happen
+          # inside the script, which runs locally and is covered by the script
+          # guard suite — this step deliberately contains no branching bash,
+          # because nothing executes this workflow before merge (#10963).
+          MAEKON_NOTARIZATION_TAGS: ${{ inputs.tags }}
         run: |
           set -uo pipefail
-
-          REQUESTED="${TAGS_INPUT:-}"
-          if [[ -n "${REQUESTED// /}" ]]; then
-            if [[ ! "$REQUESTED" =~ ^[A-Za-z0-9._+-][A-Za-z0-9._+ -]*$ ]]; then
-              echo "::error::tags input contains characters outside the release-tag charset"
-              exit 1
-            fi
-            # Word splitting is intentional: the input is a tag list.
-            # shellcheck disable=SC2086
-            ./scripts/verify-published-macos-notarization.sh $REQUESTED \
-              >notarization-report.txt 2>&1
-          else
-            ./scripts/verify-published-macos-notarization.sh --latest 5 \
-              >notarization-report.txt 2>&1
-          fi
+          ./scripts/verify-published-macos-notarization.sh --from-env \
+            >notarization-report.txt 2>&1
           status=$?
-
           cat notarization-report.txt
           exit "$status"
 
