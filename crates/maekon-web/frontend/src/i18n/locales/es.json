@@ -102,7 +102,8 @@
     "groupManage": "Gestión",
     "groupSystem": "Sistema",
     "tasks": "Tareas",
-    "contextHome": "Contexto"
+    "contextHome": "Contexto",
+    "assignmentEmailDraft": "Borrador de correo de asignación"
   },
   "dashboard": {
     "metricsError": "Error al cargar las métricas del sistema",
@@ -3296,6 +3297,49 @@
     "continueWithoutSignIn": "Continuar sin iniciar sesión",
     "localFirstNote": "Maekon funciona por completo sin una cuenta. Iniciar sesión solo añade funciones del modo conectado.",
     "continueToHome": "Ir a tu contexto"
+  },
+  "assignmentEmailDraft": {
+    "title": "Borrador de correo de asignación",
+    "description": "Revisa y edita localmente un borrador sintético y abre la ventana de redacción para la decisión humana final.",
+    "providerZero": "Cargar, editar y guardar no llama a ningún proveedor de correo. Solo la acción explícita abre la redacción del sistema; Maekon nunca envía.",
+    "externalBadge": "contacto sintético externo",
+    "source": { "title": "Cargar desde una asignación confirmada", "receipt": "ID del recibo de asignación" },
+    "fields": {
+      "organization": "Organización externa",
+      "contact": "Contacto externo",
+      "recipient": "Destinatario sintético",
+      "subject": "Asunto",
+      "body": "Cuerpo"
+    },
+    "editor": {
+      "title": "Borrador local editable",
+      "saved": "Guardado para esta sesión",
+      "unsaved": "Cambios locales sin guardar"
+    },
+    "stale": {
+      "body": "La asignación o la relación con la contraparte cambió. La edición y la entrega están bloqueadas; regenera con el último recibo o cancela.",
+      "latestReceipt": "Último ID de recibo confirmado"
+    },
+    "review": {
+      "title": "Puerta de entrega humana",
+      "body": "Confirma la organización, el contacto, el destinatario, el asunto y el cuerpo sintéticos. La aplicación de correo solo abre redacción; una persona decide el envío.",
+      "confirm": "He revisado el destinatario, asunto y cuerpo sintéticos",
+      "noAttachment": "No se adjunta automáticamente ningún XLSX ni otro archivo.",
+      "opened": "El sistema aceptó la solicitud de redacción. Maekon no envió el mensaje."
+    },
+    "actions": {
+      "generate": "Generar borrador",
+      "regenerate": "Regenerar con el último recibo",
+      "reviewInMail": "Revisar en correo"
+    },
+    "errors": {
+      "load": "No se pudo cargar o regenerar el borrador. Revisa la cuenta, el consentimiento y el recibo.",
+      "save": "No se pudo guardar la copia local de la sesión.",
+      "validation": "Guarda un asunto y cuerpo válidos y confirma la revisión antes de entregar.",
+      "noHandler": "No hay una aplicación de correo registrada. Configura una aplicación predeterminada y vuelve a intentarlo.",
+      "handoff": "El sistema no pudo abrir la redacción. El borrador local sigue guardado.",
+      "bridge": "La entrega al sistema solo está disponible en la aplicación de escritorio Maekon."
+    }
   },
   "contextHome": {
     "title": "Tu contexto",

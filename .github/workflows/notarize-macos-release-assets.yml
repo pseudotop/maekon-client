@@ -435,3 +435,102 @@ jobs:
             echo "::error::Deleted invalid release for ${RELEASE_TAG}: final byte sidecar validation failed."
             exit "$verify_status"
           fi
+
+  # Without this, a notarization failure is silent: the Release workflow stays
+  # green and the release page keeps its signed-but-unnotarized macOS assets
+  # with nothing to distinguish them. That is how v0.0.1-rc.8 shipped assets
+  # Gatekeeper would refuse, for ~13 hours (#10935).
+  report-notarization-failure:
+    needs: [notarize-macos-assets, publish-notarized-assets]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # A broken release is maintainer news first. Filing it here would publish
+      # "this release is not notarized" on the public repo, so the alert is
+      # routed to the SSOT instead (#10948). Scoped to issues:write on that one
+      # repository — no wider grant than the alert needs.
+      - name: Mint an SSOT-scoped token for issue filing
+        id: ssot_token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        with:
+          client-id: ${{ secrets.MAEKON_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MAEKON_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: pseudotop
+          repositories: oneshim
+          permission-issues: write
+
+      - name: Open or update the notarization failure issue
+        shell: bash
+        env:
+          # Falls back to the dispatch input or the parent run's branch when the
+          # notarize job died before it could resolve and publish the tag.
+          RELEASE_TAG: ${{ needs.notarize-macos-assets.outputs.release_tag }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          PARENT_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SSOT_TOKEN: ${{ steps.ssot_token.outputs.token }}
+          PUBLIC_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          TAG="${RELEASE_TAG:-}"
+          [[ -n "$TAG" ]] || TAG="${DISPATCH_TAG:-}"
+          [[ -n "$TAG" ]] || TAG="${PARENT_HEAD_BRANCH:-}"
+          [[ -n "$TAG" ]] || TAG="(tag unresolved)"
+
+          # Losing the alert is the exact defect #10935 exists to fix, so a
+          # failed mint degrades to the public repo rather than to silence.
+          # That needs two faults at once: a broken release AND broken minting.
+          SSOT_ISSUE_REPO="pseudotop/oneshim"
+          FALLBACK_NOTE=""
+          if [[ -n "${SSOT_TOKEN:-}" ]]; then
+            TARGET_REPO="$SSOT_ISSUE_REPO"
+            export GH_TOKEN="$SSOT_TOKEN"
+          else
+            TARGET_REPO="$GITHUB_REPOSITORY"
+            export GH_TOKEN="$PUBLIC_TOKEN"
+            FALLBACK_NOTE="yes"
+            echo "::error::Could not mint the ${SSOT_ISSUE_REPO} token; filing publicly so the alert is not lost."
+          fi
+
+          ISSUE_TITLE="release(maekon): macOS notarization failed for ${TAG}"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "\`Notarize macOS Release Assets\` failed for \`${TAG}\`."
+            echo
+            echo "The Release workflow may still be green. If assets were already published, the macOS DMG and PKG are signed but **not notarized or stapled**, and Gatekeeper will refuse them."
+            echo
+            echo "1. Open [the failing run](${RUN_URL}) and read the first failing step."
+            echo "2. Fix the cause, then re-run this workflow with \`tag=${TAG}\` and the Release run id as \`source_run_id\`."
+            echo "3. Confirm with \`Verify Published macOS Notarization\`, or locally:"
+            echo "   \`./scripts/verify-published-macos-notarization.sh ${TAG}\`"
+            if [[ -n "$FALLBACK_NOTE" ]]; then
+              echo
+              echo "> Filed here rather than in ${SSOT_ISSUE_REPO} because the automation App token could not be minted. Check the App installation and its private key."
+            fi
+            echo
+            echo "Opened automatically — see #10935."
+          } > "$BODY_FILE"
+
+          EXISTING="$(gh issue list \
+            --repo "$TARGET_REPO" \
+            --state open \
+            --search "\"$ISSUE_TITLE\" in:title" \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ -n "$EXISTING" ]]; then
+            gh issue comment "$EXISTING" --repo "$TARGET_REPO" --body-file "$BODY_FILE"
+          else
+            gh issue create \
+              --repo "$TARGET_REPO" \
+              --title "$ISSUE_TITLE" \
+              --body-file "$BODY_FILE"
+          fi

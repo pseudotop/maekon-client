@@ -143,6 +143,10 @@ const APP_COMMANDS: &[&str] = &[
     "open_external_target",
     // Context-home read surface (#9625).
     "fetch_context_home",
+    // Assignment email draft receipt-only surface (#9627).
+    "generate_assignment_email_draft",
+    "load_assignment_email_draft",
+    "regenerate_assignment_email_draft",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

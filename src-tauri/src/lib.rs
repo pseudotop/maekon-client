@@ -1019,6 +1019,9 @@ pub fn run() {
         // Until populated (or for disabled features / bootstrap failures) the
         // slot stays empty and the command fails immediately.
         .manage(commands::auth::TokenManagerState::empty())
+        // #9627: receipt-only draft transport, populated from the same shared
+        // authenticated client as context home. No bearer crosses IPC.
+        .manage(commands::assignment_email_draft::AssignmentEmailDraftState::empty())
         // #9625: same slot discipline for the context-home transport. Registered
         // empty here; `app_runtime_launch::auth_wiring` populates it from the
         // shared login session so one sign-in serves this surface too.
@@ -1217,6 +1220,10 @@ pub fn run() {
             commands::os_handoff::open_external_target,
             // Context-home read surface (#9625).
             commands::context_home::fetch_context_home,
+            // Receipt-only assignment draft surface (#9627).
+            commands::assignment_email_draft::generate_assignment_email_draft,
+            commands::assignment_email_draft::load_assignment_email_draft,
+            commands::assignment_email_draft::regenerate_assignment_email_draft,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("error while building Maekon: {error}"));
