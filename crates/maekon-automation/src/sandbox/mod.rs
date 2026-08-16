@@ -6,6 +6,10 @@ mod sbpl;
 // Cfg-free Windows Job-Object limits + token-restriction policy (#5138), same
 // rationale (the Win32 enforcement stays in the target-gated `windows` module).
 mod win_limits;
+// Cfg-free reporting for the Windows restricted-token launch probe (#10959),
+// same seam again: what the probe reports is string + file work, so it stays
+// testable off Windows while the launch itself remains target-gated.
+mod probe_verdict;
 
 #[cfg(target_os = "linux")]
 mod linux;

@@ -1,0 +1,35 @@
+# AppArmor profile for maekon (#11023).
+#
+# Ubuntu 24.04 ships kernel.apparmor_restrict_unprivileged_userns=1, which stops
+# unprivileged processes from creating user namespaces. WebKitGTK runs its
+# auxiliary Web and Network processes inside one, via bubblewrap. Without an
+# explicit grant, bubblewrap fails with
+#
+#     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+#
+# the auxiliary process dies before its credentials handshake, and GLib turns
+# that into a fatal error: the app serves its dashboard for about eleven seconds
+# and then aborts with SIGTRAP.
+#
+# Measured, same artifact and runner, only this restriction changed:
+#   restriction on  (Ubuntu default) -> Trace/breakpoint trap (core dumped)
+#   restriction off                  -> starts, serves, survives, no panic
+#
+# `flags=(unconfined)` is deliberate. This profile is NOT a confinement policy —
+# it exists solely to restore a capability the platform withdrew, which is the
+# pattern Ubuntu documents for applications in this position (browsers and
+# Electron apps carry the same shape). Writing a real confinement policy for a
+# desktop agent that captures the screen, talks to the network and spawns
+# helpers is a separate piece of work; claiming this file does that would be
+# worse than not shipping it.
+
+abi <abi/4.0>,
+
+include <tunables/global>
+
+profile maekon /usr/bin/maekon flags=(unconfined) {
+  userns,
+
+  # Site-local overrides, per the Debian/Ubuntu convention. Absent by default.
+  include if exists <local/maekon>
+}

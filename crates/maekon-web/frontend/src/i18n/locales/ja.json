@@ -3398,6 +3398,20 @@
     "syntheticBadge": {
       "label": "デモデータ",
       "description": "このセッションは実際の記録ではなく、デモ用の合成データを表示しています。"
+    },
+    "consoleHandoff": {
+      "title": "Consoleで続行",
+      "body": "現在のセッションで検証された合成実行とソーススナップショットで割り当てボードを開きます。",
+      "action": "割り当てボードを開く",
+      "opening": "開いています…",
+      "opened": "実行 {{run}} のConsoleを開きました。",
+      "errors": {
+        "denied": "このアカウントでは、この合成実行をConsoleで続行できません。",
+        "config": "Consoleの接続先が正しく設定されていません。",
+        "launch": "Consoleを開けませんでした。ブラウザーの関連付けを確認して再試行してください。",
+        "bridge": "この遷移はMaekonデスクトップアプリでのみ利用できます。",
+        "unavailable": "Consoleへの遷移は一時的に利用できません。"
+      }
     }
   }
 }

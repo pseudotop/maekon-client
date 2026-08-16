@@ -199,13 +199,15 @@ impl AppRuntimeLaunchBuilder {
         let (regime_manager_arc, regime_classifier_arc, regime_storage) =
             build_regime_wiring(&config, &handle, sqlite_storage.clone());
 
-        // #9459: the ONE ONESHIM login session — built, keychain-restored and
-        // registered in the `TokenManagerState` IPC slot here (see
-        // auth_wiring.rs), BEFORE both of its consumers below, so one sign-in is
-        // observed by every upload/REST/SSE transport.
+        // #9459: install the one shared login session before every consumer.
         #[cfg(feature = "server")]
-        let shared_token_manager =
-            install_shared_token_manager(&self.app_handle, &config, &handle, &data_dir_path);
+        let shared_token_manager = install_shared_token_manager(
+            &self.app_handle,
+            &config,
+            &handle,
+            &data_dir_path,
+            sqlite_storage.clone(),
+        );
 
         // OSS builds keep on-device suggestions; `server` only adds network
         // transport. The composite feedback sink over the shared regime
@@ -259,8 +261,7 @@ impl AppRuntimeLaunchBuilder {
                     sqlite_storage.connection_arc(),
                 ),
             ));
-            // #8039: unconditional now — `shared_capture_services` is always
-            // present (build_capture_wiring fails closed on error).
+            // #8039: shared capture services are unconditional and fail closed.
             builder = builder.with_shared_capture_services(shared_capture_services.clone());
             let builder = builder
                 .with_offline_mode(self.offline_mode)

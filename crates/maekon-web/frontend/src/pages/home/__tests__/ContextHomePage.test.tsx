@@ -24,6 +24,15 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 const FIXTURE = fixtureJson as unknown as ContextHomeSnapshot
+const HANDOFF_RECEIPT = {
+  contract_version: 'console-handoff.v1',
+  run_id: 'cor_demo_9628',
+  source_snapshot_id: FIXTURE.snapshot_id,
+  issued_at: '2026-08-14T09:00:00Z',
+  expires_at: '2026-08-14T09:05:00Z',
+  synthetic: true,
+  source_provenance: FIXTURE.provenance,
+}
 
 function snapshotWith(over: Partial<ContextHomeSnapshot>): ContextHomeSnapshot {
   return { ...structuredClone(FIXTURE), ...over }
@@ -248,5 +257,62 @@ describe('ContextHomePage (#9611)', () => {
 
     await screen.findByTestId('context-home-actor')
     expect(readSyntheticSession()).toBeNull()
+  })
+
+  it('offers Console only for a provenance-backed synthetic snapshot', async () => {
+    mockInvoke.mockResolvedValue(FIXTURE)
+    const { unmount } = renderHome()
+    expect(await screen.findByTestId('console-handoff-card')).toBeInTheDocument()
+    unmount()
+
+    mockInvoke.mockResolvedValue(
+      snapshotWith({
+        synthetic: false,
+        provenance: { synthetic_only: false, seed_namespaces: [], seed_revisions: [] },
+      }),
+    )
+    renderHome()
+    await screen.findByTestId('context-home-actor')
+    expect(screen.queryByTestId('console-handoff-card')).not.toBeInTheDocument()
+  })
+
+  it('opens Console through the no-argument IPC boundary and blocks duplicate clicks', async () => {
+    let resolveHandoff!: (value: typeof HANDOFF_RECEIPT) => void
+    mockInvoke.mockImplementation((command: string) => {
+      if (command === 'fetch_context_home') return Promise.resolve(FIXTURE)
+      if (command === 'open_console_assignment_board') {
+        return new Promise<typeof HANDOFF_RECEIPT>((resolve) => (resolveHandoff = resolve))
+      }
+      throw new Error(`unexpected command: ${command}`)
+    })
+    renderHome()
+
+    const button = await screen.findByTestId('console-handoff-open')
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(button).toBeDisabled()
+    await waitFor(() =>
+      expect(mockInvoke.mock.calls.filter((call) => call[0] === 'open_console_assignment_board')).toHaveLength(1),
+    )
+    const calls = mockInvoke.mock.calls.filter((call) => call[0] === 'open_console_assignment_board')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.[1]).toBeUndefined()
+
+    await act(async () => resolveHandoff(HANDOFF_RECEIPT))
+    expect(await screen.findByTestId('console-handoff-opened')).toHaveTextContent(HANDOFF_RECEIPT.run_id)
+  })
+
+  it('keeps permission denial distinct from a retryable outage', async () => {
+    mockInvoke.mockImplementation((command: string) =>
+      command === 'fetch_context_home'
+        ? Promise.resolve(FIXTURE)
+        : Promise.reject({ code: 'policy.denied', message: 'wrong actor' }),
+    )
+    renderHome()
+    fireEvent.click(await screen.findByTestId('console-handoff-open'))
+
+    const error = await screen.findByTestId('console-handoff-error')
+    expect(error).toHaveAttribute('data-error-code', 'policy.denied')
+    expect(screen.queryByTestId('console-handoff-retry')).not.toBeInTheDocument()
   })
 })

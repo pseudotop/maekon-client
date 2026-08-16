@@ -61,6 +61,11 @@
 //!   `frame_annotations` rows whose frame is already gone (#9736). Not a schema
 //!   change; `frame_annotations` declares no FK, so pre-#9731 deletions left the
 //!   rows behind and the GDPR export kept dumping them.
+//! - `v55_effective_mapping_cache.rs` — non-authoritative, server-validated TMD
+//!   mapping candidates used only for revalidation and offline explanation
+//!   (#10358); included in the full local erasure sweep.
+//! - `v56_wbs_xlsx_receipts.rs` — durable local-first output receipt spool;
+//!   successful upload marks a row instead of deleting its local evidence.
 //! - `v53_vault_mirror_state.rs` — `vault_mirror_state` (per-file content
 //!   hash for the ADR-033 memory vault mirror's change detection; member of
 //!   the GDPR erase sweep).
@@ -111,11 +116,13 @@ pub(crate) mod v51_work_context;
 mod v52_skill_pack_activation;
 mod v53_vault_mirror_state;
 mod v54_orphan_annotation_cleanup;
+mod v55_effective_mapping_cache;
+mod v56_wbs_xlsx_receipts;
 
 use rusqlite::Connection;
 use tracing::{error, info, warn};
 
-pub const CURRENT_VERSION: u32 = 54;
+pub const CURRENT_VERSION: u32 = 56;
 
 /// Keep at most this many pre-migration backups for a given DB; older ones are
 /// pruned after each new backup so they cannot accumulate unbounded across the
@@ -449,7 +456,17 @@ pub fn run_migrations_to(conn: &Connection, target: u32) -> Result<(), rusqlite:
     }
     if target >= 53 && current < 53 {
         run_migration_step(conn, 53, v53_vault_mirror_state::migrate_v53)?;
+    }
+    // Keep every step independently gated by its own version. An install that
+    // was already at V53 must still execute the one-time V54 data repair.
+    if target >= 54 && current < 54 {
         run_migration_step(conn, 54, v54_orphan_annotation_cleanup::migrate_v54)?;
+    }
+    if target >= 55 && current < 55 {
+        run_migration_step(conn, 55, v55_effective_mapping_cache::migrate_v55)?;
+    }
+    if target >= 56 && current < 56 {
+        run_migration_step(conn, 56, v56_wbs_xlsx_receipts::migrate_v56)?;
     }
 
     Ok(())

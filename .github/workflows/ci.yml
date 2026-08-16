@@ -212,8 +212,8 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -410,8 +410,8 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -474,8 +474,8 @@ jobs:
       - name: Install Linux dependencies
         if: env.RUN_HEAVY_TESTS == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -762,8 +762,8 @@ jobs:
 
       - name: Install Linux dependencies (Tauri GTK/WebKit + libsystemd-dev for sd-notify)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -889,8 +889,8 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
