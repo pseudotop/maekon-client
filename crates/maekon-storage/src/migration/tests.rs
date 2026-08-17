@@ -4,6 +4,39 @@ use super::*;
 use rusqlite::Connection;
 
 #[test]
+fn upgrade_from_exact_v53_runs_v54_repair_before_v55() {
+    let conn = Connection::open_in_memory().unwrap();
+    run_migrations_to(&conn, 53).unwrap();
+    conn.execute(
+        "INSERT INTO frame_annotations
+         (annotation_id, frame_id, annotation_type, x, y, text, created_at)
+         VALUES ('orphan-after-v53', 999, 'memo', 0.1, 0.1, 'private',
+                 '2026-08-15T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    run_migrations_to(&conn, 55).unwrap();
+
+    let orphan_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM frame_annotations WHERE annotation_id = 'orphan-after-v53'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(orphan_count, 0, "V54 repair must not be skipped from V53");
+    let versions: Vec<u32> = conn
+        .prepare("SELECT version FROM schema_version WHERE version >= 54 ORDER BY version")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(versions, vec![54, 55]);
+}
+
+#[test]
 fn migration_all_versions() {
     let conn = Connection::open_in_memory().unwrap();
     run_migrations(&conn).unwrap();

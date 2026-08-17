@@ -3402,6 +3402,20 @@
     "syntheticBadge": {
       "label": "Demo data",
       "description": "This session is showing synthetic demonstration data, not real records."
+    },
+    "consoleHandoff": {
+      "title": "Continue in Console",
+      "body": "Open the assignment board with this synthetic run and source snapshot verified by your current session.",
+      "action": "Open assignment board",
+      "opening": "Opening…",
+      "opened": "Console opened for run {{run}}.",
+      "errors": {
+        "denied": "This account cannot continue this synthetic run in Console.",
+        "config": "The Console destination is not configured correctly.",
+        "launch": "Console could not be opened. Check the browser handler and retry.",
+        "bridge": "This transition is available only in the Maekon desktop app.",
+        "unavailable": "The Console transition is temporarily unavailable."
+      }
     }
   }
 }

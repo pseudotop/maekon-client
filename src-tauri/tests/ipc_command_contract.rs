@@ -1,4 +1,4 @@
-//! Tauri IPC command contract tests — CRT-PRV-IPC-001..049.
+//! Tauri IPC command contract tests — CRT-PRV-IPC-001..051.
 //!
 //! Each `#[test]` asserts that the named IPC command module exists +
 //! declares at least one `#[tauri::command]` function. These are SMOKE /
@@ -223,6 +223,7 @@ const COVERED_COMMAND_MODULES: &[&str] = &[
     "capture_status",
     "coaching",
     "consent",
+    "console_handoff",
     "context_home",
     "detection",
     "error_report",
@@ -244,6 +245,7 @@ const COVERED_COMMAND_MODULES: &[&str] = &[
     "sync",
     "system",
     "task",
+    "tmd_xlsx",
     "tray",
     "vault",
 ];
@@ -842,6 +844,84 @@ fn crt_prv_ipc_049_assignment_email_draft_is_receipt_only() {
         );
     }
     assert_eq!(src.matches("#[command]").count(), 3);
+}
+
+/// #9628: Console handoff authority stays behind the authenticated Rust
+/// boundary. The WebView can request the fixed transition but cannot choose a
+/// URL, actor, organization, bearer, or pending-record key.
+#[test]
+fn crt_prv_ipc_050_console_handoff_takes_no_authority_argument() {
+    assert_command_module("console_handoff");
+    let path = commands_dir().join("console_handoff.rs");
+    let src = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+    let signature = src
+        .split("pub async fn open_console_assignment_board(")
+        .nth(1)
+        .expect("console_handoff must declare open_console_assignment_board")
+        .split(") ->")
+        .next()
+        .expect("the command signature must close");
+
+    for forbidden in [
+        "url",
+        "href",
+        "actor_id",
+        "user_id",
+        "organization_id",
+        "org_id",
+        "token",
+        "bearer",
+        "handoff_id",
+    ] {
+        assert!(
+            !signature.contains(forbidden),
+            "Console handoff IPC must not accept `{forbidden}`"
+        );
+    }
+    assert_eq!(src.matches("#[tauri::command]").count(), 1);
+}
+
+/// #10358: standalone XLSX generation keeps filesystem authority in native
+/// dialogs, rejects output aliases, and never accepts a bearer through IPC.
+#[test]
+fn crt_prv_ipc_051_tmd_xlsx_keeps_native_file_authority() {
+    assert_command_module("tmd_xlsx");
+    let path = commands_dir().join("tmd_xlsx.rs");
+    let src = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+    let signature = src
+        .split("pub async fn generate_tmd_xlsx(")
+        .nth(1)
+        .expect("tmd_xlsx must declare generate_tmd_xlsx")
+        .split(") ->")
+        .next()
+        .expect("the command signature must close");
+
+    for forbidden in [
+        "input_path",
+        "output_path",
+        "template_path",
+        "bearer",
+        "token",
+    ] {
+        assert!(
+            !signature.contains(forbidden),
+            "TMD XLSX IPC must not accept `{forbidden}`"
+        );
+    }
+    for required in [
+        ".blocking_pick_file()",
+        ".blocking_save_file()",
+        "paths_refer_to_same_file",
+        ".append_pending(",
+    ] {
+        assert!(
+            src.contains(required),
+            "TMD XLSX command must preserve `{required}`"
+        );
+    }
+    assert_eq!(src.matches("#[tauri::command]").count(), 1);
 }
 
 /// #8199: native fullscreen-policy diagnostics must remain debug-gated rather

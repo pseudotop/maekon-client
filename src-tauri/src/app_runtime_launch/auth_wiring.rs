@@ -52,6 +52,7 @@ pub(super) fn install_shared_token_manager(
     config: &AppConfig,
     handle: &tokio::runtime::Handle,
     data_dir_path: &Path,
+    sqlite_storage: Arc<maekon_storage::sqlite::SqliteStorage>,
 ) -> Option<Arc<TokenManager>> {
     let manager = build_shared_token_manager(config, handle, data_dir_path)?;
 
@@ -64,7 +65,7 @@ pub(super) fn install_shared_token_manager(
         .state::<crate::commands::auth::TokenManagerState>()
         .set(manager.clone());
 
-    install_context_home_client(app_handle, config, &manager);
+    install_authenticated_clients(app_handle, config, &manager, sqlite_storage);
 
     Some(manager)
 }
@@ -83,10 +84,11 @@ pub(super) fn install_shared_token_manager(
 /// one read surface could not be built would be the larger regression. The slot
 /// stays `None`, and the command answers `service.unavailable` — which is
 /// exactly the state that error code describes.
-fn install_context_home_client(
+fn install_authenticated_clients(
     app_handle: &tauri::AppHandle,
     config: &AppConfig,
     manager: &Arc<TokenManager>,
+    sqlite_storage: Arc<maekon_storage::sqlite::SqliteStorage>,
 ) {
     let client = match maekon_network::http_client::HttpApiClient::new_with_tls(
         &config.server.base_url,
@@ -112,7 +114,13 @@ fn install_context_home_client(
         .set(client.clone());
     app_handle
         .state::<crate::commands::assignment_email_draft::AssignmentEmailDraftState>()
-        .set(client);
+        .set(client.clone());
+    app_handle
+        .state::<crate::commands::console_handoff::ConsoleHandoffState>()
+        .set(client.clone());
+    app_handle
+        .state::<crate::commands::tmd_xlsx::TmdXlsxState>()
+        .set(client, sqlite_storage.clone(), sqlite_storage);
 }
 
 /// Build the process-wide `TokenManager` — keychain-backed, and restored from

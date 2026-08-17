@@ -52,3 +52,5 @@ pub mod sync_merger;
 pub(crate) mod sync_retention_tombstone;
 pub(crate) mod sync_table_descriptor;
 pub mod temp_file_projection;
+pub mod tmd_xlsx_plan;
+pub mod tmd_xlsx_writer;

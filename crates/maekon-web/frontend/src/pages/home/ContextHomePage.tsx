@@ -29,11 +29,18 @@
  * what makes a thread unreadable.
  */
 
-import { AlertTriangle, Inbox, MessageSquare, RefreshCw, ShieldOff } from 'lucide-react'
-import { useEffect, useMemo } from 'react'
+import { AlertTriangle, ExternalLink, Inbox, MessageSquare, RefreshCw, ShieldOff } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
+import {
+  CONSOLE_HANDOFF_ERROR_CODES,
+  ConsoleHandoffBridgeUnavailableError,
+  type ConsoleHandoffReceipt,
+  openConsoleAssignmentBoard,
+} from '../../api/consoleHandoff'
 import type { ContextHomeProject, ContextHomeSnapshot, ContextHomeThread } from '../../api/contextHome'
+import { isIpcError } from '../../api/desktop'
 import { markSyntheticSession } from '../../components/shell/syntheticSessionSignal'
 import { Alert, Button, Card, CardContent, Spinner } from '../../components/ui'
 import { iconSize, typography } from '../../styles/tokens'
@@ -91,6 +98,10 @@ export default function ContextHomePage() {
 
       <HomeHeader view={view} snapshot={snapshot} refreshing={refreshing} onRefresh={refresh} locale={i18n.language} />
 
+      {snapshot?.synthetic && snapshot.provenance.synthetic_only && snapshot.provenance.seed_namespaces.length > 0 && (
+        <ConsoleHandoffAction onSessionExpired={() => navigate(LOGIN_ROUTE, { replace: true })} />
+      )}
+
       {view.kind === 'loading' && <HomeLoading />}
       {view.kind === 'unavailable' && <HomeUnavailable onRetry={refresh} />}
       {view.kind === 'denied' && <HomeDenied />}
@@ -107,6 +118,121 @@ export default function ContextHomePage() {
       {snapshot && <HomeSections snapshot={snapshot} />}
     </div>
   )
+}
+
+type ConsoleHandoffView =
+  | { kind: 'idle' }
+  | { kind: 'opening' }
+  | { kind: 'opened'; receipt: ConsoleHandoffReceipt }
+  | { kind: 'error'; code: string }
+
+function ConsoleHandoffAction({ onSessionExpired }: { onSessionExpired: () => void }) {
+  const { t } = useTranslation()
+  const inFlight = useRef(false)
+  const [view, setView] = useState<ConsoleHandoffView>({ kind: 'idle' })
+
+  const open = async () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setView({ kind: 'opening' })
+    try {
+      const receipt = await openConsoleAssignmentBoard()
+      setView({ kind: 'opened', receipt })
+    } catch (error) {
+      if (isIpcError(error) && error.code === CONSOLE_HANDOFF_ERROR_CODES.sessionExpired) {
+        onSessionExpired()
+        return
+      }
+      const code =
+        error instanceof ConsoleHandoffBridgeUnavailableError
+          ? 'bridge.absent'
+          : isIpcError(error)
+            ? error.code
+            : 'validation.invalid_field'
+      setView({ kind: 'error', code })
+    } finally {
+      inFlight.current = false
+    }
+  }
+
+  return (
+    <Card className="mb-6" data-testid="console-handoff-card">
+      <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <div>
+          <p className={cn(typography.body, typography.weight.medium)}>
+            {t('contextHome.consoleHandoff.title', 'Continue in Console')}
+          </p>
+          <p className={cn(typography.caption, 'text-content-secondary')}>
+            {t(
+              'contextHome.consoleHandoff.body',
+              'Open the assignment board with this synthetic run and source snapshot verified by your current session.',
+            )}
+          </p>
+        </div>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={view.kind === 'opening'}
+          onClick={open}
+          data-testid="console-handoff-open"
+        >
+          <ExternalLink className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+          {view.kind === 'opening'
+            ? t('contextHome.consoleHandoff.opening', 'Opening…')
+            : t('contextHome.consoleHandoff.action', 'Open assignment board')}
+        </Button>
+        {view.kind === 'opened' && (
+          <Alert variant="success" className="w-full" data-testid="console-handoff-opened">
+            {t('contextHome.consoleHandoff.opened', {
+              defaultValue: 'Console opened for run {{run}}.',
+              run: view.receipt.run_id,
+            })}
+          </Alert>
+        )}
+        {view.kind === 'error' && (
+          <Alert variant="warning" className="w-full" data-testid="console-handoff-error" data-error-code={view.code}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{consoleHandoffErrorText(t, view.code)}</span>
+              {isRetryableConsoleHandoffCode(view.code) && (
+                <Button variant="secondary" size="sm" onClick={open} data-testid="console-handoff-retry">
+                  {t('contextHome.retry', 'Try again')}
+                </Button>
+              )}
+            </div>
+          </Alert>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function isRetryableConsoleHandoffCode(code: string): boolean {
+  return new Set<string>([
+    CONSOLE_HANDOFF_ERROR_CODES.unavailable,
+    CONSOLE_HANDOFF_ERROR_CODES.timeout,
+    CONSOLE_HANDOFF_ERROR_CODES.rateLimit,
+    CONSOLE_HANDOFF_ERROR_CODES.launchFailed,
+    CONSOLE_HANDOFF_ERROR_CODES.noHandler,
+  ]).has(code)
+}
+
+function consoleHandoffErrorText(t: ReturnType<typeof useTranslation>['t'], code: string): string {
+  if (code === CONSOLE_HANDOFF_ERROR_CODES.permissionDenied) {
+    return t('contextHome.consoleHandoff.errors.denied', 'This account cannot continue this synthetic run in Console.')
+  }
+  if (code === CONSOLE_HANDOFF_ERROR_CODES.configMissing || code === CONSOLE_HANDOFF_ERROR_CODES.configInvalid) {
+    return t('contextHome.consoleHandoff.errors.config', 'The Console destination is not configured correctly.')
+  }
+  if (code.startsWith('handoff.')) {
+    return t(
+      'contextHome.consoleHandoff.errors.launch',
+      'Console could not be opened. Check the browser handler and retry.',
+    )
+  }
+  if (code === 'bridge.absent') {
+    return t('contextHome.consoleHandoff.errors.bridge', 'This transition is available only in the Maekon desktop app.')
+  }
+  return t('contextHome.consoleHandoff.errors.unavailable', 'The Console transition is temporarily unavailable.')
 }
 
 /* -------------------------------------------------------------------------- */

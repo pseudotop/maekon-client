@@ -1,0 +1,35 @@
+#!/bin/sh
+# Load the AppArmor profile that restores maekon's ability to create a user
+# namespace (#11023). Without it, on stock Ubuntu 24.04, the app starts, serves
+# its dashboard, and aborts about eleven seconds later when WebKitGTK's helper
+# process cannot be sandboxed.
+set -e
+
+PROFILE=/etc/apparmor.d/maekon
+
+case "$1" in
+  configure|abort-upgrade|abort-remove|abort-deconfigure)
+    if [ ! -e "$PROFILE" ]; then
+      exit 0
+    fi
+    if ! command -v apparmor_parser >/dev/null 2>&1; then
+      # No AppArmor on this system (Debian without it, a container, a
+      # non-Ubuntu derivative). Nothing to load and nothing restricting us.
+      exit 0
+    fi
+    if [ ! -d /sys/kernel/security/apparmor ]; then
+      exit 0
+    fi
+    if apparmor_parser -r -T -W "$PROFILE" >/dev/null 2>&1; then
+      exit 0
+    fi
+    # Best-effort by design: a failed profile load must not fail the install.
+    # But it must not be silent either — the user would otherwise meet the crash
+    # with nothing connecting it to this step.
+    echo "maekon: could not load the AppArmor profile at ${PROFILE}." >&2
+    echo "maekon: on Ubuntu 24.04 and later the app may abort shortly after starting." >&2
+    echo "maekon: load it manually with: sudo apparmor_parser -r -T -W ${PROFILE}" >&2
+    ;;
+esac
+
+exit 0

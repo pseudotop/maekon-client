@@ -161,8 +161,10 @@
     "allow-set-vault-mirror-path",
     "allow-open-external-target",
     "allow-fetch-context-home",
+    "allow-open-console-assignment-board",
     "allow-generate-assignment-email-draft",
     "allow-load-assignment-email-draft",
-    "allow-regenerate-assignment-email-draft"
+    "allow-regenerate-assignment-email-draft",
+    "allow-generate-tmd-xlsx"
   ]
 }
