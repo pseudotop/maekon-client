@@ -726,14 +726,33 @@ fn select_sse_client(
     token_manager: Arc<TokenManager>,
     sse_max_retry_secs: u64,
     tls: &maekon_core::config::TlsConfig,
-) -> Result<SseClientPort> {
+) -> Option<SseClientPort> {
     if use_grpc_context {
-        Ok(Arc::new(GrpcSseAdapter::new(unified.clone())) as SseClientPort)
-    } else {
-        let sse_stream =
-            SseStreamClient::new_with_tls(server_base_url, token_manager, sse_max_retry_secs, tls)
-                .map_err(|e| anyhow::anyhow!("failed to build SSE client: {e}"))?;
-        Ok(Arc::new(sse_stream) as SseClientPort)
+        return Some(Arc::new(GrpcSseAdapter::new(unified.clone())) as SseClientPort);
+    }
+    // #10969: a transport that cannot be constructed degrades, it does not take
+    // the runtime with it. This used to return `Err`, which `?` propagated all
+    // the way out of `AgentRuntimeBundle::run()` — so monitoring, analysis and
+    // suggestions all died because one optional stream could not be built. The
+    // shipped defaults guarantee that failure (`base_url` is cleartext
+    // `http://localhost:8000` while `TlsConfig::enabled` is true), so every
+    // fresh install lost its agent while the desktop shell kept working and
+    // looked healthy.
+    //
+    // `ServerTransportPorts` already models this as `Option<SseClientPort>`;
+    // only the construction path disagreed. Mirrors the embedding fallback in
+    // the same startup sequence, which warns and continues.
+    match SseStreamClient::new_with_tls(server_base_url, token_manager, sse_max_retry_secs, tls) {
+        Ok(sse_stream) => Some(Arc::new(sse_stream) as SseClientPort),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                server_base_url,
+                "SSE client unavailable — continuing without server push (server-driven \
+                 suggestions and context updates are degraded)"
+            );
+            None
+        }
     }
 }
 
@@ -768,7 +787,7 @@ fn build_server_transports(
     let token_manager_for_perf = token_manager.clone();
 
     #[cfg(feature = "grpc")]
-    let (api_client, sse_client): (ApiClientPort, SseClientPort) = {
+    let (api_client, sse_client): (ApiClientPort, Option<SseClientPort>) = {
         let grpc_config =
             GrpcConfig::from_core_with_rest_tls(&config.grpc, &config.server.base_url, &config.tls);
         let unified = Arc::new(UnifiedClient::new(grpc_config, token_manager.clone())?);
@@ -786,7 +805,7 @@ fn build_server_transports(
             token_manager.clone(),
             config.server.sse_max_retry_secs,
             &config.tls,
-        )?;
+        );
 
         (
             Arc::new(GrpcApiAdapter::new(unified, http_fallback)),
@@ -795,21 +814,33 @@ fn build_server_transports(
     };
 
     #[cfg(not(feature = "grpc"))]
-    let (api_client, sse_client): (ApiClientPort, SseClientPort) = {
+    let (api_client, sse_client): (ApiClientPort, Option<SseClientPort>) = {
         let http_client = HttpApiClient::new_with_tls(
             &config.server.base_url,
             token_manager.clone(),
             config.request_timeout(),
             &config.tls,
         )?;
-        let sse_stream = SseStreamClient::new_with_tls(
+        // #10969: same degradation as the grpc branch above — an unbuildable
+        // SSE stream must not abort the whole agent runtime.
+        let sse_client = match SseStreamClient::new_with_tls(
             &config.server.base_url,
             token_manager,
             config.server.sse_max_retry_secs,
             &config.tls,
-        )
-        .map_err(|e| anyhow::anyhow!("failed to build SSE client: {e}"))?;
-        (Arc::new(http_client), Arc::new(sse_stream) as SseClientPort)
+        ) {
+            Ok(sse_stream) => Some(Arc::new(sse_stream) as SseClientPort),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    server_base_url = %config.server.base_url,
+                    "SSE client unavailable — continuing without server push (server-driven \
+                     suggestions and context updates are degraded)"
+                );
+                None
+            }
+        };
+        (Arc::new(http_client), sse_client)
     };
 
     // Build the suppression predicate: uploads are allowed only inside an
@@ -836,10 +867,12 @@ fn build_server_transports(
         &config.tls,
     )?);
 
+    // `sse_client` is already an Option (#10969): `None` means the stream could
+    // not be built and the runtime continues without server push.
     Ok((
         Some(batch_uploader),
         Some(api_client),
-        Some(sse_client),
+        sse_client,
         Some(feature_perf_sink),
     ))
 }

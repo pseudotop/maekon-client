@@ -96,7 +96,7 @@ describe('Tauri-layer IpcError → UI key mapping (#9492)', () => {
     // template — which would silently replace its `{message}` template with a
     // fixed UI sentence — fails here.
     const registry = readWireCodeRegistry()
-    expect(registry).toHaveLength(54)
+    expect(registry).toHaveLength(55)
 
     const shadowed = Object.keys(TAURI_IPC_ERROR_KEYS).filter((code) => registry.includes(code))
     expect(shadowed, 'mapped codes that already have a wire-catalog template').toEqual([])

@@ -229,7 +229,18 @@ section = "utility"
 priority = "optional"
 assets = [
     ["target/release/maekon", "usr/bin/", "755"],
+    # #11023: without this profile the app aborts a few seconds after start on
+    # stock Ubuntu 24.04, which restricts unprivileged user namespaces through
+    # AppArmor and so stops WebKitGTK from sandboxing its helper processes.
+    ["packaging/apparmor/maekon", "etc/apparmor.d/", "644"],
 ]
+# A conffile: it lives in /etc and a user may edit it (the profile includes
+# <local/maekon> for that), so an upgrade must not silently overwrite it.
+conf-files = ["/etc/apparmor.d/maekon"]
+# postinst loads the profile, postrm unloads it. Loading is best-effort — a
+# system without AppArmor is not an install failure — but a failure prints why,
+# because the symptom it causes looks nothing like a packaging problem.
+maintainer-scripts = "packaging/debian"
 
 [dev-dependencies]
 serde_json = { workspace = true }

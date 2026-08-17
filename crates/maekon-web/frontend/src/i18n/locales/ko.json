@@ -3398,6 +3398,20 @@
     "syntheticBadge": {
       "label": "데모 데이터",
       "description": "이 세션은 실제 기록이 아니라 시연용 합성 데이터를 보여주고 있습니다."
+    },
+    "consoleHandoff": {
+      "title": "Console에서 계속하기",
+      "body": "현재 세션이 검증한 합성 실행과 원본 스냅샷으로 할당 보드를 엽니다.",
+      "action": "할당 보드 열기",
+      "opening": "여는 중…",
+      "opened": "{{run}} 실행의 Console을 열었습니다.",
+      "errors": {
+        "denied": "이 계정으로는 해당 합성 실행을 Console에서 계속할 수 없습니다.",
+        "config": "Console 대상이 올바르게 설정되지 않았습니다.",
+        "launch": "Console을 열 수 없습니다. 브라우저 연결을 확인하고 다시 시도하세요.",
+        "bridge": "이 전환은 Maekon 데스크톱 앱에서만 사용할 수 있습니다.",
+        "unavailable": "Console 전환을 일시적으로 사용할 수 없습니다."
+      }
     }
   }
 }

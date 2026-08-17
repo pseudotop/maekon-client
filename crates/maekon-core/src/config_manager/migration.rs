@@ -28,8 +28,12 @@ pub(super) fn load_and_migrate_from_file(path: &Path) -> Result<AppConfig, CoreE
             supported_schema_version = AppConfig::SCHEMA_VERSION,
             "config schema version is newer than this client supports"
         );
+        // #10985: a distinct code, not `Invalid`. The caller replaces a corrupt
+        // config so the next launch is clean; doing that here would delete a
+        // perfectly valid file the user's newer install wrote, which is what
+        // silently wiped settings on every rollback.
         return Err(CoreError::Config {
-            code: crate::error_codes::ConfigCode::Invalid,
+            code: crate::error_codes::ConfigCode::SchemaTooNew,
             message: format!(
                 "config schema version {} is newer than this client supports ({}); \
                  upgrade the client or use a separate config directory: {}",

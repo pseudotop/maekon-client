@@ -14,6 +14,7 @@ autostart.service_migration_skipped
 config.invalid
 config.missing
 config.out_of_range
+config.schema_too_new
 consent.expired
 consent.required
 gui.bad_request

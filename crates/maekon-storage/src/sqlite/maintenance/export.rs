@@ -91,6 +91,9 @@ const PERSONAL_DATA_EXPORT_TABLES: &[&str] = &[
     "gui_interactions",
     "regime_overrides",
     "automation_presets",
+    // V56 (#10358): local production/gate receipts are user-portable evidence;
+    // their identifiers, bounded outcomes, hashes, and timestamps contain no free text.
+    "wbs_xlsx_output_receipts",
 ];
 
 /// #9630: every user table must carry an EXPLICIT portability disposition —
@@ -140,6 +143,9 @@ const PERSONAL_DATA_EXPORT_EXEMPT_TABLES: &[&str] = &[
     "hlc_clock",
     "digest_processing_markers",
     "vault_mirror_state",
+    // V55 (#10358): exact server response retained only for revalidation/UI
+    // explanation. It is derived and re-fetchable; never an offline authority.
+    "effective_mapping_cache",
     "work_context_access_epochs",
     // Deliberate policy exclusion (ADR-030 §12): raw blobs export only via the
     // reauthenticated encrypted-attachment path, never a JSON dump.

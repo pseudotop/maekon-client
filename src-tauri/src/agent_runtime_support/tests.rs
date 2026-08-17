@@ -214,3 +214,62 @@ async fn grpc_disabled_selects_rest_sse_client_and_delivers_suggestion() {
     connect_task.abort();
     server_task.abort();
 }
+
+/// #10969 — the shipped default config must not take the agent runtime down.
+///
+/// `AppConfig::default_config()` pairs a cleartext `base_url` with `TlsConfig::enabled
+/// = true`, and `SseStreamClient::validated_base_url` rejects that combination.
+/// Before the fix, `select_sse_client` returned that rejection as `Err`, `?`
+/// carried it out of `AgentRuntimeBundle::run()`, and every fresh install lost
+/// monitoring, analysis and suggestions while the desktop shell kept serving
+/// its dashboard — so nothing looked wrong.
+///
+/// Driven from `AppConfig::default_config()` rather than hand-written values on
+/// purpose: the point is that the SHIPPED pair is survivable, so if someone
+/// later changes either default this test follows them instead of pinning a
+/// combination the product no longer uses.
+#[cfg(feature = "grpc")]
+#[tokio::test]
+async fn shipped_defaults_degrade_sse_instead_of_failing_the_runtime() {
+    use maekon_core::config::AppConfig;
+
+    let defaults = AppConfig::default_config();
+    assert!(
+        defaults.server.base_url.starts_with("http://"),
+        "precondition: the shipped default base_url is cleartext, got {:?}",
+        defaults.server.base_url
+    );
+    assert!(
+        defaults.tls.enabled,
+        "precondition: the shipped default enables TLS"
+    );
+    assert!(
+        !defaults.grpc.use_grpc_context,
+        "precondition: the shipped default leaves gRPC context off"
+    );
+
+    let token_manager = Arc::new(
+        TokenManager::new_with_tls(&defaults.server.base_url, &defaults.tls, None)
+            .expect("TokenManager must build for the shipped default base_url"),
+    );
+    let unified = Arc::new(
+        UnifiedClient::new(GrpcConfig::default(), token_manager.clone())
+            .expect("UnifiedClient must build without network I/O"),
+    );
+
+    let selected = select_sse_client(
+        defaults.grpc.use_grpc_context,
+        &unified,
+        &defaults.server.base_url,
+        token_manager,
+        defaults.server.sse_max_retry_secs,
+        &defaults.tls,
+    );
+
+    assert!(
+        selected.is_none(),
+        "an unbuildable SSE stream must degrade to None so the runtime survives; \
+         returning a client here would mean the guard stopped rejecting the default pair, \
+         and returning Err would abort AgentRuntimeBundle::run() as it did before #10969"
+    );
+}

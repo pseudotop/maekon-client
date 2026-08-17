@@ -5042,10 +5042,12 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hmac",
+ "icu_normalizer",
  "keyring",
  "libc",
  "maekon-core",
  "parking_lot",
+ "quick-xml 0.39.2",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5057,6 +5059,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

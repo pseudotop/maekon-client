@@ -159,6 +159,29 @@ impl ConfigManager {
         let mut initial = if config_path.exists() {
             match migration::load_and_migrate_from_file(&config_path) {
                 Ok(c) => c,
+                // #10985: a config written by a NEWER client is not corrupt. It
+                // is the user's settings, still well-formed, and the previous
+                // code overwrote it with recovery defaults — so rolling back to
+                // an older build silently destroyed them, and rolling forward
+                // again found a downgraded file. Read-only fallback here: run on
+                // defaults for this session, leave the file exactly as it is.
+                Err(e)
+                    if matches!(
+                        &e,
+                        CoreError::Config { code, .. }
+                            if *code == crate::error_codes::ConfigCode::SchemaTooNew
+                    ) =>
+                {
+                    error!(
+                        path = %config_path.display(),
+                        error = %e,
+                        "config was written by a newer client; running on defaults for this \
+                         session WITHOUT modifying the file — install the newer build again to \
+                         recover these settings"
+                    );
+                    config_reset_from_corruption = true;
+                    AppConfig::fail_closed_recovery_default()
+                }
                 Err(e) => {
                     // Distinct error-level signal: a corrupt config means the
                     // user's prior privacy choices were lost. This is NOT the

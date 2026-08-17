@@ -81,7 +81,9 @@ pub mod codex_app_server;
 pub mod codex_app_server_session;
 pub mod compression;
 pub mod connectivity;
+pub mod console_handoff;
 pub mod context_home;
+pub mod effective_mapping;
 pub mod feature_perf_uploader;
 pub mod http_api_session;
 pub mod http_client;
@@ -94,6 +96,7 @@ pub mod remote_embedding_client;
 pub mod sse_client;
 
 pub mod sync;
+pub mod wbs_xlsx_client;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;

@@ -533,6 +533,13 @@ impl SqliteStorage {
             // deleted by the erase orchestrators via
             // `MemoryVaultWriterPort::erase_generated_files`, not here).
             "vault_mirror_state",
+            // V55 (#10358): server-derived mapping response cache. It is
+            // re-fetchable, but contains organization-scoped assignment and
+            // mapping metadata, so full local erasure removes it.
+            "effective_mapping_cache",
+            // V56 (#10358): local receipt IDs and organization-scoped anchors
+            // are erased locally. The server copy has its own retention policy.
+            "wbs_xlsx_output_receipts",
         ];
 
         let tx = conn

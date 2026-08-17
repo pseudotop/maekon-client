@@ -375,6 +375,12 @@
           "markdownDescription": "Enables the generate_assignment_email_draft command without any pre-configured scope."
         },
         {
+          "description": "Enables the generate_tmd_xlsx command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-generate-tmd-xlsx",
+          "markdownDescription": "Enables the generate_tmd_xlsx command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_allowed_setting_keys command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-allowed-setting-keys",
@@ -691,6 +697,12 @@
           "type": "string",
           "const": "allow-oauth-start-flow",
           "markdownDescription": "Enables the oauth_start_flow command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_console_assignment_board command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-console-assignment-board",
+          "markdownDescription": "Enables the open_console_assignment_board command without any pre-configured scope."
         },
         {
           "description": "Enables the open_desktop_permission_settings command without any pre-configured scope.",
@@ -1233,6 +1245,12 @@
           "markdownDescription": "Denies the generate_assignment_email_draft command without any pre-configured scope."
         },
         {
+          "description": "Denies the generate_tmd_xlsx command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-generate-tmd-xlsx",
+          "markdownDescription": "Denies the generate_tmd_xlsx command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_allowed_setting_keys command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-allowed-setting-keys",
@@ -1549,6 +1567,12 @@
           "type": "string",
           "const": "deny-oauth-start-flow",
           "markdownDescription": "Denies the oauth_start_flow command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_console_assignment_board command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-console-assignment-board",
+          "markdownDescription": "Denies the open_console_assignment_board command without any pre-configured scope."
         },
         {
           "description": "Denies the open_desktop_permission_settings command without any pre-configured scope.",

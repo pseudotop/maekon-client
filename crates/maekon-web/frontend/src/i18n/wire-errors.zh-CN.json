@@ -15,6 +15,7 @@
   "config.invalid": "配置无效：{message}",
   "config.missing": "缺少必需的配置：{message}",
   "config.out_of_range": "配置值超出范围：{message}",
+  "config.schema_too_new": "此配置需要更新版本的 Maekon：{message}",
   "consent.expired": "您的授权已过期 — 请在设置中重新授权",
   "consent.required": "此功能需要您的明确授权：{message}",
   "gui.bad_request": "GUI 请求无效：{message}",
