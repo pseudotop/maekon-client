@@ -43,6 +43,9 @@ audit-as-crates-io = false
 [policy.tauri]
 audit-as-crates-io = false
 
+[policy.tauri-plugin-wdio-webdriver]
+audit-as-crates-io = false
+
 [policy.tauri-runtime]
 audit-as-crates-io = false
 
