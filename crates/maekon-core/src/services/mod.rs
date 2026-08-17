@@ -6,3 +6,4 @@
 //! is satisfied structurally.
 
 pub mod context_sync;
+pub mod effective_mapping_gate;

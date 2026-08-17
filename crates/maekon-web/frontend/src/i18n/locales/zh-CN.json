@@ -3394,6 +3394,20 @@
     "syntheticBadge": {
       "label": "演示数据",
       "description": "此会话展示的是演示用的合成数据，并非真实记录。"
+    },
+    "consoleHandoff": {
+      "title": "在 Console 中继续",
+      "body": "使用当前会话验证的合成运行和源快照打开分配看板。",
+      "action": "打开分配看板",
+      "opening": "正在打开…",
+      "opened": "已为运行 {{run}} 打开 Console。",
+      "errors": {
+        "denied": "此账户无法在 Console 中继续该合成运行。",
+        "config": "Console 目标配置不正确。",
+        "launch": "无法打开 Console。请检查浏览器关联后重试。",
+        "bridge": "此跳转仅可在 Maekon 桌面应用中使用。",
+        "unavailable": "Console 跳转暂时不可用。"
+      }
     }
   }
 }

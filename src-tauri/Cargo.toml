@@ -89,6 +89,11 @@ ed25519-dalek = { workspace = true }
 # maekon-network, so this adds no crate to the supply-chain surface.
 url = { workspace = true }
 directories = { workspace = true }
+# #11068: cross-platform "are these two paths the same file", replacing three
+# hand-written cfg branches whose Windows arm used unstable std APIs. Already in
+# Cargo.lock (via walkdir) and already in supply-chain/audits.toml, so this adds
+# no new crate to the graph.
+same-file = "1.0"
 parking_lot = { workspace = true }
 sysinfo = { workspace = true }
 tempfile = { workspace = true }
@@ -229,7 +234,26 @@ section = "utility"
 priority = "optional"
 assets = [
     ["target/release/maekon", "usr/bin/", "755"],
+    # #11023: without this profile the app aborts a few seconds after start on
+    # stock Ubuntu 24.04, which restricts unprivileged user namespaces through
+    # AppArmor and so stops WebKitGTK from sandboxing its helper processes.
+    ["packaging/apparmor/maekon", "etc/apparmor.d/", "644"],
+    # #11064: without these the package installs a GUI application that never
+    # appears in a launcher. The autostart entry the app writes at runtime is a
+    # different file for a different purpose and does not put it in a menu.
+    # The icon must ship with the entry — an `Icon=` pointing at nothing renders
+    # blank, which looks like a broken app rather than a missing asset.
+    ["packaging/desktop/maekon.desktop", "usr/share/applications/", "644"],
+    ["icons/128x128.png", "usr/share/icons/hicolor/128x128/apps/maekon.png", "644"],
+    ["icons/32x32.png", "usr/share/icons/hicolor/32x32/apps/maekon.png", "644"],
 ]
+# A conffile: it lives in /etc and a user may edit it (the profile includes
+# <local/maekon> for that), so an upgrade must not silently overwrite it.
+conf-files = ["/etc/apparmor.d/maekon"]
+# postinst loads the profile, postrm unloads it. Loading is best-effort — a
+# system without AppArmor is not an install failure — but a failure prints why,
+# because the symptom it causes looks nothing like a packaging problem.
+maintainer-scripts = "packaging/debian"
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -948,6 +948,10 @@ fn spawn_process_with_token(
 mod tests {
     use super::*;
     use crate::sandbox::is_permissive_noop;
+    // Must match its users' gate: without this the import is unused whenever
+    // `windows-sandbox` is off, and `-D unused` makes that fatal (#11023).
+    #[cfg(feature = "windows-sandbox")]
+    use crate::sandbox::probe_verdict::{record_probe_verdict, ProbeVerdict};
     use maekon_core::config::SandboxProfile;
 
     // build_job_limits / build_token_restrictions tests moved to the cfg-free
@@ -1134,6 +1138,10 @@ mod tests {
             && std::env::var_os("GITHUB_ACTIONS").is_some()
             && !strict_ci_probe
         {
+            // #10959: `eprintln!` alone is invisible — libtest captures a
+            // passing test's output and CI passes no `--nocapture`, so a skip
+            // and a real pass both surface as `... ok`.
+            record_probe_verdict(ProbeVerdict::SkippedDllInitFailed);
             eprintln!(
                 "SKIP restricted_token_launch probe: STATUS_DLL_INIT_FAILED on \
                  GitHub-hosted runner image (known image regression, #10288)"
@@ -1146,6 +1154,9 @@ mod tests {
             "cmd /c echo must exit 0; stderr: {}",
             String::from_utf8_lossy(&outcome.stderr)
         );
+        // Recorded on the passing branch too (#10959): a line that appears only
+        // on failure makes silence ambiguous.
+        record_probe_verdict(ProbeVerdict::Passed);
         let stdout = String::from_utf8_lossy(&outcome.stdout);
         assert!(
             stdout.contains(probe),

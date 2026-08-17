@@ -59,13 +59,14 @@ describe('locale resource integrity', () => {
 describe('wire-code i18n coverage', () => {
   const registry = readWireCodeRegistry()
 
-  it('snapshot contains the expected 54 codes', () => {
+  it('snapshot contains the expected 55 codes', () => {
     // 41 → 42 with D7 addition of service.circuit_open (2026-04-20).
     // 42 → 47 with Phase 9 PR-B1 addition of 5 autostart.* codes (2026-04-25).
     // 47 → 49 with TimeWindow primitive addition of 2 time_window.* codes (2026-04-26).
     // 49 → 53 with Phase 9 PR-B2 addition of 4 autostart.* codes (2026-04-27).
     // 53 → 54 with audio integrity check error coverage.
-    expect(registry).toHaveLength(54)
+    // 54 → 55 with config rollback-safety coverage (#10985).
+    expect(registry).toHaveLength(55)
   })
 
   // The same 5 locales as the app runtime locales (`src/i18n/index.ts` supportedLngs).
@@ -173,13 +174,14 @@ describe('hasTranslation', () => {
 })
 
 describe('translatedCodes', () => {
-  it('returns all 54 codes for en', () => {
+  it('returns all 55 codes for en', () => {
     // 41 → 42 with D7 addition of service.circuit_open (2026-04-20).
     // 42 → 47 with Phase 9 PR-B1 addition of 5 autostart.* codes (2026-04-25).
     // 47 → 49 with TimeWindow primitive addition of 2 time_window.* codes (2026-04-26).
     // 49 → 53 with Phase 9 PR-B2 addition of 4 autostart.* codes (2026-04-27).
     // 53 → 54 with audio integrity check error coverage.
-    expect(translatedCodes('en')).toHaveLength(54)
+    // 54 → 55 with config rollback-safety coverage (#10985).
+    expect(translatedCodes('en')).toHaveLength(55)
   })
 
   it('returns a frozen readonly array', () => {

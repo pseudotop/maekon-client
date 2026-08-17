@@ -1,0 +1,19 @@
+#!/bin/sh
+# Unload the AppArmor profile when the package goes away (#11023). Leaving a
+# loaded profile behind for a binary that no longer exists is harmless but
+# untidy, and it confuses `aa-status` output.
+set -e
+
+PROFILE=/etc/apparmor.d/maekon
+
+case "$1" in
+  remove|purge)
+    if [ -e "$PROFILE" ] \
+      && command -v apparmor_parser >/dev/null 2>&1 \
+      && [ -d /sys/kernel/security/apparmor ]; then
+      apparmor_parser -R "$PROFILE" >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+
+exit 0

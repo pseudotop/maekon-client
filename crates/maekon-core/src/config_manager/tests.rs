@@ -1381,3 +1381,73 @@ mod managed_policy {
         );
     }
 }
+
+/// #10985 — a config written by a NEWER client must survive a rollback.
+///
+/// `load_and_migrate_from_file`'s downgrade guard returned the same
+/// `ConfigCode::Invalid` as a parse failure, so the caller treated a perfectly
+/// well-formed future-versioned file as corrupt and overwrote it with recovery
+/// defaults. Installing rc.8 then rolling back to rc.6 silently destroyed the
+/// user's settings, and rolling forward again found a downgraded file.
+///
+/// Asserts the file is byte-identical afterwards, not merely "still parses": a
+/// rewrite that happened to produce equivalent JSON would still have thrown the
+/// newer client's fields away.
+#[test]
+fn config_from_a_newer_client_is_not_overwritten() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+
+    ConfigManager::with_path(config_path.clone()).unwrap();
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    raw["schema_version"] = serde_json::json!(AppConfig::SCHEMA_VERSION + 1);
+    raw["server"]["base_url"] = serde_json::json!("https://kept.example.com");
+    let future_bytes = serde_json::to_string_pretty(&raw).unwrap();
+    fs::write(&config_path, &future_bytes).unwrap();
+
+    let manager = ConfigManager::with_path(config_path.clone())
+        .expect("a future-versioned config must not prevent startup");
+
+    assert_eq!(
+        fs::read_to_string(&config_path).unwrap(),
+        future_bytes,
+        "the newer client's config must be left byte-identical; overwriting it is what \
+         destroyed user settings on rollback (#10985)"
+    );
+    assert_ne!(
+        manager.snapshot().server.base_url,
+        "https://kept.example.com",
+        "the unreadable newer config must NOT be adopted in memory — this session runs on \
+         recovery defaults while the file is preserved for the newer build"
+    );
+}
+
+/// Control for the test above: a genuinely corrupt config must STILL be
+/// replaced. Without this, disabling the overwrite entirely would look like a
+/// fix while leaving every launch to re-read the same broken file.
+#[test]
+fn corrupt_config_is_still_replaced() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+
+    ConfigManager::with_path(config_path.clone()).unwrap();
+    fs::write(&config_path, r#"{"invalid": }"#).unwrap();
+
+    ConfigManager::with_path(config_path.clone())
+        .expect("a corrupt config must not prevent startup");
+
+    // Assert what the replacement CONTAINS, not merely that it parses: a
+    // value-blind `is_ok()` would pass on any JSON at all, including one this
+    // client still could not load on the next launch.
+    let after = fs::read_to_string(&config_path).unwrap();
+    let replaced: serde_json::Value = serde_json::from_str(&after).expect(
+        "a corrupt config must be replaced with parseable JSON so the next launch is clean",
+    );
+    assert_eq!(
+        replaced["schema_version"],
+        serde_json::json!(AppConfig::SCHEMA_VERSION),
+        "the replacement must carry THIS client's schema version, or the next launch hits the \
+         same failure again; got: {after}"
+    );
+}

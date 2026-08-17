@@ -6,6 +6,19 @@ mod sbpl;
 // Cfg-free Windows Job-Object limits + token-restriction policy (#5138), same
 // rationale (the Win32 enforcement stays in the target-gated `windows` module).
 mod win_limits;
+// Cfg-free reporting for the Windows restricted-token launch probe (#10959),
+// same seam again: what the probe reports is string + file work, so it stays
+// testable off Windows while the launch itself remains target-gated.
+//
+// `#[cfg(test)]` because the probe IS a test: CI runs it as
+// `cargo test -p maekon-automation --features windows-sandbox restricted_token`
+// (maekon-client-patch-audit.yml), and every consumer of this module lives in a
+// `#[cfg(test)]` block. Left unconditional, the module compiled into non-test
+// Windows builds with nothing using it and failed the public repo's
+// `Test (windows-latest)` job on five dead_code errors — while passing here,
+// because non-test Windows is a configuration nothing in this repo builds.
+#[cfg(test)]
+mod probe_verdict;
 
 #[cfg(target_os = "linux")]
 mod linux;

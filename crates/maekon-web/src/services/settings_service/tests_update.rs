@@ -405,8 +405,8 @@ async fn update_settings_persists_coaching_profiles_and_quiet_hours() {
 /// #9785: the handoff allowlist survives a Settings save, through the real flow.
 ///
 /// Same shape as the `regime_goals` test below, and for the same reason: the
-/// Settings form has no field for `server.allowed_handoff_hosts`, so a save that
-/// round-tripped it as absent would wipe it. What makes this one matter is what
+/// Settings form has no field for the server-owned handoff destination fields,
+/// so a save that round-tripped it as absent would wipe it. What makes this one matter is what
 /// the value decides — where the app may send the user's browser. A silent reset
 /// to empty turns handoff off entirely with nothing in the logs to explain it.
 ///
@@ -427,6 +427,7 @@ async fn update_settings_preserves_the_configured_handoff_allowlist() {
                 "console.example.com".to_string(),
                 "preview.example.com".to_string(),
             ];
+            config.server.console_base_url = Some("https://console.example.com".to_string());
             Ok(())
         })
         .expect("seed the allowlist the config file owns");
@@ -458,6 +459,10 @@ async fn update_settings_preserves_the_configured_handoff_allowlist() {
             "preview.example.com".to_string()
         ],
         "a Settings save must not clobber the handoff allowlist the config file owns",
+    );
+    assert_eq!(
+        saved.server.console_base_url.as_deref(),
+        Some("https://console.example.com")
     );
 }
 

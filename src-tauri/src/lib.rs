@@ -131,6 +131,9 @@ pub mod setup;
 pub mod shortcut_registry;
 pub mod skill_loader;
 pub mod skill_pack_resolver;
+// Cfg-free formatting for a startup failure the user can act on (#10985), so
+// the message is unit-tested here rather than only observable by crashing.
+pub mod startup_failure;
 pub mod storage_runtime;
 pub mod subprocess_provider;
 pub mod suggestion_manager;
@@ -1022,6 +1025,11 @@ pub fn run() {
         // #9627: receipt-only draft transport, populated from the same shared
         // authenticated client as context home. No bearer crosses IPC.
         .manage(commands::assignment_email_draft::AssignmentEmailDraftState::empty())
+        // #9628: authenticated pending handoff + one-window guard. Populated
+        // from the same shared login session as Context Home.
+        .manage(commands::console_handoff::ConsoleHandoffState::empty())
+        // #10358: shared authenticated transport + process-wide SQLite receipt spool.
+        .manage(commands::tmd_xlsx::TmdXlsxState::empty())
         // #9625: same slot discipline for the context-home transport. Registered
         // empty here; `app_runtime_launch::auth_wiring` populates it from the
         // shared login session so one sign-in serves this surface too.
@@ -1041,7 +1049,40 @@ pub fn run() {
         .setup(|app| {
             #[cfg(all(debug_assertions, target_os = "macos"))]
             install_debug_macos_notification_delegate_from_env();
-            setup::init(app)
+            // #10985: returning Err here reaches Tauri's
+            // `panic!("Failed to setup app: {e}")` inside a non-unwinding
+            // extern boundary, so the process aborts with `Abort trap: 6` and a
+            // raw backtrace. That is what a user rolling back to an older build
+            // sees, with no hint that the profile belongs to a newer version or
+            // that a pre-migration backup exists. Report something actionable
+            // and exit cleanly instead.
+            match setup::init(app) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let data_dir = maekon_core::config_manager::ConfigManager::data_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let backup = std::fs::read_dir(&data_dir)
+                        .map(|entries| {
+                            startup_failure::newest_backup_name(
+                                entries
+                                    .flatten()
+                                    .map(|e| e.file_name().to_string_lossy().into_owned()),
+                            )
+                        })
+                        .unwrap_or_default();
+                    let message = startup_failure::format_startup_failure(
+                        &error.to_string(),
+                        &data_dir,
+                        backup.as_deref(),
+                    );
+                    // Both sinks on purpose: stderr for a terminal launch, the
+                    // tracing log for a Finder/Explorer launch where stderr goes
+                    // nowhere the user will ever look.
+                    tracing::error!(%error, "startup failed");
+                    eprintln!("{message}");
+                    std::process::exit(1);
+                }
+            }
         })
         .on_window_event(|window, event| {
             // Close-to-tray: hide the window on close (not an actual exit).
@@ -1220,10 +1261,14 @@ pub fn run() {
             commands::os_handoff::open_external_target,
             // Context-home read surface (#9625).
             commands::context_home::fetch_context_home,
+            // Fixed-route Maekon→Console continuity handoff (#9628).
+            commands::console_handoff::open_console_assignment_board,
             // Receipt-only assignment draft surface (#9627).
             commands::assignment_email_draft::generate_assignment_email_draft,
             commands::assignment_email_draft::load_assignment_email_draft,
             commands::assignment_email_draft::regenerate_assignment_email_draft,
+            // Standalone native-file WBS XLSX flow (#10358).
+            commands::tmd_xlsx::generate_tmd_xlsx,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("error while building Maekon: {error}"));

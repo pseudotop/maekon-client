@@ -15,6 +15,7 @@
   "config.invalid": "Invalid configuration: {message}",
   "config.missing": "Missing required configuration: {message}",
   "config.out_of_range": "Configuration value out of range: {message}",
+  "config.schema_too_new": "Configuration requires a newer Maekon version: {message}",
   "consent.expired": "Your consent has expired — please renew it in settings",
   "consent.required": "This feature requires your explicit consent: {message}",
   "gui.bad_request": "GUI request was invalid: {message}",

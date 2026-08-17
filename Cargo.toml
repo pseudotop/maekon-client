@@ -308,6 +308,7 @@ bsdiff = "0.2"
 self-replace = "1.5"
 tar = "0.4.46"
 zip = "8"
+quick-xml = "=0.39.2"
 
 # 웹 프레임워크 (Axum)
 axum = { version = "0.8", features = ["macros"] }
@@ -379,6 +380,7 @@ libc = "0.2"
 mockito = "1"
 tokio-test = "0.4"
 tempfile = "3"
+icu_normalizer = { version = "=2.1.1", default-features = false, features = ["compiled_data"] }
 assert_matches = "1"
 criterion = { version = "0.8", features = ["html_reports"] }
 

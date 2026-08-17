@@ -19,6 +19,7 @@ pub mod consent;
 // #9625: `pub` so the context-home slot semantics can be exercised from
 // integration tests — the "unwired means unavailable, not empty" distinction is
 // the acceptance surface.
+pub mod console_handoff;
 pub mod context_home;
 pub(crate) mod detection;
 pub(crate) mod error_report;
@@ -42,6 +43,7 @@ pub(crate) mod suggestions;
 pub(crate) mod sync;
 pub(crate) mod system;
 pub mod task;
+pub(crate) mod tmd_xlsx;
 pub(crate) mod tray;
 pub(crate) mod vault;
 

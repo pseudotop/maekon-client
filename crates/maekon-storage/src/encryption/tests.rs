@@ -70,6 +70,42 @@ fn key_file_created_with_correct_size() {
     assert_eq!(content.len(), 32);
 }
 
+/// #10985: a database with no key file means the key is somewhere this process
+/// cannot see. Generating one here does not recover the data — it makes the loss
+/// permanent, and the "file is not a database" abort that follows names nothing
+/// the user can act on.
+#[test]
+fn refuses_to_generate_a_key_beside_an_existing_database() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join(SQLCIPHER_DB_FILENAME), b"encrypted-bytes").unwrap();
+
+    let err = EncryptionKey::load_or_create(dir.path()).unwrap_err();
+
+    assert!(
+        matches!(err, StorageError::Internal(ref msg) if msg.contains("refusing to generate")),
+        "expected a fail-closed refusal naming the situation; got: {err:?}"
+    );
+    assert!(
+        !dir.path().join(".db_key").exists(),
+        "a refused provisioning must not leave a key file behind"
+    );
+}
+
+/// The guard is about a MISSING key, not about the database's presence. An
+/// existing profile whose key file is intact must keep opening normally.
+#[test]
+fn an_existing_key_still_loads_when_a_database_is_present() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join(SQLCIPHER_DB_FILENAME), b"encrypted-bytes").unwrap();
+    fixture_key(0x42)
+        .save_to_file(&dir.path().join(".db_key"))
+        .unwrap();
+
+    let key = EncryptionKey::load_or_create(dir.path()).unwrap();
+
+    assert_eq!(key.as_hex().as_str(), fixture_key(0x42).as_hex().as_str());
+}
+
 #[test]
 fn debug_does_not_leak_key_bytes() {
     let key = fixture_key(0xAB);
@@ -620,6 +656,77 @@ mod sealed_key_tests {
             matches!(err, StorageError::Encryption(ref msg) if msg.contains("hex decode")),
             "a corrupt keychain entry must fail closed via the hex-decode rejection path, not \
              silently regenerate a new key; got: {err:?}"
+        );
+    }
+
+    /// #10985: the failure this guard exists for, end to end through the real
+    /// code paths.
+    ///
+    /// A profile that already migrated its key into the keychain has no
+    /// `.db_key` on disk. If the keychain later errors outright — not a timeout,
+    /// which is already handled — `load_or_create_sealed` falls back to
+    /// `load_or_create`, and before this guard that minted a fresh key over a
+    /// database encrypted under the sealed one.
+    #[test]
+    fn keychain_loss_does_not_mint_a_new_key_over_an_existing_database() {
+        let dir = TempDir::new().unwrap();
+        let key_path = dir.path().join(".db_key");
+        let db_path = dir.path().join(SQLCIPHER_DB_FILENAME);
+
+        // Step 1: a legacy profile — plaintext key file plus its database.
+        fixture_key(0x11).save_to_file(&key_path).unwrap();
+        fs::write(&db_path, b"encrypted-bytes").unwrap();
+
+        // Step 2: a newer build seals the key and removes the plaintext copy.
+        let vault = FakeVault::default();
+        let migrated = EncryptionKey::load_or_create_sealed(dir.path(), &vault).unwrap();
+        assert_eq!(
+            migrated.as_hex().as_str(),
+            fixture_key(0x11).as_hex().as_str()
+        );
+        assert!(
+            !key_path.exists(),
+            "the migration is supposed to delete the plaintext key; without that this \
+             test would not be reproducing #10985 at all"
+        );
+
+        // Step 3: the keychain is gone. This is the arm that falls through to
+        // `load_or_create`.
+        let dead = FakeVault {
+            force_retrieve_err: true,
+            ..FakeVault::default()
+        };
+        let err = EncryptionKey::load_or_create_sealed(dir.path(), &dead).unwrap_err();
+
+        assert!(
+            matches!(err, StorageError::Internal(ref msg) if msg.contains("refusing to generate")),
+            "losing the keychain beside an existing database must fail closed, not hand out \
+             a fresh key that orphans it; got: {err:?}"
+        );
+        assert!(
+            !key_path.exists(),
+            "no new .db_key may be written — that would also poison the next launch's \
+             migration arm by sealing the wrong key"
+        );
+    }
+
+    /// The other direction. Without this, the guard above is satisfied by an
+    /// implementation that never provisions a key at all, which would break
+    /// every first launch.
+    #[test]
+    fn a_fresh_profile_still_gets_a_key_when_the_keychain_is_unavailable() {
+        let dir = TempDir::new().unwrap();
+        let dead = FakeVault {
+            force_retrieve_err: true,
+            ..FakeVault::default()
+        };
+
+        let key = EncryptionKey::load_or_create_sealed(dir.path(), &dead).unwrap();
+
+        assert_eq!(key.as_hex().len(), 64);
+        assert!(
+            dir.path().join(".db_key").exists(),
+            "headless Linux/CI with no keyring must still get the plaintext-file scheme"
         );
     }
 }

@@ -130,6 +130,9 @@ impl AppConfig {
                 // distribution that wants its Console reachable configures it,
                 // the same way it configures the server it talks to.
                 allowed_handoff_hosts: Vec::new(),
+                // #9628: no authenticated Console origin is assumed. A
+                // distribution/operator must configure it explicitly.
+                console_base_url: None,
             },
             monitor: MonitorConfig {
                 poll_interval_ms: default_poll_interval_ms(),

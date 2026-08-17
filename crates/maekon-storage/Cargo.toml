@@ -29,6 +29,9 @@ arc-swap = { workspace = true }
 crossbeam = { workspace = true }
 keyring = { workspace = true }
 tempfile = { workspace = true }
+icu_normalizer = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
 aes-gcm = { workspace = true }
 argon2 = { workspace = true }
 zeroize = { workspace = true }
