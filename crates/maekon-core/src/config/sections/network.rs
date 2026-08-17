@@ -54,6 +54,14 @@ pub struct ServerConfig {
     /// file can already repoint `base_url`.
     #[serde(default)]
     pub allowed_handoff_hosts: Vec<String>,
+    /// Origin of the authenticated Organization Console.
+    ///
+    /// `None` is fail-closed: the desktop can read Context Home but cannot open
+    /// a Console handoff until an operator configures an HTTPS origin. The
+    /// dedicated command accepts only an origin (no path/query/fragment or
+    /// credentials) and then appends its fixed `/console/handoff` path.
+    #[serde(default)]
+    pub console_base_url: Option<String>,
 }
 
 // ── GrpcConfig ─────────────────────────────────────────────────────

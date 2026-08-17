@@ -45,8 +45,8 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -104,8 +104,8 @@ jobs:
       # protoc 을 요구한다 — 러너에 기본 설치되어 있지 않다.
       - name: Install protoc (proto regeneration prerequisite)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y --no-install-recommends protobuf-compiler libprotobuf-dev
           protoc --version
 
       # F-RC-C22-01: 생성 코드 staleness 감지

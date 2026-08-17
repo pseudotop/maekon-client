@@ -15,6 +15,7 @@
   "config.invalid": "설정 값이 올바르지 않습니다: {message}",
   "config.missing": "필수 설정이 누락되었습니다: {message}",
   "config.out_of_range": "설정 값이 허용 범위를 벗어났습니다: {message}",
+  "config.schema_too_new": "이 설정은 더 최신 Maekon 버전이 필요합니다: {message}",
   "consent.expired": "동의가 만료되었습니다 — 설정에서 다시 동의해 주세요",
   "consent.required": "이 기능은 명시적 동의가 필요합니다: {message}",
   "gui.bad_request": "GUI 요청이 올바르지 않습니다: {message}",

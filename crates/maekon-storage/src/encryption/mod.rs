@@ -96,12 +96,46 @@ impl EncryptionKey {
     /// Load from the key file, or generate a new key.
     ///
     /// - If the file exists: load it (validating the 32-byte length).
-    /// - If the file is absent: generate, then persist to file (Unix: mode 0o600).
+    /// - If the file is absent AND nothing is encrypted here: generate, then
+    ///   persist to file (Unix: mode 0o600).
+    /// - If the file is absent but a SQLCipher database exists: fail closed
+    ///   (#10985).
     pub fn load_or_create(app_data_dir: &Path) -> Result<Self, StorageError> {
         let key_path = app_data_dir.join(".db_key");
 
         if key_path.exists() {
             return Self::load_from_file(&key_path);
+        }
+
+        // #10985: never mint a fresh key beside ciphertext an older key produced.
+        //
+        // Measured on the published artifacts: rc.6 keeps the master key in a
+        // plaintext `.db_key`; upgrading to rc.8 seals it in the OS keychain and
+        // DELETES that file (`load_or_create_sealed`); rolling back to rc.6 —
+        // which has no keychain code at all — then lands here, finds no key
+        // file, generates one, and the SQLCipher database opens as "file is not
+        // a database". The app aborts and the user's data is orphaned.
+        //
+        // That downgrade cannot be fixed retroactively, but the same shape is
+        // reachable FORWARD, which is what this guards: when the keychain errors
+        // outright rather than timing out, `load_or_create_sealed` falls back to
+        // this function, and the data dir may well hold a database encrypted
+        // under the sealed key.
+        //
+        // The condition is the one the timeout arm already states — "is there
+        // anything to lose?" — applied to the arm that was missing it. A genuine
+        // fresh install still provisions a key, including on headless Linux/CI
+        // with no keyring backend, because no database exists yet.
+        let db_path = app_data_dir.join(SQLCIPHER_DB_FILENAME);
+        if db_path.exists() {
+            return Err(StorageError::Internal(format!(
+                "refusing to generate a new at-rest master key: {db_path:?} exists but \
+                 {key_path:?} does not. That database is encrypted under a key this \
+                 process cannot see — most likely sealed in the OS keychain by a newer \
+                 build (#8040/#9588). Minting a key here would make the existing data \
+                 permanently unreadable rather than recover it. Launch the build that \
+                 sealed the key, or restore the key file, and try again (#10985)."
+            )));
         }
 
         let key = Self::generate()?;

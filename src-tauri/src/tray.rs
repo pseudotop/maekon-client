@@ -4,10 +4,11 @@ use tauri::{Emitter, Manager, Runtime};
 // tray-builder path (`setup_tray`/`sync_tray_state`/`build_tray_menu`/
 // `build_connection_items`). That path needs `tauri/tray-icon`, which is forced
 // on macOS/Windows by the platform dep tables but optional on Linux via the
-// `app-tray` feature (the no-gtk Linux build drops it). Gate these imports on
-// the SAME predicate as the functions that use them so the no-tray Linux build
-// (`--no-default-features`, `app-tray` off) has no unused imports.
-#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
+// Linux has no tray backend at all (#11006): the vendored tray-icon crate maps
+// every Linux/BSD target to `disabled.rs`, whose `TrayIcon::new` always errors.
+// Gate these imports on the SAME predicate as the functions that use them so the
+// Linux build has no unused imports.
+#[cfg(not(target_os = "linux"))]
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -137,7 +138,7 @@ fn resolve_icon_state(
 /// Tray-builder-only: gated on the same predicate as `setup_tray`/
 /// `sync_tray_state` (its only callers via `build_tray_menu`) so the no-tray
 /// Linux build does not flag it as dead code.
-#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
+#[cfg(not(target_os = "linux"))]
 #[allow(clippy::type_complexity)]
 fn build_connection_items<R: Runtime>(
     app: &impl Manager<R>,
@@ -343,7 +344,7 @@ fn debug_menu_items_snapshot(
 /// `sync_tray_state` (its only callers) so the no-tray Linux build does not
 /// flag it — or the `Menu`/`MenuItem`/`PredefinedMenuItem` imports it uses — as
 /// dead.
-#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
+#[cfg(not(target_os = "linux"))]
 fn build_tray_menu<R: Runtime>(
     app: &impl Manager<R>,
     capture_available: bool,
@@ -442,7 +443,7 @@ fn build_tray_menu<R: Runtime>(
 
 /// System tray setup — template icon + menu + event handler.
 /// tauri.conf.json trayIcon is null; everything is handled here.
-#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
+#[cfg(not(target_os = "linux"))]
 pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
     // Read initial state from AppState (config-driven, registered before tray setup)
     let (paused, indicator_visible) = app
@@ -489,11 +490,17 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-/// No-tray fallback (Linux without `app-tray`): the desktop runs headless of a
-/// tray; startup must still succeed.
-#[cfg(all(target_os = "linux", not(feature = "app-tray")))]
+/// No-tray fallback (Linux): the desktop runs headless of a tray; startup must
+/// still succeed.
+///
+/// Decided by target, not by `app-tray` (#11006). The feature used to select the
+/// real path here, so the release build — which passes `--features ...` without
+/// `--no-default-features`, leaving default's `app-tray` on — reached a backend
+/// that is disabled for every Linux target and panicked during setup. The
+/// published .deb could not start at all.
+#[cfg(target_os = "linux")]
 pub fn setup_tray<R: Runtime>(_app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
-    info!("tray disabled at compile time (linux without `app-tray`)");
+    info!("tray unavailable on Linux (vendored backend is disabled for this target)");
     Ok(())
 }
 
@@ -501,7 +508,7 @@ pub fn setup_tray<R: Runtime>(_app: &tauri::App<R>) -> Result<(), Box<dyn std::e
 ///
 /// Combines icon swap (template shape overlay) with menu text rebuild.
 /// Called from tray event handlers and IPC commands.
-#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
+#[cfg(not(target_os = "linux"))]
 pub fn sync_tray_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
     paused: bool,
@@ -535,7 +542,7 @@ pub fn sync_tray_state<R: Runtime>(
 }
 
 /// No-tray fallback: state changes have no tray to mirror into.
-#[cfg(all(target_os = "linux", not(feature = "app-tray")))]
+#[cfg(target_os = "linux")]
 pub fn sync_tray_state<R: Runtime>(
     _app: &tauri::AppHandle<R>,
     _paused: bool,
@@ -559,9 +566,9 @@ pub fn debug_tray_state<R: Runtime>(app: &tauri::AppHandle<R>) -> TrayDebugState
     let capture_available = capture_available(app);
     let any_disconnected = !srv || !llm || !cli;
     let icon_state = resolve_icon_state(capture_available, paused, any_disconnected);
-    #[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
+    #[cfg(not(target_os = "linux"))]
     let registered = app.tray_by_id(MAIN_TRAY_ID).is_some();
-    #[cfg(all(target_os = "linux", not(feature = "app-tray")))]
+    #[cfg(target_os = "linux")]
     let registered = false;
     let update_actions = current_tray_update_actions(app);
     let icon_visual = tray_icon_visual_snapshot(icon_state);

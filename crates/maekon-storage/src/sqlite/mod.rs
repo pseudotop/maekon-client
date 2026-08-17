@@ -38,6 +38,7 @@ mod transcript_storage_impl;
 mod vault_mirror_state_impl;
 pub mod vector_index_impl;
 pub mod vector_store_impl;
+mod wbs_xlsx_receipt_store_impl;
 mod web_storage_impl;
 mod work_context_store_impl;
 mod work_context_writers;
@@ -71,6 +72,8 @@ use crate::migration;
 /// Parallel test instances each run migrations, so FTS is always available
 /// and this global flag being `true` is correct for all concurrent tests.
 pub(super) static FTS_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+mod effective_mapping_cache_impl;
 
 /// Format `instant` as the canonical `system_metrics_hourly.hour` bucket key.
 ///

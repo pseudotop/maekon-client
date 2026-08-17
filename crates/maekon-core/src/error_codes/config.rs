@@ -16,6 +16,13 @@ define_code_enum! {
     pub enum ConfigCode {
         /// Config file parse failure or schema mismatch.
         Invalid => "config.invalid",
+        /// Config file is well-formed but written by a NEWER client (#10985).
+        ///
+        /// Distinct from `Invalid` because the remedies are opposite: a corrupt
+        /// file should be replaced so the next launch is clean, while a
+        /// future-versioned one must be left alone — it is the user's settings,
+        /// still valid, and overwriting it destroys them on any rollback.
+        SchemaTooNew => "config.schema_too_new",
         /// Required config field missing.
         Missing => "config.missing",
         /// Config value outside the allowed range.

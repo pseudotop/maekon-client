@@ -311,6 +311,19 @@ fn launch(target: &ValidatedTarget) -> Result<(), LaunchFailure> {
     })
 }
 
+/// Launch a target that already passed [`validate`].
+///
+/// Exposed inside the app crate so dedicated commands can own URL construction
+/// while still sharing the single shell-free OS boundary.
+pub async fn launch_validated(target: ValidatedTarget) -> Result<(), IpcError> {
+    tauri::async_runtime::spawn_blocking(move || launch(&target))
+        .await
+        .map_err(|error| {
+            IpcError::new(CODE_LAUNCH_FAILED, format!("handoff task failed: {error}"))
+        })?
+        .map_err(IpcError::from)
+}
+
 #[cfg(target_os = "linux")]
 fn launch(target: &ValidatedTarget) -> Result<(), LaunchFailure> {
     use std::process::Command;
@@ -410,10 +423,7 @@ pub async fn open_external_target(
     // `status()` blocks until the launcher process exits, which is how the
     // failure classes above are observed at all. Off the async runtime's
     // worker so a slow handler cannot stall unrelated IPC.
-    tauri::async_runtime::spawn_blocking(move || launch(&target))
-        .await
-        .map_err(|e| IpcError::new(CODE_LAUNCH_FAILED, format!("handoff task failed: {e}")))?
-        .map_err(IpcError::from)
+    launch_validated(target).await
 }
 
 #[cfg(test)]

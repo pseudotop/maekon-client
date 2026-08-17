@@ -3402,6 +3402,20 @@
     "syntheticBadge": {
       "label": "Datos de demostración",
       "description": "Esta sesión muestra datos sintéticos de demostración, no registros reales."
+    },
+    "consoleHandoff": {
+      "title": "Continuar en Console",
+      "body": "Abre el tablero de asignaciones con esta ejecución sintética y la instantánea de origen verificadas por la sesión actual.",
+      "action": "Abrir tablero de asignaciones",
+      "opening": "Abriendo…",
+      "opened": "Console se abrió para la ejecución {{run}}.",
+      "errors": {
+        "denied": "Esta cuenta no puede continuar esta ejecución sintética en Console.",
+        "config": "El destino de Console no está configurado correctamente.",
+        "launch": "No se pudo abrir Console. Comprueba el controlador del navegador y vuelve a intentarlo.",
+        "bridge": "Esta transición solo está disponible en la aplicación de escritorio Maekon.",
+        "unavailable": "La transición a Console no está disponible temporalmente."
+      }
     }
   }
 }

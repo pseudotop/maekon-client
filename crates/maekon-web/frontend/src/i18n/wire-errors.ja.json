@@ -15,6 +15,7 @@
   "config.invalid": "設定が正しくありません: {message}",
   "config.missing": "必須の設定が不足しています: {message}",
   "config.out_of_range": "設定値が許容範囲を超えています: {message}",
+  "config.schema_too_new": "この設定にはより新しいバージョンの Maekon が必要です: {message}",
   "consent.expired": "同意の有効期限が切れました — 設定で再度同意してください",
   "consent.required": "この機能には明示的な同意が必要です: {message}",
   "gui.bad_request": "GUI リクエストが正しくありません: {message}",
