@@ -1038,6 +1038,72 @@ mod managed_policy {
         path
     }
 
+    /// #10985 — the read-only fallback must survive the managed overlay.
+    ///
+    /// `config_from_a_newer_client_is_not_overwritten` proves the SchemaTooNew
+    /// branch itself does not write. It proves it with NO managed policy, so it
+    /// never reaches the two clamp-rewrites that run afterwards on the same
+    /// startup path. With a policy present, `managed.apply` finds the recovery
+    /// default differs from the locked value, reports a clamped field, and
+    /// persists — writing recovery defaults over the intact newer file. Same
+    /// destruction, one branch later.
+    ///
+    /// Byte-identity, not "still parses": a rewrite producing equivalent JSON
+    /// has still thrown the newer client's fields away.
+    #[test]
+    fn newer_client_config_survives_a_managed_policy_clamp() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("config.json");
+
+        ConfigManager::with_paths(cfg_path.clone(), None).unwrap();
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        raw["schema_version"] = serde_json::json!(AppConfig::SCHEMA_VERSION + 1);
+        raw["server"]["base_url"] = serde_json::json!("https://kept.example.com");
+        let future_bytes = serde_json::to_string_pretty(&raw).unwrap();
+        fs::write(&cfg_path, &future_bytes).unwrap();
+
+        // `true` is what makes this discriminating: the recovery default this
+        // session runs on has telemetry OFF, so the policy necessarily reports a
+        // clamped field and the rewrite fires. A policy matching the recovery
+        // default would clamp nothing and the test would pass on broken code.
+        let managed_path = write_managed_telemetry_enabled(dir.path(), true);
+
+        ConfigManager::with_paths(cfg_path.clone(), Some(managed_path))
+            .expect("a future-versioned config must not prevent startup");
+
+        assert_eq!(
+            fs::read_to_string(&cfg_path).unwrap(),
+            future_bytes,
+            "a managed clamp must not persist over a config this client cannot read — the \
+             clamp applies to the in-memory session, and the file belongs to the newer build \
+             that wrote it (#10985)"
+        );
+    }
+
+    /// Control for the test above: with a config this client CAN read, the
+    /// managed clamp must still be persisted. Without this, suppressing the
+    /// clamp-rewrite outright would look like a fix while silently dropping the
+    /// fleet policy lock on every normal launch.
+    #[test]
+    fn managed_clamp_still_persists_on_a_readable_config() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("config.json");
+        let mut existing = crate::config::AppConfig::default_config();
+        existing.telemetry.enabled = true;
+        fs::write(&cfg_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+        let managed_path = write_managed_telemetry_enabled(dir.path(), false);
+
+        ConfigManager::with_paths(cfg_path.clone(), Some(managed_path)).unwrap();
+
+        let on_disk = persistence::load_from_file(&cfg_path).unwrap();
+        assert!(
+            !on_disk.telemetry.enabled,
+            "the clamp rewrite must survive for readable configs; only the unreadable-newer \
+             case is exempt"
+        );
+    }
+
     #[test]
     fn managed_telemetry_off_clamps_explicit_opt_in() {
         let dir = TempDir::new().unwrap();

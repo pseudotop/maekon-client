@@ -1,0 +1,96 @@
+# UPSTREAM-DELTA.patch -- tauri-plugin-wdio-webdriver 1.2.0
+#
+# Unified diff: pristine crates.io source (static.crates.io tarball,
+# tauri-plugin-wdio-webdriver-1.2.0.crate) -> vendored source at
+# patches/tauri-plugin-wdio-webdriver-1.2.0/. This is the ground-truth record
+# of what Maekon changed relative to upstream. See ../README.md for the refresh
+# procedure and the why/what summary per crate.
+#
+# Regenerate with:
+#   curl -L https://static.crates.io/crates/tauri-plugin-wdio-webdriver/tauri-plugin-wdio-webdriver-1.2.0.crate -o /tmp/tauri-plugin-wdio-webdriver-1.2.0.crate
+#   mkdir -p /tmp/pristine && tar xzf /tmp/tauri-plugin-wdio-webdriver-1.2.0.crate -C /tmp/pristine
+#   diff -rN -U0 --exclude=target --exclude=.cargo_vcs_info.json \
+#     --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock \
+#     /tmp/pristine/tauri-plugin-wdio-webdriver-1.2.0 patches/tauri-plugin-wdio-webdriver-1.2.0 > patches/tauri-plugin-wdio-webdriver-1.2.0/UPSTREAM-DELTA.patch
+#
+# Excluded as crates.io tarball / repo-local packaging noise (see README
+# 'Exclusions' section): .cargo_vcs_info.json, .cargo-ok, Cargo.toml.orig,
+# Cargo.lock, target/.
+#
+diff -rN -U0 --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/Cargo.toml vendored/Cargo.toml
+--- upstream/Cargo.toml
++++ vendored/Cargo.toml
+@@ -92 +92 @@
+-version = "0.18"
++version = "0.21"
+@@ -96 +96 @@
+-version = "0.21"
++version = "0.22"
+@@ -99 +99,3 @@
+-version = "0.18"
++version = "0.11"
++features = ["v4_6"]
++package = "gtk4"
+@@ -102 +104,2 @@
+-version = "1.1"
++version = "0.6"
++package = "javascriptcore6"
+@@ -104,2 +107,4 @@
+-[target.'cfg(target_os = "linux")'.dependencies.webkit2gtk]
+-version = "2.0"
++[target.'cfg(target_os = "linux")'.dependencies.webkit6]
++version = "0.6"
++features = ["v2_50"]
++package = "webkit6"
+diff -rN -U0 --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/README.md vendored/README.md
+--- upstream/README.md
++++ vendored/README.md
+@@ -281,2 +281,2 @@
+-- [Plugin Setup Guide](../tauri-service/docs/plugin-setup.md) — Full setup instructions including this plugin
+-- [Platform Support](../tauri-service/docs/platform-support.md) — Per-platform details
++- [Plugin Setup Guide](https://github.com/webdriverio/desktop-mobile/blob/6629cfbdf2e8972962ff3ca0f8422634880d82ed/packages/tauri-service/docs/plugin-setup.md) — Full setup instructions including this plugin
++- [Platform Support](https://github.com/webdriverio/desktop-mobile/blob/6629cfbdf2e8972962ff3ca0f8422634880d82ed/packages/tauri-service/docs/platform-support.md) — Per-platform details
+diff -rN -U0 --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform/linux.rs vendored/src/platform/linux.rs
+--- upstream/src/platform/linux.rs
++++ vendored/src/platform/linux.rs
+@@ -7 +7,2 @@
+-use javascriptcore::ValueExt;
++use gtk::gdk::prelude::TextureExt as _;
++use javascriptcore_rs::Value as JavaScriptValue;
+@@ -11,3 +12,2 @@
+-use webkit2gtk::{
+-    PrintOperationExt, ScriptDialogType, SnapshotOptions, SnapshotRegion, WebViewExt,
+-};
++use webkit6::prelude::WebViewExt as _;
++use webkit6::{ScriptDialogType, SnapshotOptions, SnapshotRegion};
+@@ -21,2 +21,2 @@
+-/// 
+-/// WebKitGTK's `to_json()` can fail for certain types (functions, undefined, 
++///
++/// WebKitGTK's `to_json()` can fail for certain types (functions, undefined,
+@@ -24 +24 @@
+-/// 
++///
+@@ -28 +28 @@
+-fn js_value_to_json(js_value: &javascriptcore::Value) -> Result<Value, String> {
++fn js_value_to_json(js_value: &JavaScriptValue) -> Result<Value, String> {
+@@ -104 +103,0 @@
+-    use webkit2gtk::WebViewExt as _;
+@@ -273,9 +272,5 @@
+-                    Ok(surface) => {
+-                        let mut png_data: Vec<u8> = Vec::new();
+-                        match gtk::cairo::ImageSurface::try_from(surface) {
+-                            Ok(image_surface) => match image_surface.write_to_png(&mut png_data) {
+-                                Ok(()) => Ok(BASE64_STANDARD.encode(&png_data)),
+-                                Err(e) => Err(format!("Failed to write PNG: {e}")),
+-                            },
+-                            Err(e) => Err(format!("Failed to downcast to ImageSurface: {e:?}")),
+-                        }
++                    Ok(texture) => {
++                        // WebKitGTK 6 snapshots are GDK4 textures. Request PNG
++                        // bytes directly instead of assuming a Cairo surface.
++                        let png_data = texture.save_to_png_bytes();
++                        Ok(BASE64_STANDARD.encode(png_data.as_ref()))
+@@ -361 +356 @@
+-            let print_op = webkit2gtk::PrintOperation::new(&webview);
++            let print_op = webkit6::PrintOperation::new(&webview);
