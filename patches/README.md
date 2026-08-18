@@ -1,8 +1,11 @@
 # Vendored Tauri-stack fork: delta manifest + refresh process
 
-`Cargo.toml` `[patch.crates-io]` overrides 8 crates with local vendored source
-under this directory so the Linux build can use GTK4/WebKitGTK 6 instead of
-the upstream GTK3/`webkit2gtk` line. This document is the delta manifest:
+`Cargo.toml` `[patch.crates-io]` overrides 8 active crates with local vendored
+source under this directory so the Linux build can use GTK4/WebKitGTK 6 instead
+of the upstream GTK3/`webkit2gtk` line. The retired
+`tauri-plugin-webdriver-0.2.1` predecessor remains here as historical
+provenance but is not wired into the dependency graph. This document is the
+delta manifest:
 what each crate's local source diverges from its pristine crates.io release,
 why, and how to refresh a crate to a newer upstream version without losing
 the local changes.
@@ -75,7 +78,8 @@ refresh cycle.
 | `muda-0.19.1` | `muda` 0.19.1 | 11 files / ~2053 lines | `a94c1f3d84` | `7ef51aa433`, `81d0a00a97` | Menu backend for Tauri/tray-icon. `src/platform_impl/gtk/*` (the GTK3 menu implementation) is gutted and replaced by a new `src/platform_impl/fallback/mod.rs` (+265 lines) that returns an in-process no-op/fallback menu on Linux — this is the "no-gtk linux muda fallback" referenced in commit `7ef51aa433`, not a GTK4 port. Large removed-line count (~1802 of the ~2053 total) reflects deleting the GTK3 implementation rather than porting it. |
 | `tray-icon-0.23.1` | `tray-icon` 0.23.1 | 7 files / ~1202 lines | `b2155a581f` (vendor + first modification are the **same commit** — see "Known issues") | `833d4e02d3` | Tray icon backend for Tauri. Same pattern as `muda`: `src/platform_impl/gtk/*` GTK3/`libappindicator` backend is disabled via a new `src/platform_impl/disabled.rs` that returns an unsupported-platform error on Linux/BSD, keeping Windows/macOS tray support intact. This crate carries the most explicit self-documentation of any vendored crate: its own `README.md` and `src/lib.rs` have 5 inline "Maekon E31 patch note" comments explaining the Linux/BSD disablement — read those directly for the fullest first-party rationale. |
 | `tauri-runtime-2.11.2` | `tauri-runtime` 2.11.2 | 3 files / ~18 lines | `a94c1f3d84` | `6c070616cc`, `9cf4a7ec0a` | Smallest real delta. `Cargo.toml` gtk4/webkit6 deps, `src/webview.rs` and `src/window.rs` `webkit2gtk::WebView`/`gtk::glib::IsA` type/trait-path updates to match the GTK4-clean Wry/Tao types flowing through this crate's trait definitions. |
-| `tauri-plugin-webdriver-0.2.1` | `tauri-plugin-webdriver` 0.2.1 | 3 files / ~23 lines | `a94c1f3d84` (vendor + modification are the **same commit** — see "Known issues") | none | **Correction**: issue #7722's originating review characterized this crate's delta as "0 lines" (implying a pure, unmodified vendor copy). The actual pristine-vs-vendored diff is not empty: `Cargo.toml` swaps `cairo-rs 0.18`/`glib 0.21`/`gtk 0.18`/`javascriptcore-rs 1.1`/`webkit2gtk 2.0` for `cairo-rs 0.21`/`glib 0.22`/`gtk4 0.11`/`javascriptcore6 0.6`/`webkit6 0.6`, and `src/platform/linux.rs` renames 3 `webkit2gtk::*` imports/calls to `webkit6::*`. This matches the same GTK4/WebKitGTK 6 migration pattern as the other 7 crates and is attributable to the original `#4230` WebKitGTK 6 manifest spike (its evidence doc explicitly mentions patching "the optional `tauri-plugin-webdriver` lockfile path"), even though no later `fix:` commit ever touched it separately. No `UPSTREAM-DELTA.patch` empty-marker was needed; the real 23-line delta is committed. |
+| `tauri-plugin-wdio-webdriver-1.2.0` | `tauri-plugin-wdio-webdriver` 1.2.0 | 3 files / 54 lines | `e97dc47c47` | `1655c4e8f3`, `d9855cc989`, `1037939bc5`, `0c79148599`, `fcff775229` | Active WebDriver cell. #11074 found that the registry crate still selected GTK3/`webkit2gtk` beside the patched Tauri runtime's GTK4/`webkit6` `WebView`. The local delta preserves the complete current 1.2.0 implementation, including its newer script-execution locking, while aligning the Linux manifest, WebKit prelude and JavaScriptCore crate paths, GDK4 texture snapshot encoding, and print operation with `cairo-rs` 0.21 / `glib` 0.22 / `gtk4` 0.11 / `javascriptcore6` 0.6 / `webkit6` 0.6. It also replaces two package-workspace-relative README links with immutable upstream links so the standalone public export remains link-clean, and normalizes three upstream rustdoc trailing spaces while preserving that whitespace-only delta verbatim. |
+| `tauri-plugin-webdriver-0.2.1` | `tauri-plugin-webdriver` 0.2.1 | 3 files / ~23 lines | `a94c1f3d84` (vendor + modification are the **same commit** — see "Known issues") | none | Historical predecessor, no longer referenced by `[patch.crates-io]` after #11074. It is retained only to preserve the earlier #4230/#7722 delta and must not be substituted for the active WDIO 1.2.0 package: doing so would discard later upstream behavior. |
 
 ## Exclusions
 
@@ -99,39 +103,34 @@ the wrong flag set — re-check the command above.
 
 ## Known issues
 
-### `tauri-plugin-webdriver` MSRV exceeds workspace MSRV
+### Historical `tauri-plugin-webdriver` MSRV exceeds workspace MSRV
 
-`patches/tauri-plugin-webdriver-0.2.1/Cargo.toml` declares
+The retired `patches/tauri-plugin-webdriver-0.2.1/Cargo.toml` declares
 `rust-version = "1.90"`. The workspace MSRV (`clients/maekon-client/Cargo.toml`
-`[workspace.package] rust-version`) is `1.88.0`. Every other vendored crate
+`[workspace.package] rust-version`) is `1.88.0`. The active
+`tauri-plugin-wdio-webdriver-1.2.0` replacement declares Rust 1.77 and the
+retired crate is absent from the resolved graph, so this no longer violates
+the shipping workspace's MSRV. Every other active vendored crate
 declares a `rust-version` at or below the workspace floor (`tao` 1.74,
 `muda`/`tray-icon` 1.73, `wry` 1.77, `tauri`/`tauri-runtime`/
-`tauri-runtime-wry` 1.77.2), so `tauri-plugin-webdriver` is the sole
-outlier.
+`tauri-runtime-wry` 1.77.2).
 
-This is flagged here rather than fixed in place because lowering
+This historical outlier is flagged rather than fixed in place because lowering
 `rust-version` in `patches/tauri-plugin-webdriver-0.2.1/Cargo.toml` is a
-source change to vendored code, and this manifest/process change is scoped
-to be a zero-functional-diff documentation change. Fix it at the next
-refresh of this crate (see "Refresh procedure" below): when regenerating
-`patches/tauri-plugin-webdriver-0.2.1/Cargo.toml`, either confirm the
-declared floor is still accurate against the new pristine `Cargo.toml`, or
-add an explicit local `rust-version` correction as its own commit (per
-step 3's "separate commits" rule below) with an inline comment explaining
-the divergence from upstream.
-Until then, this is a latent MSRV-policy violation that `cargo` will not
-surface unless something actually requires Rust 1.89 or 1.90 features —
-track it so it does not silently regress the workspace's declared MSRV
-guarantee.
+source change to provenance-only vendored code. Future cleanup may remove the
+retired directory as an explicit history-preserving change; it must not lower
+the manifest value and accidentally present the old crate as supported.
 
 ### Two crates have no clean pristine-vendor commit boundary
 
 For `tray-icon-0.23.1` and `tauri-plugin-webdriver-0.2.1`, the initial
 vendor (unpacking the pristine crates.io source into `patches/`) and the
 first source modification landed in the same commit (`b2155a581f` and
-`a94c1f3d84` respectively). For the other 6 crates, the vendor commit
+`a94c1f3d84` respectively). For the other 6 original crates, the vendor commit
 (`a94c1f3d84`) is a clean, unmodified copy of the pristine crate, and every
-GTK4 source change is a separate later `fix:` commit. This means git
+GTK4 source change is a separate later `fix:` commit. The active WDIO 1.2.0
+replacement also has a clean `e97dc47c47` -> `1655c4e8f3`/`d9855cc989`/
+`1037939bc5`/`0c79148599`/`fcff775229` boundary. This means git
 history alone cannot reconstruct a pristine baseline for those 2 crates —
 which is exactly the gap `UPSTREAM-DELTA.patch` now closes going forward:
 regardless of commit granularity, the pristine baseline is always one
@@ -178,7 +177,7 @@ rollback harder.
 3. **Commit pristine-vendor and re-applied modifications as separate
    commits.** This preserves the boundary that `tao`, `wry`, `tauri`,
    `tauri-runtime`, and `tauri-runtime-wry` already have and that
-   `tray-icon`/`tauri-plugin-webdriver` are missing:
+   `tray-icon` and the historical `tauri-plugin-webdriver` predecessor are missing:
    - Commit 1: `chore(maekon-client): vendor <name> <new-version> pristine source` — the untouched pristine copy, no local modifications.
    - Commit 2+: `fix(maekon-client): port E31 GTK4 patch to <name> <new-version>` (split further if the conflict resolution touches unrelated concerns) — the re-applied/hand-resolved local modifications.
    - Remove the old `patches/<old-name>-<old-version>/` directory and update
@@ -293,7 +292,7 @@ unrelated path — between the infrequent manual `workflow_dispatch` runs.
 
 The same workflow's second job, `feature-cell-check` (#7732 ctd-W2 D2),
 carries a `cargo check`-only weekly matrix for the vendored
-`tauri-plugin-webdriver` patch (`maekon-app --features webdriver`) alongside
+`tauri-plugin-wdio-webdriver` patch (`maekon-app --features webdriver`) alongside
 7 other feature cells (`maekon-vision`'s `ocr`/`ml-detect`,
 `maekon-analysis`'s `hnsw`, and `maekon-app`'s `audio`/`stt`/`download`/
 `embedding`) that no CI job in this parent monorepo compiled before this

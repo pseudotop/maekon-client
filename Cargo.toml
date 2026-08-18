@@ -392,3 +392,4 @@ wry = { path = "patches/wry-0.55.1" }
 tauri-runtime-wry = { path = "patches/tauri-runtime-wry-2.11.2" }
 tray-icon = { path = "patches/tray-icon-0.23.1" }
 muda = { path = "patches/muda-0.19.1" }
+tauri-plugin-wdio-webdriver = { path = "patches/tauri-plugin-wdio-webdriver-1.2.0" }

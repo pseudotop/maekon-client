@@ -686,6 +686,16 @@ jobs:
             chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
           fi
 
+      # #11061: compile the exact Windows default/no-sandbox-feature surface
+      # before executing tests. `--keep-going` lets Cargo report failures in
+      # independent crates during the same export PR, instead of discovering
+      # one blocked layer per #164 -> #165 -> #166 round-trip. The workspace
+      # manifest's `unused`/`dead_code` deny policy makes the two known
+      # maekon-automation regressions hard failures even under `RUSTFLAGS=-W`.
+      - name: Check Windows default workspace without sandbox features (keep-going)
+        if: env.RUN_HEAVY_TESTS == 'true' && matrix.os == 'windows-latest'
+        run: cargo check --locked --workspace --all-targets --exclude maekon-lint --exclude maekon-embedding --keep-going
+
       - name: Run tests (default workspace)
         if: env.RUN_HEAVY_TESTS == 'true'
         # Exclude maekon-lint from the REQUIRED run: its tests are house-style
