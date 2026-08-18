@@ -62,27 +62,16 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
 
-      - name: Classify release version
-        id: release
-        shell: bash
-        run: |
-          set -euo pipefail
-          source ./scripts/release-common.sh
-          TAG_VERSION="${RELEASE_TAG#v}"
-          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "release_sha=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
-          echo "release_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
-          if is_rc_version "${TAG_VERSION}"; then
-            echo "release_kind=rc" >> "$GITHUB_OUTPUT"
-            echo "base_version=$(base_version "${TAG_VERSION}")" >> "$GITHUB_OUTPUT"
-          elif is_stable_version "${TAG_VERSION}"; then
-            echo "release_kind=stable" >> "$GITHUB_OUTPUT"
-            echo "base_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Unsupported tag format: ${RELEASE_TAG}. Use vX.Y.Z-rc.N or vX.Y.Z"
-            exit 1
-          fi
-
+      # ⚠️ 이 아래 순서는 보안 계약이다 (#11155).
+      #
+      # 위 checkout 은 `inputs.release_sha` 를 그대로 받는다 — 아직 아무것도 검증되지
+      # 않은 트리다. 그러므로 **그 트리의 코드를 실행하는 첫 스텝보다 검증이 먼저여야
+      # 한다.** 아래 두 검증은 git 연산과 `gh api` 만 쓰고 체크아웃한 트리의 스크립트를
+      # 실행하지 않는다. 쓰는 값(RELEASE_TAG·RELEASE_SHA)도 워크플로 `env:` 에서 오므로
+      # 트리에 의존하지 않는다.
+      #
+      # `Classify release version` 이 `source ./scripts/release-common.sh` 로 그 트리의
+      # 셸을 실행하는 첫 지점이라 검증 뒤로 옮겼다. 새 스텝을 넣을 때 이 경계를 넘지 말 것.
       - name: Verify release tag matches the requested commit
         shell: bash
         run: |
@@ -136,6 +125,27 @@ jobs:
           TAG_VERIFY_REASON="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}" --jq '.verification.reason // "unknown"')"
           if [ "${TAG_VERIFIED}" != "true" ]; then
             echo "::error::${RELEASE_TAG} tag signature is not GitHub-verified (reason: ${TAG_VERIFY_REASON})."
+            exit 1
+          fi
+
+      - name: Classify release version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+          TAG_VERSION="${RELEASE_TAG#v}"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_sha=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "release_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          if is_rc_version "${TAG_VERSION}"; then
+            echo "release_kind=rc" >> "$GITHUB_OUTPUT"
+            echo "base_version=$(base_version "${TAG_VERSION}")" >> "$GITHUB_OUTPUT"
+          elif is_stable_version "${TAG_VERSION}"; then
+            echo "release_kind=stable" >> "$GITHUB_OUTPUT"
+            echo "base_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unsupported tag format: ${RELEASE_TAG}. Use vX.Y.Z-rc.N or vX.Y.Z"
             exit 1
           fi
 

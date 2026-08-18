@@ -16,4 +16,48 @@ case "$1" in
     ;;
 esac
 
+# #11065: tell the user what this package cannot remove.
+#
+# Measured on the install-evidence lane: `apt-get remove` leaves ten files in
+# ~/.config/maekon and ~/.local/share/maekon. `purge` leaves them too — and that
+# is not an omission a postrm can fix. Those paths are derived from $HOME at
+# runtime by the app, so dpkg never recorded them; a postrm that went looking
+# would have to walk /home/*, which breaks on LDAP/NFS homes and would delete
+# other users' data. The encryption key is worse: it lives in the invoking
+# user's session keyring, which root has no route to.
+#
+# So this prints rather than deletes. Printing is the part that is correct under
+# every candidate policy in #11065 — whether the profile should ultimately
+# survive purge, or a user-run command should remove it, the user still needs to
+# know it is there. Deleting would pre-empt a decision that is not made yet.
+#
+# `purge` only: leaving user data across `remove` is the Debian convention and
+# needs no notice. `purge` is where "everything is gone" is the natural reading,
+# so that is where the gap has to be stated.
+if [ "$1" = "purge" ]; then
+  cat <<'EOF'
+
+Maekon: profile data was NOT removed by this purge.
+
+  ~/.config/maekon        settings
+  ~/.local/share/maekon   local database and logs
+
+These live under each user's home directory and are created at runtime, so the
+package never owned them. The database encryption key is stored separately in
+that user's login keyring and is likewise untouched.
+
+To remove them, as the user who ran Maekon:
+
+  rm -rf ~/.config/maekon ~/.local/share/maekon
+
+The keyring entry can be removed with a keyring tool such as seahorse, or:
+
+  secret-tool clear service maekon
+
+(The service name follows the app identity, so a flavored build stores its key
+under e.g. "maekon-dev" instead. The released package is unflavored: "maekon".)
+
+EOF
+fi
+
 exit 0

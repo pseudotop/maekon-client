@@ -111,9 +111,9 @@ expect_used = "warn"
 
 [workspace.package]
 edition = "2021"
-version = "0.0.1-rc.8"
+version = "0.0.1-rc.9"
 license = "Apache-2.0"
-rust-version = "1.88.0"  # jsonwebtoken 10.4.0 MSRV (cycle 32 F-SC-C33-02)
+rust-version = "1.88.0"  # jsonwebtoken 11.0.0 MSRV (#9375; 10.4.0 과 동일한 1.88.0)
 repository = "https://github.com/pseudotop/maekon-client"
 homepage = "https://github.com/pseudotop/maekon-client"
 authors = ["Maekon Contributors"]
@@ -190,7 +190,7 @@ fast_image_resize = "6"
 webp = "0.3"
 xcap = "0.9"
 leptess = "0.14"
-base64 = "0.22"
+base64 = "0.23"
 
 # Tauri v2 (iced → Tauri 마이그레이션)
 tauri = { version = "2", features = ["image-png", "macos-private-api"] }
@@ -262,7 +262,7 @@ rustls-pki-types = "1"
 # External gRPC binding (D13-v2c)
 arc-swap = "1"
 aws-lc-rs = "1.16.2"
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
 rustls = "0.23"
@@ -380,7 +380,7 @@ libc = "0.2"
 mockito = "1"
 tokio-test = "0.4"
 tempfile = "3"
-icu_normalizer = { version = "=2.1.1", default-features = false, features = ["compiled_data"] }
+icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 assert_matches = "1"
 criterion = { version = "0.8", features = ["html_reports"] }
 
