@@ -5,16 +5,16 @@
 //! Extracting it here (no `#[cfg]`, no FFI) makes it unit-testable on any OS,
 //! mirroring `super::win_limits` (#5138) and `super::sbpl` (#5120).
 //!
-//! Why this exists at all: the #10288 skip signals via `eprintln!`, and libtest
-//! captures a *passing* test's output unless `--nocapture` is passed — which
-//! public CI does not pass. A skipped probe and a genuinely passing one both
-//! print `... ok`, so a green Windows column cannot distinguish "the regression
-//! is gone" from "the failure was swallowed". `$GITHUB_STEP_SUMMARY` is a file
-//! the runner reads after the step, so writing there escapes that capture.
+//! Why this exists at all: libtest captures a *passing* test's output unless
+//! `--nocapture` is passed, which public CI does not pass. This module wrote the
+//! verdict to `$GITHUB_STEP_SUMMARY` — a file the runner reads after the step —
+//! so a green Windows column could be told apart from a swallowed failure.
 //!
-//! Both outcomes are recorded, not just the skip. A report that only appears on
-//! failure leaves silence ambiguous — it could mean the probe passed, or that
-//! the reporting itself broke.
+//! The failure it guarded against is gone: #10288's skip was removed once the
+//! cause turned out to be `CREATE_NO_WINDOW` rather than the runner image, and
+//! the probe now asserts at full strength. What remains is the weaker but still
+//! real signal that the probe *ran at all* — a filter that matches nothing also
+//! prints a green `test result: ok`, and that must not read as a pass.
 
 // Written by the Windows-only probe in `super::windows`; the unit tests below
 // are the only callers on other targets.
@@ -26,21 +26,21 @@ use std::io::Write;
 use std::path::Path;
 
 /// Which branch the restricted-token launch probe took.
+///
+/// One variant, deliberately. `SkippedDllInitFailed` went with #10288's skip;
+/// the probe now either passes or fails the job. Kept as an enum rather than
+/// collapsed away because the call site reads as a verdict, and a second
+/// outcome would be added here rather than reshaping the reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeVerdict {
-    /// The child ran and exited cleanly — the #10288 regression is not present
-    /// on this image.
+    /// The child ran and exited cleanly.
     Passed,
-    /// The child died at DLL initialization with `STATUS_DLL_INIT_FAILED`, and
-    /// the #10288 release-unblock skip was taken.
-    SkippedDllInitFailed,
 }
 
 impl fmt::Display for ProbeVerdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Passed => write!(f, "PASSED"),
-            Self::SkippedDllInitFailed => write!(f, "SKIPPED (STATUS_DLL_INIT_FAILED)"),
         }
     }
 }
@@ -66,9 +66,6 @@ pub fn describe_image(image_os: Option<&str>, image_version: Option<&str>) -> St
 pub fn format_probe_verdict(verdict: ProbeVerdict, image: &str) -> String {
     let note = match verdict {
         ProbeVerdict::Passed => "restricted-token launch probe ran to completion",
-        ProbeVerdict::SkippedDllInitFailed => {
-            "restricted-token launch probe skipped — #10288 regression still present"
-        }
     };
     format!("- **{verdict}** on `{image}` — {note}")
 }
@@ -109,46 +106,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skip_verdict_names_the_issue_so_a_green_column_is_not_read_as_clean() {
-        let line = format_probe_verdict(ProbeVerdict::SkippedDllInitFailed, "win25/20260810.198");
-        assert!(
-            line.contains("SKIPPED"),
-            "a skipped probe must say so: {line}"
-        );
-        assert!(
-            line.contains("#10288"),
-            "the skip line must point at the tracking issue: {line}"
-        );
-        assert!(
-            line.contains("win25/20260810.198"),
-            "the verdict must name the image it applies to: {line}"
-        );
-    }
-
-    #[test]
-    fn pass_verdict_is_reported_too_so_silence_is_never_ambiguous() {
+    fn pass_verdict_is_reported_so_silence_is_never_ambiguous() {
         let line = format_probe_verdict(ProbeVerdict::Passed, "win25/20260810.198");
         assert!(
             line.contains("PASSED"),
             "a passing probe must say so: {line}"
         );
         assert!(
-            !line.contains("SKIPPED"),
-            "a passing probe must not read as skipped: {line}"
+            line.contains("ran to completion"),
+            "the line must say the probe executed, not merely that it was green: {line}"
         );
         assert!(
             line.contains("win25/20260810.198"),
             "the verdict must name the image it applies to: {line}"
         );
-    }
-
-    #[test]
-    fn the_two_verdicts_are_distinguishable() {
-        // The whole point: `... ok` is identical for both, so the recorded
-        // lines must not be.
-        let passed = format_probe_verdict(ProbeVerdict::Passed, "img");
-        let skipped = format_probe_verdict(ProbeVerdict::SkippedDllInitFailed, "img");
-        assert_ne!(passed, skipped);
     }
 
     #[test]
@@ -182,11 +153,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("not-created-yet.md");
 
-        append_step_summary(&path, "- **SKIPPED (STATUS_DLL_INIT_FAILED)** on `img` — y")
+        append_step_summary(&path, "- **PASSED** on `img` — y")
             .expect("append to a missing summary file");
 
         let contents = std::fs::read_to_string(&path).expect("read back");
-        assert!(contents.contains("SKIPPED"), "got: {contents:?}");
+        assert!(contents.contains("PASSED"), "got: {contents:?}");
     }
 
     // `record_probe_verdict` is the function `super::windows` actually calls, so
@@ -223,25 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn recording_a_skip_reaches_the_summary_file_that_ci_reads() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("summary.md");
-
-        with_probe_env(Some(&path), Some(("win25", "20260810.198")), || {
-            record_probe_verdict(ProbeVerdict::SkippedDllInitFailed);
-        });
-
-        let contents = std::fs::read_to_string(&path).expect("summary must have been written");
-        assert!(contents.contains("SKIPPED"), "got: {contents:?}");
-        assert!(contents.contains("#10288"), "got: {contents:?}");
-        assert!(
-            contents.contains("win25/20260810.198"),
-            "the image must come from the runner env: {contents:?}"
-        );
-    }
-
-    #[test]
-    fn recording_a_pass_reaches_the_same_file() {
+    fn recording_a_pass_reaches_the_summary_file_that_ci_reads() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("summary.md");
 
@@ -251,7 +204,10 @@ mod tests {
 
         let contents = std::fs::read_to_string(&path).expect("summary must have been written");
         assert!(contents.contains("PASSED"), "got: {contents:?}");
-        assert!(!contents.contains("SKIPPED"), "got: {contents:?}");
+        assert!(
+            contents.contains("win25/20260810.198"),
+            "the image must come from the runner env: {contents:?}"
+        );
     }
 
     #[test]
@@ -270,7 +226,7 @@ mod tests {
         let unwritable = dir.path().join("no-such-dir").join("summary.md");
 
         with_probe_env(Some(&unwritable), None, || {
-            record_probe_verdict(ProbeVerdict::SkippedDllInitFailed);
+            record_probe_verdict(ProbeVerdict::Passed);
         });
 
         assert!(!unwritable.exists(), "nothing should have been created");

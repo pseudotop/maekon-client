@@ -17,6 +17,8 @@ jobs:
   config-sync:
     name: Port & Version Sync
     runs-on: ubuntu-latest
+    # 실측 n=12 p50=9s max=11s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
