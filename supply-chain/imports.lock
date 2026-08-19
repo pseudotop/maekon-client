@@ -13,19 +13,33 @@ when = "2025-12-26"
 user-id = 429
 user-login = "diwic"
 
+[[publisher.async-trait]]
+version = "0.1.92"
+when = "2026-08-08"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
+
 [[publisher.aws-lc-rs]]
-version = "1.17.0"
-when = "2026-05-13"
+version = "1.18.0"
+when = "2026-08-07"
 user-id = 156764
 user-login = "justsmth"
 user-name = "Justin W Smith"
 
 [[publisher.aws-lc-sys]]
-version = "0.41.0"
-when = "2026-05-13"
+version = "0.44.0"
+when = "2026-08-07"
 user-id = 156764
 user-login = "justsmth"
 user-name = "Justin W Smith"
+
+[[publisher.base64]]
+version = "0.23.1"
+when = "2026-08-04"
+user-id = 5563
+user-login = "marshallpierce"
+user-name = "Marshall Pierce"
 
 [[publisher.blake2]]
 version = "0.10.6"
@@ -82,6 +96,20 @@ when = "2021-10-11"
 user-id = 3788
 user-login = "emilio"
 user-name = "Emilio Cobos Álvarez"
+
+[[publisher.clap]]
+version = "4.6.6"
+when = "2026-08-06"
+user-id = 6743
+user-login = "epage"
+user-name = "Ed Page"
+
+[[publisher.clap_builder]]
+version = "4.6.6"
+when = "2026-08-06"
+user-id = 6743
+user-login = "epage"
+user-name = "Ed Page"
 
 [[publisher.core-foundation]]
 version = "0.9.3"
@@ -186,6 +214,13 @@ when = "2023-10-05"
 user-id = 79201
 user-login = "Narsil"
 user-name = "Nicolas Patry"
+
+[[publisher.futures-core]]
+version = "0.3.34"
+when = "2026-08-11"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
 
 [[publisher.gbm]]
 version = "0.18.0"
@@ -299,6 +334,76 @@ user-id = 3623
 user-login = "sdroege"
 user-name = "Sebastian Dröge"
 
+[[publisher.h2]]
+version = "0.4.16"
+when = "2026-08-17"
+user-id = 359
+user-login = "seanmonstar"
+user-name = "Sean McArthur"
+
+[[publisher.http]]
+version = "1.5.0"
+when = "2026-07-29"
+user-id = 359
+user-login = "seanmonstar"
+user-name = "Sean McArthur"
+
+[[publisher.http-body-util]]
+version = "0.1.5"
+when = "2026-08-12"
+user-id = 359
+user-login = "seanmonstar"
+user-name = "Sean McArthur"
+
+[[publisher.icu_collections]]
+version = "2.3.0"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
+[[publisher.icu_locale_core]]
+version = "2.3.0"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
+[[publisher.icu_normalizer]]
+version = "2.3.0"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
+[[publisher.icu_normalizer_data]]
+version = "2.3.0"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
+[[publisher.icu_properties]]
+version = "2.3.0"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
+[[publisher.icu_properties_data]]
+version = "2.3.0"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
+[[publisher.icu_provider]]
+version = "2.3.0"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
 [[publisher.image]]
 version = "0.25.10"
 when = "2026-03-10"
@@ -320,6 +425,13 @@ user-id = 68864
 user-login = "rib"
 user-name = "Robert Bragg"
 
+[[publisher.jsonwebtoken]]
+version = "11.0.0"
+when = "2026-07-24"
+user-id = 2876
+user-login = "Keats"
+user-name = "Vincent Prouillet"
+
 [[publisher.kqueue]]
 version = "1.1.1"
 when = "2025-05-06"
@@ -333,6 +445,13 @@ when = "2023-08-06"
 user-id = 1640
 user-login = "worr"
 user-name = "William Orr"
+
+[[publisher.landlock]]
+version = "0.4.7"
+when = "2026-07-27"
+user-id = 1609
+user-login = "l0kod"
+user-name = "Mickaël Salaün"
 
 [[publisher.libdbus-sys]]
 version = "0.2.7"
@@ -360,6 +479,13 @@ when = "2025-09-15"
 user-id = 114665
 user-login = "tom-a-wagner"
 user-name = "Tom Wagner"
+
+[[publisher.libsqlite3-sys]]
+version = "0.38.2"
+when = "2026-08-08"
+user-id = 5062
+user-login = "gwenn"
+user-name = "gwenn"
 
 [[publisher.linux-raw-sys]]
 version = "0.4.15"
@@ -569,12 +695,14 @@ version = "2.0.0-rc.12"
 when = "2026-03-05"
 user-id = 152041
 user-login = "decahedron1"
+user-name = "Carson M."
 
 [[publisher.ort-sys]]
 version = "2.0.0-rc.12"
 when = "2026-03-05"
 user-id = 152041
 user-login = "decahedron1"
+user-name = "Carson M."
 
 [[publisher.pango]]
 version = "0.22.6"
@@ -604,13 +732,6 @@ user-id = 114665
 user-login = "tom-a-wagner"
 user-name = "Tom Wagner"
 
-[[publisher.polyval]]
-version = "0.6.2"
-when = "2024-03-03"
-user-id = 267
-user-login = "tarcieri"
-user-name = "Tony Arcieri"
-
 [[publisher.ppmd-rust]]
 version = "1.4.0"
 when = "2026-01-24"
@@ -624,6 +745,13 @@ when = "2025-08-19"
 user-id = 3618
 user-login = "dtolnay"
 user-name = "David Tolnay"
+
+[[publisher.rcgen]]
+version = "0.14.9"
+when = "2026-08-10"
+user-id = 209038
+user-login = "cpu"
+user-name = "Daniel McCarney"
 
 [[publisher.redox_syscall]]
 version = "0.7.3"
@@ -639,12 +767,40 @@ user-id = 2668
 user-login = "jackpot51"
 user-name = "Jeremy Soller"
 
+[[publisher.rusqlite]]
+version = "0.40.2"
+when = "2026-08-08"
+user-id = 5062
+user-login = "gwenn"
+user-name = "gwenn"
+
 [[publisher.rustfft]]
 version = "6.4.1"
 when = "2025-09-18"
 user-id = 6727
 user-login = "ejmahler"
 user-name = "Elliott Mahler"
+
+[[publisher.rustls]]
+version = "0.23.43"
+when = "2026-07-29"
+user-id = 2751
+user-login = "ctz"
+user-name = "Joe Birr-Pixton"
+
+[[publisher.schemars]]
+version = "1.2.2"
+when = "2026-07-27"
+user-id = 55662
+user-login = "GREsau"
+user-name = "Graham Esau"
+
+[[publisher.schemars_derive]]
+version = "1.2.2"
+when = "2026-07-27"
+user-id = 55662
+user-login = "GREsau"
+user-name = "Graham Esau"
 
 [[publisher.security-framework]]
 version = "2.11.1"
@@ -666,6 +822,13 @@ when = "2026-02-20"
 user-id = 988
 user-login = "kornelski"
 user-name = "Kornel"
+
+[[publisher.serde_derive_internals]]
+version = "0.30.0"
+when = "2026-07-25"
+user-id = 3618
+user-login = "dtolnay"
+user-name = "David Tolnay"
 
 [[publisher.servo_arc]]
 version = "0.4.3"
@@ -738,8 +901,8 @@ user-login = "tauri-bot"
 user-name = "tauri"
 
 [[publisher.tauri-plugin-dialog]]
-version = "2.7.1"
-when = "2026-05-02"
+version = "2.7.2"
+when = "2026-07-18"
 user-id = 95389
 user-login = "tauri-bot"
 user-name = "tauri"
@@ -766,8 +929,8 @@ user-login = "tauri-bot"
 user-name = "tauri"
 
 [[publisher.tauri-plugin-single-instance]]
-version = "2.4.2"
-when = "2026-05-02"
+version = "2.4.3"
+when = "2026-07-13"
 user-id = 95389
 user-login = "tauri-bot"
 user-name = "tauri"
@@ -808,18 +971,25 @@ user-login = "jdm"
 user-name = "Josh Matthews"
 
 [[publisher.thiserror]]
-version = "2.0.18"
-when = "2026-01-18"
+version = "2.0.20"
+when = "2026-08-08"
 user-id = 3618
 user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.thiserror-impl]]
-version = "2.0.18"
-when = "2026-01-18"
+version = "2.0.20"
+when = "2026-08-08"
 user-id = 3618
 user-login = "dtolnay"
 user-name = "David Tolnay"
+
+[[publisher.tinystr]]
+version = "0.8.4"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
 
 [[publisher.tokenizers]]
 version = "0.22.2"
@@ -912,6 +1082,27 @@ user-id = 95389
 user-login = "tauri-bot"
 user-name = "tauri"
 
+[[publisher.writeable]]
+version = "0.6.4"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
+[[publisher.yoke]]
+version = "0.8.3"
+when = "2026-06-03"
+user-id = 1139
+user-login = "Manishearth"
+user-name = "Manish Goregaokar"
+
+[[publisher.yoke-derive]]
+version = "0.8.2"
+when = "2026-04-01"
+user-id = 1139
+user-login = "Manishearth"
+user-name = "Manish Goregaokar"
+
 [[publisher.zbus]]
 version = "5.14.0"
 when = "2026-02-22"
@@ -925,6 +1116,27 @@ when = "2026-01-09"
 user-id = 6423
 user-login = "zeenix"
 user-name = "Zeeshan Ali Khan"
+
+[[publisher.zerotrie]]
+version = "0.2.5"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
+[[publisher.zerovec]]
+version = "0.11.7"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
+
+[[publisher.zerovec-derive]]
+version = "0.11.4"
+when = "2026-08-13"
+user-id = 128408
+user-login = "sffc"
+user-name = "Shane F. Carr"
 
 [[publisher.zmij]]
 version = "1.0.21"
@@ -987,6 +1199,12 @@ who = "Jamey Sharp <jsharp@fastly.com>"
 criteria = "safe-to-deploy"
 version = "0.11.1"
 notes = "This library uses `forbid(unsafe_code)` and has no filesystem or network I/O."
+
+[[audits.bytecodealliance.audits.crossbeam-epoch]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.9.18 -> 0.9.20"
+notes = "Minor updates, nothing out of place."
 
 [[audits.bytecodealliance.audits.foreign-types]]
 who = "Pat Hickey <phickey@fastly.com>"
@@ -1364,20 +1582,6 @@ version = "0.2.1"
 notes = "Reviewed on https://fxrev.dev/904811"
 aggregated-from = "https://fuchsia.googlesource.com/fuchsia/+/refs/heads/main/third_party/rust_crates/supply-chain/audits.toml?format=TEXT"
 
-[[audits.google.audits.writeable]]
-who = "Manish Goregaokar <manishearth@google.com>"
-criteria = "safe-to-deploy"
-version = "0.6.0"
-notes = "Contains three lines of unsafe, thoroughly commented: one is for from-UTF8 on ASCII, the other two are for from-UTF8 on a datastructure that keeps track of a buffer with partial UTF8 validation. Relatively straigtforward."
-aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
-
-[[audits.google.audits.writeable]]
-who = "Daniel Cheng <dcheng@chromium.org>"
-criteria = "safe-to-deploy"
-delta = "0.6.0 -> 0.6.1"
-notes = "Minor comment/documentation updates and switch to a non-panicking alternative to split_at()."
-aggregated-from = "https://chromium.googlesource.com/chromium/src/+/main/third_party/rust/chromium_crates_io/supply-chain/audits.toml?format=TEXT"
-
 [audits.google_sc.audits]
 
 [[audits.isrg.audits.alloca]]
@@ -1480,6 +1684,12 @@ criteria = "safe-to-deploy"
 delta = "0.2.8 -> 0.2.9"
 notes = "No changes to Rust code between 0.2.8 and 0.2.9"
 
+[[audits.isrg.audits.fiat-crypto]]
+who = "Tim Geoghegan <timg@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "0.2.9 -> 0.3.0"
+notes = "The diff is huge, but that's because it introduces a wrapper around indexing into arrays which is used in many many places. There is no new unsafe code and no change to build scripts I can detect."
+
 [[audits.isrg.audits.inout]]
 who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
@@ -1499,16 +1709,6 @@ delta = "1.0.40 -> 1.0.43"
 who = "Brandon Pitman <bran@bran.land>"
 criteria = "safe-to-deploy"
 delta = "1.0.40 -> 1.0.43"
-
-[[audits.isrg.audits.universal-hash]]
-who = "David Cook <dcook@divviup.org>"
-criteria = "safe-to-deploy"
-version = "0.4.1"
-
-[[audits.isrg.audits.universal-hash]]
-who = "David Cook <dcook@divviup.org>"
-criteria = "safe-to-deploy"
-delta = "0.5.0 -> 0.5.1"
 
 [[audits.isrg.audits.zlib-rs]]
 who = "Ameer Ghani <inahga@divviup.org>"
@@ -2124,12 +2324,6 @@ criteria = "safe-to-deploy"
 delta = "0.1.1 -> 0.2.0"
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
 
-[[audits.mozilla.audits.writeable]]
-who = "Makoto Kato <m_kato@ga2.so-net.ne.jp>"
-criteria = "safe-to-deploy"
-delta = "0.6.1 -> 0.6.2"
-aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
-
 [[audits.zcash.audits.autocfg]]
 who = "Jack Grigg <jack@electriccoin.co>"
 criteria = "safe-to-deploy"
@@ -2199,6 +2393,13 @@ criteria = "safe-to-deploy"
 delta = "0.8.0 -> 0.8.1"
 aggregated-from = "https://raw.githubusercontent.com/zcash/wallet/main/supply-chain/audits.toml"
 
+[[audits.zcash.audits.num-conv]]
+who = "Kris Nuttycombe <kris@nutty.land>"
+criteria = "safe-to-deploy"
+delta = "0.2.1 -> 0.2.2"
+notes = "No changes to unsafe code, straightforward refactoring and cleanup."
+aggregated-from = "https://raw.githubusercontent.com/zcash/librustzcash/main/supply-chain/audits.toml"
+
 [[audits.zcash.audits.quinn-udp]]
 who = "Jack Grigg <jack@electriccoin.co>"
 criteria = "safe-to-deploy"
@@ -2223,18 +2424,18 @@ The only notable change is the ref-cast usage which is a sound pattern for creat
 """
 aggregated-from = "https://raw.githubusercontent.com/zcash/librustzcash/main/supply-chain/audits.toml"
 
+[[audits.zcash.audits.time-core]]
+who = "Kris Nuttycombe <kris@nutty.land>"
+criteria = "safe-to-deploy"
+delta = "0.1.8 -> 0.1.9"
+notes = "No unsafe code; macro additions are straightforward refactoring changes."
+aggregated-from = "https://raw.githubusercontent.com/zcash/librustzcash/main/supply-chain/audits.toml"
+
 [[audits.zcash.audits.try-lock]]
 who = "Jack Grigg <jack@electriccoin.co>"
 criteria = "safe-to-deploy"
 delta = "0.2.4 -> 0.2.5"
 notes = "Bumps MSRV to remove unsafe code block."
-aggregated-from = "https://raw.githubusercontent.com/zcash/zcash/master/qa/supply-chain/audits.toml"
-
-[[audits.zcash.audits.universal-hash]]
-who = "Daira Hopwood <daira@jacaranda.org>"
-criteria = "safe-to-deploy"
-delta = "0.4.1 -> 0.5.0"
-notes = "I checked correctness of to_blocks which uses unsafe code in a safe function."
 aggregated-from = "https://raw.githubusercontent.com/zcash/zcash/master/qa/supply-chain/audits.toml"
 
 [[audits.zcash.audits.valuable]]

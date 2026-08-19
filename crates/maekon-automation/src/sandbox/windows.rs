@@ -495,6 +495,11 @@ use restricted_token::create_restricted_token;
 #[cfg(all(test, feature = "windows-sandbox"))]
 use restricted_token::{build_logon_sid, build_user_sid, build_write_restricted_code_sid};
 
+// #10288 diagnostic in its own file: closing that issue is then a deletion.
+#[cfg(all(test, feature = "windows-sandbox"))]
+#[path = "windows_dll_init_bisect.rs"]
+mod dll_init_bisect;
+
 /// Log-only stub when `windows-sandbox` feature is disabled.
 ///
 /// Token restriction is unenforced in this path: without the feature the worker

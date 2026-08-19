@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.9] - 2026-08-18
+
+### Fixed
+
+- The published Linux `.deb` starts. `v0.0.1-rc.8`'s Linux artifact could not —
+  not "on CI", on any Linux. The tray patch maps every Linux/BSD target to a
+  backend whose constructor always errors, while the release build left the
+  default `app-tray` feature on, so the error surfaced from the setup hook and
+  panicked before the window ever appeared (#11006).
+- The app starts on Ubuntu 24.04. That release ships
+  `kernel.apparmor_restrict_unprivileged_userns=1`, and WebKitGTK sandboxes its
+  Web and Network processes in a user namespace via bubblewrap. Without an
+  explicit grant the app installed, served its dashboard for about eleven
+  seconds, then aborted with SIGTRAP. The package now ships an AppArmor profile.
+  The cause was established by measurement on one byte-identical `.deb` with a
+  single variable flipped, not by inference (#11023).
+- The `.deb` puts the application in your launcher. It previously installed a
+  GUI application with no `/usr/share/applications` entry and no icon, so after
+  `apt-get install ./maekon.deb` the only way to start it was typing `maekon` in
+  a terminal. The runtime-written `~/.config/autostart/maekon.desktop` is a
+  different file for a different purpose — it runs the app at login and never
+  placed it in a menu (#11064).
+- A configuration file written by a newer build survives an older build's
+  startup. The downgrade guard already refused to overwrite it, but two clamps
+  40 lines further down — managed policy and bounds — persisted the recovery
+  default over it anyway. In a managed deployment the clamp fires by
+  construction, so the guard covered only half of its own defect and the other
+  half appeared exactly where rollback matters (#10985).
+- An at-rest encryption key is never minted beside an existing database (#10985).
+- A failed startup says what happened and what to do. Rolling an older build
+  onto a newer profile ended in a raw non-unwinding panic two seconds in, with
+  no mention of the `data/maekon.backup.v41.*` file the newer build had already
+  written (#10998).
+- An SSE stream that cannot be built no longer takes the agent runtime down with
+  it (#10969).
+- `apt-get purge` now prints the profile data it cannot remove — settings, local
+  database and logs, and the keyring entry — instead of leaving them silently
+  behind (#11065).
+- Configuration schema error messages are complete in both locales.
+
+### Added
+
+- Maekon Console handoff, so a desktop session can hand its context to the
+  Console (#9628).
+- A standalone TMD XLSX flow that does not require a server round-trip (#11007).
+- Human-gated assignment email composition — the draft is prepared for a person
+  to review and send, never sent automatically.
+
+### Security
+
+- `lru` updated to 0.18.2 for RUSTSEC-2026-0253.
+- `react-router` upgraded to 7.18.2 rather than re-accepting the advisory.
+- 23 crates that were blocking Dependabot moved onto publisher-trust, and the
+  stale `imports.lock` that had quietly neutered publisher-trust was restored
+  (#11082).
+
 ## [0.0.1-rc.8] - 2026-08-12
 
 ### Fixed
