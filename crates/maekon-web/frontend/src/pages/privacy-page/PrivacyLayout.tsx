@@ -5,7 +5,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Pause, Play } from 'lucide-react'
-import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Outlet } from 'react-router-dom'
 import {
@@ -25,15 +25,18 @@ import {
 } from '../../api/client'
 import { Alert, Button, Card, CardTitle, Spinner } from '../../components/ui'
 import { addToast } from '../../hooks/useToast'
+import { describeIpcError } from '../../i18n/tauriIpcErrors'
 import { colors, elevation, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
-import ConsentToggleSection from './ConsentToggleSection'
+import { buildDeleteRangeRequest } from './deleteRangeRequest'
 
 type DataType = 'events' | 'frames' | 'metrics' | 'processes' | 'idle'
 
 interface CaptureStatus {
   paused: boolean
   indicator_visible: boolean
+  consent_granted: boolean
+  permitted: boolean
 }
 
 async function invokeCaptureStatus(command: 'get_capture_status' | 'toggle_capture_pause'): Promise<CaptureStatus> {
@@ -51,6 +54,15 @@ interface ConfirmModalProps {
   onCancel: () => void
   /** Optional disclosure rendered as a distinct warning callout below the message. */
   note?: string
+  /**
+   * #9524: disable the confirm button while the confirmed mutation is in
+   * flight. Both erase-path modals stay open on failure as a retry affordance
+   * (#9505), so without this a pending erase could be double-submitted —
+   * concurrent `withdraw_consent`/`erase_all_local_data` runs each hold their
+   * own EraseWindowGuard and the second guard's Drop would clear the `erasing`
+   * barrier while the first erase is still running.
+   */
+  confirmDisabled?: boolean
 }
 
 export function ConfirmModal({
@@ -62,6 +74,7 @@ export function ConfirmModal({
   onConfirm,
   onCancel,
   note,
+  confirmDisabled,
 }: ConfirmModalProps) {
   const { t } = useTranslation()
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -94,8 +107,10 @@ export function ConfirmModal({
       if (e.key !== 'Tab') return
       const dialog = dialogRef.current
       if (!dialog) return
+      // #9535: exclude disabled controls (the pending-guarded confirm button,
+      // #9524) — otherwise `last` is unfocusable and Tab escapes the dialog.
       const focusable = dialog.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
       )
       if (focusable.length === 0) return
       const first = focusable[0]
@@ -135,7 +150,7 @@ export function ConfirmModal({
             <Button variant="secondary" onClick={onCancel}>
               {t('privacy.cancel')}
             </Button>
-            <Button variant={isDangerous ? 'danger' : 'primary'} onClick={onConfirm}>
+            <Button variant={isDangerous ? 'danger' : 'primary'} onClick={onConfirm} disabled={confirmDisabled}>
               {confirmText}
             </Button>
           </div>
@@ -176,10 +191,11 @@ export interface PrivacyContext {
   handleDeleteAll: () => void
   DATA_TYPE_LABELS: Record<DataType, string>
   getDateRangeText: () => string
+  notifyConsentChanged: () => void
 }
 
 export default function PrivacyLayout() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const DATA_TYPE_LABELS: Record<DataType, string> = {
     events: t('privacy.dataTypes.events'),
     frames: t('privacy.dataTypes.frames'),
@@ -214,22 +230,19 @@ export default function PrivacyLayout() {
     queryFn: fetchStorageStats,
   })
 
-  useEffect(() => {
-    let disposed = false
-    invokeCaptureStatus('get_capture_status')
-      .then((status) => {
-        if (disposed) return
-        setCaptureStatus(status)
-        setCaptureStatusUnavailable(false)
-      })
-      .catch(() => {
-        if (disposed) return
-        setCaptureStatusUnavailable(true)
-      })
-    return () => {
-      disposed = true
+  const refreshCaptureStatus = useCallback(async () => {
+    try {
+      const status = await invokeCaptureStatus('get_capture_status')
+      setCaptureStatus(status)
+      setCaptureStatusUnavailable(false)
+    } catch {
+      setCaptureStatusUnavailable(true)
     }
   }, [])
+
+  useEffect(() => {
+    void refreshCaptureStatus()
+  }, [refreshCaptureStatus])
 
   const deleteRangeMutation = useMutation({
     mutationFn: deleteDataRange,
@@ -268,8 +281,17 @@ export default function PrivacyLayout() {
       queryClient.invalidateQueries()
       setShowDeleteAllModal(false)
     },
+    // #9492 item 4: `withdraw_consent` fails this mutation with the
+    // `storage.unavailable` IpcError when GDPR Art. 17 frame erasure cannot be
+    // verified (`commands/consent.rs::erase_all_local_data`). `error.message`
+    // put that Rust English literal straight into the toast; route it through
+    // the shared out-of-registry mapping instead. Non-IpcError rejections still
+    // resolve to their own `message`, so nothing else changes.
     onError: (error: Error) => {
-      addToast('error', error.message)
+      addToast(
+        'error',
+        describeIpcError(error, (key) => t(key), i18n.language),
+      )
     },
   })
 
@@ -307,11 +329,7 @@ export default function PrivacyLayout() {
   const handleDeleteRange = () => {
     if (!fromDate || !toDate) return
 
-    const request: DeleteRangeRequest = {
-      from: fromDate,
-      to: toDate,
-      data_types: selectedDataTypes.length > 0 ? selectedDataTypes : undefined,
-    }
+    const request = buildDeleteRangeRequest(fromDate, toDate, selectedDataTypes)
 
     deleteRangeMutation.mutate(request)
   }
@@ -410,7 +428,19 @@ export default function PrivacyLayout() {
     handleDeleteAll,
     DATA_TYPE_LABELS,
     getDateRangeText,
+    notifyConsentChanged: () => void refreshCaptureStatus(),
   }
+
+  const captureConsentGranted = captureStatus?.consent_granted === true
+  const captureActive = captureConsentGranted && captureStatus?.permitted === true && !captureStatus.paused
+  const captureStatusLabel = !captureConsentGranted
+    ? t('privacy.captureConsentRequired')
+    : captureActive
+      ? t('privacy.captureRunning')
+      : captureStatus?.paused
+        ? t('privacy.capturePaused')
+        : t('privacy.captureBlocked')
+  const captureStatusClass = captureActive ? 'text-status-connected' : 'text-status-connecting'
 
   return (
     <div className="min-h-full space-y-6 p-6">
@@ -425,11 +455,7 @@ export default function PrivacyLayout() {
           <div>
             <CardTitle>{t('privacy.capturePauseTitle')}</CardTitle>
             <p className={cn('mt-1 text-sm', colors.text.secondary)}>{t('privacy.capturePauseDesc')}</p>
-            <p
-              className={cn('mt-2 text-sm', captureStatus?.paused ? 'text-status-connecting' : 'text-status-connected')}
-            >
-              {captureStatus?.paused ? t('privacy.capturePaused') : t('privacy.captureRunning')}
-            </p>
+            <p className={cn('mt-2 text-sm', captureStatusClass)}>{captureStatusLabel}</p>
             {captureStatusUnavailable && (
               <p className={cn('mt-2 text-sm', colors.text.tertiary)}>{t('privacy.capturePauseUnavailable')}</p>
             )}
@@ -438,14 +464,18 @@ export default function PrivacyLayout() {
             type="button"
             role="switch"
             aria-checked={captureStatus?.paused ?? false}
-            variant={captureStatus?.paused ? 'secondary' : 'primary'}
+            variant={captureActive ? 'primary' : 'secondary'}
             isLoading={captureStatusBusy}
-            disabled={captureStatusBusy || captureStatusUnavailable}
+            disabled={captureStatusBusy || captureStatusUnavailable || !captureConsentGranted}
             onClick={handleToggleCapturePause}
             className="w-full gap-2 sm:w-auto"
           >
             {captureStatus?.paused ? <Play size={16} aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
-            {captureStatus?.paused ? t('privacy.resumeCapture') : t('privacy.pauseCapture')}
+            {!captureConsentGranted
+              ? t('privacy.captureConsentRequired')
+              : captureStatus?.paused
+                ? t('privacy.resumeCapture')
+                : t('privacy.pauseCapture')}
           </Button>
         </div>
       </Card>
@@ -481,9 +511,6 @@ export default function PrivacyLayout() {
           </button>
         </Alert>
       )}
-
-      {/* GDPR consent grant/withdrawal control — placed above the deletion (right-to-erasure) ConsentSection */}
-      <ConsentToggleSection />
 
       <Outlet context={ctx} />
 
@@ -526,6 +553,7 @@ export default function PrivacyLayout() {
         })}
         confirmText={t('privacy.deleteRange')}
         isDangerous={false}
+        confirmDisabled={deleteRangeMutation.isPending}
         onConfirm={handleDeleteRange}
         onCancel={() => setShowDeleteRangeModal(false)}
       />
@@ -537,6 +565,7 @@ export default function PrivacyLayout() {
         note={t('privacy.deleteAllExportNote')}
         confirmText={t('privacy.deleteAllButton')}
         isDangerous={true}
+        confirmDisabled={deleteAllMutation.isPending}
         onConfirm={handleDeleteAll}
         onCancel={() => setShowDeleteAllModal(false)}
       />

@@ -1,5 +1,10 @@
 // e2e-tauri/privacy-audit-setup.spec.ts
-import { fetchApiJson, invokeIpc } from './helpers.js'
+import { fetchApiJson, invokeIpc, navigateMain } from './helpers.js'
+
+type SettingsSnapshot = {
+  capture_enabled: boolean
+  privacy: { pii_filter_level: string }
+}
 
 describe('J2: Privacy & Settings Persistence', () => {
   /**
@@ -12,25 +17,25 @@ describe('J2: Privacy & Settings Persistence', () => {
    */
   it('T110: Settings write persists PII filter level after reload', async () => {
     // Save the current settings
-    const before = await fetchApiJson<Record<string, any>>('/settings')
+    const before = await fetchApiJson<SettingsSnapshot>('/settings')
     const originalLevel = before?.privacy?.pii_filter_level
 
     // Change the PII filter to Strict
     const patch = { privacy: { pii_filter_level: 'Strict' } }
-    await invokeIpc('update_setting', { config_json: JSON.stringify(patch) })
+    await invokeIpc('update_setting', { configJson: JSON.stringify(patch) })
 
     // Reload the page (re-read from disk)
-    await browser.url('tauri://localhost/')
+    await navigateMain('/')
     await browser.pause(2000) // wait for config reload
 
     // Verify the change is persisted
-    const after = await fetchApiJson<Record<string, any>>('/settings')
+    const after = await fetchApiJson<SettingsSnapshot>('/settings')
     expect(after.privacy.pii_filter_level).toBe('Strict')
 
     // Restore the original value
     if (originalLevel && originalLevel !== 'Strict') {
       const restore = { privacy: { pii_filter_level: originalLevel } }
-      await invokeIpc('update_setting', { config_json: JSON.stringify(restore) })
+      await invokeIpc('update_setting', { configJson: JSON.stringify(restore) })
     }
   })
 
@@ -43,23 +48,23 @@ describe('J2: Privacy & Settings Persistence', () => {
    * @tauri_only_reason IPC update_setting writes config JSON to disk
    */
   it('T111: Settings write persists capture_enabled toggle after reload', async () => {
-    const before = await fetchApiJson<Record<string, any>>('/settings')
-    const originalEnabled = before?.capture?.capture_enabled
+    const before = await fetchApiJson<SettingsSnapshot>('/settings')
+    const originalEnabled = before.capture_enabled
 
     // Disable capture
     const patch = { capture: { capture_enabled: false } }
-    await invokeIpc('update_setting', { config_json: JSON.stringify(patch) })
+    await invokeIpc('update_setting', { configJson: JSON.stringify(patch) })
 
-    await browser.url('tauri://localhost/')
+    await navigateMain('/')
     await browser.pause(2000)
 
-    const after = await fetchApiJson<Record<string, any>>('/settings')
-    expect(after.capture.capture_enabled).toBe(false)
+    const after = await fetchApiJson<SettingsSnapshot>('/settings')
+    expect(after.capture_enabled).toBe(false)
 
     // Restore the original value
     if (originalEnabled !== false) {
       const restore = { capture: { capture_enabled: true } }
-      await invokeIpc('update_setting', { config_json: JSON.stringify(restore) })
+      await invokeIpc('update_setting', { configJson: JSON.stringify(restore) })
     }
   })
 
@@ -73,7 +78,7 @@ describe('J2: Privacy & Settings Persistence', () => {
    */
   it('T113: Data deletion requires confirmation dialog', async () => {
     // Navigate to the Privacy page
-    await browser.url('tauri://localhost/privacy')
+    await navigateMain('/privacy')
     await browser.pause(2000)
 
     // Find the "Delete All Data" button (danger variant)
@@ -105,7 +110,7 @@ describe('J2: Privacy & Settings Persistence', () => {
    * @tauri_only_reason Focus trap behavior in real WebView environment
    */
   it('T114: Data deletion confirm dialog has focus trap and a11y', async () => {
-    await browser.url('tauri://localhost/privacy')
+    await navigateMain('/privacy')
     await browser.pause(2000)
 
     // Click the Delete All button

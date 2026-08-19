@@ -1,14 +1,19 @@
 // OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 875
+use tauri::{Emitter, Manager, Runtime};
+// `tauri::tray`/`menu` builder types and `image::Image` are only touched by the
+// tray-builder path (`setup_tray`/`sync_tray_state`/`build_tray_menu`/
+// `build_connection_items`). That path needs `tauri/tray-icon`, which is forced
+// on macOS/Windows by the platform dep tables but optional on Linux via the
+// Linux has no tray backend at all (#11006): the vendored tray-icon crate maps
+// every Linux/BSD target to `disabled.rs`, whose `TrayIcon::new` always errors.
+// Gate these imports on the SAME predicate as the functions that use them so the
+// Linux build has no unused imports.
+#[cfg(not(target_os = "linux"))]
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    Emitter, Manager, Runtime,
+    tray::TrayIconBuilder,
 };
-// `tauri::tray` exists only with `tauri/tray-icon`: forced on macOS/Windows by
-// the platform dep tables, optional on Linux via the `app-tray` feature (the
-// no-gtk Linux build drops it) — gate every touch point on that predicate.
-#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
-use tauri::tray::TrayIconBuilder;
 use tracing::{debug, info, warn};
 
 use serde::Serialize;
@@ -57,6 +62,7 @@ pub struct TrayDebugState {
     pub registered: bool,
     pub visible: bool,
     pub tooltip: String,
+    pub capture_available: bool,
     pub capture_paused: bool,
     pub indicator_visible: bool,
     pub icon_variant: String,
@@ -77,8 +83,7 @@ pub struct TrayActionOutcome {
 
 pub(crate) fn focus_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
-        window.show().unwrap_or_default();
-        window.set_focus().unwrap_or_default();
+        crate::window_state::show_restore_and_focus_main_window(&window);
     }
 }
 
@@ -99,9 +104,27 @@ fn read_connection_status<R: Runtime>(app: &impl Manager<R>) -> (bool, bool, boo
         .unwrap_or((false, false, false))
 }
 
+/// Whether every capture gate other than the explicit pause toggle is open.
+///
+/// This reuses the scheduler's effective gate so the tray cannot advertise
+/// active capture when consent, configuration, or the tracking schedule blocks
+/// collection. Passing `false` for pause keeps the unavailable and paused
+/// states distinguishable in the tray UI.
+fn capture_available<R: Runtime>(app: &impl Manager<R>) -> bool {
+    app.try_state::<crate::runtime_state::AppState>()
+        .map(|state| crate::magic_overlay::effective_capture_permitted(&state, false))
+        .unwrap_or(false)
+}
+
 /// Determine the tray icon state from capture and connection flags.
-fn resolve_icon_state(paused: bool, any_disconnected: bool) -> TrayIconState {
-    if paused {
+fn resolve_icon_state(
+    capture_available: bool,
+    paused: bool,
+    any_disconnected: bool,
+) -> TrayIconState {
+    if !capture_available {
+        TrayIconState::Disabled
+    } else if paused {
         TrayIconState::Paused
     } else if any_disconnected {
         TrayIconState::Disabled
@@ -111,6 +134,11 @@ fn resolve_icon_state(paused: bool, any_disconnected: bool) -> TrayIconState {
 }
 
 /// Build the connection status menu items (disabled / info-only).
+///
+/// Tray-builder-only: gated on the same predicate as `setup_tray`/
+/// `sync_tray_state` (its only callers via `build_tray_menu`) so the no-tray
+/// Linux build does not flag it as dead code.
+#[cfg(not(target_os = "linux"))]
 #[allow(clippy::type_complexity)]
 fn build_connection_items<R: Runtime>(
     app: &impl Manager<R>,
@@ -154,8 +182,10 @@ fn connection_item_label(name: &str, connected: bool) -> String {
 }
 
 /// Determine status text from capture/connection state (no emoji — template icon handles visual).
-fn status_text(paused: bool, any_disconnected: bool) -> &'static str {
-    if paused {
+fn status_text(capture_available: bool, paused: bool, any_disconnected: bool) -> &'static str {
+    if !capture_available {
+        "Capture unavailable"
+    } else if paused {
         "Paused"
     } else if any_disconnected {
         "Local mode"
@@ -257,6 +287,7 @@ fn tray_item(
 }
 
 fn debug_menu_items_snapshot(
+    capture_available: bool,
     paused: bool,
     indicator_visible: bool,
     srv: bool,
@@ -265,7 +296,9 @@ fn debug_menu_items_snapshot(
     update_actions: TrayUpdateActions,
 ) -> Vec<TrayMenuItemSnapshot> {
     let any_disconnected = !srv || !llm || !cli;
-    let toggle_text = if paused {
+    let toggle_text = if !capture_available {
+        "Capture unavailable"
+    } else if paused {
         "Resume Capture"
     } else {
         "Pause Capture"
@@ -279,7 +312,7 @@ fn debug_menu_items_snapshot(
     vec![
         tray_item(
             "capture-status",
-            status_text(paused, any_disconnected),
+            status_text(capture_available, paused, any_disconnected),
             false,
         ),
         tray_item(
@@ -289,7 +322,7 @@ fn debug_menu_items_snapshot(
         ),
         tray_item("conn-llm", connection_item_label("Local LLM", llm), false),
         tray_item("conn-cli", connection_item_label("CLI bridge", cli), false),
-        tray_item("toggle-capture", toggle_text, true),
+        tray_item("toggle-capture", toggle_text, capture_available),
         tray_item("toggle-indicator", indicator_text, true),
         tray_item("show", dashboard_toggle_label(), true),
         tray_item("settings", "Settings", true),
@@ -306,8 +339,15 @@ fn debug_menu_items_snapshot(
 }
 
 /// Build the full tray menu with connection status items.
+///
+/// Tray-builder-only: gated on the same predicate as `setup_tray`/
+/// `sync_tray_state` (its only callers) so the no-tray Linux build does not
+/// flag it — or the `Menu`/`MenuItem`/`PredefinedMenuItem` imports it uses — as
+/// dead.
+#[cfg(not(target_os = "linux"))]
 fn build_tray_menu<R: Runtime>(
     app: &impl Manager<R>,
+    capture_available: bool,
     paused: bool,
     indicator_visible: bool,
     srv: bool,
@@ -319,13 +359,15 @@ fn build_tray_menu<R: Runtime>(
     let capture_status = MenuItem::with_id(
         app,
         "capture-status",
-        status_text(paused, any_disconnected),
+        status_text(capture_available, paused, any_disconnected),
         false,
         None::<&str>,
     )?;
     let (srv_item, llm_item, cli_item) = build_connection_items(app, srv, llm, cli)?;
 
-    let toggle_text = if paused {
+    let toggle_text = if !capture_available {
+        "Capture unavailable"
+    } else if paused {
         "Resume Capture"
     } else {
         "Pause Capture"
@@ -336,7 +378,13 @@ fn build_tray_menu<R: Runtime>(
         "Show Indicator"
     };
 
-    let toggle_capture = MenuItem::with_id(app, "toggle-capture", toggle_text, true, None::<&str>)?;
+    let toggle_capture = MenuItem::with_id(
+        app,
+        "toggle-capture",
+        toggle_text,
+        capture_available,
+        None::<&str>,
+    )?;
     let toggle_indicator =
         MenuItem::with_id(app, "toggle-indicator", indicator_text, true, None::<&str>)?;
 
@@ -395,7 +443,7 @@ fn build_tray_menu<R: Runtime>(
 
 /// System tray setup — template icon + menu + event handler.
 /// tauri.conf.json trayIcon is null; everything is handled here.
-#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
+#[cfg(not(target_os = "linux"))]
 pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
     // Read initial state from AppState (config-driven, registered before tray setup)
     let (paused, indicator_visible) = app
@@ -410,13 +458,22 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
         .unwrap_or((false, true));
 
     let (srv, llm, cli) = read_connection_status(app);
+    let capture_available = capture_available(app);
     let any_disconnected = !srv || !llm || !cli;
 
-    let icon_state = resolve_icon_state(paused, any_disconnected);
+    let icon_state = resolve_icon_state(capture_available, paused, any_disconnected);
     let (rgba, w, h) = crate::tray_icon::status_icon(icon_state);
     let initial_icon = Image::new_owned(rgba, w, h);
 
-    let menu = build_tray_menu(app, paused, indicator_visible, srv, llm, cli)?;
+    let menu = build_tray_menu(
+        app,
+        capture_available,
+        paused,
+        indicator_visible,
+        srv,
+        llm,
+        cli,
+    )?;
 
     TrayIconBuilder::with_id(MAIN_TRAY_ID)
         .icon(initial_icon)
@@ -433,11 +490,17 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-/// No-tray fallback (Linux without `app-tray`): the desktop runs headless of a
-/// tray; startup must still succeed.
-#[cfg(all(target_os = "linux", not(feature = "app-tray")))]
+/// No-tray fallback (Linux): the desktop runs headless of a tray; startup must
+/// still succeed.
+///
+/// Decided by target, not by `app-tray` (#11006). The feature used to select the
+/// real path here, so the release build — which passes `--features ...` without
+/// `--no-default-features`, leaving default's `app-tray` on — reached a backend
+/// that is disabled for every Linux target and panicked during setup. The
+/// published .deb could not start at all.
+#[cfg(target_os = "linux")]
 pub fn setup_tray<R: Runtime>(_app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
-    info!("tray disabled at compile time (linux without `app-tray`)");
+    info!("tray unavailable on Linux (vendored backend is disabled for this target)");
     Ok(())
 }
 
@@ -445,7 +508,7 @@ pub fn setup_tray<R: Runtime>(_app: &tauri::App<R>) -> Result<(), Box<dyn std::e
 ///
 /// Combines icon swap (template shape overlay) with menu text rebuild.
 /// Called from tray event handlers and IPC commands.
-#[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
+#[cfg(not(target_os = "linux"))]
 pub fn sync_tray_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
     paused: bool,
@@ -453,24 +516,33 @@ pub fn sync_tray_state<R: Runtime>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(tray) = app.tray_by_id(MAIN_TRAY_ID) {
         let (srv, llm, cli) = read_connection_status(app);
+        let capture_available = capture_available(app);
         let any_disconnected = !srv || !llm || !cli;
 
         // Update icon with template shape overlay
-        let icon_state = resolve_icon_state(paused, any_disconnected);
+        let icon_state = resolve_icon_state(capture_available, paused, any_disconnected);
         let (rgba, w, h) = crate::tray_icon::status_icon(icon_state);
         let icon = Image::new_owned(rgba, w, h);
         tray.set_icon(Some(icon))?;
         tray.set_icon_as_template(true)?;
 
         // Rebuild menu with connection status
-        let menu = build_tray_menu(app, paused, indicator_visible, srv, llm, cli)?;
+        let menu = build_tray_menu(
+            app,
+            capture_available,
+            paused,
+            indicator_visible,
+            srv,
+            llm,
+            cli,
+        )?;
         tray.set_menu(Some(menu))?;
     }
     Ok(())
 }
 
 /// No-tray fallback: state changes have no tray to mirror into.
-#[cfg(all(target_os = "linux", not(feature = "app-tray")))]
+#[cfg(target_os = "linux")]
 pub fn sync_tray_state<R: Runtime>(
     _app: &tauri::AppHandle<R>,
     _paused: bool,
@@ -491,11 +563,12 @@ pub fn debug_tray_state<R: Runtime>(app: &tauri::AppHandle<R>) -> TrayDebugState
         })
         .unwrap_or((false, true));
     let (srv, llm, cli) = read_connection_status(app);
+    let capture_available = capture_available(app);
     let any_disconnected = !srv || !llm || !cli;
-    let icon_state = resolve_icon_state(paused, any_disconnected);
-    #[cfg(any(not(target_os = "linux"), feature = "app-tray"))]
+    let icon_state = resolve_icon_state(capture_available, paused, any_disconnected);
+    #[cfg(not(target_os = "linux"))]
     let registered = app.tray_by_id(MAIN_TRAY_ID).is_some();
-    #[cfg(all(target_os = "linux", not(feature = "app-tray")))]
+    #[cfg(target_os = "linux")]
     let registered = false;
     let update_actions = current_tray_update_actions(app);
     let icon_visual = tray_icon_visual_snapshot(icon_state);
@@ -505,6 +578,7 @@ pub fn debug_tray_state<R: Runtime>(app: &tauri::AppHandle<R>) -> TrayDebugState
         registered,
         visible: registered,
         tooltip: MAIN_TRAY_TOOLTIP.to_string(),
+        capture_available,
         capture_paused: paused,
         indicator_visible,
         icon_variant: icon_state_name(icon_state).to_string(),
@@ -517,6 +591,7 @@ pub fn debug_tray_state<R: Runtime>(app: &tauri::AppHandle<R>) -> TrayDebugState
             any_disconnected,
         },
         menu_items: debug_menu_items_snapshot(
+            capture_available,
             paused,
             indicator_visible,
             srv,
@@ -560,6 +635,14 @@ fn tray_quit_debug_ipc_allowed_now() -> bool {
 fn request_tray_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     info!("tray: quit requested");
     app.exit(0);
+}
+
+/// #9634: production app-quit entry point for UI surfaces (tracking panel).
+/// The panel's quit button used to invoke the DEBUG-ONLY `simulate_tray_action`
+/// QC command, which is compiled out of release builds — so the shipped quit
+/// button did nothing. Same exit path as the tray "Quit" menu item.
+pub fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    request_tray_quit(app);
 }
 
 fn schedule_debug_tray_quit<R: Runtime>(app: tauri::AppHandle<R>) {
@@ -607,6 +690,10 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
     match id {
         "toggle-capture" => {
             if let Some(state) = app.try_state::<crate::runtime_state::AppState>() {
+                if !crate::magic_overlay::effective_capture_permitted(&state, false) {
+                    debug!("tray: toggle-capture ignored because capture is unavailable");
+                    return true;
+                }
                 let was_paused = state
                     .capture_paused
                     .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
@@ -614,20 +701,7 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
                 let indicator_visible = state
                     .indicator_visible
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let payload = serde_json::json!({
-                    "paused": new_paused,
-                    "indicator_visible": indicator_visible
-                });
-                if let Err(e) =
-                    app.emit_to("magic-overlay", "overlay:capture-state-changed", &payload)
-                {
-                    debug!("emit magic-overlay failed: {e}");
-                }
-                if let Err(e) =
-                    app.emit_to("tracking-panel", "overlay:capture-state-changed", &payload)
-                {
-                    debug!("emit tracking-panel failed: {e}");
-                }
+                crate::commands::capture_status::emit_current_capture_status(app, &state);
                 if let Err(e) = sync_tray_state(app, new_paused, indicator_visible) {
                     debug!("sync_tray_state failed: {e}");
                 }
@@ -657,28 +731,9 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
                 let paused = state
                     .capture_paused
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let payload = serde_json::json!({
-                    "paused": paused,
-                    "indicator_visible": new_visible
-                });
-                if let Err(e) =
-                    app.emit_to("magic-overlay", "overlay:capture-state-changed", &payload)
-                {
-                    debug!("emit magic-overlay failed: {e}");
-                }
-                if let Err(e) =
-                    app.emit_to("tracking-panel", "overlay:capture-state-changed", &payload)
-                {
-                    debug!("emit tracking-panel failed: {e}");
-                }
-                if let Some(panel) = app.get_webview_window("tracking-panel") {
-                    if new_visible {
-                        if let Err(e) = panel.show() {
-                            debug!("window show failed: {e}");
-                        }
-                    } else if let Err(e) = panel.hide() {
-                        debug!("window hide failed: {e}");
-                    }
+                crate::commands::capture_status::emit_current_capture_status(app, &state);
+                if let Err(e) = crate::magic_overlay::set_tracking_panel_visible(app, new_visible) {
+                    debug!("tracking panel visibility reconcile failed: {e}");
                 }
                 if let Err(e) = sync_tray_state(app, paused, new_visible) {
                     debug!("sync_tray_state failed: {e}");
@@ -777,7 +832,109 @@ mod tests {
 
     #[test]
     fn disconnected_services_use_local_mode_status() {
-        assert_eq!(status_text(false, true), "Local mode");
+        assert_eq!(status_text(true, false, true), "Local mode");
+    }
+
+    #[test]
+    fn all_healthy_flags_render_active_not_local_mode() {
+        // #8050 regression: once server/llm/cli all read healthy, the tray must
+        // render "Active" — the permanent "Local mode"/disconnected state
+        // (caused by dead adapter health writers) is gone. The two off-by-one
+        // half-states below prove any single unhealthy flag still degrades.
+        let all_healthy = debug_menu_items_snapshot(
+            true,
+            false,
+            true,
+            true,
+            true,
+            true,
+            tray_update_actions(None),
+        );
+        let status = all_healthy
+            .iter()
+            .find(|item| item.id == "capture-status")
+            .expect("capture-status item");
+        assert_eq!(
+            status.label, "Active",
+            "all-connected flags must render Active, not Local mode (#8050)"
+        );
+
+        // Any single unhealthy flag still degrades to Local mode.
+        for (srv, llm, cli) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            let items = debug_menu_items_snapshot(
+                true,
+                false,
+                true,
+                srv,
+                llm,
+                cli,
+                tray_update_actions(None),
+            );
+            let label = &items
+                .iter()
+                .find(|item| item.id == "capture-status")
+                .expect("capture-status item")
+                .label;
+            assert_eq!(
+                label, "Local mode",
+                "one unhealthy flag (srv={srv}, llm={llm}, cli={cli}) must degrade to Local mode"
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_capture_uses_disabled_truthful_state() {
+        let items = debug_menu_items_snapshot(
+            false,
+            false,
+            true,
+            true,
+            true,
+            true,
+            tray_update_actions(None),
+        );
+        let by_id = |id: &str| {
+            items
+                .iter()
+                .find(|item| item.id == id)
+                .unwrap_or_else(|| panic!("missing tray item {id}"))
+        };
+
+        assert_eq!(by_id("capture-status").label, "Capture unavailable");
+        assert_eq!(by_id("toggle-capture").label, "Capture unavailable");
+        assert!(!by_id("toggle-capture").enabled);
+        assert_eq!(
+            resolve_icon_state(false, false, false),
+            TrayIconState::Disabled
+        );
+    }
+
+    #[test]
+    fn available_paused_capture_remains_resumable() {
+        let items = debug_menu_items_snapshot(
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            tray_update_actions(None),
+        );
+        let by_id = |id: &str| {
+            items
+                .iter()
+                .find(|item| item.id == id)
+                .unwrap_or_else(|| panic!("missing tray item {id}"))
+        };
+
+        assert_eq!(by_id("capture-status").label, "Paused");
+        assert_eq!(by_id("toggle-capture").label, "Resume Capture");
+        assert!(by_id("toggle-capture").enabled);
+        assert_eq!(resolve_icon_state(true, true, false), TrayIconState::Paused);
     }
 
     #[test]
@@ -830,8 +987,15 @@ mod tests {
 
     #[test]
     fn debug_menu_snapshot_lists_current_tray_items() {
-        let items =
-            debug_menu_items_snapshot(false, true, true, false, true, tray_update_actions(None));
+        let items = debug_menu_items_snapshot(
+            true,
+            false,
+            true,
+            true,
+            false,
+            true,
+            tray_update_actions(None),
+        );
 
         let by_id = |id: &str| {
             items
@@ -855,8 +1019,15 @@ mod tests {
 
     #[test]
     fn native_tray_menu_stays_minimal_control_surface() {
-        let items =
-            debug_menu_items_snapshot(false, true, true, true, true, tray_update_actions(None));
+        let items = debug_menu_items_snapshot(
+            true,
+            false,
+            true,
+            true,
+            true,
+            true,
+            tray_update_actions(None),
+        );
         let labels = items
             .iter()
             .map(|item| item.label.as_str())
@@ -915,9 +1086,9 @@ mod tests {
 
     #[test]
     fn tray_icon_visual_snapshot_matches_resolved_state() {
-        let active = tray_icon_visual_snapshot(resolve_icon_state(false, false));
-        let paused = tray_icon_visual_snapshot(resolve_icon_state(true, false));
-        let disabled = tray_icon_visual_snapshot(resolve_icon_state(false, true));
+        let active = tray_icon_visual_snapshot(resolve_icon_state(true, false, false));
+        let paused = tray_icon_visual_snapshot(resolve_icon_state(true, true, false));
+        let disabled = tray_icon_visual_snapshot(resolve_icon_state(false, false, false));
 
         assert_eq!(active.variant, "active");
         assert_eq!(paused.variant, "paused");

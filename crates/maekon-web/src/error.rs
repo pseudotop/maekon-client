@@ -265,6 +265,27 @@ impl From<maekon_core::models::ai_session::SessionInputLimitError> for ApiError 
     }
 }
 
+/// #7574: semantic search's explicit capability-boundary error maps to HTTP
+/// 501 Not Implemented (not the 503 Service Unavailable used for transient
+/// CoreError failures) — the client should switch modes, not retry. Ordinary
+/// CoreError failures inside an otherwise-configured pipeline still flow
+/// through the standard `From<CoreError>` mapping above.
+impl From<crate::services::semantic_search_service::SearchExecutionError> for ApiError {
+    fn from(err: crate::services::semantic_search_service::SearchExecutionError) -> Self {
+        use crate::services::semantic_search_service::SearchExecutionError;
+        match err {
+            SearchExecutionError::SemanticNotConfigured => ApiError::Coded {
+                status: StatusCode::NOT_IMPLEMENTED.as_u16(),
+                code: "service.not_implemented".to_string(),
+                message:
+                    "semantic search is not configured in this build; use mode=keyword or mode=hybrid"
+                        .to_string(),
+            },
+            SearchExecutionError::Core(core_err) => ApiError::from(core_err),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +351,20 @@ mod tests {
         assert_eq!(body["status"], StatusCode::INTERNAL_SERVER_ERROR.as_u16());
         assert_eq!(body["code"], "internal.generic");
         assert_eq!(body["error"], "internal server error");
+    }
+
+    #[tokio::test]
+    async fn storage_error_keeps_wire_code_without_leaking_private_detail() {
+        let core = maekon_core::error::CoreError::Storage {
+            code: maekon_core::error_codes::StorageCode::Failed,
+            message: "database is locked at C:\\Users\\alice\\private.db".to_string(),
+        };
+        let (status, body) = response_json(core.into()).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["code"], "storage.failed");
+        assert_eq!(body["error"], "internal server error");
+        assert!(!body.to_string().contains("alice"));
     }
 
     #[tokio::test]
@@ -441,5 +476,46 @@ mod tests {
         };
         let api: ApiError = core.into();
         assert_coded(api, StatusCode::BAD_REQUEST, "time_window.parse_failed");
+    }
+
+    /// #7574 regression: `SearchExecutionError::SemanticNotConfigured` must
+    /// map to HTTP 501 Not Implemented with the explicit capability-boundary
+    /// message, not the HTTP 503 used for transient CoreError failures.
+    /// Fails before the fix: the prior code path produced
+    /// `CoreError::ServiceUnavailable`, which this same conversion path would
+    /// have mapped to 503 -- misleadingly implying a temporary outage.
+    #[tokio::test]
+    async fn semantic_not_configured_maps_to_not_implemented() {
+        use crate::services::semantic_search_service::SearchExecutionError;
+
+        let api: ApiError = SearchExecutionError::SemanticNotConfigured.into();
+        let (status, body) = response_json(api).await;
+
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(body["status"], StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(body["code"], "service.not_implemented");
+        assert_eq!(
+            body["error"],
+            "semantic search is not configured in this build; use mode=keyword or mode=hybrid"
+        );
+    }
+
+    /// #7574: ordinary CoreError failures wrapped in `SearchExecutionError`
+    /// must keep flowing through the standard `From<CoreError>` mapping
+    /// (e.g. still 503 for ServiceUnavailable), so only the capability
+    /// boundary gets the 501 treatment.
+    #[tokio::test]
+    async fn search_execution_core_error_uses_standard_core_error_mapping() {
+        use crate::services::semantic_search_service::SearchExecutionError;
+
+        let core = maekon_core::error::CoreError::ServiceUnavailable {
+            code: maekon_core::error_codes::ServiceCode::Unavailable,
+            message: "embedding daemon is down".to_string(),
+        };
+        let api: ApiError = SearchExecutionError::Core(core).into();
+        let (status, body) = response_json(api).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["code"], "service.unavailable");
     }
 }

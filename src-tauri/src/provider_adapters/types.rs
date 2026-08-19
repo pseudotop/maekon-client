@@ -3,6 +3,7 @@ use std::sync::Arc;
 use maekon_automation::audit::AuditLogger;
 use maekon_core::config::{ExternalDataPolicy, PiiFilterLevel, PrivacyConfig};
 use maekon_core::error::CoreError;
+use maekon_core::models::audit::AuditStatus;
 use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::llm_provider::{LlmProvider, ScreenContext};
 use maekon_core::ports::monitor::ProcessMonitor;
@@ -12,7 +13,6 @@ use tokio::sync::RwLock;
 use maekon_vision::privacy_gateway::{PrivacyGateway, SanitizedImage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Remote and OAuth variants pending provider integration
 pub enum ProviderSource {
     Local,
     /// LocalModel arm with a live Ollama backend (loopback, no egress).
@@ -43,11 +43,11 @@ impl ProviderSource {
 // Ollama base URL is loopback (no egress gate needed) or an external host
 // (must route through `guard_external_llm_provider`).
 //
-// Reuses `maekon_network::http_client::host_is_loopback` which is already
+// Reuses `maekon_http_core::outbound::host_is_loopback` which is already
 // fail-closed: unparseable / empty host → returns `false` (treated as external).
 #[cfg(feature = "analysis")]
 pub(super) fn endpoint_is_loopback(url: &str) -> bool {
-    maekon_network::http_client::host_is_loopback(url)
+    maekon_http_core::outbound::host_is_loopback(url)
 }
 
 #[cfg(not(feature = "analysis"))]
@@ -86,6 +86,15 @@ pub(super) type OcrProviderResolution =
 pub(super) type LlmProviderResolution =
     Result<(Arc<dyn LlmProvider>, ProviderSource, Option<String>), CoreError>;
 
+// Its fields are read only by `GuardedAnalysisProvider` (analysis-only,
+// `provider_adapters/guarded_analysis.rs`), while the producing method
+// (`prepare_text_for_external_llm` below) lives in the broader
+// `ExternalOcrPrivacyGuard` impl block, which stays compiled in every build
+// (that impl block already carries the matching `allow(dead_code)` for its
+// own methods) — so this struct needs its own matching allow rather than a
+// hard `#[cfg(feature = "analysis")]`, which would require also gating the
+// producing method (#7743 ctd-W3 A2b follow-up).
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 pub(super) struct SanitizedExternalText {
     pub(super) context_json: String,
     pub(super) system_prompt: String,
@@ -132,7 +141,7 @@ impl ExternalOcrPrivacyGuard {
             Some(window) => window,
             None => {
                 let message = "External OCR blocked: active window context unavailable".to_string();
-                self.log_event(
+                self.log_denied_event(
                     "privacy.external_ocr.denied",
                     &format!("provider={provider_name} reason=no_active_window"),
                 )
@@ -179,7 +188,7 @@ impl ExternalOcrPrivacyGuard {
                 Ok(sanitized)
             }
             Err(err) => {
-                self.log_event(
+                self.log_denied_event(
                     "privacy.external_ocr.denied",
                     &format!(
                         "provider={provider_name} app={} title_chars={} reason={}",
@@ -274,11 +283,26 @@ impl ExternalOcrPrivacyGuard {
         provider_name: &str,
         purpose: &str,
     ) -> Result<maekon_core::models::context::WindowInfo, CoreError> {
+        self.ensure_external_llm_allowed_with_correlation(
+            provider_name,
+            purpose,
+            "runtime-ai-egress",
+        )
+        .await
+    }
+
+    async fn ensure_external_llm_allowed_with_correlation(
+        &self,
+        provider_name: &str,
+        purpose: &str,
+        correlation_id: &str,
+    ) -> Result<maekon_core::models::context::WindowInfo, CoreError> {
         let active_window = match self.process_monitor.get_active_window().await? {
             Some(window) => window,
             None => {
-                self.log_event(
+                self.log_denied_event_with_correlation(
                     "privacy.external_llm.denied",
+                    correlation_id,
                     &format!("provider={provider_name} purpose={purpose} reason=no_active_window"),
                 )
                 .await;
@@ -289,13 +313,10 @@ impl ExternalOcrPrivacyGuard {
             }
         };
 
-        if !self
-            .consent_manager
-            .effective_permissions()
-            .full_text_extraction
-        {
-            self.log_event(
+        if !self.consent_manager.full_text_extraction_permitted() {
+            self.log_denied_event_with_correlation(
                 "privacy.external_llm.denied",
+                correlation_id,
                 &format!(
                     "provider={provider_name} purpose={purpose} reason=full_text_extraction_missing"
                 ),
@@ -309,8 +330,9 @@ impl ExternalOcrPrivacyGuard {
         }
 
         if maekon_vision::privacy::is_sensitive_app(&active_window.app_name) {
-            self.log_event(
+            self.log_denied_event_with_correlation(
                 "privacy.external_llm.denied",
+                correlation_id,
                 &format!(
                     "provider={provider_name} purpose={purpose} app={} reason=sensitive_app",
                     self.audit_safe_fragment(&active_window.app_name),
@@ -326,16 +348,14 @@ impl ExternalOcrPrivacyGuard {
             });
         }
 
-        if maekon_vision::privacy::should_exclude(
+        if maekon_vision::privacy::should_exclude_by_policy(
+            &self.privacy_config,
             &active_window.app_name,
             &active_window.title,
-            &self.privacy_config.excluded_apps,
-            &self.privacy_config.excluded_app_patterns,
-            &self.privacy_config.excluded_title_patterns,
-            self.privacy_config.auto_exclude_sensitive,
         ) {
-            self.log_event(
+            self.log_denied_event_with_correlation(
                 "privacy.external_llm.denied",
+                correlation_id,
                 &format!(
                     "provider={provider_name} purpose={purpose} app={} reason=excluded_by_policy",
                     self.audit_safe_fragment(&active_window.app_name),
@@ -349,6 +369,60 @@ impl ExternalOcrPrivacyGuard {
         }
 
         Ok(active_window)
+    }
+
+    /// #9632: gate variant for USER-TYPED payloads (chat). The screen gates
+    /// (sensitive app, exclusion policy) exist to protect SCREEN-DERIVED
+    /// content, so when the active-window probe itself fails (macOS
+    /// accessibility permission absent / transient AX failure) a typed chat
+    /// message must not die with a policy denial — the caller instead strips
+    /// every screen-derived part (context) and proceeds content-only.
+    ///
+    /// Returns `Ok(Some(window))` when the probe succeeded and every gate
+    /// passed (screen context may egress after sanitization), or `Ok(None)`
+    /// when the window context is unavailable — the caller MUST strip the
+    /// message context before sending. Consent and (when a window IS present)
+    /// sensitive-app/exclusion gates still fail closed exactly as before.
+    async fn ensure_external_llm_allowed_for_user_typed(
+        &self,
+        provider_name: &str,
+        purpose: &str,
+        correlation_id: &str,
+    ) -> Result<Option<maekon_core::models::context::WindowInfo>, CoreError> {
+        if self.process_monitor.get_active_window().await?.is_none() {
+            // #9643 review M1: consent is checked BEFORE the context_stripped
+            // event is written — a request that ends denied must not leave a
+            // completed "context_stripped" record alongside the denial.
+            if !self.consent_manager.full_text_extraction_permitted() {
+                self.log_denied_event_with_correlation(
+                    "privacy.external_llm.denied",
+                    correlation_id,
+                    &format!(
+                        "provider={provider_name} purpose={purpose} reason=full_text_extraction_missing"
+                    ),
+                )
+                .await;
+                return Err(CoreError::PolicyDenied {
+                    code: maekon_core::error_codes::PolicyCode::Denied,
+                    message: "External LLM blocked: full text extraction consent is required"
+                        .to_string(),
+                });
+            }
+            self.log_event_with_correlation(
+                "privacy.external_llm.context_stripped",
+                correlation_id,
+                &format!("provider={provider_name} purpose={purpose} reason=no_active_window"),
+            )
+            .await;
+            return Ok(None);
+        }
+        // Deliberate double probe: `ensure_external_llm_allowed_with_correlation`
+        // re-probes internally. A window vanishing between the two probes fails
+        // CLOSED (the old denial) — rare and safe, so the shared gate sequence
+        // stays single-sourced instead of being split apart.
+        self.ensure_external_llm_allowed_with_correlation(provider_name, purpose, correlation_id)
+            .await
+            .map(Some)
     }
 
     fn external_llm_filter_level(&self) -> PiiFilterLevel {
@@ -367,6 +441,58 @@ impl ExternalOcrPrivacyGuard {
 
         let mut logger = audit_logger.write().await;
         logger.log_event(action_type, "runtime-ai-egress", details);
+    }
+
+    async fn log_event_with_correlation(
+        &self,
+        action_type: &str,
+        correlation_id: &str,
+        details: &str,
+    ) {
+        let Some(audit_logger) = self.audit_logger.as_ref() else {
+            return;
+        };
+
+        let mut logger = audit_logger.write().await;
+        logger.log_correlated_event_with_status(
+            action_type,
+            correlation_id,
+            AuditStatus::Completed,
+            details,
+        );
+    }
+
+    async fn log_denied_event(&self, action_type: &str, details: &str) {
+        let Some(audit_logger) = self.audit_logger.as_ref() else {
+            return;
+        };
+
+        let mut logger = audit_logger.write().await;
+        logger.log_event_with_status(
+            action_type,
+            "runtime-ai-egress",
+            AuditStatus::Denied,
+            details,
+        );
+    }
+
+    async fn log_denied_event_with_correlation(
+        &self,
+        action_type: &str,
+        correlation_id: &str,
+        details: &str,
+    ) {
+        let Some(audit_logger) = self.audit_logger.as_ref() else {
+            return;
+        };
+
+        let mut logger = audit_logger.write().await;
+        logger.log_correlated_event_with_status(
+            action_type,
+            correlation_id,
+            AuditStatus::Denied,
+            details,
+        );
     }
 }
 
@@ -431,21 +557,123 @@ pub(super) fn sanitize_attachment(
     }
 }
 
+fn attachment_has_inline_data(attachment: &maekon_core::models::ai_session::Attachment) -> bool {
+    use maekon_core::models::ai_session::Attachment;
+    matches!(
+        attachment,
+        Attachment::Image { data: Some(_), .. } | Attachment::File { data: Some(_), .. }
+    )
+}
+
+fn attachment_sanitization_changed(
+    before: &maekon_core::models::ai_session::Attachment,
+    after: &maekon_core::models::ai_session::Attachment,
+) -> bool {
+    use maekon_core::models::ai_session::Attachment;
+    match (before, after) {
+        (
+            Attachment::Image {
+                mime: before_mime,
+                path: before_path,
+                data: before_data,
+            },
+            Attachment::Image {
+                mime: after_mime,
+                path: after_path,
+                data: after_data,
+            },
+        ) => {
+            before_mime != after_mime
+                || before_path != after_path
+                || before_data.is_some() != after_data.is_some()
+        }
+        (
+            Attachment::File {
+                path: before_path,
+                mime: before_mime,
+                data: before_data,
+            },
+            Attachment::File {
+                path: after_path,
+                mime: after_mime,
+                data: after_data,
+            },
+        ) => {
+            before_path != after_path
+                || before_mime != after_mime
+                || before_data.is_some() != after_data.is_some()
+        }
+        (
+            Attachment::Directory { path: before_path },
+            Attachment::Directory { path: after_path },
+        ) => before_path != after_path,
+        (
+            Attachment::Skill {
+                skill_id: before_id,
+                display_name: before_name,
+            },
+            Attachment::Skill {
+                skill_id: after_id,
+                display_name: after_name,
+            },
+        ) => before_id != after_id || before_name != after_name,
+        (
+            Attachment::AppReference {
+                app_name: before_app,
+                window_title: before_title,
+            },
+            Attachment::AppReference {
+                app_name: after_app,
+                window_title: after_title,
+            },
+        ) => before_app != after_app || before_title != after_title,
+        _ => true,
+    }
+}
+
 #[async_trait::async_trait]
 impl super::guarded_conversation::ConversationContentGuard for ExternalOcrPrivacyGuard {
     async fn sanitize_outbound(
         &self,
         message: &maekon_core::models::ai_session::SessionMessage,
+        correlation_id: &str,
     ) -> Result<maekon_core::models::ai_session::SessionMessage, CoreError> {
-        // Fail-closed: consent / active-window / sensitive-app / exclusion gate.
-        let active_window = self
-            .ensure_external_llm_allowed("conversation", "chat")
-            .await?;
+        // #9632: USER-TYPED chat payloads degrade to context-less egress when
+        // the window probe fails (accessibility permission absent) instead of
+        // dying with a policy denial; consent still fails closed, and
+        // sensitive-app/exclusion gates fail closed whenever a window IS
+        // probeable. #9643 review I2: messages whose CONTENT was assembled
+        // from screen data (current-context prompts, explain-suggestion
+        // quotes — `message.screen_derived`) keep the ORIGINAL strict gate:
+        // for them, "window unavailable" must remain a denial, because the
+        // screen-derived text egresses in the content itself and cannot be
+        // stripped like the context field.
+        let active_window = if message.screen_derived {
+            Some(
+                self.ensure_external_llm_allowed_with_correlation(
+                    "conversation",
+                    "chat",
+                    correlation_id,
+                )
+                .await?,
+            )
+        } else {
+            self.ensure_external_llm_allowed_for_user_typed("conversation", "chat", correlation_id)
+                .await?
+        };
 
         let level = self.external_llm_filter_level();
         let mut sanitized = message.clone();
         sanitized.content =
             maekon_vision::privacy::sanitize_title_with_level(&message.content, level);
+        if active_window.is_none() {
+            // Window context unavailable → strip the screen-derived context
+            // field. NOTE (#9643 review M2): user-attached app-reference
+            // attachments may still carry an app name/window title; they are
+            // user-selected payloads and go through the same PII sanitization
+            // below rather than being dropped.
+            sanitized.context = None;
+        }
         if let Some(context) = sanitized.context.as_mut() {
             if let Some(app) = context.active_app.as_deref() {
                 context.active_app = Some(maekon_vision::privacy::sanitize_title_with_level(
@@ -467,17 +695,64 @@ impl super::guarded_conversation::ConversationContentGuard for ExternalOcrPrivac
             .map(|attachment| sanitize_attachment(attachment, level))
             .collect();
 
-        self.log_event(
+        // #9086: expose a privacy-safe live-product oracle without persisting
+        // the outbound envelope. These booleans/counts prove that context was
+        // scoped and inline attachment bodies were removed; no prompt, path,
+        // attachment body, token, or provider output is logged.
+        let inline_data_before = message
+            .attachments
+            .iter()
+            .filter(|attachment| attachment_has_inline_data(attachment))
+            .count();
+        let inline_data_after = sanitized
+            .attachments
+            .iter()
+            .filter(|attachment| attachment_has_inline_data(attachment))
+            .count();
+        let context_changed = match (&message.context, &sanitized.context) {
+            (Some(before), Some(after)) => {
+                before.regime != after.regime || before.active_app != after.active_app
+            }
+            (None, None) => false,
+            _ => true,
+        };
+        let attachments_changed = message.attachments.len() != sanitized.attachments.len()
+            || message
+                .attachments
+                .iter()
+                .zip(&sanitized.attachments)
+                .any(|(before, after)| attachment_sanitization_changed(before, after));
+        let envelope_changed =
+            message.content != sanitized.content || context_changed || attachments_changed;
+
+        self.log_event_with_correlation(
             "privacy.external_llm.allowed",
+            correlation_id,
             &format!(
-                "provider=conversation purpose=chat app={} content_chars={} attachments={}",
-                self.audit_safe_fragment(&active_window.app_name),
+                "o=1 p=conversation u=chat a={} z={} n={} cp={} cc={} ac={} ib={} ia={} ec={}",
+                active_window
+                    .as_ref()
+                    .map(|window| self.audit_safe_fragment(&window.app_name))
+                    .unwrap_or_else(|| "window_unavailable".to_string()),
                 sanitized.content.len(),
-                sanitized.attachments.len()
+                sanitized.attachments.len(),
+                u8::from(sanitized.context.is_some()),
+                u8::from(context_changed),
+                u8::from(attachments_changed),
+                inline_data_before,
+                inline_data_after,
+                u8::from(envelope_changed),
             ),
         )
         .await;
 
         Ok(sanitized)
+    }
+
+    fn consent_state_snapshot(&self) -> String {
+        format!(
+            "full_text_extraction={}",
+            self.consent_manager.full_text_extraction_permitted()
+        )
     }
 }

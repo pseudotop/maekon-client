@@ -334,6 +334,11 @@ pub struct ManagedSignaturePolicy {
     pub require_signature: bool,
     #[serde(default)]
     pub bundle_signature: Option<String>,
+    /// #9638: read nowhere — `validate()` only checks `bundle_signature`
+    /// PRESENCE (no cryptographic verification exists yet, and no key lookup
+    /// consults this id). Deprecated instead of removed because this crate is
+    /// exported to the public repository.
+    #[deprecated(note = "never consulted — signature verification is presence-only (#9638)")]
     #[serde(default)]
     pub key_id: Option<String>,
 }

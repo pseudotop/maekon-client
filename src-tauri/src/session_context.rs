@@ -118,6 +118,12 @@ impl SessionContextAssembler {
         let content = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string());
 
         SessionMessage {
+            // #9643 re-review M1: this content IS screen-derived (top apps,
+            // window titles, regime). It never reaches the conversation guard
+            // today (consumed via config.system_prompt only, with its own
+            // masking path), but the label must not hand a future
+            // send_message caller the lenient gate.
+            screen_derived: true,
             role: MessageRole::System,
             content: format!(
                 "You are Maekon's AI assistant. Here is the current user context:\n\n{content}"

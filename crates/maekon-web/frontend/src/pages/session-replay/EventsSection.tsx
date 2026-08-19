@@ -30,7 +30,10 @@ export default function EventsSection() {
   }
 
   return (
-    <div id="section-events" className="min-h-[300px]">
+    // #9633: bound the height so EventLog's internal overflow-y-auto actually
+    // scrolls — without a constrained ancestor the whole page grew with the
+    // list and the player/date controls scrolled away.
+    <div id="section-events" className="flex max-h-[calc(100vh-18rem)] min-h-[300px] flex-col">
       <EventLog items={timeline.items} currentTime={playback.currentTime} onItemClick={playback.handleTimeChange} />
     </div>
   )

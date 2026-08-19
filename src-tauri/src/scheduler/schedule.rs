@@ -1,78 +1,33 @@
 //! Active-hours gate, tracking schedule gate, and capture-permitted composite
 //! gate — all time-injectable for deterministic testing.
 //!
-//! Extracted from scheduler/mod.rs (ADR-013 split).
+//! Extracted from scheduler/mod.rs (ADR-013 split). #7735 E-3: the pure
+//! policy functions (`should_run_now_with_time`, `tracking_schedule_active`'s
+//! 2-arg core, the 4-arg `capture_permitted_now`/`audio_capture_permitted_now`
+//! and their `_with_power` variants) moved to `maekon_core::capture_gate`.
+//! This file keeps only the process-global `BATTERY_SAVER_ACTIVE` static and
+//! the thin wrappers that read it + inject `Local::now()` — a composition-root
+//! concern that cannot live in the tauri-free core crate.
 
-use chrono::{Datelike, Timelike};
-use maekon_core::config::{AppConfig, Weekday};
+// Only consumed within this file (`should_run_now` + its own tests) — the
+// former crate-wide re-export at `scheduler::should_run_now_with_time` was
+// removed in the same change since its only external caller moved into
+// `maekon_core::capture_gate` too and no longer needs it.
+use maekon_core::capture_gate::should_run_now_with_time;
+use maekon_core::config::AppConfig;
 
 pub(super) static BATTERY_SAVER_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-pub(crate) fn set_battery_saver_active_for_scheduler(active: bool) {
+/// Sets the process-global battery-saver flag consulted by
+/// [`capture_permitted_now`] / [`audio_capture_permitted_now`].
+///
+/// #7734: widened from `pub(crate)` to `pub` (re-exported at
+/// `scheduler::set_battery_saver_active_for_scheduler`) so the
+/// `tracking_schedule_gating_integration` test can reset this shared static
+/// between test runs; not a stability surface — internal app-library helper.
+pub fn set_battery_saver_active_for_scheduler(active: bool) {
     BATTERY_SAVER_ACTIVE.store(active, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Time-injectable core of the active-hours gate.
-///
-/// Accepts an explicit `now: DateTime<Local>` so callers in tests can drive
-/// deterministic scenarios (including the overnight wrap covered by CONS-C05).
-/// Production call-sites should use [`should_run_now`] which calls
-/// `chrono::Local::now()` internally.
-///
-/// # Overnight wrap (CONS-C05)
-///
-/// When `active_end_hour < active_start_hour` the window wraps midnight, e.g.
-/// `22:00 – 06:00`.  For the hour-in-range check the rule is:
-/// - Non-wrapping (`end > start`): `hour ∈ [start, end)` on `now.weekday()`.
-/// - Wrapping (`end < start`): `hour ≥ start` OR `hour < end`.
-///   - If `hour ≥ start`: check `now.weekday()` is in `active_days`.
-///   - If `hour < end`:  check the *previous* weekday is in `active_days`
-///     (because the window was opened last night).
-/// - Equal (`end == start`): treated as empty window → returns `false`.
-pub(crate) fn should_run_now_with_time(
-    config: &AppConfig,
-    now: chrono::DateTime<chrono::Local>,
-) -> bool {
-    let schedule = &config.schedule;
-    if !schedule.active_hours_enabled {
-        return true;
-    }
-
-    let hour = now.hour() as u8;
-    let weekday = match now.weekday() {
-        chrono::Weekday::Mon => Weekday::Mon,
-        chrono::Weekday::Tue => Weekday::Tue,
-        chrono::Weekday::Wed => Weekday::Wed,
-        chrono::Weekday::Thu => Weekday::Thu,
-        chrono::Weekday::Fri => Weekday::Fri,
-        chrono::Weekday::Sat => Weekday::Sat,
-        chrono::Weekday::Sun => Weekday::Sun,
-    };
-
-    let start = schedule.active_start_hour;
-    let end = schedule.active_end_hour;
-
-    if end > start {
-        // Non-wrapping window: e.g. 09:00–17:00.
-        if !schedule.active_days.contains(&weekday) {
-            return false;
-        }
-        hour >= start && hour < end
-    } else if end < start {
-        // Overnight (wrapping) window: e.g. 22:00–06:00.
-        if hour >= start {
-            schedule.active_days.contains(&weekday)
-        } else if hour < end {
-            let yesterday = weekday_pred(weekday);
-            schedule.active_days.contains(&yesterday)
-        } else {
-            false
-        }
-    } else {
-        // start == end: empty / degenerate window → inactive.
-        false
-    }
 }
 
 /// Returns `true` when the current wall-clock time falls within the configured
@@ -84,13 +39,12 @@ pub fn should_run_now(config: &AppConfig) -> bool {
     should_run_now_with_time(config, chrono::Local::now())
 }
 
-/// Returns `true` when the current instant falls inside any configured
-/// tracking-schedule mute window.
-///
-/// Delegates to the time-injectable helper; uses `chrono::Local::now()`.
-#[allow(dead_code)]
-pub fn tracking_schedule_active(config: &AppConfig) -> bool {
-    super::loops::tracking_schedule_helper::tracking_schedule_active(config, chrono::Local::now())
+/// Whether the configured tracking schedule permits capture at the current
+/// local time. Enabled non-empty schedules require the current instant to fall
+/// inside an allowed window; disabled and empty schedules remain unrestricted.
+/// Delegates to the time-injectable helper using `chrono::Local::now()`.
+pub fn tracking_schedule_allows_capture(config: &AppConfig) -> bool {
+    maekon_core::capture_gate::tracking_schedule_allows_capture(config, chrono::Local::now())
 }
 
 /// Full capture privacy gate composite — use this at all gate sites rather than
@@ -101,7 +55,7 @@ pub fn tracking_schedule_active(config: &AppConfig) -> bool {
 ///     config.vision.capture_enabled       // user-visible capture toggle
 ///     AND consent.screen_capture          // consent top-authority (CONS-PC02)
 ///     AND should_run_now(cfg)             // active_hours gate
-///     AND !tracking_schedule_active(cfg)  // tracking-schedule mute gate
+///     AND tracking_schedule_allows_capture(cfg) // tracking-schedule allow gate
 ///     AND !capture_paused                 // user tray-toggle veto
 /// ```
 pub fn capture_permitted_now(
@@ -109,7 +63,7 @@ pub fn capture_permitted_now(
     consent: &maekon_core::consent::ConsentPermissions,
     capture_paused: bool,
 ) -> bool {
-    super::loops::tracking_schedule_helper::capture_permitted_now_with_power(
+    maekon_core::capture_gate::capture_permitted_now_with_power(
         config,
         consent,
         capture_paused,
@@ -128,28 +82,13 @@ pub fn audio_capture_permitted_now(
     consent: &maekon_core::consent::ConsentPermissions,
     capture_paused: bool,
 ) -> bool {
-    super::loops::tracking_schedule_helper::audio_capture_permitted_now_with_power(
+    maekon_core::capture_gate::audio_capture_permitted_now_with_power(
         config,
         consent,
         capture_paused,
         BATTERY_SAVER_ACTIVE.load(std::sync::atomic::Ordering::Relaxed),
         chrono::Local::now(),
     )
-}
-
-/// Returns the predecessor (previous) weekday.
-///
-/// Used by [`should_run_now_with_time`] for overnight window carry-over checks.
-pub(crate) fn weekday_pred(day: Weekday) -> Weekday {
-    match day {
-        Weekday::Mon => Weekday::Sun,
-        Weekday::Tue => Weekday::Mon,
-        Weekday::Wed => Weekday::Tue,
-        Weekday::Thu => Weekday::Wed,
-        Weekday::Fri => Weekday::Thu,
-        Weekday::Sat => Weekday::Fri,
-        Weekday::Sun => Weekday::Sat,
-    }
 }
 
 #[cfg(test)]
@@ -184,11 +123,11 @@ mod tests {
         cfg.schedule.active_start_hour = 22;
         cfg.schedule.active_end_hour = 6;
         cfg.schedule.active_days = vec![
-            Weekday::Mon,
-            Weekday::Tue,
-            Weekday::Wed,
-            Weekday::Thu,
-            Weekday::Fri,
+            maekon_core::config::Weekday::Mon,
+            maekon_core::config::Weekday::Tue,
+            maekon_core::config::Weekday::Wed,
+            maekon_core::config::Weekday::Thu,
+            maekon_core::config::Weekday::Fri,
         ];
         cfg
     }
@@ -271,9 +210,7 @@ mod tests {
         let now = fixed_at_local(2024, 1, 8, 20, 0);
 
         assert!(
-            !super::super::loops::tracking_schedule_helper::capture_permitted_now(
-                &cfg, &consent, false, now
-            ),
+            !maekon_core::capture_gate::capture_permitted_now(&cfg, &consent, false, now),
             "Mon 20:00 must be blocked when active_hours is 09-17 (Mon only)"
         );
     }
@@ -285,9 +222,7 @@ mod tests {
         let now = fixed_at_local(2024, 1, 7, 0, 0);
 
         assert!(
-            super::super::loops::tracking_schedule_helper::capture_permitted_now(
-                &cfg, &consent, false, now
-            ),
+            maekon_core::capture_gate::capture_permitted_now(&cfg, &consent, false, now),
             "capture must be permitted when active_hours_enabled=false (any time, any day)"
         );
     }
@@ -307,11 +242,8 @@ mod tests {
         ];
 
         let consent = capture_consent(true);
-        let permit = |now| {
-            super::super::loops::tracking_schedule_helper::capture_permitted_now(
-                &cfg, &consent, false, now,
-            )
-        };
+        let permit =
+            |now| maekon_core::capture_gate::capture_permitted_now(&cfg, &consent, false, now);
 
         let wed_23 = fixed_at_local(2024, 1, 10, 23, 0);
         assert!(permit(wed_23), "Wed 23:00 must be inside window (CONS-C05)");
@@ -339,6 +271,66 @@ mod tests {
             permit(sat_0001),
             "Sat 00:01 must be inside (Fri carry-over, interpretation B — \
              pred-weekday check against active_days) (CONS-C05)"
+        );
+    }
+
+    /// #8094 first-run pin: a FRESH profile (a `ConsentManager` over a path with
+    /// no `consent.json`) must deny screen capture, microphone capture, AND
+    /// telemetry through the PRODUCTION gate wrappers the monitor loop
+    /// (`crate::scheduler::capture_permitted_now`, monitor.rs), audio path
+    /// (`audio_capture_permitted_now`), and egress path (`may_upload_telemetry`)
+    /// actually call. This pins the whole default-deny chain end-to-end:
+    /// fresh `ConsentManager` → `ConsentGate` fail-closed snapshot → composite
+    /// gate == closed, on default config (capture_enabled=true, active_hours off).
+    #[test]
+    fn fresh_profile_default_deny_capture_audio_and_telemetry_first_run() {
+        use maekon_core::consent::{ConsentManager, ConsentPermissions};
+        use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
+
+        // Fresh profile: no consent.json exists yet (first run).
+        let dir = tempfile::tempdir().unwrap();
+        let manager: std::sync::Arc<dyn ConsentManagerPort> =
+            std::sync::Arc::new(ConsentManager::new(dir.path().join("consent.json")));
+        let owned = Some(manager);
+        let gate = ConsentGate::from_ref(owned.as_ref());
+        let snapshot = gate.permissions_snapshot();
+        let cfg = AppConfig::default_config();
+
+        assert!(
+            !capture_permitted_now(&cfg, &snapshot, false),
+            "fresh no-consent profile must deny screen capture (first-run fail-closed, #8094)"
+        );
+        assert!(
+            !audio_capture_permitted_now(&cfg, &snapshot, false),
+            "fresh no-consent profile must deny microphone capture (first-run fail-closed)"
+        );
+        assert!(
+            !gate.may_upload_telemetry(),
+            "fresh no-consent profile must deny telemetry upload (first-run fail-closed)"
+        );
+
+        // Positive control: granting ONLY screen_capture opens the screen gate but
+        // NOT the mic gate — proving the denials above were the consent term, not an
+        // unrelated always-closed gate, and that mic keeps its own consent (#4568).
+        owned
+            .as_ref()
+            .unwrap()
+            .grant_consent(
+                ConsentPermissions {
+                    screen_capture: true,
+                    ..Default::default()
+                },
+                30,
+            )
+            .unwrap();
+        let granted = ConsentGate::from_ref(owned.as_ref()).permissions_snapshot();
+        assert!(
+            capture_permitted_now(&cfg, &granted, false),
+            "granting screen_capture consent must open the capture gate on default config"
+        );
+        assert!(
+            !audio_capture_permitted_now(&cfg, &granted, false),
+            "screen consent must NOT open the mic gate (#4568: mic has its own consent)"
         );
     }
 }

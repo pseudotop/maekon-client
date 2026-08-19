@@ -17,7 +17,7 @@ import type {
   SuggestionViewDto,
 } from '../types'
 
-type OverlayAction =
+export type OverlayAction =
   | { type: 'show-coaching'; payload: CoachingPayload }
   | { type: 'upgrade-message'; payload: { message_id: string; personalized_text: string } }
   | { type: 'dismiss' }
@@ -42,13 +42,16 @@ type OverlayAction =
   | { type: 'codex-approval-dismiss' }
   | { type: 'set-fullscreen-policy'; payload: OverlayFullscreenPolicyPayload }
 
-const initialState: OverlayState = {
+// #9637: exported so the reducer — the overlay's single state SSOT per the
+// CLAUDE.md guardrail — can be unit-tested directly (13/23 branches had no
+// automated coverage of any kind).
+export const initialState: OverlayState = {
   mode: 'minimal',
   coaching: null,
   coachingQueue: [],
   focusHighlight: null,
   goals: [],
-  captureState: { paused: false, indicator_visible: false },
+  captureState: { paused: true, indicator_visible: false, consent_granted: false, permitted: false },
   focusMode: false,
   focusModeAuto: false,
   suggestionsPanelOpen: false,
@@ -64,7 +67,7 @@ const initialState: OverlayState = {
   fullscreenPolicy: null,
 }
 
-function reducer(state: OverlayState, action: OverlayAction): OverlayState {
+export function reducer(state: OverlayState, action: OverlayAction): OverlayState {
   switch (action.type) {
     case 'show-coaching':
       if (state.coaching === null) {
@@ -219,13 +222,12 @@ export function useOverlayEvents() {
             dispatch({ type: 'set-focus-mode', payload: { active: e.payload.active, auto: e.payload.auto ?? false } })
           }),
         )
-        // Suggestions panel toggle (from Cmd+Shift+S)
-        unlisten.push(
-          await listen('overlay:toggle-suggestions', () => {
-            dispatch({ type: 'toggle-suggestions-panel' })
-          }),
-        )
-        // Explicit suggestions panel open/close request (from tracking panel)
+        // Explicit suggestions panel open/close state (#8847). Emitted with the
+        // AUTHORITATIVE native state from the Cmd+Shift+S shortcut, the tracking
+        // panel, and every toggle_suggestions_panel IPC call. Idempotent: the
+        // reducer converges to `open`, so event timing cannot invert or lose the
+        // native state (the former relative `overlay:toggle-suggestions` event —
+        // lost when the WebView was destroyed by the idle policy — is retired).
         unlisten.push(
           await listen<{ open: boolean }>('overlay:set-suggestions-panel', (e) => {
             dispatch({ type: 'toggle-suggestions-panel', payload: !!e.payload.open })

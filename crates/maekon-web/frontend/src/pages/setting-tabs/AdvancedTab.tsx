@@ -1,7 +1,8 @@
+import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import type { AppSettings } from '../../api/client'
-import { Card, CardTitle, GuidancePanel, Input } from '../../components/ui'
-import { colors, typography } from '../../styles/tokens'
+import { type AppSettings, CONSENT_QUERY_KEY, getConsent } from '../../api/client'
+import { Alert, Card, CardTitle, GuidancePanel, Input } from '../../components/ui'
+import { colors, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useLoadedFormData, useSettingsFormContext } from '../settings/SettingsFormContext'
 import ToggleRow from './ToggleRow'
@@ -21,6 +22,7 @@ function NumberField({
   onChange,
   min,
   max,
+  step,
 }: {
   id: string
   label: string
@@ -28,6 +30,7 @@ function NumberField({
   onChange: (v: number) => void
   min?: number
   max?: number
+  step?: number
 }) {
   return (
     <div>
@@ -38,6 +41,7 @@ function NumberField({
         value={value}
         min={min}
         max={max}
+        step={step}
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full"
       />
@@ -50,6 +54,20 @@ export default function AdvancedTab() {
   const { form } = useSettingsFormContext()
   const formData = useLoadedFormData()
 
+  // #9687: the tiered-memory pipeline is gated on this consent in addition to
+  // its own toggle. Read-only here — granting stays on Privacy → Data Controls.
+  //
+  // `isSuccess` separates "we read the consent and it is missing" from "we could
+  // not read it at all" (standalone/dev without Tauri, transient IPC error, or
+  // simply the first render before the query settles). Only the former may show
+  // the warning; treating unknown as denied flashes a false "consent missing"
+  // at every cold mount and lies outright in standalone mode.
+  const { data: consent, isSuccess: consentKnown } = useQuery({
+    queryKey: CONSENT_QUERY_KEY,
+    queryFn: getConsent,
+  })
+  const patternLearningGranted = consent?.status === 'Valid' && consent.permissions.activity_pattern_learning === true
+
   const handleChange = <K extends keyof AppSettings>(section: K, field: string, value: unknown) => {
     form.setFormData((prev) => {
       if (!prev) return prev
@@ -58,6 +76,30 @@ export default function AdvancedTab() {
         return { ...prev, [section]: { ...sectionData, [field]: value } }
       }
       return prev
+    })
+  }
+
+  // G2a (#8059): the three config flags that make up the discoverable "AI
+  // features" bundle — local embedding, the on-device AI daily-digest
+  // narrative, and semantic search (which needs embedding wired). The master
+  // toggle flips all three atomically (on → all on; off → all off); the
+  // individual power-user toggles below stay in sync. Checkbox has no
+  // indeterminate state, so the master reads ON only when all three are on.
+  const aiFeaturesAllOn =
+    formData.analysis.enabled && formData.analysis.embedding_enabled && formData.analysis.llm_summary_enabled
+
+  const handleEnableAiFeatures = (value: boolean) => {
+    form.setFormData((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        analysis: {
+          ...prev.analysis,
+          enabled: value,
+          embedding_enabled: value,
+          llm_summary_enabled: value,
+        },
+      }
     })
   }
 
@@ -167,6 +209,7 @@ export default function AdvancedTab() {
             onChange={(v) => handleChange('indicator', 'border_opacity', v)}
             min={0}
             max={1}
+            step={0.1}
           />
         </div>
       </Card>
@@ -175,6 +218,18 @@ export default function AdvancedTab() {
       <Card variant="default" padding="lg">
         <CardTitle sticky>{t('settings.advanced.analysis', 'Analysis Pipeline')}</CardTitle>
         <div className="space-y-4">
+          {/* G2a (#8059): master "Enable AI features" toggle — flips analysis,
+              embedding, and llm_summary together so the built-but-hidden AI
+              features (semantic search, AI daily-digest narrative) are
+              discoverable in one click. Everything runs on-device. */}
+          <div className={cn('rounded-lg border border-brand-signal/40 bg-brand-signal/5 p-4', motion.colors)}>
+            <ToggleRow
+              label={t('advancedTab.aiFeaturesMaster')}
+              description={t('advancedTab.aiFeaturesMasterDescription')}
+              checked={aiFeaturesAllOn}
+              onChange={handleEnableAiFeatures}
+            />
+          </div>
           <ToggleRow
             label={t('advancedTab.enableAnalysis')}
             description={t('advancedTab.enableAnalysisDescription')}
@@ -196,6 +251,7 @@ export default function AdvancedTab() {
               onChange={(v) => handleChange('analysis', 'min_confidence', v)}
               min={0}
               max={1}
+              step={0.1}
             />
             <NumberField
               id="analysis-max-suggestions"
@@ -208,17 +264,44 @@ export default function AdvancedTab() {
             <NumberField
               id="regime-detection-interval"
               label={t('advancedTab.regimeDetectionIntervalHours')}
-              value={formData.analysis.tiered_memory?.regime_detection_interval_hours ?? 2}
-              onChange={(v) => handleChange('analysis', 'regime_detection_interval_hours' as never, v)}
+              value={formData.analysis.regime_detection_interval_hours}
+              onChange={(v) => handleChange('analysis', 'regime_detection_interval_hours', v)}
               min={1}
               max={24}
             />
+          </div>
+          {/* #9687: the toggle alone does nothing — the pipeline additionally
+              requires the activity_pattern_learning consent (GDPR Tier 4,
+              granted on Settings → Privacy, NOT part of the first-run bundle)
+              and an app restart (the pipeline is wired at boot from a config
+              snapshot). Both were verified empirically; without disclosure a
+              user flips this and sees no change anywhere. Consent is never
+              auto-granted from here — Tier 4 requires an explicit act. */}
+          <div className="space-y-2">
+            <ToggleRow
+              label={t('advancedTab.tieredMemory')}
+              description={t('advancedTab.tieredMemoryDescription')}
+              checked={formData.analysis.tiered_memory_enabled}
+              onChange={(v) => handleChange('analysis', 'tiered_memory_enabled', v)}
+            />
+            {formData.analysis.tiered_memory_enabled && consentKnown && !patternLearningGranted ? (
+              <Alert variant="warning">{t('advancedTab.tieredMemoryNeedsConsent')}</Alert>
+            ) : null}
+            {formData.analysis.tiered_memory_enabled && consentKnown && patternLearningGranted ? (
+              <Alert variant="info">{t('advancedTab.tieredMemoryNeedsRestart')}</Alert>
+            ) : null}
           </div>
           <ToggleRow
             label={t('advancedTab.embedding')}
             description={t('advancedTab.embeddingDescription')}
             checked={formData.analysis.embedding_enabled}
             onChange={(v) => handleChange('analysis', 'embedding_enabled', v)}
+          />
+          <ToggleRow
+            label={t('advancedTab.llmSummary')}
+            description={t('advancedTab.llmSummaryDescription')}
+            checked={formData.analysis.llm_summary_enabled}
+            onChange={(v) => handleChange('analysis', 'llm_summary_enabled', v)}
           />
           <ToggleRow
             label={t('advancedTab.guiIntelligence')}

@@ -1,4 +1,405 @@
 {
-  "dependabot": [],
-  "codeql": []
+  "dependabot": [
+    {
+      "package": "pillow",
+      "manifest": "scripts/requirements-training.txt",
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-07-23",
+      "reason": "Pillow < 12.3.0 advisories affect only the offline ML-training helper scripts (scripts/requirements-training.txt). The dependency is never installed into, bundled with, or executed by shipped client artifacts (DMG/MSI/DEB). Upgrading past the deliberate <12.0 cap requires separate training-pipeline validation; re-triage before 2026-10-31."
+    },
+    {
+      "package": "Pillow",
+      "manifest": "scripts/requirements-training.txt",
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-07-23",
+      "reason": "Case-variant duplicate of the pillow entry above — Dependabot reports the same requirements-training.txt advisories under both spellings and the gate matches package names exactly."
+    },
+    {
+      "advisory": "GHSA-wrw7-89jp-8q8g",
+      "package": "glib",
+      "manifest": "Cargo.lock",
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-14",
+      "reason": "glib 0.18.5 is reachable only through the optional webdriver feature and tauri-plugin-wdio-webdriver; the exact Linux release feature graph excludes the plugin, WebKit2GTK, and glib 0.18.x, and scripts/check-webdriver-security-isolation.sh fails closed if it enters a shipped graph. Renewal was tested against the upgrade rather than assumed: plugin 1.3.0 (published 2026-08-03) declares glib ^0.21 directly, but `cargo tree -p maekon-app --features webdriver -i glib@0.18.5 --target all` on a 1.3.0 lockfile still resolves glib 0.18.5 through its gtk ^0.18 and webkit2gtk ^2.0 stack (atk/cairo-rs/gdk/gdk-pixbuf/gio/pango all pin the 0.18 line). Bumping the plugin therefore adds glib 0.21.5 beside 0.18.5 instead of removing it, so no patched release exists yet — the prior entry's judgement was correct and only its 'no newer plugin published' fact was stale. Re-triage when upstream ships a GTK4/WebKitGTK 6 backend that drops the gtk 0.18 line, and no later than 2026-10-31 (#10885)."
+    },
+    {
+      "advisory": "GHSA-5p4m-2wfm-xmqj",
+      "package": "js-yaml",
+      "reason": "js-yaml prototype-pollution advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-4cwx-7wf7-3272",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain (Node fetch client used by test/build tooling). Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-8xcm-r25x-g524",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-v3r7-h72x-cjcm",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-jr45-8vmc-qm54",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-m8rv-5g2x-5cg5",
+      "package": "undici",
+      "reason": "undici advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-mwp4-54f8-5fhr",
+      "package": "ip-address",
+      "reason": "ip-address advisory in the dev tool chain (socks/proxy-agent under test tooling). Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-22jq-vg5j-6vgg",
+      "package": "ip-address",
+      "reason": "ip-address advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-4xrf-jv44-h6hh",
+      "package": "ip-address",
+      "reason": "ip-address advisory in the dev tool chain. Dependabot classifies every affected lockfile node as development scope: the package reaches pnpm-lock.yaml only through build/test tooling importers, never through the production dependency graph. Shipped client artifacts (DMG/MSI/DEB) embed only the vite `dist` output via rust-embed — node_modules content is not installed into, bundled with, or executed by any shipped artifact. Re-triage with the post-rc.7 dependency-update wave before 2026-09-30.",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-10"
+    },
+    {
+      "advisory": "GHSA-jmr9-qjv8-65gv",
+      "package": "extract-zip",
+      "reason": "extract-zip 2.0.1 unvalidated symlink path traversal, reachable only through the Puppeteer browser downloader: @puppeteer/browsers@2.13.2 -> extract-zip@2.0.1. That importer fetches a Chrome build for local and CI browser automation and is never installed into, bundled with, or executed by shipped client artifacts (DMG/MSI/DEB), which embed only the vite `dist` output via rust-embed. Dependabot classifies the affected node as development scope. Bound to this advisory rather than to the package so a future extract-zip advisory re-blocks instead of inheriting this decision. Re-triage with the post-rc.8 dependency-update wave before 2026-09-30 (#10829).",
+      "manifest": "crates/maekon-web/frontend/pnpm-lock.yaml",
+      "accepted_until": "2026-09-30",
+      "accepted_at": "2026-08-13"
+    }
+  ],
+  "codeql": [
+    {
+      "number": 182,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/actions/setup-pnpm/action.yml",
+      "line": 17,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "composite action 이라 자체 트리거가 없고 호출자의 문턱을 그대로 따른다. 호출자는 위 workflow_dispatch 전용 워크플로들이다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 183,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/build-smoke.yml",
+      "line": 93,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "build-smoke 는 inputs.ref 를 검증 없이 빌드하지만 릴리스 아티팩트를 만들지 않는 스모크 빌드이고, 캐시 키 smoke-build-<target> 은 이 워크플로 밖에서 쓰이지 않는다(저장소 전수 확인). 따라서 오염의 최대 영향은 이후 build-smoke 실행 자체에 국한된다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 184,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/build-smoke.yml",
+      "line": 139,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "build-smoke 는 inputs.ref 를 검증 없이 빌드하지만 릴리스 아티팩트를 만들지 않는 스모크 빌드이고, 캐시 키 smoke-build-<target> 은 이 워크플로 밖에서 쓰이지 않는다(저장소 전수 확인). 따라서 오염의 최대 영향은 이후 build-smoke 실행 자체에 국한된다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 185,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/build-smoke.yml",
+      "line": 145,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "build-smoke 는 inputs.ref 를 검증 없이 빌드하지만 릴리스 아티팩트를 만들지 않는 스모크 빌드이고, 캐시 키 smoke-build-<target> 은 이 워크플로 밖에서 쓰이지 않는다(저장소 전수 확인). 따라서 오염의 최대 영향은 이후 build-smoke 실행 자체에 국한된다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 186,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/build-smoke.yml",
+      "line": 174,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "build-smoke 는 inputs.ref 를 검증 없이 빌드하지만 릴리스 아티팩트를 만들지 않는 스모크 빌드이고, 캐시 키 smoke-build-<target> 은 이 워크플로 밖에서 쓰이지 않는다(저장소 전수 확인). 따라서 오염의 최대 영향은 이후 build-smoke 실행 자체에 국한된다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 187,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/build-smoke.yml",
+      "line": 182,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "build-smoke 는 inputs.ref 를 검증 없이 빌드하지만 릴리스 아티팩트를 만들지 않는 스모크 빌드이고, 캐시 키 smoke-build-<target> 은 이 워크플로 밖에서 쓰이지 않는다(저장소 전수 확인). 따라서 오염의 최대 영향은 이후 build-smoke 실행 자체에 국한된다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 188,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/build-smoke.yml",
+      "line": 191,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "build-smoke 는 inputs.ref 를 검증 없이 빌드하지만 릴리스 아티팩트를 만들지 않는 스모크 빌드이고, 캐시 키 smoke-build-<target> 은 이 워크플로 밖에서 쓰이지 않는다(저장소 전수 확인). 따라서 오염의 최대 영향은 이후 build-smoke 실행 자체에 국한된다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 189,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/build-smoke.yml",
+      "line": 225,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "build-smoke 는 inputs.ref 를 검증 없이 빌드하지만 릴리스 아티팩트를 만들지 않는 스모크 빌드이고, 캐시 키 smoke-build-<target> 은 이 워크플로 밖에서 쓰이지 않는다(저장소 전수 확인). 따라서 오염의 최대 영향은 이후 build-smoke 실행 자체에 국한된다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 190,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/build-smoke.yml",
+      "line": 239,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "build-smoke 는 inputs.ref 를 검증 없이 빌드하지만 릴리스 아티팩트를 만들지 않는 스모크 빌드이고, 캐시 키 smoke-build-<target> 은 이 워크플로 밖에서 쓰이지 않는다(저장소 전수 확인). 따라서 오염의 최대 영향은 이후 build-smoke 실행 자체에 국한된다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 191,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/linux-systemd-integration.yml",
+      "line": 36,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "inputs.branch 로 임의 ref 를 빌드하지만 systemd 통합 검증 전용이고 릴리스 아티팩트를 만들지 않는다. 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 192,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 491,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 193,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 497,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 194,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 505,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 195,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 564,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 196,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 577,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 197,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 609,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 198,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 619,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 199,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 628,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 200,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 680,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 201,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 685,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 202,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 744,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 203,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 749,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 204,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 766,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 205,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 783,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 206,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 787,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 207,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 1335,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 208,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 1348,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 209,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 1356,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 210,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 1405,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 211,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 1415,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 212,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 1423,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 213,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 1441,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    },
+    {
+      "number": 214,
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/release.yml",
+      "line": 1472,
+      "accepted_until": "2026-10-31",
+      "accepted_at": "2026-08-18",
+      "reason": "release.yml 의 checkout ref 는 verify-version 이 검증한 SHA 다 — 태그가 가리키는 커밋과 일치하고(RELEASE_SHA == <tag>^{commit}), 태그는 주석 태그이며 GitHub 서명 검증을 통과해야 하고, main 에 브랜치 보호나 활성 ruleset 이 있어야 한다. push 이벤트에서는 origin/main HEAD 와의 일치까지 요구한다. #11155 에서 그 검증이 트리 코드 실행보다 뒤에 있던 순서 결함을 함께 고쳤다 (tests/scripts/test_maekon_release_verify_order.py 가 고정). 네 축이 함께 성립해서 수락한다. (1) 트리거 — 이 워크플로는 workflow_dispatch 전용이라 호출 자체가 저장소 write 권한을 요구한다. 자동 dispatch 경로는 없다. (2) 캐시 키 격리 — 이 워크플로의 캐시 키는 다른 워크플로가 쓰지 않으므로 오염된 캐시가 CI·릴리스 게이트로 번지지 않는다. (3) 토큰 권한 — permissions 가 contents: read (release 는 actions: read 추가) 뿐이라 복원된 캐시가 코드를 실행해도 쓰기 권한으로 승격할 여지가 없다. (4) 산출물 — 이 경로는 서명·공증되는 릴리스 아티팩트를 만들지 않거나(smoke/integration), 만드는 경우 아래 게이트를 통과한 트리에서만 만든다."
+    }
+  ]
 }

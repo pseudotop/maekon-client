@@ -1,34 +1,24 @@
-//! Legacy `local_suggestions` table persistence (deprecated — kept for migration).
-
-use tracing::debug;
+//! `local_suggestions` table persistence — legacy schema (predates the unified
+//! `suggestions` table, V8+). The table is intentionally KEPT, not dead: it has
+//! three live readers —
+//! [`FewShotStorage`](crate::sqlite::few_shot_storage_impl) (few-shot prompt
+//! construction from stored feedback), `LocalSuggestionQueryPort`
+//! (`integration_query_impl.rs`, consumed by
+//! `LocalSuggestionIntegrationSource` in `src-tauri`), and
+//! `WebStorage::list_recent_local_suggestions` (dashboard REST feed via
+//! `maekon-web`'s `focus_service`). Only the rule-based `LocalSuggestion` enum
+//! writer path (`save_local_suggestion` / `serialize_suggestion`) was dead —
+//! deleted 2026-07 (#7733). New RuleBased/LlmLocal suggestions flow through the
+//! unified `suggestions` table (`save_rule_suggestion_sync`) instead; rows
+//! already persisted here remain readable through the functions below.
 
 use crate::error::StorageError;
-#[allow(deprecated)]
-use maekon_core::models::work_session::LocalSuggestion;
 
 use super::super::super::LocalSuggestionRecord;
 use super::super::super::SqliteStorage;
 use super::row_mapper::map_local_suggestion_row;
 
 impl SqliteStorage {
-    #[allow(deprecated)]
-    pub fn save_local_suggestion(&self, suggestion: &LocalSuggestion) -> Result<i64, StorageError> {
-        let (suggestion_type, payload) = Self::serialize_suggestion(suggestion);
-
-        // Write — write_lock (skip when deletion_flag is set → id 0; local_suggestions ∈ ALL_TABLES).
-        self.conn.write_lock().run(0i64, |conn| {
-            conn.execute(
-                "INSERT INTO local_suggestions (suggestion_type, payload) VALUES (?1, ?2)",
-                rusqlite::params![suggestion_type, payload],
-            )
-            .map_err(|e| StorageError::Internal(format!("Failed to save local suggestion: {e}")))?;
-
-            let id = conn.last_insert_rowid();
-            debug!("suggestion save: id={}, type={}", id, suggestion_type);
-            Ok(id)
-        })
-    }
-
     pub fn mark_suggestion_shown(&self, suggestion_id: i64) -> Result<(), StorageError> {
         // Write — write_lock (skip when deletion_flag is set).
         self.conn.write_lock().run((), |conn| {
@@ -214,67 +204,5 @@ impl SqliteStorage {
                 .push(row.map_err(|e| StorageError::Internal(format!("Failed to read row: {e}")))?);
         }
         Ok(records)
-    }
-
-    /// Private: serialize a `LocalSuggestion` to `(type_str, payload_json)`.
-    #[allow(deprecated)]
-    pub(super) fn serialize_suggestion(suggestion: &LocalSuggestion) -> (String, String) {
-        match suggestion {
-            LocalSuggestion::NeedFocusTime {
-                communication_ratio,
-                suggested_focus_mins,
-            } => (
-                "NeedFocusTime".to_string(),
-                serde_json::json!({
-                    "communication_ratio": communication_ratio,
-                    "suggested_focus_mins": suggested_focus_mins,
-                })
-                .to_string(),
-            ),
-            LocalSuggestion::TakeBreak {
-                continuous_work_mins,
-            } => (
-                "TakeBreak".to_string(),
-                serde_json::json!({
-                    "continuous_work_mins": continuous_work_mins,
-                })
-                .to_string(),
-            ),
-            LocalSuggestion::RestoreContext {
-                interrupted_app,
-                interrupted_at,
-                snapshot_frame_id,
-            } => (
-                "RestoreContext".to_string(),
-                serde_json::json!({
-                    "interrupted_app": interrupted_app,
-                    "interrupted_at": interrupted_at.to_rfc3339(),
-                    "snapshot_frame_id": snapshot_frame_id,
-                })
-                .to_string(),
-            ),
-            LocalSuggestion::PatternDetected {
-                pattern_description,
-                confidence,
-            } => (
-                "PatternDetected".to_string(),
-                serde_json::json!({
-                    "pattern_description": pattern_description,
-                    "confidence": confidence,
-                })
-                .to_string(),
-            ),
-            LocalSuggestion::ExcessiveCommunication {
-                today_communication_mins,
-                avg_communication_mins,
-            } => (
-                "ExcessiveCommunication".to_string(),
-                serde_json::json!({
-                    "today_communication_mins": today_communication_mins,
-                    "avg_communication_mins": avg_communication_mins,
-                })
-                .to_string(),
-            ),
-        }
     }
 }

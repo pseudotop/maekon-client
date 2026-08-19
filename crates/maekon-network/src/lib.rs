@@ -25,7 +25,7 @@
 // Rationale is embedded here so public source remains self-contained.
 #![allow(clippy::significant_drop_tightening)]
 // P2 nursery-hardening (PR-B): derive Eq alongside PartialEq when possible.
-#![deny(clippy::derive_partial_eq_without_eq)]
+// (Enforced workspace-wide via `[workspace.lints.clippy]`, #7719.)
 
 //! # maekon-network
 //! ## Feature Flags
@@ -47,7 +47,7 @@ pub const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 pub fn default_model_for_provider(provider: &maekon_core::config::AiProviderType) -> &'static str {
     use maekon_core::config::AiProviderType;
     match provider {
-        AiProviderType::Anthropic => "claude-sonnet-4-20250514",
+        AiProviderType::Anthropic => "claude-sonnet-5",
         AiProviderType::OpenAi => "gpt-5.4",
         AiProviderType::Google => "gemini-2.5-flash",
         AiProviderType::Ollama => "qwen3:8b",
@@ -69,32 +69,34 @@ pub mod ai_llm_client;
 pub use maekon_core::ports::llm_provider::LlmCallHealth;
 pub mod ai_ocr_client;
 pub mod analysis_client;
+pub mod assignment_email_draft;
 pub mod auth;
 pub mod batch_uploader;
-pub mod circuit_breaker;
-pub use circuit_breaker::{
-    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerRegistry, CircuitState,
-};
+// ADR-034: the outbound-HTTP substrate (circuit_breaker / outbound /
+// resilience) lives in `maekon-http-core` so a future integration crate can
+// share it without an adapter→adapter dependency. P1 kept transitional
+// re-exports here; P2 repointed every caller to `maekon_http_core::…` and
+// removed them — reach the substrate directly, not through this crate.
 pub mod codex_app_server;
 pub mod codex_app_server_session;
 pub mod compression;
 pub mod connectivity;
+pub mod console_handoff;
+pub mod context_home;
+pub mod effective_mapping;
 pub mod feature_perf_uploader;
 pub mod http_api_session;
 pub mod http_client;
-pub mod integration;
 pub mod local_llm_session;
 pub(crate) mod mutex_ext;
 pub mod oauth;
 pub mod ollama_discovery;
-pub(crate) mod outbound;
-mod provider_error_body;
 pub mod provider_model_catalog_client;
 pub mod remote_embedding_client;
-pub mod resilience;
 pub mod sse_client;
 
 pub mod sync;
+pub mod wbs_xlsx_client;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;

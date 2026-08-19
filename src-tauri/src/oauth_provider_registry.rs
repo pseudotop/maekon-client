@@ -2,8 +2,8 @@
 use maekon_api_contracts::ai_providers::ProviderTransportSpec;
 #[cfg(feature = "analysis")]
 use maekon_api_contracts::provider_specs::{
-    self, parse_surface_execution_kind, provider_surface_catalog, provider_surface_spec,
-    ProviderSurfaceSpec, ProviderTransportKind, SurfaceExecutionKind,
+    self, provider_surface_catalog, provider_surface_spec, ProviderSurfaceSpec,
+    ProviderTransportKind, SurfaceExecutionKind,
 };
 #[cfg(feature = "analysis")]
 use maekon_core::config::{AiAccessMode, AiProviderConfig, AiProviderType, ExternalApiEndpoint};
@@ -39,11 +39,66 @@ fn managed_oauth_provider_factories() -> [ManagedOAuthProviderFactory; 2] {
 
 #[cfg(feature = "analysis")]
 pub fn configured_oauth_provider_configs() -> Vec<OAuthProviderConfig> {
-    managed_oauth_surface_specs()
+    let mut providers: Vec<OAuthProviderConfig> = managed_oauth_surface_specs()
         .into_iter()
         .flatten()
         .filter_map(build_managed_oauth_provider_config)
+        .collect();
+    providers.extend(connector_oauth_provider_configs());
+    providers
+}
+
+/// Environment variable carrying the app-owned Google Desktop OAuth client id
+/// for the calendar connector. Google publishes no shared public client id for
+/// third-party desktop apps, so the operator provisions one (same posture as
+/// the AI surfaces' `MAEKON_GOOGLE_OAUTH_CLIENT_ID`, but a separate credential:
+/// the calendar consent screen must show calendar scopes only).
+#[cfg(feature = "analysis")]
+const GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV: &str = "MAEKON_GOOGLE_CALENDAR_OAUTH_CLIENT_ID";
+
+/// OAuth provider configs for the built-in connectors (ADR-034 P4, #9855).
+///
+/// Iterates `maekon_integration::connectors::builtin_connectors()` — the
+/// compile-time registry of essential tools — and builds the matching provider
+/// config for each entry whose credential is provisioned. Two properties:
+///
+/// - **Feature-gated at the source**: a build without
+///   `connector-google-calendar` has no calendar row in the registry, so no
+///   provider config either. This function needs no cfg of its own per entry.
+/// - **Absent credential = absent provider, not an error**: the connector is
+///   compiled in but cannot start an OAuth flow until the operator provisions
+///   the client id. Nothing user-facing advertises the flow (the MK-EXT IPC
+///   surface stays retired per #9639), so an unprovisioned build is inert
+///   rather than a dead button.
+#[cfg(feature = "analysis")]
+fn connector_oauth_provider_configs() -> Vec<OAuthProviderConfig> {
+    maekon_integration::connectors::builtin_connectors()
+        .iter()
+        .filter_map(|connector| {
+            if connector.oauth_provider_id == maekon_core::ports::oauth::GOOGLE_CALENDAR_PROVIDER_ID
+            {
+                google_calendar_oauth_client_id().map(OAuthProviderConfig::google_calendar_readonly)
+            } else {
+                // A registry entry this wiring does not recognise is a wiring
+                // gap, not a silent skip — the registry doc names this exact
+                // hand-off, and the paired test in maekon-integration expects
+                // the composition root to keep up.
+                warn!(
+                    provider_id = connector.oauth_provider_id,
+                    "built-in connector has no OAuth wiring in the composition root"
+                );
+                None
+            }
+        })
         .collect()
+}
+
+#[cfg(feature = "analysis")]
+fn google_calendar_oauth_client_id() -> Option<String> {
+    std::env::var(GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(feature = "analysis")]
@@ -53,8 +108,7 @@ fn managed_oauth_surface_specs() -> Result<Vec<&'static ProviderSurfaceSpec>, St
         .surfaces
         .iter()
         .filter(|surface| {
-            parse_surface_execution_kind(&surface.execution_kind).ok()
-                == Some(SurfaceExecutionKind::ManagedHttp)
+            surface.execution_kind == SurfaceExecutionKind::ManagedHttp
                 && surface
                     .credential_kind
                     .eq_ignore_ascii_case("managed_oauth")
@@ -178,14 +232,7 @@ fn managed_oauth_surface(
             resource_type: "provider_surface".to_string(),
             id: msg,
         })?;
-    // Iter-107: catalog metadata has bad execution_kind value = invalid
-    // catalog data (programmer/catalog bug). Config::Invalid fits the
-    // "catalog contains an unsupported value" semantic better than Internal.
-    if parse_surface_execution_kind(&surface.execution_kind).map_err(|msg| CoreError::Config {
-        code: maekon_core::error_codes::ConfigCode::Invalid,
-        message: msg,
-    })? != SurfaceExecutionKind::ManagedHttp
-    {
+    if surface.execution_kind != SurfaceExecutionKind::ManagedHttp {
         return Err(CoreError::Config {
             code: maekon_core::error_codes::ConfigCode::Invalid,
             message: "Selected provider surface does not use managed OAuth transport.".to_string(),
@@ -314,6 +361,40 @@ mod tests {
         let client_id = google_oauth_client_id(surface);
         std::env::remove_var("MAEKON_GOOGLE_OAUTH_CLIENT_ID");
         assert_eq!(client_id.as_deref(), Some("test-google-client-id"));
+    }
+
+    /// ADR-034 P4 (#9855): the calendar connector's OAuth provider appears
+    /// exactly when its client id is provisioned — absent credential means an
+    /// inert connector, not an error and not a misconfigured provider row.
+    #[test]
+    fn calendar_connector_provider_follows_the_provisioned_client_id() {
+        std::env::remove_var(GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV);
+        assert!(
+            connector_oauth_provider_configs().is_empty(),
+            "no client id must mean no provider row"
+        );
+
+        std::env::set_var(
+            GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV,
+            "test-calendar-client-id",
+        );
+        let providers = connector_oauth_provider_configs();
+        std::env::remove_var(GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV);
+
+        assert_eq!(providers.len(), 1);
+        let p = &providers[0];
+        assert_eq!(
+            p.provider_id,
+            maekon_core::ports::oauth::GOOGLE_CALENDAR_PROVIDER_ID,
+            "provider id must be the shared core constant — the connector's \
+             SecretStore namespace and this row must never drift"
+        );
+        assert_eq!(
+            p.scopes,
+            vec![maekon_core::ports::oauth::GOOGLE_CALENDAR_READONLY_SCOPE.to_string()],
+            "read-only scope only (MK-EXT #8582)"
+        );
+        assert_eq!(p.client_id, "test-calendar-client-id");
     }
 
     /// ToS invariant guard (ADR-025 / #4884): managed_oauth_provider_factories must

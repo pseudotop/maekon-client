@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-poll-ax-focus-observer"
+description = "Enables the poll_ax_focus_observer command without any pre-configured scope."
+commands.allow = ["poll_ax_focus_observer"]
+
+[[permission]]
+identifier = "deny-poll-ax-focus-observer"
+description = "Denies the poll_ax_focus_observer command without any pre-configured scope."
+commands.deny = ["poll_ax_focus_observer"]

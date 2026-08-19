@@ -32,7 +32,12 @@ fn default_vad_min_speech_ms() -> u32 {
 }
 
 /// Audio capture and speech-to-text configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// NOTE: Debug is hand-written (not derived) to mask `cloud_api_key` (#7600,
+// mirroring the `AudioSettings` DTO twin's #7066 mitigation, itself following
+// the ProviderModelsRequest #5639 pattern). This is the SOURCE config struct;
+// a derived Debug would emit the cleartext cloud STT secret verbatim under
+// any `{:?}`, so a single error-path `?config` could leak it to a log sink.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
     /// Enable audio capture and STT features (opt-in).
     #[serde(default)]
@@ -78,6 +83,27 @@ pub struct AudioConfig {
     /// Minimum speech duration in ms to trigger transcription.
     #[serde(default = "default_vad_min_speech_ms")]
     pub vad_min_speech_ms: u32,
+}
+
+impl std::fmt::Debug for AudioConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioConfig")
+            .field("enabled", &self.enabled)
+            .field("whisper_model_path", &self.whisper_model_path)
+            .field("language", &self.language)
+            .field("max_recording_secs", &self.max_recording_secs)
+            .field("model_size", &self.model_size)
+            .field("stt_provider", &self.stt_provider)
+            .field("cloud_api_key", &"[REDACTED]")
+            .field("cloud_stt_endpoint", &self.cloud_stt_endpoint)
+            .field("cloud_timeout_secs", &self.cloud_timeout_secs)
+            .field("cloud_stt_policy", &self.cloud_stt_policy)
+            .field("mic_input_mode", &self.mic_input_mode)
+            .field("vad_threshold", &self.vad_threshold)
+            .field("vad_silence_ms", &self.vad_silence_ms)
+            .field("vad_min_speech_ms", &self.vad_min_speech_ms)
+            .finish()
+    }
 }
 
 impl Default for AudioConfig {
@@ -279,5 +305,24 @@ mod tests {
         assert!((config.vad_threshold - 0.02).abs() < f32::EPSILON);
         assert_eq!(config.vad_silence_ms, 800);
         assert_eq!(config.vad_min_speech_ms, 300);
+    }
+
+    #[test]
+    fn audio_config_debug_redacts_cloud_api_key() {
+        let config = AudioConfig {
+            cloud_api_key: "sk-super-secret-cloud-stt-key".to_string(),
+            ..AudioConfig::default()
+        };
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains("sk-super-secret-cloud-stt-key"),
+            "Debug must not leak the cloud_api_key: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "cloud_api_key must render as [REDACTED]: {rendered}"
+        );
+        // Non-secret fields must still be visible for diagnostics.
+        assert!(rendered.contains("cloud_stt_endpoint"));
     }
 }

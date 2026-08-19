@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-habit-streaks"
+description = "Enables the get_habit_streaks command without any pre-configured scope."
+commands.allow = ["get_habit_streaks"]
+
+[[permission]]
+identifier = "deny-get-habit-streaks"
+description = "Denies the get_habit_streaks command without any pre-configured scope."
+commands.deny = ["get_habit_streaks"]

@@ -1,3 +1,10 @@
+// #6266: delta-patch apply is not wired into the install path today
+// (`update_coordinator/check.rs` explicitly refuses a `DeltaPatch` asset
+// rather than risk installing an unapplied `.patch` as the executable) — this
+// module's only caller, `apply_delta_update`, is itself dead for the same
+// reason. Kept for when delta apply is actually wired.
+#![allow(dead_code)]
+
 use super::UpdateError;
 
 /// Apply a bsdiff patch to the old binary, producing the new binary.

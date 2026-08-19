@@ -1,14 +1,17 @@
 use anyhow::Result;
-use maekon_core::ports::coaching_storage::CoachingStoragePort;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tracing::info;
 
 mod audio_wiring;
+#[cfg(feature = "server")]
+mod auth_wiring;
 mod capture_wiring;
+mod coaching_wiring;
 mod cua_safe_mode;
 #[cfg(any(feature = "grpc-dashboard", feature = "grpc-dashboard-external"))]
 mod external_grpc;
+mod flags_wiring;
 mod launch_result;
 mod regime_wiring;
 mod session_wiring;
@@ -17,26 +20,25 @@ mod state_wiring;
 mod suggestion_wiring;
 mod web_server_wiring;
 
-use self::audio_wiring::build_audio_runtime_state;
-use self::capture_wiring::build_capture_wiring;
-pub(crate) use self::cua_safe_mode::cua_safe_mode_enabled;
-use self::launch_result::generate_local_auth_token;
+#[cfg(feature = "server")]
+use self::auth_wiring::install_shared_token_manager;
+use self::capture_wiring::{build_capture_reauth_gate, build_capture_wiring};
+use self::coaching_wiring::build_coaching_wiring;
+pub(crate) use self::cua_safe_mode::{cua_safe_mode_enabled, precreate_auxiliary_webviews};
 pub(crate) use self::launch_result::AppRuntimeLaunchResult;
+use self::launch_result::{ensure_installation_id, generate_local_auth_token};
 use self::regime_wiring::build_regime_wiring;
-use self::session_wiring::{build_session_manager, spawn_idle_reaper};
+use self::session_wiring::{build_session_manager, build_shared_policy_client, spawn_idle_reaper};
 use self::state_wiring::{build_managed_state_builder, ManagedStateWiringParts};
 #[cfg(feature = "local-suggestions")]
 use self::suggestion_wiring::build_suggestion_wiring;
-use self::web_server_wiring::build_web_automation_wiring;
-use crate::agent_runtime::AgentRuntimeBuilder;
+use self::web_server_wiring::{build_web_automation_wiring, ensure_web_server_ready};
+use crate::agent_runtime::AgentRuntimeBundle;
+use crate::agent_runtime_support::TauriNotifier;
 use crate::bootstrap_runtime::BootstrapRuntimeBundle;
 use crate::launch_resources::LaunchCoreResourcesBuilder;
 use crate::magic_overlay::MagicOverlayHandle;
 use crate::runtime_bridges::RuntimeBridgeSpawner;
-use crate::runtime_state::{
-    AiSessionRuntimeState, AnalysisHealthFlags, AutomationRuntimeState, ConfigRuntimeState,
-    DetectionRuntimeState, EmbeddingRuntimeState, SuggestionRuntimeState, SyncRuntimeState,
-};
 use crate::scheduler::shared_regime_state::SharedRegimeState;
 #[cfg(feature = "server")]
 use crate::server_runtime_context::ServerLaunchContext;
@@ -84,17 +86,10 @@ impl AppRuntimeLaunchBuilder {
                 integration_runtime_status: _integration_runtime_status,
         } = self.bootstrap;
 
-        // Auto-generate installation ID for staged rollout bucketing.
-        if config.update.installation_id.is_none() {
-            let new_id = uuid::Uuid::new_v4().to_string();
-            if let Err(e) = config_manager.update_with(|c| {
-                c.update.installation_id = Some(new_id.clone());
-                Ok(())
-            }) {
-                tracing::warn!("Failed to persist installation_id: {e}");
-            }
-            config.update.installation_id = Some(new_id);
-        }
+        ensure_installation_id(&config_manager, &mut config);
+
+        // #8044: the ONE capture-history re-auth gate — see capture_wiring.rs.
+        let reauth_gate = build_capture_reauth_gate(&config);
 
         #[cfg(feature = "server")]
         let server_context = ServerLaunchContext::from_bootstrap(server);
@@ -129,18 +124,37 @@ impl AppRuntimeLaunchBuilder {
             tracing::info!("CUA safe mode enabled: automatic capture starts paused; manual capture remains available");
         }
 
+        // #8039: fail-closed on a capture-services build failure (see capture_wiring.rs).
         let capture_wiring = build_capture_wiring(
             &handle,
             &data_dir_path,
             &config,
             core_resources.storage_runtime.encryption_key.clone(),
             cua_safe_mode,
-        );
+        )?;
         let capture_paused = capture_wiring.capture_paused.clone();
         let indicator_visible = capture_wiring.indicator_visible.clone();
         let detection_active = capture_wiring.detection_active.clone();
         let shared_capture_services = capture_wiring.shared_capture_services.clone();
         let capture_consent_manager = capture_wiring.consent_manager.clone();
+        // One FocusAnalyzer instance is shared by scheduler loops and Tauri
+        // consent commands. This lets a runtime own-field revoke clear unfinished
+        // workflow-pattern state in the same object immediately.
+        // #9671 review B2: this injected instance OVERWRITES the one the
+        // support builder constructs, so the notification master-switch gate
+        // must be applied HERE — a raw TauriNotifier at this site silently
+        // bypassed notification.enabled for every focus-analyzer toast.
+        let focus_notifier: Arc<dyn maekon_core::ports::notifier::DesktopNotifier> =
+            Arc::new(crate::agent_runtime_support::GatedNotifier::new(
+                Arc::new(TauriNotifier::new(self.app_handle.clone())),
+                config_manager.clone(),
+            ));
+        let focus_analyzer = Arc::new(
+            maekon_analysis::focus_analyzer::FocusAnalyzer::with_defaults(
+                sqlite_storage.clone(),
+                focus_notifier,
+            ),
+        );
 
         // #4928 + #4801: finalize erasure wiring (install the shared deletion_flag + retry incomplete local deletions).
         capture_wiring::install_erasure_wiring(
@@ -148,6 +162,7 @@ impl AppRuntimeLaunchBuilder {
             &sqlite_storage,
             &capture_consent_manager,
             &shared_capture_services,
+            &config_manager,
         );
 
         #[cfg(feature = "server")]
@@ -157,56 +172,62 @@ impl AppRuntimeLaunchBuilder {
             capture_consent_manager.clone(),
         );
 
-        // Connection status flags — start disconnected, updated by health check loop.
-        let server_connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let llm_connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let cli_connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Shared connection/health flags + cross-loop runtime slots (created once
+        // here; see flags_wiring.rs for the per-field rationale). Destructured
+        // into the same local names the wiring below expects.
+        let flags_wiring::RuntimeFlagsWiring {
+            server_connected,
+            llm_connected,
+            cli_connected,
+            server_health_flag,
+            llm_health_flag,
+            cli_health_flag,
+            analysis_health_flag,
+            breaker_registry,
+            sync_runtime_state,
+            embedding_runtime_state,
+            scene_finder_slot,
+        } = flags_wiring::build_runtime_flags();
 
         // Focus mode state — transient, not persisted across restarts.
         let focus_mode = Arc::new(crate::focus_mode::FocusModeState::new());
 
-        // Keep coaching template interpolation behind the same PII sanitizer as other surfaces.
-        let coaching_engine = Arc::new(
-            maekon_analysis::CoachingEngine::new(config.coaching.clone()).with_pii_sanitizer(
-                Arc::new(maekon_vision::privacy::VisionPiiSanitizer),
-                config.privacy.pii_filter_level,
-            ),
-        );
+        // #7913 T2.1b: PII-sanitized coaching engine + shared storage handle,
+        // built once here with learned effectiveness hydrated before the loops.
+        let (coaching_engine, coaching_storage) =
+            build_coaching_wiring(&config, &handle, sqlite_storage.clone());
         let (regime_manager_arc, regime_classifier_arc, regime_storage) =
             build_regime_wiring(&config, &handle, sqlite_storage.clone());
 
-        // OSS builds keep on-device suggestions; `server` only adds network transport.
-        #[cfg(feature = "local-suggestions")]
-        let feedback_sink: Arc<
-            dyn maekon_core::ports::feedback_signal_sink::FeedbackSignalSink,
-        > = Arc::new(crate::feedback_sink::CompositeFeedbackSink::new(
-            Some(coaching_engine.clone()),
-            Some(regime_classifier_arc.clone()),
-        ));
+        // #9459: install the one shared login session before every consumer.
+        #[cfg(feature = "server")]
+        let shared_token_manager = install_shared_token_manager(
+            &self.app_handle,
+            &config,
+            &handle,
+            &data_dir_path,
+            sqlite_storage.clone(),
+        );
 
+        // OSS builds keep on-device suggestions; `server` only adds network
+        // transport. The composite feedback sink over the shared regime
+        // classifier is built inside build_suggestion_wiring (its sole
+        // consumer).
         #[cfg(feature = "local-suggestions")]
         let suggestion_wiring = build_suggestion_wiring(
             &self.app_handle,
             &handle,
             &config,
             sqlite_storage.clone(),
-            feedback_sink.clone(),
+            regime_classifier_arc.clone(),
+            #[cfg(feature = "server")]
+            shared_token_manager.clone(),
         );
         #[cfg(feature = "local-suggestions")]
         let suggestion_manager = suggestion_wiring.manager.clone();
 
         #[cfg(not(feature = "local-suggestions"))]
         let suggestion_manager: Option<Arc<crate::suggestion_manager::SuggestionManager>> = None;
-
-        // Adapter health flags feed the connection-status health loop.
-        let server_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let llm_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let cli_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-        // Analysis health starts optimistic and flips on first primary failure.
-        let analysis_health_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-
-        let coaching_storage: Arc<dyn CoachingStoragePort> = sqlite_storage.clone();
 
         // Create MagicOverlay handle (window created at startup in setup.rs)
         let magic_overlay =
@@ -219,20 +240,8 @@ impl AppRuntimeLaunchBuilder {
         // Obtain shutdown receiver for idle reaper before core_resources is consumed.
         let reaper_shutdown_rx = core_resources.background_runtime.shutdown_rx();
 
-        // D7 (#4812 / E20-20): single shared workspace-wide circuit-breaker registry
-        // threaded into every network adapter (agent, session, automation).
-        let breaker_registry = crate::breaker_registry::CircuitBreakerRegistry::new();
-
-        // #6264: create the cross-device-sync IPC state up front so its shared
-        // write-once slot can be threaded into the agent runtime (which builds
-        // the SyncEngine asynchronously) AND registered as managed state below —
-        // both observe the same `Arc<OnceLock<SyncEngine>>`.
-        let sync_runtime_state = SyncRuntimeState::default();
-        // #6266: same shared-slot pattern for the reloadable embedding model.
-        let embedding_runtime_state = EmbeddingRuntimeState::default();
-
         let agent_runtime = {
-            let mut builder = AgentRuntimeBuilder::new(
+            let mut builder = AgentRuntimeBundle::new(
                 sqlite_storage.clone(),
                 sqlite_storage.clone(),
                 sqlite_storage.clone(),
@@ -246,14 +255,14 @@ impl AppRuntimeLaunchBuilder {
             )
             .with_sync_runtime_slot(sync_runtime_state.slot())
             .with_embedding_runtime_slot(embedding_runtime_state.slot())
+            .with_scene_finder_slot(scene_finder_slot.clone())
             .with_vector_store(Arc::new(
                 maekon_storage::sqlite::vector_store_impl::SqliteVectorStore::new(
                     sqlite_storage.connection_arc(),
                 ),
             ));
-            if let Some(ref capture_services) = shared_capture_services {
-                builder = builder.with_shared_capture_services(capture_services.clone());
-            }
+            // #8039: shared capture services are unconditional and fail closed.
+            builder = builder.with_shared_capture_services(shared_capture_services.clone());
             let builder = builder
                 .with_offline_mode(self.offline_mode)
                 .with_event_tx(
@@ -265,6 +274,7 @@ impl AppRuntimeLaunchBuilder {
                 .with_calibration_reader(sqlite_storage.clone())
                 .with_override_store(sqlite_storage.clone())
                 .with_consent_manager(capture_consent_manager.clone())
+                .with_focus_analyzer(focus_analyzer.clone())
                 .with_coaching_engine(coaching_engine.clone())
                 .with_coaching_storage(coaching_storage.clone())
                 .with_regime_handles(regime_manager_arc.clone(), regime_classifier_arc.clone())
@@ -295,6 +305,9 @@ impl AppRuntimeLaunchBuilder {
             let builder = builder
                 .with_shared_suggestion_queue(suggestion_wiring.shared_queue.clone())
                 .with_shared_scorer(suggestion_wiring.shared_scorer.clone());
+            // #9459: the SAME Arc the suggestion wiring and the IPC slot hold.
+            #[cfg(feature = "server")]
+            let builder = builder.with_shared_token_manager(shared_token_manager.clone());
             #[cfg(feature = "local-suggestions")]
             let builder = if let Some(ref mgr) = suggestion_manager {
                 builder.with_suggestion_manager(mgr.clone())
@@ -303,10 +316,16 @@ impl AppRuntimeLaunchBuilder {
             };
             #[cfg(feature = "analysis")] // C1: OAuth coordinator from provider context.
             let builder = provider.configure_agent_builder(builder);
-            builder.build()
+            builder
         };
         agent_runtime.spawn_on(&handle, core_resources.background_runtime.shutdown_rx());
         info!("Agent started");
+
+        // #7932 Part B: the ONE shared Arc<PolicyClient> injected into BOTH the
+        // Codex approval decider (via build_session_manager) AND the automation
+        // controller (via the web wiring below). See build_shared_policy_client
+        // for the Port Instance Sharing rationale.
+        let shared_policy_client = build_shared_policy_client(&data_dir_path);
 
         let (session_manager, codex_approval_registry) = build_session_manager(
             &self.app_handle,
@@ -317,6 +336,10 @@ impl AppRuntimeLaunchBuilder {
             shared_regime_state.clone(),
             capture_consent_manager.clone(),
             breaker_registry.clone(),
+            shared_policy_client.clone(),
+            // #8050: SAME Arc the scheduler holds as `llm_ok`, so chat sends and
+            // the health-check loop observe one shared LLM-connectivity flag.
+            llm_health_flag.clone(),
         );
         spawn_idle_reaper(
             &handle,
@@ -340,6 +363,7 @@ impl AppRuntimeLaunchBuilder {
                 event_tx.clone(),
                 web_port.clone(),
                 local_auth_token.clone(),
+                reauth_gate.clone(),
                 integration_runtime_status,
                 config_manager.clone(),
                 update_control.clone(),
@@ -350,10 +374,12 @@ impl AppRuntimeLaunchBuilder {
                 erasure_requested.clone(),
                 coaching_engine.clone(),
                 &session_manager,
-                shared_capture_services.as_ref(),
+                Some(&shared_capture_services),
                 capture_consent_manager.clone(),
                 cli_health_flag.clone(),
                 breaker_registry.clone(),
+                // #7932 Part B: same shared Arc<PolicyClient> the Codex decider holds.
+                shared_policy_client.clone(),
                 #[cfg(feature = "analysis")]
                 &provider,
                 #[cfg(feature = "server")]
@@ -370,73 +396,39 @@ impl AppRuntimeLaunchBuilder {
         };
         if let Some(wiring) = web_automation_wiring.as_ref() {
             frontend_web_port = wiring.frontend_web_port;
-            if let Some(error) = wiring.web_server_startup_error.as_deref() {
-                if error.contains("did not report a bound port within 3s") {
-                    tracing::warn!(
-                        %error,
-                        frontend_web_port,
-                        "web server startup degraded before UI injection"
-                    );
-                } else {
-                    anyhow::bail!("web server startup failed: {error}");
-                }
-            }
+            // The local web surface is required by the Tauri frontend. Continuing
+            // after a readiness timeout injects an unbound port into the WebView;
+            // frontend retries can then fall back to standalone mock data and make
+            // a disconnected desktop session look healthy (#8201).
+            ensure_web_server_ready(wiring.web_server_startup_error.as_deref())?;
         }
         let automation_controller = web_automation_wiring
             .as_ref()
             .and_then(|wiring| wiring.automation_controller.clone());
+        // Populate the shared slot here because automation builds after scheduler startup.
+        if let Some(scene_finder) = automation_controller
+            .as_ref()
+            .and_then(|controller| controller.scene_finder().cloned())
+        {
+            let _ = scene_finder_slot.set(scene_finder);
+        }
 
-        // Connection status is now driven by the health check loop —
-        // no optimistic initialization. The loop reads adapter health flags
-        // and updates connection flags as the single source of truth.
+        // Connection status is driven by the health check loop, which mirrors the
+        // adapter health flags into the connection flags each tick (the single
+        // source of truth). The optimistic initial values above only cover the
+        // window before the first tick; from then on the real adapter writers
+        // (heartbeat/upload, AuditingSession send, automation command result)
+        // own the values (#8050).
 
         core_resources.background_runtime.spawn_runtime_bridges();
 
         // Forward update status changes to Tauri frontend via broadcast → emit bridge.
         RuntimeBridgeSpawner::spawn_update_event_bridge(&handle, &self.app_handle, &update_control);
 
-        let ai_session_runtime_state = AiSessionRuntimeState::new(
-            session_manager.as_ref().map(|(sm, _)| sm.clone()),
-            Some(sqlite_storage.clone()),
-            config.ai_session.max_history_turns,
-        );
-        let audio_runtime_state = build_audio_runtime_state(
-            &self.app_handle,
-            config_manager.clone(),
-            &config,
-            capture_consent_manager.clone(),
-            capture_paused.clone(),
-        );
-        let config_runtime_state =
-            ConfigRuntimeState::new(config_manager.clone(), web_port.clone());
-        let suggestion_runtime_state =
-            SuggestionRuntimeState::new(suggestion_manager.clone(), Some(magic_overlay.clone()));
-        let detection_runtime_state = DetectionRuntimeState::new(
-            detection_active.clone(),
-            automation_controller
-                .as_ref()
-                .and_then(|controller| controller.scene_finder().cloned()),
-            Some(magic_overlay.clone()),
-        );
-
-        // #5703: live controller iff web.enabled (controller is built inside
-        // build_web_automation_wiring) — None keeps all 7 automation IPCs at
-        // service.unavailable, symmetric with the REST surface.
-        let automation_runtime_state = AutomationRuntimeState::new(
-            automation_controller
-                .clone()
-                .map(|c| c as Arc<dyn maekon_core::ports::automation::AutomationPort>),
-        );
-
-        // Compute analysis_health before `config` is moved into AppState.
-        let analysis_health = if config.analysis.enabled && config.ai_provider.llm_api.is_some() {
-            Some(AnalysisHealthFlags {
-                primary_healthy: analysis_health_flag,
-            })
-        } else {
-            None
-        };
-
+        // The per-command IPC runtime states (ai_session / audio / config /
+        // suggestion / detection / automation) and `analysis_health` are now
+        // assembled inside `build_managed_state_builder` from the raw inputs
+        // threaded below — see state_wiring.rs (ADR-013 composition-root slimming).
         let runtime_handle_for_writer = handle.clone();
 
         let state_builder = build_managed_state_builder(ManagedStateWiringParts {
@@ -456,20 +448,26 @@ impl AppRuntimeLaunchBuilder {
             llm_connected,
             cli_connected,
             focus_mode,
-            shared_capture_services,
+            focus_analyzer,
+            shared_capture_services: Some(shared_capture_services),
             capture_consent_manager,
-            analysis_health,
             regime_storage,
             regime_manager_arc,
-            config_runtime_state,
-            ai_session_runtime_state,
             codex_approval_registry,
-            audio_runtime_state,
-            suggestion_runtime_state,
-            detection_runtime_state,
-            automation_runtime_state,
             sync_runtime_state,
             embedding_runtime_state,
+            // Raw inputs — the IPC runtime states + analysis_health are built from
+            // these inside build_managed_state_builder (state_wiring.rs).
+            app_handle: self.app_handle.clone(),
+            config_manager: config_manager.clone(),
+            web_port: web_port.clone(),
+            session_manager,
+            suggestion_manager: suggestion_manager.clone(),
+            shared_regime_state: shared_regime_state.clone(),
+            detection_active,
+            scene_finder_slot,
+            automation_controller,
+            analysis_health_flag,
         });
         // C1: provider credentials (OAuth, secret-backend profile) via analysis;
         // integration bindings (auth, session) via server.
@@ -487,6 +485,9 @@ impl AppRuntimeLaunchBuilder {
         Ok(AppRuntimeLaunchResult {
             frontend_web_port,
             local_auth_token,
+            // #8044: carry the shared re-auth gate so setup.rs can register the
+            // ReauthRuntimeState managed state for the biometric/PIN command.
+            reauth_gate,
             state_builder,
             // F-RR-C36-01: include the handles in the returned struct so the
             // caller (setup.rs) can register them as Tauri managed state.

@@ -8,7 +8,7 @@
 //!
 //! | Test | Expected at A.10 | Reason |
 //! |------|-----------------|--------|
-//! | `flush_returns_zero_when_suppression_predicate_true`  | **RED** (FAILS)  | Stub ignores `|| true`; flush drains 3 events, `assert_eq!(sent, 0)` fails |
+//! | `flush_returns_zero_when_suppression_predicate_true`  | **RED** (FAILS)  | Stub ignores `|| true`; flush drains 3 events, `assert_eq!(sent.len(), 0)` fails |
 //! | `flush_drains_when_suppression_predicate_false`       | **GREEN** (PASSES) | Stub ignores `|| false`; flush drains normally — expected behaviour happens to match |
 //! | `predicate_reads_latest_config`                       | **RED** (FAILS)  | Stub ignores predicate; flush runs even when shared flag says "suppress" |
 //!
@@ -61,14 +61,20 @@ impl ApiClient for AlwaysOkApiClient {
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-fn make_event() -> Event {
-    Event::Context(ContextEvent {
-        app_name: "test-app".to_string(),
-        window_title: "Test Window".to_string(),
-        prev_app_name: None,
-        timestamp: chrono::Utc::now(),
-        ..Default::default()
-    })
+fn make_event() -> maekon_core::ports::batch_sink::QueuedUpload {
+    maekon_core::ports::batch_sink::QueuedUpload {
+        storage_id: format!(
+            "suppr-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ),
+        event: Event::Context(ContextEvent {
+            app_name: "test-app".to_string(),
+            window_title: "Test Window".to_string(),
+            prev_app_name: None,
+            timestamp: chrono::Utc::now(),
+            ..Default::default()
+        }),
+    }
 }
 
 fn make_uploader() -> BatchUploader {
@@ -88,7 +94,7 @@ fn make_uploader() -> BatchUploader {
 // draining the queue and return `Ok(0)`.
 //
 // At A.10 the stub ignores the predicate, so flush drains all 3 events and
-// returns `Ok(3)`. The `assert_eq!(sent, 0)` line then fails → red state.
+// returns `Ok(3)`. The `assert_eq!(sent.len(), 0)` line then fails → red state.
 // A.11 greens this by gating flush on `predicate()`.
 // ---------------------------------------------------------------------------
 #[tokio::test]
@@ -107,7 +113,8 @@ async fn flush_returns_zero_when_suppression_predicate_true() {
 
     // When suppression is active, flush must return 0 and leave the queue intact.
     assert_eq!(
-        sent, 0,
+        sent.len(),
+        0,
         "flush() must return 0 when the suppression predicate returns true \
          (A.10: EXPECTED FAILURE — stub does not suppress)"
     );
@@ -143,7 +150,8 @@ async fn flush_drains_when_suppression_predicate_false() {
 
     // Predicate=false → no suppression → queue must be drained.
     assert_eq!(
-        sent, 3,
+        sent.len(),
+        3,
         "flush() must drain all 3 events when predicate returns false"
     );
     assert_eq!(uploader.queue_size(), 0, "queue must be empty after flush");
@@ -161,7 +169,7 @@ async fn flush_drains_when_suppression_predicate_false() {
 //     2 newly-enqueued events in the queue.
 //
 // At A.10 the stub ignores the predicate, so the second flush drains the 2
-// new events and returns `Ok(2)`. The `assert_eq!(sent2, 0)` fails → red.
+// new events and returns `Ok(2)`. The `assert_eq!(sent2.len(), 0)` fails → red.
 // A.11 greens this by re-evaluating the closure on every flush call.
 // ---------------------------------------------------------------------------
 #[tokio::test]
@@ -183,7 +191,8 @@ async fn predicate_reads_latest_config() {
         .await
         .expect("flush should not return a network error");
     assert_eq!(
-        sent1, 2,
+        sent1.len(),
+        2,
         "phase 1: predicate=false, flush must drain both events"
     );
     assert_eq!(
@@ -206,7 +215,8 @@ async fn predicate_reads_latest_config() {
         .expect("flush should not return a network error");
 
     assert_eq!(
-        sent2, 0,
+        sent2.len(),
+        0,
         "phase 2: flush() must return 0 when predicate was flipped to true \
          (A.10: EXPECTED FAILURE — stub does not re-evaluate predicate)"
     );

@@ -21,7 +21,7 @@ fn test_session(
         system_prompt,
         config,
         default_tools,
-        breaker_registry: crate::CircuitBreakerRegistry::new(),
+        breaker_registry: maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     })
 }
 
@@ -63,6 +63,51 @@ fn anthropic_message_delta_with_usage() {
         }
         other => panic!("expected Result with usage, got {other:?}"),
     }
+}
+
+#[test]
+fn anthropic_message_start_captures_input_only() {
+    // #8057 (P2-1): input_tokens ride on message_start; capture them as an
+    // input-only usage chunk (output forced to 0 so it does not double-count
+    // the output the message_delta chunk adds).
+    let data = r#"{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":42,"output_tokens":1}}}"#;
+    let msg = parse_anthropic_sse_event("message_start", data);
+    match msg {
+        Some(OutboundMessage::Result { usage, done, .. }) => {
+            let u = usage.unwrap();
+            assert_eq!(u.input_tokens, 42);
+            assert_eq!(u.output_tokens, 0);
+            assert!(!done);
+        }
+        other => panic!("expected Result with input-only usage, got {other:?}"),
+    }
+}
+
+#[test]
+fn anthropic_message_delta_output_only_updates_usage() {
+    // #8057 (P2-1): the real wire omits input_tokens on message_delta. The old
+    // parser required both and dropped the whole usage; now output alone
+    // suffices (input defaults to 0, already accounted on message_start).
+    let data = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":73}}"#;
+    let msg = parse_anthropic_sse_event("message_delta", data);
+    match msg {
+        Some(OutboundMessage::Result { usage, .. }) => {
+            let u = usage.unwrap();
+            assert_eq!(u.input_tokens, 0);
+            assert_eq!(u.output_tokens, 73);
+        }
+        other => panic!("expected Result with output usage, got {other:?}"),
+    }
+}
+
+#[test]
+fn anthropic_message_start_without_usage_is_ignored() {
+    // A message_start carrying no usage yields nothing rather than a zero chunk.
+    let msg = parse_anthropic_sse_event(
+        "message_start",
+        r#"{"type":"message_start","message":{"id":"msg_1"}}"#,
+    );
+    assert!(msg.is_none());
 }
 
 #[test]
@@ -269,6 +314,7 @@ fn history_truncation_no_op_when_under_limit() {
 #[test]
 fn chat_message_from_session_message() {
     let session_msg = SessionMessage {
+        screen_derived: false,
         role: maekon_core::models::ai_session::MessageRole::User,
         content: "test question".to_string(),
         attachments: vec![],
@@ -295,7 +341,7 @@ fn chat_message_from_session_message() {
 fn new_session_with_system_prompt_initializes_history() {
     let session = test_session(
         "provider_surface.anthropic.direct_api".to_string(),
-        "claude-sonnet-4-20250514".to_string(),
+        "claude-sonnet-5".to_string(),
         "https://api.anthropic.com/v1/messages".to_string(),
         CredentialSource::ApiKey("sk-test".to_string()),
         AiProviderType::Anthropic,
@@ -306,7 +352,7 @@ fn new_session_with_system_prompt_initializes_history() {
 
     assert!(!session.session_id.is_empty());
     assert_eq!(session.provider_name(), "anthropic");
-    assert_eq!(session.model, "claude-sonnet-4-20250514");
+    assert_eq!(session.model, "claude-sonnet-5");
 
     let info = session.info();
     assert_eq!(info.transport, SessionTransport::HttpApi);
@@ -318,7 +364,7 @@ fn http_api_session_is_external() {
     // Cloud HTTP API transmits chat content off-device → must be guarded.
     let session = test_session(
         "provider_surface.anthropic.direct_api".to_string(),
-        "claude-sonnet-4-20250514".to_string(),
+        "claude-sonnet-5".to_string(),
         "https://api.anthropic.com/v1/messages".to_string(),
         CredentialSource::ApiKey("sk-test".to_string()),
         AiProviderType::Anthropic,
@@ -534,6 +580,7 @@ fn google_file_content_blocks() {
 #[test]
 fn render_message_content_omits_native_attachment_manifest_entries() {
     let message = SessionMessage {
+        screen_derived: false,
         role: maekon_core::models::ai_session::MessageRole::User,
         content: "Summarize these attachments".to_string(),
         attachments: vec![
@@ -878,7 +925,7 @@ fn google_function_call() {
 fn anthropic_tools_request_body() {
     let session = test_session(
         "provider_surface.anthropic.direct_api".to_string(),
-        "claude-sonnet-4-20250514".to_string(),
+        "claude-sonnet-5".to_string(),
         "https://api.anthropic.com/v1/messages".to_string(),
         CredentialSource::ApiKey("sk-test".to_string()),
         AiProviderType::Anthropic,
@@ -908,6 +955,21 @@ fn anthropic_tools_request_body() {
     let api_tools = body["tools"].as_array().unwrap();
     assert_eq!(api_tools[0]["name"], "get_weather");
     assert!(api_tools[0]["input_schema"].is_object());
+}
+
+#[test]
+fn openai_chat_body_requests_streaming_usage() {
+    // #8057 (P2-1): the Chat Completions body MUST carry
+    // stream_options.include_usage so OpenAI emits the trailing usage chunk;
+    // without it every chat-completions surface reported 0 tokens.
+    let messages = vec![ChatMessage {
+        role: ChatRole::User,
+        content: "hi".to_string(),
+        content_blocks: None,
+    }];
+    let body = build_openai_chat_request_body("gpt-5.4", 256, None, &messages, None, None);
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["stream_options"]["include_usage"], true);
 }
 
 #[test]
@@ -950,7 +1012,7 @@ fn openai_tools_request_body() {
 fn tools_without_schema_receive_default_empty_object_schema() {
     let session = test_session(
         "provider_surface.anthropic.direct_api".to_string(),
-        "claude-sonnet-4-20250514".to_string(),
+        "claude-sonnet-5".to_string(),
         "https://api.anthropic.com/v1/messages".to_string(),
         CredentialSource::ApiKey("sk-test".to_string()),
         AiProviderType::Anthropic,
@@ -1044,7 +1106,7 @@ mod http_status_mapping {
 
         let session = test_session(
             "provider_surface.anthropic.direct_api".to_string(),
-            "claude-sonnet-4-20250514".to_string(),
+            "claude-sonnet-5".to_string(),
             server.url(),
             CredentialSource::ApiKey("test-key".to_string()),
             AiProviderType::Anthropic,
@@ -1054,6 +1116,7 @@ mod http_status_mapping {
         );
 
         let msg = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],
@@ -1110,12 +1173,14 @@ mod http_status_mapping {
 
     // ── D7 Circuit breaker behavior ───────────────────────────────────────
 
-    fn fast_breaker_registry(server_url: &str) -> Arc<crate::CircuitBreakerRegistry> {
-        let registry = crate::CircuitBreakerRegistry::new();
-        let key = crate::resilience::endpoint_authority(server_url).unwrap();
+    fn fast_breaker_registry(
+        server_url: &str,
+    ) -> Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry> {
+        let registry = maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new();
+        let key = maekon_http_core::resilience::endpoint_authority(server_url).unwrap();
         let _ = registry.get_with_config(
             &key,
-            crate::circuit_breaker::CircuitBreakerConfig {
+            maekon_http_core::circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 3,
                 initial_cooldown: std::time::Duration::from_millis(50),
                 max_cooldown: std::time::Duration::from_millis(200),
@@ -1127,11 +1192,11 @@ mod http_status_mapping {
 
     fn breaker_test_session(
         server_url: String,
-        registry: Arc<crate::CircuitBreakerRegistry>,
+        registry: Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry>,
     ) -> HttpApiSession {
         HttpApiSession::new(HttpApiSessionInit {
             surface_id: "provider_surface.anthropic.direct_api".to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
+            model: "claude-sonnet-5".to_string(),
             endpoint: server_url,
             credential: CredentialSource::ApiKey("test-key".to_string()),
             provider_type: AiProviderType::Anthropic,
@@ -1144,6 +1209,7 @@ mod http_status_mapping {
 
     fn test_user_message() -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],
@@ -1200,7 +1266,7 @@ mod http_status_mapping {
         tokio::time::sleep(std::time::Duration::from_millis(70)).await;
         let _ = session.send_message(&test_user_message()).await;
 
-        let key = crate::resilience::endpoint_authority(&server.url()).unwrap();
+        let key = maekon_http_core::resilience::endpoint_authority(&server.url()).unwrap();
         let breaker = registry.get(&key);
         assert_eq!(
             breaker.stats().current_cooldown,
@@ -1227,7 +1293,7 @@ mod http_status_mapping {
 
         let session = test_session(
             "provider_surface.anthropic.direct_api".to_string(),
-            "claude-sonnet-4-20250514".to_string(),
+            "claude-sonnet-5".to_string(),
             server.url(),
             CredentialSource::ApiKey("test-key".to_string()),
             AiProviderType::Anthropic,
@@ -1287,7 +1353,7 @@ mod http_status_mapping {
 
         let session = test_session(
             "provider_surface.anthropic.direct_api".to_string(),
-            "claude-sonnet-4-20250514".to_string(),
+            "claude-sonnet-5".to_string(),
             server.url(),
             CredentialSource::ApiKey("test-key".to_string()),
             AiProviderType::Anthropic,
@@ -1340,12 +1406,12 @@ mod http_status_mapping {
         // record success. Drain the result.
         let _ = session.send_message(&test_user_message()).await;
 
-        let key = crate::resilience::endpoint_authority(&server.url()).unwrap();
+        let key = maekon_http_core::resilience::endpoint_authority(&server.url()).unwrap();
         let breaker = registry.get(&key);
         assert!(
             matches!(
                 breaker.check(),
-                crate::circuit_breaker::CircuitState::Closed
+                maekon_http_core::circuit_breaker::CircuitState::Closed
             ),
             "initial 200 should leave breaker Closed even with unreadable stream body"
         );
@@ -1359,12 +1425,15 @@ mod http_status_mapping {
 // orchestrator arms (not just the per-event parsers).
 #[cfg(test)]
 mod streaming_history {
+    use std::time::Duration;
+
     use super::*;
     use maekon_core::models::ai_session::{MessageRole, SessionMessage};
     use maekon_core::ports::conversation_session::ConversationSession;
 
     fn test_user_message() -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],
@@ -1388,7 +1457,7 @@ mod streaming_history {
             system_prompt: None,
             config: Arc::new(AiSessionConfig::default()),
             default_tools: None,
-            breaker_registry: crate::CircuitBreakerRegistry::new(),
+            breaker_registry: maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         })
     }
 
@@ -1658,5 +1727,57 @@ mod streaming_history {
             "an over-cap turn must not be saved as an assistant message: {:?}",
             history.iter().map(|m| m.role).collect::<Vec<_>>()
         );
+    }
+
+    /// #7574 regression: concurrent `send_message` calls on the same
+    /// `HttpApiSession` must serialize — the second turn blocks while the
+    /// first turn's stream is still alive, and proceeds once that stream is
+    /// dropped. Before the turn-guard fix, both calls would race directly on
+    /// `history` (interleaved read-snapshot/push of the shared
+    /// `Vec<ChatMessage>`), so this test fails before the fix (the second
+    /// call returns almost immediately instead of timing out).
+    #[tokio::test]
+    async fn http_api_send_message_serializes_until_stream_drops() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+            .create_async()
+            .await;
+
+        let session = Arc::new(streaming_session(
+            server.url(),
+            AiProviderType::Anthropic,
+            "provider_surface.anthropic.direct_api",
+        ));
+
+        let first_stream = session
+            .send_message(&test_user_message())
+            .await
+            .expect("first turn should start");
+
+        let mut second = {
+            let session = session.clone();
+            tokio::spawn(async move { session.send_message(&test_user_message()).await })
+        };
+
+        // `ResponseStream` (the Ok type) is not `Debug`, so `.expect_err()` cannot be used
+        // here (it would need to format the Ok value); extract the concrete `Elapsed` via
+        // `.err()` instead — this still asserts the timeout actually fired, not merely a
+        // boolean `is_err()`.
+        tokio::time::timeout(Duration::from_millis(100), &mut second)
+            .await
+            .err()
+            .expect("second turn must wait while the first turn stream is still alive");
+
+        drop(first_stream);
+
+        let second_stream = tokio::time::timeout(Duration::from_millis(500), second)
+            .await
+            .expect("second turn should start once the first stream drops")
+            .expect("second task should not panic")
+            .expect("second send_message should succeed");
+        drop(second_stream);
     }
 }

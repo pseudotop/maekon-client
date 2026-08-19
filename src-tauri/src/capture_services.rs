@@ -57,13 +57,18 @@ impl SharedCaptureServices {
         );
 
         let ocr_tessdata = std::env::var("MAEKON_TESSDATA").ok().map(PathBuf::from);
-        let frame_processor: Arc<dyn FrameProcessor> =
-            Arc::new(EdgeFrameProcessor::with_pii_level(
+        // #8054: thread the configured OCR recognition languages (default
+        // Korean-first) into the processor so macOS Vision / leptess recognize
+        // Korean screen text instead of silently defaulting to English-only.
+        let frame_processor: Arc<dyn FrameProcessor> = Arc::new(
+            EdgeFrameProcessor::with_pii_level(
                 config.vision.thumbnail_width,
                 config.vision.thumbnail_height,
                 ocr_tessdata,
                 config.privacy.pii_filter_level,
-            ));
+            )
+            .with_ocr_languages(config.vision.ocr_languages.clone()),
+        );
 
         Ok(Self {
             frame_storage,

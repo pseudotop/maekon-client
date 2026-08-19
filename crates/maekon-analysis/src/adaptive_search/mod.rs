@@ -62,6 +62,16 @@ pub struct SearchConfig {
     /// An unrecognized value falls back to brute-force; callers should validate
     /// the configured string and warn before constructing this. (review4 F9/F10)
     pub forced_strategy: Option<String>,
+    /// Whether INT8 scalar quantization is enabled for the backing vector store.
+    ///
+    /// Default `false`, mirroring `analysis.embedding.quantization_enabled`.
+    /// When quantization is disabled, vectors are stored f32-only (`vector_int8`
+    /// is NULL for every row), so every INT8 strategy — `BruteForceInt8`,
+    /// `IvfInt8`, `IvfBinaryRerank` — filters out all rows and retrieval
+    /// silently returns empty. In that mode the coordinator routes to the f32
+    /// `search_filtered` path so results are actually returned (#7479). The
+    /// composition root must set this from the runtime config.
+    pub quantization_enabled: bool,
 }
 
 impl Default for SearchConfig {
@@ -73,6 +83,7 @@ impl Default for SearchConfig {
             oversample_factor: 10,
             default_nprobe: 0,
             forced_strategy: None,
+            quantization_enabled: false,
         }
     }
 }
@@ -242,11 +253,36 @@ impl AdaptiveSearchCoordinator {
                     }
                 }
             }
-            // Fallback: use brute-force INT8 search
-            let quantized = ScalarQuantizer::quantize(query_f32)?;
+            // Fallback: brute-force scan. Use the INT8 `search_quantized` scan
+            // only when quantization is enabled; otherwise `vector_int8` is NULL
+            // for every row and the scan returns nothing, so use the f32
+            // `search_filtered` path instead (#7479).
+            if self.config.quantization_enabled {
+                let quantized = ScalarQuantizer::quantize(query_f32)?;
+                return self
+                    .vector_store
+                    .search_quantized(&quantized, limit, time_decay_hours, filters)
+                    .await
+                    .map_err(AnalysisError::Core);
+            }
             return self
                 .vector_store
-                .search_quantized(&quantized, limit, time_decay_hours, filters)
+                .search_filtered(query_f32, limit, time_decay_hours, filters)
+                .await
+                .map_err(AnalysisError::Core);
+        }
+
+        // INT8-tier gate (#7479): the remaining strategies (BruteForceInt8,
+        // IvfInt8, IvfBinaryRerank) all read `vector_int8`, which is NULL for
+        // every row when INT8 quantization is disabled (the default). In that
+        // mode the INT8 paths filter out all rows and retrieval silently returns
+        // empty. Route to the f32 `search_filtered` path so results are actually
+        // returned; IVF acceleration still applies inside `search_filtered` once
+        // an f32-derived index exists.
+        if !self.config.quantization_enabled {
+            return self
+                .vector_store
+                .search_filtered(query_f32, limit, time_decay_hours, filters)
                 .await
                 .map_err(AnalysisError::Core);
         }

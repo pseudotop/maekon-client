@@ -16,9 +16,28 @@ pub struct StorageConfig {
 }
 
 /// Floor for `storage.retention_days` (#6169).
+///
+/// #7726 (ctd-W2 E4): this field is deliberately left **uncapped** here — the
+/// maekon-web boundary (`settings_validation.rs`) previously imposed its own
+/// undocumented `<= 365` cap that disagreed with this file-load/write-chokepoint
+/// path (which has only ever enforced the floor). No commit history or design
+/// doc evidence was found that the 365-day cap was a deliberate product
+/// decision, and `storage.max_storage_mb` already bounds total on-disk usage
+/// independently of day-count, so the wider (uncapped) range is the SSOT and
+/// the web-boundary cap was removed to match (not the other way around).
 pub(crate) const STORAGE_RETENTION_DAYS_FLOOR: u32 = 1;
-/// Floor for `storage.max_storage_mb` (#6169).
-pub(crate) const STORAGE_MAX_STORAGE_MB_FLOOR: u64 = 10;
+/// Floor for `storage.max_storage_mb` (#6169, raised #7726).
+///
+/// Raised from 10 to 100 to match the value `maekon-web`'s
+/// `settings_validation.rs` has enforced on every settings write since the
+/// original client migration (#7726 ctd-W2 E4) — the same "the boundary that
+/// has actually been live in production wins" reconciliation applied to
+/// `vision.capture_throttle_ms` in this same change.
+pub(crate) const STORAGE_MAX_STORAGE_MB_FLOOR: u64 = 100;
+/// Cap for `storage.max_storage_mb` (#7726). Adopted from the maekon-web
+/// boundary, which is the only boundary that previously bounded this field's
+/// ceiling; core had none.
+pub(crate) const STORAGE_MAX_STORAGE_MB_CAP: u64 = 10_000;
 
 impl StorageConfig {
     /// Validate that storage configuration values are within acceptable bounds.
@@ -33,13 +52,18 @@ impl StorageConfig {
                 "storage.max_storage_mb must be >= {STORAGE_MAX_STORAGE_MB_FLOOR}"
             ));
         }
+        if self.max_storage_mb > STORAGE_MAX_STORAGE_MB_CAP {
+            return Err(format!(
+                "storage.max_storage_mb must be <= {STORAGE_MAX_STORAGE_MB_CAP}"
+            ));
+        }
         Ok(())
     }
 
-    /// Raise any sub-floor storage value to its floor in place, returning the
-    /// dotted-path identities of the fields that were clamped (#6169). Used by
-    /// the fail-open INITIAL-LOAD path so the clamped config also satisfies
-    /// [`Self::validate_bounds`].
+    /// Raise/lower any out-of-bounds storage value to its nearest bound in
+    /// place, returning the dotted-path identities of the fields that were
+    /// clamped (#6169). Used by the fail-open INITIAL-LOAD path so the
+    /// clamped config also satisfies [`Self::validate_bounds`].
     pub(crate) fn clamp_bounds(&mut self) -> Vec<&'static str> {
         let mut clamped = Vec::new();
         if self.retention_days < STORAGE_RETENTION_DAYS_FLOOR {
@@ -48,6 +72,9 @@ impl StorageConfig {
         }
         if self.max_storage_mb < STORAGE_MAX_STORAGE_MB_FLOOR {
             self.max_storage_mb = STORAGE_MAX_STORAGE_MB_FLOOR;
+            clamped.push("storage.max_storage_mb");
+        } else if self.max_storage_mb > STORAGE_MAX_STORAGE_MB_CAP {
+            self.max_storage_mb = STORAGE_MAX_STORAGE_MB_CAP;
             clamped.push("storage.max_storage_mb");
         }
         clamped
@@ -112,7 +139,7 @@ pub struct TelemetryConfig {
 }
 
 fn default_telemetry_enabled() -> bool {
-    true
+    false
 }
 
 fn default_telemetry_sample_rate() -> f64 {
@@ -149,7 +176,7 @@ impl TelemetryConfig {
 
 // ── NotificationConfig ─────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationConfig {
     #[serde(default = "default_notification_enabled")]
     pub enabled: bool,
@@ -186,6 +213,39 @@ impl Default for NotificationConfig {
             daily_summary_notification: false,
             tracking_schedule_enabled: default_true(),
         }
+    }
+}
+
+/// Floor for `notification.idle_notification_mins` (#7726 ctd-W2 E4).
+///
+/// Previously enforced only by `src-tauri/src/commands/settings.rs`'s
+/// hardcoded `validate_config_bounds` (WebView boundary) with no core
+/// equivalent — a zero value there is meaningless (an "idle after 0 minutes"
+/// notification would fire continuously) and was silently unenforced on any
+/// other write path (maekon-web HTTP API, hand-edited config file).
+pub(crate) const NOTIFICATION_IDLE_MINS_FLOOR: u32 = 1;
+
+impl NotificationConfig {
+    /// Validate that notification configuration values are within acceptable bounds.
+    pub fn validate_bounds(&self) -> Result<(), String> {
+        if self.idle_notification_mins < NOTIFICATION_IDLE_MINS_FLOOR {
+            return Err(format!(
+                "notification.idle_notification_mins must be >= {NOTIFICATION_IDLE_MINS_FLOOR}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Raise a sub-floor `idle_notification_mins` to its floor in place,
+    /// returning the dotted-path identities of the fields that were clamped.
+    /// Fail-open INITIAL-LOAD counterpart to [`Self::validate_bounds`].
+    pub(crate) fn clamp_bounds(&mut self) -> Vec<&'static str> {
+        let mut clamped = Vec::new();
+        if self.idle_notification_mins < NOTIFICATION_IDLE_MINS_FLOOR {
+            self.idle_notification_mins = NOTIFICATION_IDLE_MINS_FLOOR;
+            clamped.push("notification.idle_notification_mins");
+        }
+        clamped
     }
 }
 
@@ -636,5 +696,101 @@ mod tests {
         config
             .validate_integrity_policy()
             .expect("serde-defaulted UpdateConfig must validate");
+    }
+
+    #[test]
+    fn telemetry_defaults_fail_closed_until_explicit_opt_in() {
+        assert!(!TelemetryConfig::default().enabled);
+
+        let sparse: TelemetryConfig =
+            serde_json::from_str("{}").expect("sparse telemetry config must deserialize");
+        assert!(!sparse.enabled);
+    }
+
+    // ── #7726 (ctd-W2 E4): storage.max_storage_mb cap + notification bounds ──
+
+    #[test]
+    fn storage_validate_bounds_rejects_max_storage_mb_above_cap() {
+        let config = StorageConfig {
+            db_path: None,
+            retention_days: 30,
+            max_storage_mb: STORAGE_MAX_STORAGE_MB_CAP + 1,
+        };
+        let err = config.validate_bounds().unwrap_err();
+        assert!(err.contains("max_storage_mb"), "got: {err}");
+    }
+
+    #[test]
+    fn storage_validate_bounds_accepts_max_storage_mb_cap_boundary() {
+        let config = StorageConfig {
+            db_path: None,
+            retention_days: 30,
+            max_storage_mb: STORAGE_MAX_STORAGE_MB_CAP,
+        };
+        config
+            .validate_bounds()
+            .expect("max_storage_mb == cap must be accepted (inclusive boundary)");
+    }
+
+    #[test]
+    fn storage_clamp_bounds_lowers_over_cap_max_storage_mb() {
+        let mut config = StorageConfig {
+            db_path: None,
+            retention_days: 30,
+            max_storage_mb: STORAGE_MAX_STORAGE_MB_CAP + 500,
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"storage.max_storage_mb"));
+        assert_eq!(config.max_storage_mb, STORAGE_MAX_STORAGE_MB_CAP);
+        config
+            .validate_bounds()
+            .expect("clamped config must satisfy validate_bounds");
+    }
+
+    #[test]
+    fn storage_validate_bounds_has_no_retention_days_cap() {
+        // #7726: retention_days is deliberately uncapped here — a large value
+        // (e.g. 1000, which was previously un-settable through the
+        // maekon-web UI's now-removed 365-day cap) must be accepted by the
+        // core SSOT.
+        let config = StorageConfig {
+            db_path: None,
+            retention_days: 1000,
+            max_storage_mb: 500,
+        };
+        config
+            .validate_bounds()
+            .expect("retention_days has no upper bound in the core SSOT");
+    }
+
+    #[test]
+    fn notification_validate_bounds_rejects_zero_idle_notification_mins() {
+        let config = NotificationConfig {
+            idle_notification_mins: 0,
+            ..NotificationConfig::default()
+        };
+        let err = config.validate_bounds().unwrap_err();
+        assert!(err.contains("idle_notification_mins"), "got: {err}");
+    }
+
+    #[test]
+    fn notification_validate_bounds_accepts_default() {
+        NotificationConfig::default()
+            .validate_bounds()
+            .expect("default NotificationConfig must satisfy validate_bounds");
+    }
+
+    #[test]
+    fn notification_clamp_bounds_raises_zero_idle_notification_mins() {
+        let mut config = NotificationConfig {
+            idle_notification_mins: 0,
+            ..NotificationConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"notification.idle_notification_mins"));
+        assert_eq!(config.idle_notification_mins, NOTIFICATION_IDLE_MINS_FLOOR);
+        config
+            .validate_bounds()
+            .expect("clamped config must satisfy validate_bounds");
     }
 }

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use maekon_core::error::CoreError;
 use maekon_core::models::suggestion::Suggestion;
 use maekon_core::models::work_session::{AppCategory, FocusMetrics, Interruption, WorkSession};
@@ -57,12 +58,13 @@ impl FocusStorage for SqliteStorage {
             .map_err(Into::into)
     }
 
-    async fn record_interruption_resume(
+    async fn resume_interruption(
         &self,
         interruption_id: i64,
         resumed_to_app: &str,
-    ) -> Result<(), CoreError> {
-        SqliteStorage::record_interruption_resume_async(self, interruption_id, resumed_to_app)
+        resumed_at: DateTime<Utc>,
+    ) -> Result<Option<Interruption>, CoreError> {
+        SqliteStorage::resume_interruption_async(self, interruption_id, resumed_to_app, resumed_at)
             .await
             .map_err(Into::into)
     }
@@ -170,10 +172,17 @@ mod tests {
             .await
             .unwrap();
 
-        // 5. record_interruption_resume
-        <SqliteStorage as FocusStorage>::record_interruption_resume(&storage, int_id, "VSCode")
-            .await
-            .unwrap();
+        // 5. resume_interruption
+        let resumed = <SqliteStorage as FocusStorage>::resume_interruption(
+            &storage,
+            int_id,
+            "VSCode",
+            Utc::now(),
+        )
+        .await
+        .unwrap()
+        .expect("pending interruption should resume");
+        assert_eq!(resumed.id, int_id);
 
         // 6. get_pending_interruption (None after resume)
         let pending = <SqliteStorage as FocusStorage>::get_pending_interruption(&storage)

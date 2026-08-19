@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::super::enums::{CoachingTone, DataLookback, OverlayMode};
+use super::super::enums::{CoachingTone, OverlayMode};
 
 /// Coaching engine configuration.
 ///
@@ -15,10 +15,6 @@ pub struct CoachingConfig {
     /// Per-profile configuration.
     #[serde(default = "default_profile_configs")]
     pub profiles: HashMap<String, ProfileConfig>,
-
-    /// Lookback window for historical comparisons.
-    #[serde(default)]
-    pub data_lookback: DataLookback,
 
     /// Message tone preference.
     #[serde(default)]
@@ -39,10 +35,9 @@ pub struct CoachingConfig {
     /// Overlay display mode (Phase 2 — stored for forward compatibility).
     #[serde(default)]
     pub overlay_mode: OverlayMode,
-
-    /// Overlay toggle hotkey (Phase 2 — stored for forward compatibility).
-    #[serde(default = "default_overlay_hotkey")]
-    pub overlay_hotkey: String,
+    // #9638: `overlay_hotkey` sat here unread since Phase 2 — the MagicOverlay
+    // hotkey wiring never consulted it. Removed; serde ignores the stale key
+    // in existing configs. Re-add only together with actual hotkey wiring.
 }
 
 impl Default for CoachingConfig {
@@ -50,27 +45,17 @@ impl Default for CoachingConfig {
         Self {
             enabled: false,
             profiles: default_profile_configs(),
-            data_lookback: DataLookback::default(),
             tone: CoachingTone::default(),
             quiet_hours: vec![],
             regime_goals: HashMap::new(),
             locale: default_locale(),
             overlay_mode: OverlayMode::default(),
-            overlay_hotkey: default_overlay_hotkey(),
         }
     }
 }
 
 fn default_locale() -> String {
     "en".to_string()
-}
-
-fn default_overlay_hotkey() -> String {
-    if cfg!(target_os = "macos") {
-        "Cmd+Shift+O".to_string()
-    } else {
-        "Ctrl+Shift+O".to_string()
-    }
 }
 
 fn default_profile_configs() -> HashMap<String, ProfileConfig> {

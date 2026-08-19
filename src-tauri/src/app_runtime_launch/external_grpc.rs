@@ -1,4 +1,213 @@
 #[cfg(any(feature = "grpc-dashboard", feature = "grpc-dashboard-external"))]
+use crate::web_server_runtime::{WebServerLaunchResult, WebServerRuntimeBuilder};
+
+#[cfg(feature = "grpc-dashboard-external")]
+pub(super) struct DashboardGrpcSharedState {
+    live: Option<std::sync::Arc<maekon_web::grpc::external::live_config::LiveExternalConfig>>,
+    metrics: Option<std::sync::Arc<maekon_web::grpc::external::metrics::ExternalMetrics>>,
+}
+
+#[cfg(not(feature = "grpc-dashboard-external"))]
+pub(super) struct DashboardGrpcSharedState;
+
+#[cfg(feature = "grpc-dashboard-external")]
+impl DashboardGrpcSharedState {
+    pub(super) fn new(config: &maekon_core::config::AppConfig) -> Self {
+        if config.external_grpc.enabled {
+            let initial_streaming = config
+                .external_grpc
+                .streaming_enabled
+                .unwrap_or(config.web.grpc_streaming_enabled);
+            let initial_thresholds = config.web.grpc_load_thresholds.clone().unwrap_or_default();
+            let initial_policy = maekon_web::grpc::LoadPolicy::try_new(initial_thresholds)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        err = %e,
+                        "external_grpc: invalid LoadThresholds at pre-creation; using defaults"
+                    );
+                    maekon_web::grpc::LoadPolicy::new(Default::default())
+                });
+            let live = std::sync::Arc::new(
+                maekon_web::grpc::external::live_config::LiveExternalConfig::new(
+                    maekon_web::grpc::external::live_config::LiveSnapshot {
+                        streaming_enabled: initial_streaming,
+                        load_policy: std::sync::Arc::new(initial_policy),
+                    },
+                ),
+            );
+            let metrics =
+                std::sync::Arc::new(maekon_web::grpc::external::metrics::ExternalMetrics::new());
+            Self {
+                live: Some(live),
+                metrics: Some(metrics),
+            }
+        } else {
+            Self {
+                live: None,
+                metrics: None,
+            }
+        }
+    }
+
+    pub(super) fn configure_web_server_builder<'a>(
+        &self,
+        builder: WebServerRuntimeBuilder<'a>,
+    ) -> WebServerRuntimeBuilder<'a> {
+        match (&self.live, &self.metrics) {
+            (Some(live), Some(metrics)) => {
+                builder.with_external_grpc_live_and_metrics(live.clone(), metrics.clone())
+            }
+            _ => builder,
+        }
+    }
+}
+
+#[cfg(not(feature = "grpc-dashboard-external"))]
+impl DashboardGrpcSharedState {
+    pub(super) fn new(_config: &maekon_core::config::AppConfig) -> Self {
+        Self
+    }
+
+    pub(super) fn configure_web_server_builder<'a>(
+        &self,
+        builder: WebServerRuntimeBuilder<'a>,
+    ) -> WebServerRuntimeBuilder<'a> {
+        builder
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(unused_variables)]
+pub(super) fn spawn_dashboard_grpc_servers(
+    handle: &tokio::runtime::Handle,
+    event_tx: tokio::sync::broadcast::Sender<maekon_web::RealtimeEvent>,
+    sqlite_storage: std::sync::Arc<maekon_storage::sqlite::SqliteStorage>,
+    config: &maekon_core::config::AppConfig,
+    config_manager: maekon_core::config_manager::ConfigManager,
+    local_auth_token: std::sync::Arc<str>,
+    web_server_runtime: &mut WebServerLaunchResult,
+    shared: DashboardGrpcSharedState,
+) {
+    let shared_grpc_monitor: std::sync::Arc<dyn maekon_core::ports::monitor::SystemMonitor> =
+        std::sync::Arc::new(maekon_monitor::system::SysInfoMonitor::new());
+
+    #[cfg(feature = "grpc-dashboard")]
+    {
+        let grpc_port = resolve_loopback_grpc_port(config.web.grpc_port);
+        let grpc_storage =
+            sqlite_storage.clone() as std::sync::Arc<dyn maekon_web::storage_port::WebStorage>;
+        let thresholds = config.web.grpc_load_thresholds.clone().unwrap_or_default();
+        let load_policy = std::sync::Arc::new(maekon_web::grpc::LoadPolicy::new(thresholds));
+        let grpc_pii_sanitizer = std::sync::Arc::new(maekon_vision::privacy::VisionPiiSanitizer)
+            as std::sync::Arc<dyn maekon_core::ports::pii_sanitizer::PiiSanitizer>;
+        let cfg = maekon_web::grpc::GrpcSpawnConfig {
+            port: grpc_port,
+            storage: grpc_storage,
+            system_monitor: shared_grpc_monitor.clone(),
+            event_tx: event_tx.clone(),
+            integration_auth_token: config.web.integration_auth_token.clone(),
+            local_auth_token: Some(local_auth_token),
+            pii_sanitizer: Some(grpc_pii_sanitizer),
+            ai_runtime_status_snapshot: web_server_runtime.ai_runtime_status.clone(),
+            load_policy,
+            streaming_enabled: config.web.grpc_streaming_enabled,
+            max_concurrent_streams: config.web.grpc_max_concurrent_streams,
+        };
+        handle.spawn(async move {
+            maekon_web::grpc::serve_optional(cfg).await;
+        });
+    }
+
+    #[cfg(feature = "grpc-dashboard-external")]
+    {
+        let ext_cfg = &config.external_grpc;
+        if !ext_cfg.enabled {
+            return;
+        }
+
+        let loopback_port = resolve_loopback_grpc_port(config.web.grpc_port);
+        if let Err(msg) = maekon_web::grpc::external::port_collision::check_port_collision(
+            ext_cfg.port,
+            loopback_port,
+        ) {
+            tracing::error!(
+                external_port = ext_cfg.port,
+                loopback_port,
+                err = %msg,
+                "external_grpc: port collides with loopback grpc port; disabling external server"
+            );
+            return;
+        }
+        if let Err(e) = ext_cfg.validate() {
+            tracing::error!(err = %e, "external_grpc: config validation failed; disabling");
+            return;
+        }
+
+        let ext_storage =
+            sqlite_storage.clone() as std::sync::Arc<dyn maekon_web::storage_port::WebStorage>;
+        let ext_audit: std::sync::Arc<dyn maekon_core::ports::audit_log::AuditLogPort> = {
+            let storage_for_audit = sqlite_storage.clone();
+            let blocking_persist: std::sync::Arc<dyn maekon_automation::audit::AuditPersistence> =
+                std::sync::Arc::new(move |entry: &maekon_core::models::audit::AuditEntry| {
+                    storage_for_audit.save_audit_entry(entry);
+                });
+            let persistence_cb: std::sync::Arc<dyn maekon_automation::audit::AuditPersistence> =
+                std::sync::Arc::new(maekon_automation::audit::ChannelAuditPersistence::new(
+                    blocking_persist,
+                    handle.clone(),
+                ));
+            let audit_query: std::sync::Arc<dyn maekon_automation::audit::AuditQuery> =
+                std::sync::Arc::new(crate::audit_query::SqliteAuditQuery::new(
+                    sqlite_storage.clone(),
+                ));
+            let audit_pii_sanitizer: std::sync::Arc<
+                dyn maekon_core::ports::pii_sanitizer::PiiSanitizer,
+            > = std::sync::Arc::new(maekon_vision::privacy::VisionPiiSanitizer);
+            let logger = std::sync::Arc::new(tokio::sync::RwLock::new(
+                maekon_automation::audit::AuditLogger::new(500, 50)
+                    .with_persistence(persistence_cb)
+                    .with_query(audit_query)
+                    .with_pii_sanitizer(audit_pii_sanitizer),
+            ));
+            std::sync::Arc::new(maekon_automation::audit::AuditLogAdapter::new(logger))
+        };
+        let ext_pii_sanitizer: std::sync::Arc<dyn maekon_core::ports::pii_sanitizer::PiiSanitizer> =
+            std::sync::Arc::new(maekon_vision::privacy::VisionPiiSanitizer);
+        let ext_ai_status = web_server_runtime.ai_runtime_status.clone();
+        let ext_app_config_snapshot = std::sync::Arc::new(config.clone());
+
+        match handle.block_on(build_external_spawn_config(
+            ext_cfg,
+            ext_storage,
+            shared_grpc_monitor,
+            event_tx,
+            ext_audit,
+            Some(ext_pii_sanitizer),
+            ext_ai_status,
+            config_manager,
+            ext_app_config_snapshot,
+            shared.live,
+            shared.metrics,
+        )) {
+            Ok((spawn_cfg, cert_watcher)) => {
+                let ext_handle =
+                    handle.block_on(maekon_web::grpc::external::spawn_with_supervisor(spawn_cfg));
+                web_server_runtime.ext_grpc_supervisor = Some(ext_handle);
+                web_server_runtime.ext_cert_watcher = Some(cert_watcher);
+                tracing::info!(
+                    bind = %format!("{}:{}", ext_cfg.bind_address, ext_cfg.port),
+                    auth_mode = ?ext_cfg.auth_mode,
+                    "external_grpc: server spawned"
+                );
+            }
+            Err(e) => {
+                tracing::error!(err = %e, "external_grpc: failed to build spawn config; disabling");
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "grpc-dashboard", feature = "grpc-dashboard-external"))]
 pub(super) fn resolve_loopback_grpc_port(configured_port: u16) -> u16 {
     std::env::var("MAEKON_DASHBOARD_GRPC_PORT")
         .ok()

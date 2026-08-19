@@ -17,6 +17,21 @@ impl Updater {
             .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
     }
 
+    /// Extraction directory for a downloaded archive: the archive's parent
+    /// when it has a real one, otherwise the OS temp directory.
+    ///
+    /// #9545 (CRT-PRV-UPD-007): restores the contract the orphaned test
+    /// asserted — while it was unwired, both extract paths regressed to a
+    /// hardcoded `/tmp` fallback, which is not a real directory on Windows.
+    /// `Path::parent()` returns `Some("")` for bare file names, so the empty
+    /// parent must also take the temp-dir fallback.
+    pub(crate) fn archive_extract_dir_for_path(archive_path: &Path) -> PathBuf {
+        match archive_path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => std::env::temp_dir(),
+        }
+    }
+
     pub(crate) fn extract_tar_gz(&self, archive_path: &Path) -> Result<PathBuf, UpdateError> {
         use flate2::read::GzDecoder;
         use std::fs::File;
@@ -25,9 +40,7 @@ impl Updater {
         let decoder = GzDecoder::new(file);
         let mut archive = tar::Archive::new(decoder);
 
-        let extract_dir = archive_path
-            .parent()
-            .unwrap_or(std::path::Path::new("/tmp"));
+        let extract_dir = &Self::archive_extract_dir_for_path(archive_path);
         let mut total_extracted: u64 = 0;
         for entry in archive.entries()? {
             let mut entry = entry?;
@@ -82,9 +95,7 @@ impl Updater {
         let mut archive = zip::ZipArchive::new(file)
             .map_err(|e| UpdateError::Install(format!("Failed to open ZIP archive: {}", e)))?;
 
-        let extract_dir = archive_path
-            .parent()
-            .unwrap_or(std::path::Path::new("/tmp"));
+        let extract_dir = &Self::archive_extract_dir_for_path(archive_path);
 
         let mut total_extracted: u64 = 0;
         for i in 0..archive.len() {

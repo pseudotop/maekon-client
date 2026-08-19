@@ -140,8 +140,8 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -203,17 +203,18 @@ jobs:
         shell: bash
         # Mirror release.yml: scope to `-p maekon-app` and use the same
         # OS-conditional feature set. Linux also needs `systemd-notify` because
-        # the released DEB ships a Type=notify unit.
+        # the released DEB ships a Type=notify unit. All three ship `lan-sync`
+        # (#8056) and `stt,download` (#8053) to mirror the shipped feature set.
         env:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            FEATURES="grpc,systemd-notify,linux-sandbox"
+            FEATURES="grpc,systemd-notify,linux-sandbox,lan-sync,stt,download"
           elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            FEATURES="grpc,windows-sandbox"
+            FEATURES="grpc,windows-sandbox,lan-sync,stt,download"
           else
-            FEATURES="grpc"
+            FEATURES="grpc,lan-sync,stt,download"
           fi
           ./scripts/cargo-cache.sh build --locked --release --target "$TARGET" -p maekon-app --features "$FEATURES"
 
@@ -241,6 +242,32 @@ jobs:
           $sz = (Get-Item $bin).Length
           if ($sz -lt 1MB) { throw "binary too small: $sz bytes" }
           Write-Host "Binary OK: $bin ($([math]::Round($sz / 1MB, 1)) MB)"
+
+      # This lane exists to rehearse the release before the tag is cut, so it
+      # must run the gate that can strand a tag. Without it the rehearsal built
+      # the shipped binary and never inspected its import table: the v0.0.1-rc.7
+      # closure failure (`maekon.exe -> mmdevapi.dll`) was reachable here and
+      # went unseen, surfacing only in release.yml after the tag existed.
+      - name: Stage and verify signed Microsoft VC runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/stage-windows-vc-runtime.ps1 `
+            -PayloadRoot "target/${{ matrix.target }}/release"
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
+          $dumpbin = Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse |
+            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$dumpbin) { throw "x64 dumpbin.exe was not found under $installation" }
+          node scripts/verify-windows-runtime-closure.mjs `
+            --payload-root "target/${{ matrix.target }}/release" `
+            --dependency-tool $dumpbin.FullName `
+            --binary maekon.exe
 
       - name: GUI bootstrap smoke (Windows)
         if: runner.os == 'Windows'

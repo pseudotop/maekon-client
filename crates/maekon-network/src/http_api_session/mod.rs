@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
 use futures::stream::StreamExt;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tracing::warn;
 
 use maekon_api_contracts::provider_specs::{
@@ -37,7 +37,7 @@ use maekon_core::models::ai_session::{
 use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
 use maekon_core::ports::credential_source::CredentialSource;
 
-use crate::provider_error_body::provider_error_message;
+use maekon_http_core::provider_error_body::provider_error_message;
 
 /// Direct HTTP API session adapter for Anthropic and OpenAI providers.
 ///
@@ -50,6 +50,12 @@ pub struct HttpApiSession {
     credential: CredentialSource,
     provider_type: AiProviderType,
     history: Arc<RwLock<Vec<ChatMessage>>>,
+    /// #7574: per-session turn guard. Held from `send_message` (after the
+    /// D7 breaker fast-fail check) until the returned stream is fully
+    /// drained/dropped, so concurrent `send_message` calls on the same
+    /// session serialize instead of racing on `history` (mirrors
+    /// `GenericSubprocessSession::send_lock`).
+    send_lock: Arc<AsyncMutex<()>>,
     system_prompt: Option<String>,
     default_tools: Option<Vec<ToolDefinition>>,
     state: parking_lot::Mutex<SessionState>,
@@ -65,7 +71,7 @@ pub struct HttpApiSession {
     /// per spec O2: initial HTTP status is the breaker signal; mid-stream
     /// disconnects are not recorded (matches BatchUploader's
     /// "server-acknowledged" = success pattern).
-    breaker: Arc<crate::circuit_breaker::CircuitBreaker>,
+    breaker: Arc<maekon_http_core::circuit_breaker::CircuitBreaker>,
 }
 
 pub struct HttpApiSessionInit {
@@ -80,7 +86,7 @@ pub struct HttpApiSessionInit {
     /// D7: Shared per-endpoint circuit breaker registry (resolved by
     /// constructor using `endpoint`). Allows a single workspace registry
     /// to feed multiple session instances.
-    pub breaker_registry: Arc<crate::circuit_breaker::CircuitBreakerRegistry>,
+    pub breaker_registry: Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry>,
 }
 
 #[derive(Debug, Default)]
@@ -173,9 +179,15 @@ impl HttpApiSession {
         // fails on TLS backend initialization failure (the original reqwest::Client::new() also
         // panics under the same condition); we panic explicitly so we never fall back to a
         // redirect-following client.
-        let http_client = crate::outbound::hardened_client_builder()
-            .build()
-            .expect("하드닝 세션 HTTP 클라이언트 빌드 (TLS 백엔드 초기화)");
+        // #8045 C3: https_only backstop derived from the session endpoint (loopback
+        // local LLM like Ollama keeps cleartext; remote providers are HTTPS-only).
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&init.endpoint),
+        )
+        .build()
+        .unwrap_or_else(|error| {
+            panic!("hardened session HTTP client build failed (TLS backend init): {error}")
+        });
         let mut initial_history = Vec::new();
 
         if let Some(ref prompt) = init.system_prompt {
@@ -187,7 +199,7 @@ impl HttpApiSession {
         }
 
         // D7: resolve per-endpoint breaker.
-        let breaker_key = crate::resilience::endpoint_authority(&init.endpoint)
+        let breaker_key = maekon_http_core::resilience::endpoint_authority(&init.endpoint)
             .unwrap_or_else(|_| format!("malformed::{}", init.endpoint));
         let breaker = init.breaker_registry.get(&breaker_key);
 
@@ -199,6 +211,7 @@ impl HttpApiSession {
             credential: init.credential,
             provider_type: init.provider_type,
             history: Arc::new(RwLock::new(initial_history)),
+            send_lock: Arc::new(AsyncMutex::new(())),
             system_prompt: init.system_prompt,
             default_tools: init.default_tools,
             state: parking_lot::Mutex::new(SessionState::Active),
@@ -405,13 +418,20 @@ impl ConversationSession for HttpApiSession {
         // request assembly.
         if matches!(
             self.breaker.check(),
-            crate::circuit_breaker::CircuitState::Open { .. }
+            maekon_http_core::circuit_breaker::CircuitState::Open { .. }
         ) {
             return Err(CoreError::ServiceUnavailable {
                 code: maekon_core::error_codes::ServiceCode::CircuitOpen,
                 message: format!("circuit open for {}", self.endpoint),
             });
         }
+
+        // #7574: acquire the turn guard after the fast-fail breaker check
+        // (which must never block on an in-flight turn) but before any
+        // history read/mutation, so a concurrent second `send_message` call
+        // blocks until this turn's stream is fully drained/dropped instead
+        // of racing on `history`.
+        let turn_guard = self.send_lock.clone().lock_owned().await;
 
         let shape = provider_specs::resolved_request_shape(
             self.provider_type,
@@ -467,15 +487,16 @@ impl ConversationSession for HttpApiSession {
         // status ONLY. Mid-stream disconnects in the returned stream do NOT
         // affect breaker state (indistinguishable from client-side cancel).
         let signal = match &send_result {
-            Ok(resp) => {
-                crate::resilience::classify_for_breaker(Some(resp.status().as_u16()), false)
-            }
-            Err(_) => crate::resilience::classify_for_breaker(None, true),
+            Ok(resp) => maekon_http_core::resilience::classify_for_breaker(
+                Some(resp.status().as_u16()),
+                false,
+            ),
+            Err(_) => maekon_http_core::resilience::classify_for_breaker(None, true),
         };
         match signal {
-            crate::resilience::BreakerSignal::Success => self.breaker.record_success(),
-            crate::resilience::BreakerSignal::Failure => self.breaker.record_failure(),
-            crate::resilience::BreakerSignal::Neutral => {}
+            maekon_http_core::resilience::BreakerSignal::Success => self.breaker.record_success(),
+            maekon_http_core::resilience::BreakerSignal::Failure => self.breaker.record_failure(),
+            maekon_http_core::resilience::BreakerSignal::Neutral => {}
         }
         let response = send_result.map_err(|e| {
             *self.state.lock() = SessionState::Failed;
@@ -496,9 +517,9 @@ impl ConversationSession for HttpApiSession {
         let status = response.status();
         if !status.is_success() {
             // #6949: cap the HTTP API session error response body (OOM guard)
-            let body = crate::outbound::read_text_capped(
+            let body = maekon_http_core::outbound::read_text_capped(
                 response,
-                crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+                maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
             )
             .await
             .ok();
@@ -546,6 +567,11 @@ impl ConversationSession for HttpApiSession {
 
         // Build the ResponseStream using SSE parsing
         let stream: ResponseStream = Box::pin(try_stream! {
+            // #7574: keep the turn guard alive for the lifetime of this
+            // stream (dropped when the stream completes or is dropped early)
+            // so the next queued `send_message` cannot start until this turn
+            // releases it.
+            let _turn_guard = turn_guard;
             let mut accumulated = String::new();
             let mut tool_calls: Vec<PartialToolCall> = Vec::new();
             // Running total across accumulated assistant text + every tool-call's

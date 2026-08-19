@@ -1,16 +1,25 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { CapturePermissionNotice } from './components/CapturePermissionNotice'
 import { DevToolbar } from './components/DevToolbar'
-import ErrorBoundary from './components/ErrorBoundary'
 import { MicrophoneUpgradeNotice } from './components/MicrophoneUpgradeNotice'
-import { ActivityBar, CommandPalette, ShortcutsHelp, SidePanel, StatusBar, TitleBar } from './components/shell'
+import {
+  ActivityBar,
+  CommandPalette,
+  ShortcutsHelp,
+  SidePanel,
+  StatusBar,
+  SyntheticDataBadge,
+  TitleBar,
+} from './components/shell'
 import { ToastContainer } from './components/ui'
 import { ShellLayoutProvider } from './contexts/ShellLayoutContext'
 import { useCommandPalette } from './hooks/useCommandPalette'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useResetScrollOnPath } from './hooks/useResetScrollOnPath'
 import { useShellLayout } from './hooks/useShellLayout'
 import { useTauriEventBridge } from './hooks/useTauriEventBridge'
-import { RouteRenderer, useCurrentGroup, useCurrentRoute } from './routes'
+import { PersistentRouteRenderer, useCurrentGroup, useCurrentRoute } from './routes'
 import { layout } from './styles/tokens'
 import { cn } from './utils/cn'
 
@@ -23,6 +32,7 @@ function AppShell() {
   const activeGroup = useCurrentGroup()
   const { isOpen: isPaletteOpen, open: openPalette, close: closePalette, toggle: togglePalette } = useCommandPalette()
   const [isHelpOpen, setIsHelpOpen] = useState(false)
+  const mainContentRef = useRef<HTMLElement>(null)
   const openHelp = useCallback(() => setIsHelpOpen(true), [])
   const closeHelp = useCallback(() => setIsHelpOpen(false), [])
 
@@ -58,6 +68,7 @@ function AppShell() {
 
   useKeyboardShortcuts(shortcutHandlers)
   useTauriEventBridge()
+  useResetScrollOnPath(mainContentRef)
 
   return (
     <ShellLayoutProvider sidebarCollapsed={sidebarCollapsed}>
@@ -72,6 +83,15 @@ function AppShell() {
 
         <TitleBar onSearchOpen={openPalette} />
 
+        {/*
+          #9611 WD-02.3: the synthetic-data label lives HERE, above the router
+          and outside <main>, so no route change, modal, or route-level error
+          boundary can unmount it. A viewer looking at a screenshot of any
+          screen in a demo session must be able to tell the data is not real —
+          not only on the one page that fetched it.
+        */}
+        <SyntheticDataBadge />
+
         <ActivityBar onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed} />
 
         <SidePanel
@@ -84,14 +104,14 @@ function AppShell() {
         />
 
         <main
+          ref={mainContentRef}
           id="main-content"
           className={cn('min-w-0 overflow-y-auto', layout.mainContent.bg)}
           aria-label={t('appShell.mainContent', 'Main content')}
         >
+          <CapturePermissionNotice />
           <MicrophoneUpgradeNotice />
-          <ErrorBoundary>
-            <RouteRenderer />
-          </ErrorBoundary>
+          <PersistentRouteRenderer />
         </main>
 
         <StatusBar />

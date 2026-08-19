@@ -37,6 +37,12 @@ pub struct StorageWebContext {
     /// #4478 G3: one-shot erasure-propagation signal the `delete_all_data`
     /// service sets so a local GDPR erasure reaches LAN sync peers.
     pub erasure_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// ADR-033 §4: vault mirror writer for the erase orchestrator's Phase-3.
+    /// `Some` on every production shape; `None` fails the erase loud (the
+    /// #8039 discipline — never report Art.17 success with generated vault
+    /// files possibly remaining).
+    pub memory_vault_writer:
+        Option<Arc<dyn maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort>>,
 }
 
 impl StorageWebContext {
@@ -47,6 +53,7 @@ impl StorageWebContext {
             frame_storage: state.core.frame_storage.clone(),
             pii_sanitizer: state.diagnostics.pii_sanitizer.clone(),
             erasure_requested: state.core.erasure_requested.clone(),
+            memory_vault_writer: state.core.memory_vault_writer.clone(),
         }
     }
 }

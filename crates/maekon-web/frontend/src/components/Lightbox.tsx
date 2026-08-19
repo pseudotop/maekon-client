@@ -1,9 +1,10 @@
 import { useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { iconSize, motion } from '../styles/tokens'
+import FrameImage from './FrameImage'
 
 interface LightboxProps {
-  imageUrl: string
+  imageUrl: string | null | undefined
   alt?: string
   onClose: () => void
   onPrev?: () => void
@@ -94,13 +95,11 @@ export default function Lightbox({
       )}
 
       {/* UI note */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: onClick only prevents bubble to backdrop, not interactive */}
-      <img
-        src={imageUrl}
-        alt={alt}
-        className="max-h-[90vh] max-w-[90vw] object-contain"
-        onClick={(e) => e.stopPropagation()}
-      />
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard close is handled by the dialog's global keydown listener */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: click only stops propagation to the backdrop; not an interactive control */}
+      <div className="flex max-h-[90vh] max-w-[90vw] items-center justify-center" onClick={(e) => e.stopPropagation()}>
+        <FrameImage imageUrl={imageUrl} alt={alt} imgClassName="max-h-[90vh] max-w-[90vw] object-contain" />
+      </div>
 
       {/* UI note */}
       {hasNext && onNext && (

@@ -9,30 +9,128 @@ use std::sync::Arc;
 
 pub mod benchmark;
 
+/// Platform-independent WebP decode helper used by `windows` (WIC has no
+/// WebP codec). Unconditionally compiled — not gated by `target_os` — so
+/// it stays unit-testable on every development host, mirroring the
+/// `benchmark` module above.
+pub mod webp_decode;
+
 #[cfg(target_os = "macos")]
 mod macos;
 
 #[cfg(target_os = "windows")]
 mod windows;
 
-/// Create platform-native OCR provider.
+/// Default OCR recognition languages (BCP-47) for platform-native providers.
+///
+/// ONESHIM targets Korean-speaking users, so Korean is prioritized ahead of
+/// English. macOS Vision honors this list via `setRecognitionLanguages:`;
+/// Windows Media.Ocr instead uses the OS user-profile language packs (#8054).
+pub const DEFAULT_OCR_LANGUAGES: [&str; 2] = ["ko-KR", "en-US"];
+
+/// Owned copy of [`DEFAULT_OCR_LANGUAGES`] for callers that thread a
+/// `Vec<String>` (e.g. config-driven overrides) into the OCR pipeline.
+#[must_use]
+pub fn default_ocr_languages() -> Vec<String> {
+    DEFAULT_OCR_LANGUAGES
+        .iter()
+        .map(|lang| (*lang).to_string())
+        .collect()
+}
+
+/// Create platform-native OCR provider with the default recognition languages.
 ///
 /// Returns `Some(Arc<dyn OcrProvider>)` on macOS (Vision.framework) and
 /// Windows (WinRT Media.Ocr), `None` on all other platforms.
 pub fn create_native_ocr() -> Option<Arc<dyn OcrProvider>> {
+    create_native_ocr_with_languages(&default_ocr_languages())
+}
+
+/// Create a platform-native OCR provider that recognizes `languages` (BCP-47
+/// identifiers, e.g. `ko-KR`, `en-US`).
+///
+/// macOS forwards the list to `VNRecognizeTextRequest.setRecognitionLanguages:`.
+/// Windows Media.Ocr resolves languages from the OS user profile, so the list
+/// is accepted for signature parity but not applied there. An empty list keeps
+/// each platform's built-in default.
+pub fn create_native_ocr_with_languages(languages: &[String]) -> Option<Arc<dyn OcrProvider>> {
     #[cfg(target_os = "macos")]
     {
-        Some(Arc::new(macos::MacOsNativeOcr))
+        Some(Arc::new(macos::MacOsNativeOcr::new(languages.to_vec())))
     }
 
     #[cfg(target_os = "windows")]
     {
+        let _ = languages;
         Some(Arc::new(windows::WindowsNativeOcr))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
+        let _ = languages;
         None
+    }
+}
+
+/// Whether a platform-native OCR engine CAN be constructed on the OS this
+/// binary is compiled for.
+///
+/// `true` on macOS (Vision.framework) and Windows (WinRT Media.Ocr), `false`
+/// on every other platform — including Linux, where `create_native_ocr()`
+/// always returns `None` and shipped builds do not compile the leptess
+/// (`feature = "ocr"`) fallback either (#7581/#7602).
+///
+/// Capability descriptors (UI feature flags, telemetry snapshots) should call
+/// this instead of duck-typing `create_native_ocr().is_some()`, which would
+/// construct — and immediately drop — a throwaway provider just to answer a
+/// yes/no availability question. This is the honest, single source of truth
+/// for "does this platform have ANY OCR engine wired into the shipped
+/// (non-leptess) build" (#7602 audit ①: the absence must be explicit and
+/// observable, never a silent hidden-empty).
+#[must_use]
+pub const fn native_ocr_platform_supported() -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::{create_native_ocr, native_ocr_platform_supported};
+
+    /// Cross-checks `native_ocr_platform_supported()` against
+    /// `create_native_ocr()` directly (not merely against the same `cfg!`
+    /// expression each is built from) so a future edit that updates one
+    /// function's platform list without the other is caught here instead of
+    /// silently drifting (#7602 audit ①).
+    #[test]
+    fn capability_flag_matches_create_native_ocr_availability() {
+        assert_eq!(
+            create_native_ocr().is_some(),
+            native_ocr_platform_supported(),
+            "native_ocr_platform_supported() must exactly track whether \
+             create_native_ocr() can construct a provider on this platform"
+        );
+    }
+
+    /// On this build target the flag must equal the documented macOS/Windows
+    /// allow-list — including `false` on every other platform (Linux).
+    #[test]
+    fn capability_flag_matches_documented_platform_allow_list() {
+        assert_eq!(
+            native_ocr_platform_supported(),
+            cfg!(any(target_os = "macos", target_os = "windows"))
+        );
+    }
+
+    /// Inspection-only on this macOS host — Linux-gated code cannot compile
+    /// here, so this test compiles and runs only on Linux CI. It proves by
+    /// construction that on Linux `create_native_ocr()` returns `None` AND
+    /// the capability descriptor honestly reports `false` for it, so no
+    /// caller can silently keep assuming OCR is present (#7602 audit ①).
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[test]
+    fn linux_reports_no_native_ocr_capability() {
+        assert!(create_native_ocr().is_none());
+        assert!(!native_ocr_platform_supported());
     }
 }
 

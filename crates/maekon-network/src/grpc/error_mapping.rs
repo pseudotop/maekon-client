@@ -1,5 +1,5 @@
 use crate::error::NetworkError;
-use crate::resilience::MAX_RETRY_AFTER_SECS;
+use maekon_http_core::resilience::MAX_RETRY_AFTER_SECS;
 use tonic::{Code, Status};
 
 const DEFAULT_RETRY_AFTER_SECS: u64 = 60;

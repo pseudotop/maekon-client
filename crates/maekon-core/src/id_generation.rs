@@ -44,7 +44,7 @@ pub fn generate_id(prefix: &str) -> String {
         is_valid_prefix(prefix),
         "invalid ADR-022 id prefix `{prefix}`"
     );
-    format!("{prefix}_{}", ulid::Ulid::new())
+    format!("{prefix}_{}", ulid::Ulid::generate())
 }
 
 /// Non-panicking variant of [`generate_id`] (#4344).
@@ -60,7 +60,7 @@ pub fn generate_id(prefix: &str) -> String {
 /// outside `a-z`/`0-9`/`_`.
 pub fn generate_id_checked(prefix: &str) -> Result<String, IdError> {
     if is_valid_prefix(prefix) {
-        Ok(format!("{prefix}_{}", ulid::Ulid::new()))
+        Ok(format!("{prefix}_{}", ulid::Ulid::generate()))
     } else {
         Err(IdError::InvalidPrefix {
             prefix: prefix.to_owned(),
@@ -93,9 +93,41 @@ mod tests {
     /// `grep -rhoE 'generate_id\("[^"]+"\)'`. When introducing a new prefix,
     /// update this list too so the registry does not drift into a panic.
     const USED_PREFIXES: &[&str] = &[
-        "ann", "aud", "audit", "cch", "clip", "clm", "consent", "ctx", "edg", "env", "erasure",
-        "evt", "fa", "flow", "hl", "input", "ovr", "pomo", "proc", "ptr", "q", "rcpt", "rect",
-        "req", "scene", "ses", "sug", "tkt", "win",
+        "ann",
+        "aud",
+        "audit",
+        "cch",
+        "clip",
+        "clm",
+        "consent",
+        "ctx",
+        "edg",
+        "env",
+        "erasure",
+        "evt",
+        "fa",
+        "flow",
+        "hl",
+        "input",
+        "notification_activation",
+        "ovr",
+        "pomo",
+        "proc",
+        "ptr",
+        "q",
+        "rcpt",
+        "rect",
+        "req",
+        "scene",
+        "ses",
+        "skact",
+        "sug",
+        "tcand",
+        "tkt",
+        "tmut",
+        "todo",
+        "wctx",
+        "win",
     ];
 
     #[test]

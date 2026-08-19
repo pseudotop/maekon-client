@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tauri::{command, AppHandle, Emitter};
 
+use maekon_core::error::CoreError;
 use maekon_core::models::ai_session::{
     validate_session_input_size, Attachment, ConversationSessionInfo, MessageContext,
     MessageRecord, MessageRole, OutboundMessage, SessionConfig, SessionMessage, SessionRecord,
@@ -38,6 +39,80 @@ fn require_session_manager_impl(
 /// deletes).
 fn session_storage_not_available() -> IpcError {
     IpcError::new("service.unavailable", "session storage not available")
+}
+
+/// Convert a persisted record into a historical session entry.
+///
+/// Session runtimes are intentionally process-local. After an app restart, a
+/// record can still contain its last live state even though no runtime exists
+/// in the current manager. Returning that stale state makes the Chat composer
+/// editable and guarantees `send_session_message` will fail with
+/// `not_found.resource_missing`. Only manager-owned sessions are live; every
+/// other persisted record is exposed as terminated/read-only history.
+fn historical_session_info(
+    record: &SessionRecord,
+    live_session_ids: &HashSet<String>,
+) -> Option<ConversationSessionInfo> {
+    if live_session_ids.contains(&record.session_id) {
+        return None;
+    }
+
+    let mut info = ConversationSessionInfo::from(record);
+    info.state = SessionState::Terminated;
+    Some(info)
+}
+
+/// #8057 (P2-2): decide the synthetic terminal the drain task must emit when a
+/// stream ended WITHOUT a provider terminal, so the chat UI never hangs on
+/// "generating".
+///
+/// - A `stream_failed` stream already surfaced an `Error`, and a
+///   `saw_terminal_result` stream already emitted its own terminal — both
+///   return `None` (nothing to synthesize).
+/// - A stream cut short by a LOCAL guard (`terminated_early`, e.g. the 1 MB
+///   response cap or a dead event channel) is closed with a benign
+///   `Result { done: true }`: the content already streamed, the turn is simply
+///   over.
+/// - A stream that just STOPPED with no terminal (codex app-server process died
+///   mid-turn → `recv` None; an SSE close with no `[DONE]`/`message_stop`)
+///   surfaces a retryable `incomplete_stream` error so the frontend can clear
+///   the spinner and offer a retry.
+fn synthetic_stream_terminal(
+    stream_failed: bool,
+    saw_terminal_result: bool,
+    terminated_early: bool,
+) -> Option<OutboundMessage> {
+    if stream_failed || saw_terminal_result {
+        return None;
+    }
+    Some(if terminated_early {
+        OutboundMessage::Result {
+            content: String::new(),
+            done: true,
+            usage: None,
+        }
+    } else {
+        OutboundMessage::Error {
+            code: "incomplete_stream".to_string(),
+            message: "stream ended before a completion signal was received".to_string(),
+            retryable: true,
+        }
+    })
+}
+
+/// Select the canonical assistant body after a passive stream finishes.
+/// Providers that emitted any Text frame own the body; terminal Result.content
+/// is a fallback only for transports that emitted no Text frames at all.
+fn finalize_assistant_content(
+    saw_text_frame: bool,
+    text_content: String,
+    terminal_result_content: String,
+) -> String {
+    if saw_text_frame {
+        text_content
+    } else {
+        terminal_result_content
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +199,7 @@ pub async fn send_session_message(
 
     let user_content = request.message.clone();
     let msg = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: request.message,
         attachments,
@@ -145,17 +221,33 @@ pub async fn send_session_message(
     let event_name = format!("ai-session:{}", request.session_id);
     let session_id = request.session_id;
 
+    // #8057 (P3): reserve an abort-registry slot so `interrupt_session_turn` can
+    // cancel this drain task for a backend without a native turn interrupt
+    // (HTTP/Ollama). The token is moved into the task (which deregisters itself
+    // on completion); the abort handle is bound after spawn.
+    let inflight = state.inflight_registry();
+    let inflight_token = inflight.reserve_token();
+    let inflight_task = inflight.clone();
+    let registry_key = session_id.clone();
+
     // Spawn a background task to drain the stream and emit events.
     let app_clone = app.clone();
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         /// Safety limit: truncate response if accumulated content exceeds 1 MB.
         const MAX_RESPONSE_BYTES: usize = 1_048_576;
 
         let mut assistant_content = String::new();
+        let mut terminal_result_content = String::new();
+        let mut saw_text_frame = false;
         let mut assistant_thinking: Option<String> = None;
         let mut assistant_tool_use: Option<String> = None;
         let mut total_input: u64 = 0;
         let mut total_output: u64 = 0;
+        let mut stream_failed = false;
+        let mut saw_terminal_result = false;
+        // #8057 (P2-2): set when the loop exits via a LOCAL guard (size cap /
+        // dead event channel) rather than the stream naturally ending.
+        let mut terminated_early = false;
 
         while let Some(item) = stream.next().await {
             match item {
@@ -163,6 +255,7 @@ pub async fn send_session_message(
                     // Accumulate for persistence
                     match &outbound {
                         OutboundMessage::Text { content, .. } => {
+                            saw_text_frame = true;
                             assistant_content.push_str(content);
                         }
                         OutboundMessage::Thinking { content, .. } => {
@@ -180,23 +273,51 @@ pub async fn send_session_message(
                             );
                         }
                         OutboundMessage::Result {
-                            usage: Some(ref u), ..
+                            content,
+                            usage,
+                            done,
                         } => {
-                            total_input = u.input_tokens;
-                            total_output = u.output_tokens;
-                            mgr_clone
-                                .accumulate_tokens(&session_id, u.input_tokens, u.output_tokens)
-                                .await;
+                            if !content.is_empty() {
+                                terminal_result_content.clear();
+                                terminal_result_content.push_str(content);
+                            }
+                            // #8057 (P2-1): take the per-field running MAX rather
+                            // than overwriting. A turn can report usage in more
+                            // than one chunk — Anthropic sends input on
+                            // `message_start` and output on `message_delta` — so a
+                            // plain overwrite let the later output-only chunk clobber
+                            // `total_input` back to 0 in the persisted MessageRecord.
+                            // Within one turn input_tokens is constant and
+                            // output_tokens is monotonic, so MAX yields the correct
+                            // totals for every provider. The durable ledger is fed
+                            // the raw per-chunk deltas (disjoint here), so it sums
+                            // to the same totals without double counting.
+                            if let Some(u) = usage {
+                                total_input = total_input.max(u.input_tokens);
+                                total_output = total_output.max(u.output_tokens);
+                                mgr_clone
+                                    .accumulate_tokens(&session_id, u.input_tokens, u.output_tokens)
+                                    .await;
+                            }
+                            if *done {
+                                saw_terminal_result = true;
+                            }
                         }
                         _ => {}
                     }
 
                     // Guard: stop accumulating if response exceeds safety limit
-                    if assistant_content.len() > MAX_RESPONSE_BYTES {
+                    let response_len = if saw_text_frame {
+                        assistant_content.len()
+                    } else {
+                        terminal_result_content.len()
+                    };
+                    if response_len > MAX_RESPONSE_BYTES {
                         tracing::warn!(
                             session_id = %session_id,
                             "response exceeded 1 MB limit, truncating stream"
                         );
+                        terminated_early = true;
                         break;
                     }
 
@@ -205,10 +326,12 @@ pub async fn send_session_message(
                             session_id = %session_id,
                             "failed to emit ai-session event: {e}"
                         );
+                        terminated_early = true;
                         break;
                     }
                 }
                 Err(err) => {
+                    stream_failed = true;
                     tracing::warn!(
                         session_id = %session_id,
                         "stream error: {err}"
@@ -228,35 +351,57 @@ pub async fn send_session_message(
             }
         }
 
+        assistant_content =
+            finalize_assistant_content(saw_text_frame, assistant_content, terminal_result_content);
+
+        if !stream_failed && saw_terminal_result {
+            mgr_clone.record_success(&session_id).await;
+        }
+
+        // #8057 (P2-2): a stream that ended without any terminal (Err /
+        // Result{done:true}) leaves the frontend spinner stuck forever. Emit a
+        // synthetic terminal so the UI always resolves the turn.
+        if let Some(terminal) =
+            synthetic_stream_terminal(stream_failed, saw_terminal_result, terminated_early)
+        {
+            tracing::warn!(
+                session_id = %session_id,
+                "stream ended without a terminal result; emitting synthetic terminal"
+            );
+            if let Err(e) = app_clone.emit(&event_name, &terminal) {
+                debug!("emit synthetic terminal failed: {e}");
+            }
+        }
+
         // Auto-extract suggestions from AI response
         if let Some(ref sgn_mgr) = suggestion_mgr {
             let extracted =
                 crate::commands::suggestion_parser::try_extract_suggestions(&assistant_content);
             if !extracted.is_empty() {
-                let count = extracted.len();
                 let mut queue = sgn_mgr.queue().lock().await;
-                for suggestion in extracted {
-                    queue.push(suggestion);
-                }
+                let admitted_count =
+                    crate::commands::suggestion_parser::admit_suggestions(&mut queue, extracted);
                 let queue_count = queue.len();
                 drop(queue);
 
-                let _ = app_clone.emit(
-                    "chat:suggestions-extracted",
-                    serde_json::json!({ "count": count, "sessionId": session_id }),
-                );
+                if admitted_count > 0 {
+                    let _ = app_clone.emit(
+                        "chat:suggestions-extracted",
+                        serde_json::json!({ "count": admitted_count, "sessionId": session_id }),
+                    );
 
-                // Also notify overlay
-                let _ = app_clone.emit(
-                    "overlay:suggestions-changed",
-                    serde_json::json!({ "count": queue_count }),
-                );
+                    // Also notify the overlay with the authoritative queue size.
+                    let _ = app_clone.emit(
+                        "overlay:suggestions-changed",
+                        serde_json::json!({ "count": queue_count }),
+                    );
 
-                debug!(
-                    count,
-                    session_id = %session_id,
-                    "auto-extracted suggestions from chat response"
-                );
+                    debug!(
+                        count = admitted_count,
+                        session_id = %session_id,
+                        "auto-extracted suggestions from chat response"
+                    );
+                }
             }
         }
 
@@ -300,7 +445,16 @@ pub async fn send_session_message(
                     .await;
             }
         }
+
+        // #8057 (P3): deregister this drain task's abort slot on natural
+        // completion (token-guarded so a newer same-session turn is untouched).
+        // An interrupt-abort skips this arm — `abort_inflight` already removed it.
+        inflight_task.deregister(&session_id, inflight_token);
     });
+
+    // Bind the abort handle now that the task is spawned (runs before the task is
+    // first polled, so it cannot deregister before it is registered).
+    inflight.bind(registry_key, inflight_token, handle.abort_handle());
 
     Ok(())
 }
@@ -343,26 +497,36 @@ pub async fn retry_ai_session(
     Ok(session.info())
 }
 
-/// List all AI sessions (active + persisted historical).
+/// List AI sessions (active + persisted historical), paginated over the
+/// persisted history. #8057 (P3): `offset` pages past the first `limit` records
+/// so older sessions beyond the window are reachable; `limit` defaults to
+/// `max_history_turns`. Live active sessions are prepended only on the first
+/// page (`offset == 0`) — they belong there and must not repeat on deeper pages.
 #[command]
 pub async fn list_ai_sessions(
     state: tauri::State<'_, AiSessionRuntimeState>,
+    limit: Option<u32>,
+    offset: Option<u32>,
 ) -> Result<Vec<ConversationSessionInfo>, IpcError> {
-    let mut result = vec![];
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or_else(|| state.max_history_turns());
 
-    if let Some(mgr) = state.manager_impl() {
-        result.extend(mgr.list_sessions().await);
-    }
+    let active: Vec<ConversationSessionInfo> = match state.manager_impl() {
+        Some(mgr) => mgr.list_sessions().await,
+        _ => vec![],
+    };
+    let live_session_ids: HashSet<String> = active
+        .iter()
+        .map(|session| session.session_id.clone())
+        .collect();
+    let mut result = if offset == 0 { active } else { vec![] };
 
-    // Merge persisted (historical) sessions.
-    // Reuse max_history_turns (default 100) as the session list limit.
+    // Merge persisted (historical) sessions for the requested page.
     if let Some(ss) = state.session_storage() {
-        let limit = state.max_history_turns();
-        if let Ok(persisted) = ss.list_sessions(limit).await {
-            let active_ids: HashSet<String> = result.iter().map(|s| s.session_id.clone()).collect();
+        if let Ok(persisted) = ss.list_sessions(limit, offset).await {
             for record in &persisted {
-                if !active_ids.contains(&record.session_id) {
-                    result.push(ConversationSessionInfo::from(record));
+                if let Some(historical) = historical_session_info(record, &live_session_ids) {
+                    result.push(historical);
                 }
             }
         }
@@ -420,12 +584,26 @@ pub async fn rename_ai_session(
 /// Get token usage for the current day across all sessions.
 #[command]
 pub async fn get_token_usage(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AiSessionRuntimeState>,
 ) -> Result<TokenUsageResponse, IpcError> {
+    use tauri::Manager;
     let mgr = require_session_manager_impl(&state)?;
 
     let (input, output) = mgr.get_global_token_usage().await;
     let budget = state.daily_token_budget().unwrap_or(0);
+    // #9466: expose the configured model/provider so the privacy panel can
+    // estimate spend from a local price table (never a network lookup).
+    let llm_api = app
+        .try_state::<crate::runtime_state::ConfigRuntimeState>()
+        .and_then(|cs| cs.config_manager().get().ai_provider.llm_api);
+    let (model, provider) = match llm_api {
+        Some(endpoint) => (
+            endpoint.model.clone(),
+            Some(format!("{:?}", endpoint.provider_type).to_lowercase()),
+        ),
+        None => (None, None),
+    };
     Ok(TokenUsageResponse {
         total_input_tokens: input,
         total_output_tokens: output,
@@ -435,6 +613,8 @@ pub async fn get_token_usage(
         } else {
             Some(budget.saturating_sub(input + output))
         },
+        model,
+        provider,
     })
 }
 
@@ -447,12 +627,35 @@ pub async fn get_token_usage(
 /// `ConversationSession::interrupt`.
 #[command]
 pub async fn interrupt_session_turn(
+    app: AppHandle,
     state: tauri::State<'_, AiSessionRuntimeState>,
     session_id: String,
 ) -> Result<(), IpcError> {
     let mgr = require_session_manager_impl(&state)?;
     let session = mgr.get_session(&session_id).await.map_err(IpcError::from)?;
-    session.interrupt().await.map_err(IpcError::from)
+    match session.interrupt().await {
+        Ok(()) => Ok(()),
+        // #8057 (P3): backends without a native in-flight-turn interrupt
+        // (HTTP/Ollama) return InvalidArguments. Fall back to aborting the
+        // background drain task so "stop" actually halts BYOK token consumption,
+        // and emit a terminal so the chat UI clears its spinner — the aborted
+        // task is cancelled before it can emit one itself.
+        Err(CoreError::InvalidArguments { .. }) => {
+            if state.abort_inflight(&session_id) {
+                let event_name = format!("ai-session:{session_id}");
+                let terminal = OutboundMessage::Result {
+                    content: String::new(),
+                    done: true,
+                    usage: None,
+                };
+                if let Err(e) = app.emit(&event_name, &terminal) {
+                    debug!("emit interrupt terminal failed: {e}");
+                }
+            }
+            Ok(())
+        }
+        Err(other) => Err(IpcError::from(other)),
+    }
 }
 
 /// Steer (course-correct) the in-flight turn of an AI session with additional
@@ -479,6 +682,7 @@ pub async fn steer_session_turn(
 
     let session = mgr.get_session(&session_id).await.map_err(IpcError::from)?;
     let msg = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: message,
         attachments: vec![],
@@ -532,14 +736,122 @@ pub struct TokenUsageResponse {
     pub total_output_tokens: u64,
     pub daily_budget: u64,
     pub budget_remaining: Option<u64>,
+    /// #9466: configured LLM model (from `config.ai.llm_api`), so the
+    /// privacy panel can price today's usage from a LOCAL reference table
+    /// (no network lookup). `None` when no endpoint/model is configured.
+    pub model: Option<String>,
+    /// #9466: configured provider type label (e.g. `anthropic`), same source.
+    pub provider: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::decision_to_bool;
-    use maekon_core::models::ai_session::{
-        validate_session_input_size, Attachment, MAX_SESSION_ATTACHMENTS, MAX_SESSION_INPUT_BYTES,
+    use super::{
+        decision_to_bool, finalize_assistant_content, historical_session_info,
+        synthetic_stream_terminal,
     };
+    use chrono::Utc;
+    use maekon_core::models::ai_session::{
+        validate_session_input_size, Attachment, OutboundMessage, SessionRecord, SessionState,
+        SessionTransport, MAX_SESSION_ATTACHMENTS, MAX_SESSION_INPUT_BYTES,
+    };
+    use std::collections::HashSet;
+
+    fn session_record(session_id: &str, state: SessionState) -> SessionRecord {
+        let now = Utc::now();
+        SessionRecord {
+            session_id: session_id.to_string(),
+            provider_name: "codex".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            transport: SessionTransport::Subprocess,
+            state,
+            system_prompt: None,
+            turn_count: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            created_at: now,
+            last_active: now,
+            terminated_at: None,
+            title: None,
+        }
+    }
+
+    #[test]
+    fn persisted_non_live_session_is_returned_as_terminated_history() {
+        let record = session_record("persisted-active", SessionState::Active);
+        let info = historical_session_info(&record, &HashSet::new())
+            .expect("non-live persisted session should be listed");
+
+        assert_eq!(info.session_id, record.session_id);
+        assert_eq!(info.state, SessionState::Terminated);
+    }
+
+    #[test]
+    fn live_session_is_not_duplicated_by_its_persisted_record() {
+        let record = session_record("live-session", SessionState::Active);
+        let live_ids = HashSet::from([record.session_id.clone()]);
+
+        assert!(historical_session_info(&record, &live_ids).is_none());
+    }
+
+    #[test]
+    fn result_content_is_used_only_when_no_text_frame_exists() {
+        assert_eq!(
+            finalize_assistant_content(false, String::new(), "result-only".to_string()),
+            "result-only"
+        );
+        assert_eq!(
+            finalize_assistant_content(
+                true,
+                "streamed text".to_string(),
+                "duplicate terminal body".to_string(),
+            ),
+            "streamed text"
+        );
+        assert_eq!(
+            finalize_assistant_content(true, String::new(), "terminal body".to_string()),
+            "",
+            "the presence of a Text frame, not its byte length, owns the response body"
+        );
+    }
+
+    #[test]
+    fn synthetic_terminal_none_when_stream_already_resolved() {
+        // #8057 (P2-2): a stream that already surfaced an Error, or already
+        // emitted a provider terminal, needs no synthetic terminal.
+        assert!(synthetic_stream_terminal(true, false, false).is_none());
+        assert!(synthetic_stream_terminal(false, true, false).is_none());
+        assert!(synthetic_stream_terminal(true, true, true).is_none());
+    }
+
+    #[test]
+    fn synthetic_terminal_incomplete_error_on_silent_stream_end() {
+        // A stream that simply stopped (codex process death / SSE close with no
+        // terminal) must surface a retryable incomplete_stream error so the UI
+        // clears the "generating" spinner.
+        match synthetic_stream_terminal(false, false, false) {
+            Some(OutboundMessage::Error {
+                code, retryable, ..
+            }) => {
+                assert_eq!(code, "incomplete_stream");
+                assert!(retryable);
+            }
+            other => panic!("expected incomplete_stream Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synthetic_terminal_done_result_on_local_early_termination() {
+        // A locally truncated stream (size cap / dead channel) already streamed
+        // its content — close it with a benign done Result, not an error.
+        match synthetic_stream_terminal(false, false, true) {
+            Some(OutboundMessage::Result { done, usage, .. }) => {
+                assert!(done);
+                assert!(usage.is_none());
+            }
+            other => panic!("expected done Result, got {other:?}"),
+        }
+    }
 
     #[test]
     fn accept_maps_true_decline_and_cancel_map_false() {

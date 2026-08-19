@@ -15,7 +15,7 @@ mod migration;
 mod path_resolution;
 pub(crate) mod persistence;
 
-pub use path_resolution::{config_dir, data_dir, managed_config_dir};
+pub use path_resolution::{config_dir, data_dir, keychain_service_name, managed_config_dir};
 
 use crate::config::{load_managed_config, AppConfig, ManagedConfig};
 use crate::error::CoreError;
@@ -156,9 +156,39 @@ impl ConfigManager {
         // Set when an existing config file fails to parse and we fall back to
         // the privacy-preserving recovery default (see below).
         let mut config_reset_from_corruption = false;
+        // #10985: set ONLY for the unreadable-newer case. The file on disk is
+        // well-formed and belongs to a build we cannot read, so nothing in this
+        // startup may write to it — not the fallback, and not the clamp
+        // rewrites that run after it. Suppressing the fallback alone left the
+        // clamps as a second door to the same destruction.
+        let mut config_is_from_newer_client = false;
         let mut initial = if config_path.exists() {
             match migration::load_and_migrate_from_file(&config_path) {
                 Ok(c) => c,
+                // #10985: a config written by a NEWER client is not corrupt. It
+                // is the user's settings, still well-formed, and the previous
+                // code overwrote it with recovery defaults — so rolling back to
+                // an older build silently destroyed them, and rolling forward
+                // again found a downgraded file. Read-only fallback here: run on
+                // defaults for this session, leave the file exactly as it is.
+                Err(e)
+                    if matches!(
+                        &e,
+                        CoreError::Config { code, .. }
+                            if *code == crate::error_codes::ConfigCode::SchemaTooNew
+                    ) =>
+                {
+                    error!(
+                        path = %config_path.display(),
+                        error = %e,
+                        "config was written by a newer client; running on defaults for this \
+                         session WITHOUT modifying the file — install the newer build again to \
+                         recover these settings"
+                    );
+                    config_reset_from_corruption = true;
+                    config_is_from_newer_client = true;
+                    AppConfig::fail_closed_recovery_default()
+                }
                 Err(e) => {
                     // Distinct error-level signal: a corrupt config means the
                     // user's prior privacy choices were lost. This is NOT the
@@ -171,8 +201,8 @@ impl ConfigManager {
                          defaults (telemetry/capture disabled until re-enabled)"
                     );
                     config_reset_from_corruption = true;
-                    // Fail-closed: do NOT re-seed the fresh-install default-on
-                    // telemetry/capture intent over an unrecoverable opt-out.
+                    // Fail-closed: do not seed any telemetry/capture intent
+                    // over an unrecoverable opt-out.
                     let recovery_config = AppConfig::fail_closed_recovery_default();
                     // Overwrite the corrupt file so the next launch is clean.
                     if let Err(e) = persistence::save_to_file(&config_path, &recovery_config) {
@@ -200,7 +230,19 @@ impl ConfigManager {
                     fields = ?clamped,
                     "managed policy clamped user config at startup (override blocked)"
                 );
-                if let Err(e) = persistence::save_to_file(&config_path, &initial) {
+                // #10985: the clamp is enforced in memory either way — the policy
+                // governs this session regardless. Persisting it is only about
+                // surviving a relaunch, and that is not worth writing recovery
+                // defaults over the newer build's intact settings. The newer
+                // build will re-apply the policy on its own next launch.
+                if config_is_from_newer_client {
+                    warn!(
+                        target: "managed_policy",
+                        path = %config_path.display(),
+                        "managed clamp NOT persisted: the config on disk was written by a newer \
+                         client and is preserved for it; the clamp applies to this session only"
+                    );
+                } else if let Err(e) = persistence::save_to_file(&config_path, &initial) {
                     debug!("save_to_file (managed clamp) failed: {e}");
                 }
             }
@@ -228,7 +270,19 @@ impl ConfigManager {
                 fields = ?bounds_clamped,
                 "config bounds clamped at startup (interval floors: fail-open; web.allow_external/port: fail-closed) — see `fields`"
             );
-            if let Err(e) = persistence::save_to_file(&config_path, &initial) {
+            // #10985: same reason as the managed clamp above. Today this is
+            // unreachable in the newer-client case because the recovery default
+            // is already in bounds — but that is a property of the current
+            // defaults, not a guarantee. Gating it here means a future default
+            // drifting out of bounds cannot reopen the destruction.
+            if config_is_from_newer_client {
+                warn!(
+                    target: "config_bounds",
+                    path = %config_path.display(),
+                    "bounds clamp NOT persisted: the config on disk was written by a newer client \
+                     and is preserved for it"
+                );
+            } else if let Err(e) = persistence::save_to_file(&config_path, &initial) {
                 debug!("save_to_file (bounds clamp) failed: {e}");
             }
         }

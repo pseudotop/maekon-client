@@ -59,6 +59,7 @@ pub(super) async fn run_analysis_tick(
     // reuse it (avoids re-running AppCategory::from_app_name's substring match at 3 sites
     // on the 1 Hz analysis hot path).
     let app_category = AppCategory::from_app_name(app_name);
+    let app_subcategory = ts.app_registry.classify(app_name).1;
 
     // 1. Classify event → TriggerInput
     let trigger_input = if app_changed {
@@ -80,11 +81,13 @@ pub(super) async fn run_analysis_tick(
 
     // 4. Classify work type
     let (work_type, engagement) = if let Some(ref content) = parsed_content {
-        ts.work_type_classifier.classify(
+        ts.work_type_classifier.classify_extended(
             &input_snap.keyboard,
             &input_snap.mouse,
             &content.content_label,
             app_category,
+            Some(app_subcategory),
+            input_snap.keystroke_profile.as_ref(),
         )
     } else {
         (
@@ -154,8 +157,6 @@ pub(super) async fn run_analysis_tick(
     };
 
     // 4e. Enrich terminal commands with accessibility text
-    let app_subcategory = ts.app_registry.classify(app_name).1;
-
     let terminal_command = focused_element
         .and_then(|fe| fe.extracted_text.as_deref())
         .and_then(|text| {

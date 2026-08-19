@@ -1,5 +1,17 @@
 mod codex_ui_approval_hook;
+// `FallbackLlmProvider`/`LoopbackLlmProvider` are constructed only by
+// `llm_resolver::resolve_local_model_llm_provider`'s `feature = "analysis"`
+// arm — the whole module (including its self-contained unit tests) is
+// unreachable under `--no-default-features`, so it is gated to match rather
+// than leaving the structs to trip `dead_code` there (#7743 ctd-W3 A2b
+// follow-up).
+#[cfg(feature = "analysis")]
 mod fallback_llm;
+// `GuardedAnalysisProvider` is constructed only by
+// `guard_external_analysis_provider` below, which is itself analysis-only
+// (its sole caller, `agent_runtime::analysis_helpers::build_analysis_provider`,
+// is `#[cfg(feature = "analysis")]`) — same rationale as `fallback_llm` above.
+#[cfg(feature = "analysis")]
 mod guarded_analysis;
 mod guarded_conversation;
 mod guarded_llm;
@@ -22,6 +34,8 @@ use std::sync::Arc;
 
 use maekon_core::config::{AiAccessMode, AiProviderConfig, PiiFilterLevel};
 use maekon_core::error::CoreError;
+// Only used by `guard_external_analysis_provider` below, itself gated.
+#[cfg(feature = "analysis")]
 use maekon_core::ports::analysis_provider::AnalysisProvider;
 use maekon_core::ports::llm_provider::LlmCallHealth;
 #[cfg(feature = "analysis")]
@@ -45,6 +59,11 @@ use types::ProviderSource as PS;
 
 use crate::subprocess_provider::probe_known_cli_surfaces;
 
+// Sole caller: `agent_runtime::analysis_helpers::build_analysis_provider`,
+// which is itself `#[cfg(feature = "analysis")]` — gate to match (#7743
+// ctd-W3 A2b follow-up). `GuardedAnalysisProvider` (constructed below) is
+// gated at its module declaration above for the same reason.
+#[cfg(feature = "analysis")]
 pub(crate) fn guard_external_analysis_provider(
     provider: Arc<dyn AnalysisProvider>,
     privacy_guard: Option<ExternalOcrPrivacyGuard>,

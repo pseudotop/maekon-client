@@ -23,7 +23,6 @@ use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)] // Variants constructed per-platform; serialized to frontend via serde
 pub enum DesktopPermissionState {
     Granted,
     NeedsAttention,
@@ -84,7 +83,13 @@ pub fn open_desktop_permission_settings(permission_kind: &str) -> Result<(), Str
         let url = macos_permission_settings_url(permission_kind).ok_or_else(|| {
             format!("Unsupported desktop permission settings kind: {permission_kind}")
         })?;
-        let status = std::process::Command::new("open")
+        // SEC-MON-01: resolve against the shared trusted-directory allowlist
+        // (maekon-monitor) instead of spawning a bare `open` — fail closed
+        // (no PATH fallback) when the binary is not found under any trusted
+        // system directory.
+        let open_path = maekon_monitor::resolve_trusted_binary("open")
+            .ok_or_else(|| "open not found under the trusted directory allowlist".to_string())?;
+        let status = std::process::Command::new(open_path)
             .arg(url)
             .status()
             .map_err(|err| format!("Failed to open macOS System Settings: {err}"))?;
@@ -626,6 +631,25 @@ fn macos_screen_capture_access_granted() -> bool {
     // by value. This is a read-only preflight with no pointer/lifetime or
     // thread-affinity obligations.
     unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+/// Cheap per-tick OS screen-capture permission probe for the monitor loop
+/// (#8686 AC4 mid-session revocation fail-closed axis).
+///
+/// macOS: `CGPreflightScreenCaptureAccess` — a read-only syscall safe to call
+/// every second. Other platforms have no revocable screen-recording permission
+/// concept we can preflight (Windows/Linux report `not_required`/`unavailable`
+/// in the snapshot), so the axis is always open there; xcap-level capture
+/// errors keep their existing warn-and-skip handling.
+pub(crate) fn screen_capture_os_permission_ok() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos_screen_capture_access_granted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
 }
 
 #[cfg(test)]

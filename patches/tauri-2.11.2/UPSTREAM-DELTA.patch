@@ -1,0 +1,429 @@
+# UPSTREAM-DELTA.patch -- tauri 2.11.2
+#
+# Unified diff: pristine crates.io source (static.crates.io tarball,
+# tauri-2.11.2.crate) -> vendored source at patches/tauri-2.11.2/.
+# This is the ground-truth record of what Maekon changed relative to
+# upstream. See ../README.md for the refresh procedure and the why/what
+# summary per crate.
+#
+# Regenerate with:
+#   curl -L https://static.crates.io/crates/tauri/tauri-2.11.2.crate -o /tmp/tauri-2.11.2.crate
+#   mkdir -p /tmp/pristine && tar xzf /tmp/tauri-2.11.2.crate -C /tmp/pristine
+#   diff -ruN --exclude=target --exclude=.cargo_vcs_info.json \
+#     --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock \
+#     /tmp/pristine/tauri-2.11.2 patches/tauri-2.11.2 > patches/tauri-2.11.2/UPSTREAM-DELTA.patch
+#
+# Excluded as crates.io tarball / repo-local packaging noise (see README
+# 'Exclusions' section): .cargo_vcs_info.json, .cargo-ok, Cargo.toml.orig,
+# Cargo.lock (per-patch-crate lockfiles were removed as non-shipping
+# Dependabot noise, PR #5862 / commit 1a4a0a85f0), target/.
+#
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/Cargo.toml vendored/Cargo.toml
+--- upstream/Cargo.toml
++++ vendored/Cargo.toml
+@@ -134,7 +134,7 @@
+ ]
+ wry = [
+     "webview2-com",
+-    "webkit2gtk",
++    "webkit6",
+     "tauri-runtime-wry",
+ ]
+ x11 = ["tauri-runtime-wry?/x11"]
+@@ -333,20 +333,19 @@
+ default-features = false
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.gtk]
+-version = "0.18"
+-features = ["v3_24"]
++version = "0.11"
++features = ["v4_6"]
++package = "gtk4"
+ 
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.webkit2gtk]
+-version = "2"
+-features = ["v2_40"]
++[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.webkit6]
++version = "0.6"
++features = ["v2_50"]
++package = "webkit6"
+ optional = true
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "windows", target_os = "macos"))'.dependencies.muda]
+ version = "0.19"
+-features = [
+-    "serde",
+-    "gtk",
+-]
++features = ["serde"]
+ default-features = false
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "windows", target_os = "macos"))'.dependencies.tray-icon]
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/mobile/ios-api/Sources/Tauri/Logger.swift vendored/mobile/ios-api/Sources/Tauri/Logger.swift
+--- upstream/mobile/ios-api/Sources/Tauri/Logger.swift
++++ vendored/mobile/ios-api/Sources/Tauri/Logger.swift
+@@ -13,35 +13,35 @@
+   private var stderrPipe: [Int32] = [-1, -1]
+   private var stdoutReadSource: DispatchSourceRead?
+   private var stderrReadSource: DispatchSourceRead?
+-    
++
+   func start() {
+     originalStdout = dup(STDOUT_FILENO)
+     originalStderr = dup(STDERR_FILENO)
+-        
++
+     guard Darwin.pipe(&stdoutPipe) == 0,
+       Darwin.pipe(&stderrPipe) == 0 else {
+       Logger.error("Failed to create stdout/stderr pipes")
+       return
+     }
+-        
++
+     dup2(stdoutPipe[1], STDOUT_FILENO)
+     dup2(stderrPipe[1], STDERR_FILENO)
+     close(stdoutPipe[1])
+     close(stderrPipe[1])
+-        
++
+     stdoutReadSource = createReader(
+       readPipe: stdoutPipe[0],
+       writeToOriginal: originalStdout,
+       label: "stdout"
+     )
+-        
++
+     stderrReadSource = createReader(
+       readPipe: stderrPipe[0],
+       writeToOriginal: originalStderr,
+       label: "stderr"
+     )
+   }
+-    
++
+   private func createReader(
+     readPipe: Int32,
+     writeToOriginal: Int32,
+@@ -51,18 +51,18 @@
+       fileDescriptor: readPipe,
+       queue: .global(qos: .utility)
+     )
+-        
++
+     source.setEventHandler {
+       let bufferSize = 4096
+       var buffer = [UInt8](repeating: 0, count: bufferSize)
+       let bytesRead = read(readPipe, &buffer, bufferSize)
+-            
++
+       if bytesRead > 0 {
+         let output = String(
+           bytes: buffer[0..<bytesRead],
+           encoding: .utf8
+         ) ?? ""
+-                
++
+         let trimmed = output.trimmingCharacters(in: .newlines)
+         if !trimmed.isEmpty {
+           // we're sending stderr to oslog, so we need to avoid recursive calls
+@@ -74,12 +74,12 @@
+           }
+         }
+       }
+-    } 
+-        
++    }
++
+     source.setCancelHandler {
+       close(readPipe)
+     }
+-        
++
+     source.resume()
+     return source
+   }
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/app.rs vendored/src/app.rs
+--- upstream/src/app.rs
++++ vendored/src/app.rs
+@@ -2082,7 +2082,7 @@
+   ///
+   /// Leverages [setURLSchemeHandler](https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/2875766-seturlschemehandler) on macOS,
+   /// [AddWebResourceRequestedFilter](https://docs.microsoft.com/en-us/dotnet/api/microsoft.web.webview2.core.corewebview2.addwebresourcerequestedfilter?view=webview2-dotnet-1.0.774.44) on Windows
+-  /// and [webkit-web-context-register-uri-scheme](https://webkitgtk.org/reference/webkit2gtk/stable/WebKitWebContext.html#webkit-web-context-register-uri-scheme) on Linux.
++  /// and [webkit-web-context-register-uri-scheme](https://webkitgtk.org/reference/webkit6/stable/WebKitWebContext.html#webkit-web-context-register-uri-scheme) on Linux.
+   ///
+   /// # Arguments
+   ///
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/manager/menu.rs vendored/src/manager/menu.rs
+--- upstream/src/manager/menu.rs
++++ vendored/src/manager/menu.rs
+@@ -85,9 +85,10 @@
+           target_os = "netbsd",
+           target_os = "openbsd"
+         ))]
+-        let _ = menu
+-          .inner()
+-          .init_for_gtk_window(raw.gtk_window, raw.default_vbox);
++        {
++          let _ = raw;
++          let _ = menu;
++        }
+       })
+     } else {
+       None
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/menu/menu.rs vendored/src/menu/menu.rs
+--- upstream/src/menu/menu.rs
++++ vendored/src/menu/menu.rs
+@@ -12,6 +12,7 @@
+ use crate::run_main_thread;
+ use crate::Window;
+ use crate::{AppHandle, Manager, Position, Runtime};
++#[cfg(any(target_os = "macos", target_os = "windows"))]
+ use muda::ContextMenu;
+ use muda::MenuId;
+ 
+@@ -63,11 +64,7 @@
+         target_os = "netbsd",
+         target_os = "openbsd"
+       ))]
+-      if let Ok(w) = window.gtk_window() {
+-        self_
+-          .inner()
+-          .show_context_menu_for_gtk_window(w.as_ref(), position);
+-      }
++      let _ = (window, self_, position);
+ 
+       #[cfg(windows)]
+       if let Ok(hwnd) = window.hwnd() {
+@@ -248,6 +245,7 @@
+     Ok(menu)
+   }
+ 
++  #[cfg(any(target_os = "macos", target_os = "windows"))]
+   pub(crate) fn inner(&self) -> &muda::Menu {
+     (*self.0).as_ref()
+   }
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/menu/submenu.rs vendored/src/menu/submenu.rs
+--- upstream/src/menu/submenu.rs
++++ vendored/src/menu/submenu.rs
+@@ -11,7 +11,9 @@
+ use crate::menu::SubmenuInner;
+ use crate::run_main_thread;
+ use crate::{AppHandle, Manager, Position, Runtime, Window};
+-use muda::{ContextMenu, Icon as MudaIcon, MenuId};
++#[cfg(any(target_os = "macos", target_os = "windows"))]
++use muda::ContextMenu;
++use muda::{Icon as MudaIcon, MenuId};
+ 
+ impl<R: Runtime> super::ContextMenu for Submenu<R> {
+   #[cfg(target_os = "windows")]
+@@ -56,11 +58,7 @@
+         target_os = "netbsd",
+         target_os = "openbsd"
+       ))]
+-      if let Ok(w) = window.gtk_window() {
+-        self_
+-          .inner()
+-          .show_context_menu_for_gtk_window(w.as_ref(), position);
+-      }
++      let _ = (window, self_, position);
+ 
+       #[cfg(windows)]
+       if let Ok(hwnd) = window.hwnd() {
+@@ -259,6 +257,7 @@
+     Ok(menu)
+   }
+ 
++  #[cfg(any(target_os = "macos", target_os = "windows"))]
+   pub(crate) fn inner(&self) -> &muda::Submenu {
+     (*self.0).as_ref()
+   }
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/plugin.rs vendored/src/plugin.rs
+--- upstream/src/plugin.rs
++++ vendored/src/plugin.rs
+@@ -596,7 +596,7 @@
+   ///
+   /// Leverages [setURLSchemeHandler](https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/2875766-seturlschemehandler) on macOS,
+   /// [AddWebResourceRequestedFilter](https://docs.microsoft.com/en-us/dotnet/api/microsoft.web.webview2.core.corewebview2.addwebresourcerequestedfilter?view=webview2-dotnet-1.0.774.44) on Windows
+-  /// and [webkit-web-context-register-uri-scheme](https://webkitgtk.org/reference/webkit2gtk/stable/WebKitWebContext.html#webkit-web-context-register-uri-scheme) on Linux.
++  /// and [webkit-web-context-register-uri-scheme](https://webkitgtk.org/reference/webkit6/stable/WebKitWebContext.html#webkit-web-context-register-uri-scheme) on Linux.
+   ///
+   /// # Known limitations
+   ///
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/test/mock_runtime.rs vendored/src/test/mock_runtime.rs
+--- upstream/src/test/mock_runtime.rs
++++ vendored/src/test/mock_runtime.rs
+@@ -490,7 +490,7 @@
+     target_os = "netbsd",
+     target_os = "openbsd"
+   ))]
+-  fn transient_for(self, parent: &impl gtk::glib::IsA<gtk::Window>) -> Self {
++  fn transient_for(self, parent: &impl gtk::prelude::IsA<gtk::Window>) -> Self {
+     self
+   }
+ 
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/webview/mod.rs vendored/src/webview/mod.rs
+--- upstream/src/webview/mod.rs
++++ vendored/src/webview/mod.rs
+@@ -152,7 +152,7 @@
+ 
+ #[cfg(feature = "wry")]
+ impl PlatformWebview {
+-  /// Returns [`webkit2gtk::WebView`] handle.
++  /// Returns [`webkit6::WebView`] handle.
+   #[cfg(any(
+     target_os = "linux",
+     target_os = "dragonfly",
+@@ -170,7 +170,7 @@
+       target_os = "openbsd"
+     )))
+   )]
+-  pub fn inner(&self) -> webkit2gtk::WebView {
++  pub fn inner(&self) -> webkit6::WebView {
+     self.0.clone()
+   }
+ 
+@@ -1273,7 +1273,7 @@
+       target_os = "openbsd",
+     )
+   ))]
+-  pub fn with_related_view(mut self, related_view: webkit2gtk::WebView) -> Self {
++  pub fn with_related_view(mut self, related_view: webkit6::WebView) -> Self {
+     self.webview_attributes.related_view.replace(related_view);
+     self
+   }
+@@ -1609,7 +1609,7 @@
+   ///
+   /// The closure is executed on the main thread.
+   ///
+-  /// Note that `webview2-com`, `webkit2gtk`, `objc2_web_kit` and similar crates may be updated in minor releases of Tauri.
++  /// Note that `webview2-com`, `webkit6`, `objc2_web_kit` and similar crates may be updated in minor releases of Tauri.
+   /// Therefore it's recommended to pin Tauri to at least a minor version when you're using `with_webview`.
+   ///
+   /// # Examples
+@@ -1626,9 +1626,9 @@
+     main_webview.with_webview(|webview| {
+       #[cfg(target_os = "linux")]
+       {
+-        // see <https://docs.rs/webkit2gtk/2.0.0/webkit2gtk/struct.WebView.html>
+-        // and <https://docs.rs/webkit2gtk/2.0.0/webkit2gtk/trait.WebViewExt.html>
+-        use webkit2gtk::WebViewExt;
++        // see <https://docs.rs/webkit6/2.0.0/webkit6/struct.WebView.html>
++        // and <https://docs.rs/webkit6/2.0.0/webkit6/trait.WebViewExt.html>
++        use webkit6::WebViewExt;
+         webview.inner().set_zoom_level(4.);
+       }
+ 
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/webview/webview_window.rs vendored/src/webview/webview_window.rs
+--- upstream/src/webview/webview_window.rs
++++ vendored/src/webview/webview_window.rs
+@@ -707,7 +707,7 @@
+     target_os = "openbsd"
+   ))]
+   #[must_use]
+-  pub fn transient_for_raw(mut self, parent: &impl gtk::glib::IsA<gtk::Window>) -> Self {
++  pub fn transient_for_raw(mut self, parent: &impl gtk::prelude::IsA<gtk::Window>) -> Self {
+     self.window_builder = self.window_builder.transient_for_raw(parent);
+     self
+   }
+@@ -1330,7 +1330,7 @@
+       target_os = "openbsd",
+     )
+   ))]
+-  pub fn with_related_view(mut self, related_view: webkit2gtk::WebView) -> Self {
++  pub fn with_related_view(mut self, related_view: webkit6::WebView) -> Self {
+     self.webview_builder = self.webview_builder.with_related_view(related_view);
+     self
+   }
+@@ -2302,7 +2302,7 @@
+   ///
+   /// The closure is executed on the main thread.
+   ///
+-  /// Note that `webview2-com`, `webkit2gtk`, `objc2_web_kit` and similar crates may be updated in minor releases of Tauri.
++  /// Note that `webview2-com`, `webkit6`, `objc2_web_kit` and similar crates may be updated in minor releases of Tauri.
+   /// Therefore it's recommended to pin Tauri to at least a minor version when you're using `with_webview`.
+   ///
+   /// # Examples
+@@ -2317,9 +2317,9 @@
+   ///       main_webview.with_webview(|webview| {
+   ///         #[cfg(target_os = "linux")]
+   ///         {
+-  ///           // see <https://docs.rs/webkit2gtk/2.0.0/webkit2gtk/struct.WebView.html>
+-  ///           // and <https://docs.rs/webkit2gtk/2.0.0/webkit2gtk/trait.WebViewExt.html>
+-  ///           use webkit2gtk::WebViewExt;
++  ///           // see <https://docs.rs/webkit6/2.0.0/webkit6/struct.WebView.html>
++  ///           // and <https://docs.rs/webkit6/2.0.0/webkit6/trait.WebViewExt.html>
++  ///           use webkit6::WebViewExt;
+   ///           webview.inner().set_zoom_level(4.);
+   ///         }
+   ///
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/window/mod.rs vendored/src/window/mod.rs
+--- upstream/src/window/mod.rs
++++ vendored/src/window/mod.rs
+@@ -749,7 +749,7 @@
+     target_os = "openbsd"
+   ))]
+   #[must_use]
+-  pub fn transient_for_raw(mut self, parent: &impl gtk::glib::IsA<gtk::Window>) -> Self {
++  pub fn transient_for_raw(mut self, parent: &impl gtk::prelude::IsA<gtk::Window>) -> Self {
+     self.window_builder = self.window_builder.transient_for(parent);
+     self
+   }
+@@ -1297,11 +1297,7 @@
+         target_os = "netbsd",
+         target_os = "openbsd"
+       ))]
+-      if let (Ok(gtk_window), Ok(gtk_box)) = (window.gtk_window(), window.default_vbox()) {
+-        let _ = menu_
+-          .inner()
+-          .init_for_gtk_window(&gtk_window, Some(&gtk_box));
+-      }
++      let _ = (window, menu_);
+     })?;
+ 
+     self.menu_lock().replace(WindowMenu {
+@@ -1338,9 +1334,7 @@
+           target_os = "netbsd",
+           target_os = "openbsd"
+         ))]
+-        if let Ok(gtk_window) = window.gtk_window() {
+-          let _ = menu.inner().remove_for_gtk_window(&gtk_window);
+-        }
++        let _ = (window, menu);
+       })?;
+     }
+ 
+@@ -1370,9 +1364,7 @@
+           target_os = "netbsd",
+           target_os = "openbsd"
+         ))]
+-        if let Ok(gtk_window) = window.gtk_window() {
+-          let _ = menu_.inner().hide_for_gtk_window(&gtk_window);
+-        }
++        let _ = (window, menu_);
+       })?;
+     }
+ 
+@@ -1398,9 +1390,7 @@
+           target_os = "netbsd",
+           target_os = "openbsd"
+         ))]
+-        if let Ok(gtk_window) = window.gtk_window() {
+-          let _ = menu_.inner().show_for_gtk_window(&gtk_window);
+-        }
++        let _ = (window, menu_);
+       })?;
+     }
+ 
+@@ -1427,8 +1417,9 @@
+           target_os = "netbsd",
+           target_os = "openbsd"
+         ))]
+-        if let Ok(gtk_window) = window.gtk_window() {
+-          let _ = tx.send(menu_.inner().is_visible_on_gtk_window(&gtk_window));
++        {
++          let _ = (window, menu_);
++          let _ = tx.send(false);
+         }
+       })?;
+ 

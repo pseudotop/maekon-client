@@ -21,17 +21,30 @@
 
 MaekonはONESHIMなしでも独立して利用できるApache-2.0 local-firstデスクトップエージェントです。ローカルコンテキストの収集、ユーザーが確認する次の行動候補、ポリシーゲート付き自動化、内蔵ダッシュボードを提供します。RustとTauri v2（Reactフロントエンドを包むWebViewシェル）で構築されており、macOS、Windows、Linuxでネイティブパフォーマンスを発揮します。
 
+公開チャネルは招待制Global Alpha向けの初期prereleaseです。Stable releaseや運用準備完了を示すものではありません。
+
 ## Source Buildクイックスタート
 
-公開リポジトリは利用可能ですが、公開GitHub Releaseアセットはまだ公開されていません。最初の公開リリースが利用可能になるまでは、ローカルのsource checkoutからMaekonを実行してください。
+公開リポジトリは利用可能で、`v0.0.1-rc.6`が現在の公開prereleaseです。GitHubの`latest` endpointはprereleaseを除外するため、release binaryの検証ではinstall guideのversion固定commandを使用してください。開発とdebug buildはローカルのsource checkoutから実行します。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
 cd maekon-client
+
+# Build the two bundled prerequisites the Tauri config requires before the app
+# can run from source (a fresh checkout has neither yet):
+#   1) the web dashboard frontend  -> crates/maekon-web/frontend/dist
+#   2) the sandbox-worker sidecar   -> src-tauri/maekon-sandbox-worker-<target-triple>
+(cd crates/maekon-web/frontend && pnpm install && pnpm build)
+cargo build -p maekon-sandbox-worker
+cp target/debug/maekon-sandbox-worker \
+  "src-tauri/maekon-sandbox-worker-$(rustc -vV | sed -n 's/host: //p')"
+
+# Run Maekon from source
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
-リリースインストーラーのコマンドは下記のインストール文書に記載されており、公開リリースアセットが公開された後に推奨パスになります。バージョン固定、署名検証の強制、アンインストール方法：
+リリースインストーラーのコマンドは下記のインストール文書に記載されています。Prereleaseのversion固定、署名検証の強制、アンインストール方法：
 - English: [`docs/install.md`](./docs/install.md)
 - Korean: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -39,7 +52,7 @@ cd maekon-client
 
 - **活動をガバナンスされたワークインサイトに整理**: コンテキスト、タイムライン、フォーカスパターン、中断、承認済み自動化パスをひとつの場所で追跡します。
 - **軽量なオンデバイス処理**: Edge処理（デルタエンコーディング、サムネイル、OCR）により転送量を削減し、高速なレスポンスを維持します。
-- **本番環境レベルのデスクトップスタック**: クロスプラットフォームバイナリ、自動アップデート、システムトレイ統合、ローカルWebダッシュボードを備えています。
+- **Global Alphaでデスクトップスタックを評価**: Prereleaseにはクロスプラットフォームソース、更新基盤、システムトレイ統合、ローカルWebダッシュボードが含まれます。利用前に対象buildとplatformを検証してください。
 
 ## 対象ユーザー
 
@@ -60,7 +73,7 @@ cd maekon-client
 Standaloneモードは現在利用可能です。
 
 Connectedモードはopt-inプレビューパスとしてのみ提供されています。
-リリース運用環境ではStandaloneモードがデフォルトの本番パスです。
+Global AlphaではStandaloneモードが現在のデフォルト評価パスです。
 
 ## セキュリティとプライバシーの概要
 
@@ -78,13 +91,30 @@ Connectedモードはopt-inプレビューパスとしてのみ提供されて�
 - 自動化イベントコントラクト: [docs/contracts/automation-event-contract.md](./docs/contracts/automation-event-contract.md)
 - AIプロバイダーコントラクト: [docs/contracts/ai-provider-contract.md](./docs/contracts/ai-provider-contract.md)
 
+### ソースで直接検証する
+
+上記のプライバシーに関する主張はマーケティング文言ではありません — 各主張は、このリポジトリで直接読み、ビルドし、テストできるコードに対応しています。READMEとソースは同一の検証済みツリーから一緒にexportされるため、この表は常にすぐ隣にあるコードを説明しています。
+
+| 主張 | 検証場所 |
+|---|---|
+| 除外/機密アプリはアップロード時ではなく**キャプチャ時点で**除外されます | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`)、キャプチャゲート配線: [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
+| Egress policyの対象として宣言されたruntime pathはローカル台帳に記録され、アプリ内で閲覧できます (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + リーダールート: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| メモリグラフが蓄積したユーザーに関する信念(claims)は閲覧・ワンクリック撤回が可能です (Privacy → Claims) | claimsルート: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| 同意はfail-closedです: 有効な同意がなければキャプチャしません | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
+| Vision pipelineの対象pathは、文書化された保存またはegress stepの前に設定済みPII filterを適用します | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| サポート対象の自動化実行pathはpolicy・sandbox・audit componentを通るよう設計されています | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+
+### ソース同期ポリシー
+
+このリポジトリはMaekon内部ソースの**検証済みスナップショットexport**です。スナップショットはリリース単位で検証後にexportされ — リリースタグが検証済み状態を示し、リポジトリは内部のすべてのコミットではなくリリースを追跡します。READMEとコードは常に同じツリーから生成されるため、上記の主張とコードのリンクは今読んでいるチェックアウトを正確に指しています。
+
 ## 機能
 
 ### コア機能
 - **リアルタイムコンテキストモニタリング**: アクティブウィンドウ、システムリソース、ユーザーアクティビティを追跡します
 - **Edgeイメージ処理**: スクリーンショットキャプチャ、デルタエンコーディング、サムネイル、OCR
 - **ポリシーゲート付き自動化**: 承認済みアクションをポリシー検査、サンドボックス隔離、監査ログ経由で実行します
-- **サーバー連携機能（プレビュー / Opt-in）**: 確認可能な次の行動候補とフィードバック同期は段階的検証用に提供されており、デフォルトの本番パスではありません
+- **サーバー連携機能（プレビュー / Opt-in）**: 確認可能な次の行動候補とフィードバック同期は段階的検証用に提供されており、デフォルトのStandaloneパスではありません
 - **システムトレイ**: バックグラウンドで実行され、クイックアクセスが可能です
 - **自動アップデート**: GitHub Releasesに基づく自動アップデート
 - **クロスプラットフォーム**: macOS、Windows、Linuxをサポートします
@@ -164,7 +194,7 @@ MAEKON_TARGET_HARD_LIMIT_MB=6144 \
 ```
 
 Connectedモードはプレビュー専用であり、明示的なサーバー/認証設定が必要です。
-環境でConnectedモードの検証が完了していない限り、Standaloneモードをデフォルトの本番パスとして使用してください。
+環境でConnectedモードの検証が完了していない限り、StandaloneモードをGlobal Alphaのデフォルトパスとして使用してください。
 
 macOS headless CI/リモートデバッグセッションなど、WindowServerがなくトレイの初期化が失敗する可能性がある場合:
 ```bash
@@ -214,17 +244,17 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
 ```
 
 ### リリースアセット
@@ -256,11 +286,13 @@ Maekon はアプリの表示名です。現在のリリースファイル名は�
 
 | 変数 | 説明 | デフォルト |
 |------|------|--------|
-| `MAEKON_EMAIL` | ログインメールアドレス（Connectedモード専用） | （Standaloneでは任意） |
-| `MAEKON_PASSWORD` | ログインパスワード（Connectedモード専用） | （Standaloneでは任意） |
 | `MAEKON_TESSDATA` | Tesseractデータパス | （任意） |
 | `MAEKON_DISABLE_TRAY` | システムトレイ初期化のスキップ（headless CI/リモートGUI smoke専用） | `0` |
 | `RUST_LOG` | ログレベル | `info` |
+
+ログイン資格情報は環境変数から読み込みません。**設定 → 一般 → アカウント**
+からサインインしてください（`--features server` 付きのビルドが必要）。
+サーバーURLは **設定 → 詳細設定 → ネットワークとサーバー** で設定します。
 
 ### 設定ファイル
 

@@ -4,7 +4,7 @@
 //! classification, vector RAG retrieval, and proactive coaching engine.
 
 // P2 nursery-hardening (PR-B): derive Eq alongside PartialEq when possible.
-#![deny(clippy::derive_partial_eq_without_eq)]
+// (Enforced workspace-wide via `[workspace.lints.clippy]`, #7719.)
 // Cast safety: statistical values, scores, durations — precision loss acceptable.
 #![allow(
     clippy::cast_precision_loss,
@@ -44,11 +44,13 @@ pub mod claim_promoter;
 pub mod clustering_strategy;
 pub mod constraint_builder;
 pub mod content_tracker;
+pub mod current_context;
 pub mod daily_digest_generator;
 pub mod daily_insight_generator;
 pub mod digest_exporter;
 pub mod document_heading;
 pub mod embedding_pipeline;
+pub mod focus_analyzer;
 pub mod focus_shared;
 pub mod gmm_detector;
 pub mod gui_aggregator;
@@ -59,6 +61,8 @@ pub mod hnsw_adapter;
 pub mod kmeans_adapter;
 pub mod llm_segment_summarizer;
 pub mod llm_work_type_refiner;
+pub mod memory_graph_projection;
+pub mod memory_vault_writer;
 pub mod param_resolver;
 mod pattern_miner;
 mod prompts;
@@ -75,6 +79,7 @@ mod title_bar_parser;
 pub mod vector_retriever;
 pub mod weekly_digest_generator;
 mod work_type_classifier;
+pub mod workflow_intelligence;
 
 pub mod coaching_engine;
 pub mod coaching_template;
@@ -82,9 +87,7 @@ pub mod feedback_tracker;
 pub mod few_shot_selector;
 pub mod regime_goal_tracker;
 
-pub use adaptive_trigger::{
-    AdaptiveCaptureCadence, AdaptiveTrigger, CaptureRateRegime, TriggerDecision,
-};
+pub use adaptive_trigger::{AdaptiveTrigger, TriggerDecision};
 pub use analyzer::ContextAnalyzer;
 pub use assembler::{
     humanize_time_ago, AnalysisContext, ContentSummaryEntry, ContextAssembler, CurrentActivity,
@@ -92,6 +95,10 @@ pub use assembler::{
 };
 pub use calibration_buffer::CalibrationBuffer;
 pub use content_tracker::ContentTracker;
+pub use current_context::{
+    BuiltCurrentContextPrompt, CurrentContextPromptInput, CURRENT_CONTEXT_SUGGESTION_PROMPT,
+    LOCAL_CURRENT_SCENE_SOURCE_ID,
+};
 pub use few_shot_selector::FewShotSelector;
 pub use param_resolver::ParamResolver;
 pub use pattern_miner::{detect_gui_patterns, GuiPattern, PatternMiner};
@@ -101,7 +108,7 @@ pub use regime_detector::RegimeDetector;
 pub use regime_manager::RegimeManager;
 pub use segment_buffer::SegmentBuffer;
 pub use segment_summarizer::{to_content_summary_entries, SegmentSummarizer};
-pub use suggestion_filter::filter_by_regime;
+pub use suggestion_filter::{apply_regime_acceptance_gate, filter_by_regime};
 pub use title_bar_parser::{ParsedContent, TitleBarParser};
 pub use work_type_classifier::WorkTypeClassifier;
 

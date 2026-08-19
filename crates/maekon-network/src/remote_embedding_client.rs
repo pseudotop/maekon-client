@@ -11,10 +11,10 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
-use crate::http_client::host_is_loopback;
-use crate::provider_error_body::provider_error_message;
-use crate::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
+use maekon_http_core::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
+use maekon_http_core::outbound::host_is_loopback;
+use maekon_http_core::provider_error_body::provider_error_message;
+use maekon_http_core::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
 
 /// Egress-ledger destination for remote embedding uploads (mirrors the
 /// `EGRESS_DESTINATION_FEATURE_PERF` const pattern). Distinct `external.*`
@@ -61,11 +61,10 @@ struct EmbeddingData {
     /// Position of this embedding in the original `input` array.
     ///
     /// OpenAI-compatible servers echo an `index` field so clients can reorder
-    /// when a strict-spec server returns `data` out of request order.  Defaults
-    /// to `0` when the server omits it; in that case the server-provided order
-    /// is preserved (a stable sort keeps equal-`index` items in place).
+    /// when a strict-spec server returns `data` out of request order. When every
+    /// item omits it, the server-provided order is preserved.
     #[serde(default)]
-    index: usize,
+    index: Option<usize>,
 }
 
 impl RemoteEmbeddingProvider {
@@ -115,10 +114,16 @@ impl RemoteEmbeddingProvider {
         // embedding text body. build() only fails on TLS backend initialization failure
         // (process-fatal); we panic explicitly there rather than falling back to a redirect-following
         // reqwest::Client::default().
-        let http_client = crate::outbound::hardened_client_builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
-            .build()
-            .expect("하드닝 embedding HTTP 클라이언트 빌드 (TLS 백엔드 초기화)");
+        // #8045 C3: https_only backstop derived from the target endpoint (a
+        // loopback local-embedding server keeps cleartext; remote is HTTPS-only).
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&endpoint),
+        )
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .unwrap_or_else(|error| {
+            panic!("hardened embedding HTTP client build failed (TLS backend init): {error}")
+        });
 
         // D7: resolve per-endpoint breaker; malformed endpoint falls back to
         // a "none" key so at least the construction succeeds and runtime
@@ -291,10 +296,12 @@ impl RemoteEmbeddingProvider {
             // a non-2xx with a multi-GB body to OOM the agent on the error path. The
             // body is only used to classify the failure, so a cap breach/read error
             // degrades to None (no body marker), never an unbounded buffer.
-            let error_body =
-                crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-                    .await
-                    .ok();
+            let error_body = maekon_http_core::outbound::read_text_capped(
+                response,
+                maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+            )
+            .await
+            .ok();
             let message = provider_error_message("Embedding API", status, error_body.as_deref());
             // Semantic HTTP status mapping per iter-54/55 pattern.
             return Err(match status.as_u16() {
@@ -328,20 +335,22 @@ impl RemoteEmbeddingProvider {
 
         // #6939: cap the provider response body before buffering/parse — a
         // compromised/MITM provider could otherwise stream multi-GB and OOM the agent.
-        let body_bytes =
-            crate::outbound::read_body_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-                .await
-                .map_err(|e| CoreError::Network {
-                    code: maekon_core::error_codes::NetworkCode::Generic,
-                    message: match e {
-                        crate::outbound::BodyReadError::Transport(err) => {
-                            format!("Failed to read embedding response: {err}")
-                        }
-                        crate::outbound::BodyReadError::TooLarge { len, cap } => {
-                            format!("embedding response exceeded cap {cap} bytes (len {len})")
-                        }
-                    },
-                })?;
+        let body_bytes = maekon_http_core::outbound::read_body_capped(
+            response,
+            maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|e| CoreError::Network {
+            code: maekon_core::error_codes::NetworkCode::Generic,
+            message: match e {
+                maekon_http_core::outbound::BodyReadError::Transport(err) => {
+                    format!("Failed to read embedding response: {err}")
+                }
+                maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
+                    format!("embedding response exceeded cap {cap} bytes (len {len})")
+                }
+            },
+        })?;
         let mut parsed: EmbeddingResponse =
             serde_json::from_slice(&body_bytes).map_err(|e| CoreError::Network {
                 code: maekon_core::error_codes::NetworkCode::Generic,
@@ -364,9 +373,37 @@ impl RemoteEmbeddingProvider {
 
         // Restore request order before positional binding: an OpenAI-compatible
         // server may return `data` reordered, with the original position carried
-        // in each item's `index` field (#6128). Stable sort keeps the
-        // server-provided order when `index` is absent (defaults to 0).
-        parsed.data.sort_by_key(|d| d.index);
+        // in each item's `index` field (#6128). If a server provides indices,
+        // require a complete, unique, in-range 0..N-1 set; otherwise duplicate or
+        // out-of-range indices can silently bind vectors to the wrong input.
+        if parsed.data.iter().any(|d| d.index.is_some()) {
+            let mut seen = vec![false; texts.len()];
+            for item in &parsed.data {
+                let Some(index) = item.index else {
+                    return Err(CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: "Embedding API mixed indexed and unindexed vectors".to_string(),
+                    });
+                };
+                if index >= texts.len() {
+                    return Err(CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!(
+                            "Embedding API returned index {index} out of range for {} inputs",
+                            texts.len()
+                        ),
+                    });
+                }
+                if seen[index] {
+                    return Err(CoreError::Network {
+                        code: maekon_core::error_codes::NetworkCode::Generic,
+                        message: format!("Embedding API returned duplicate index {index}"),
+                    });
+                }
+                seen[index] = true;
+            }
+            parsed.data.sort_by_key(|d| d.index.unwrap_or(usize::MAX));
+        }
 
         let target_dims = self.dimensions;
         let embeddings: Vec<Vec<f32>> = parsed
@@ -581,6 +618,84 @@ mod tests {
         assert!(
             err.to_string().contains("mismatch"),
             "error message should mention the count mismatch, got: {err}"
+        );
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_response_indices_error() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "data": [
+                        {"index": 0, "embedding": [0.1, 0.2, 0.3]},
+                        {"index": 0, "embedding": [0.4, 0.5, 0.6]}
+                    ]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let provider = RemoteEmbeddingProvider::new(
+            server.url(),
+            "test-key".to_string(),
+            "text-embedding-3-small".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        );
+
+        let err = provider
+            .embed_batch(&["first".to_string(), "second".to_string()])
+            .await
+            .expect_err("duplicate indices must error, not bind ambiguously");
+        assert!(
+            err.to_string().contains("duplicate"),
+            "error message should mention duplicate indices, got: {err}"
+        );
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn out_of_range_response_index_errors() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "data": [
+                        {"index": 0, "embedding": [0.1, 0.2, 0.3]},
+                        {"index": 2, "embedding": [0.4, 0.5, 0.6]}
+                    ]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let provider = RemoteEmbeddingProvider::new(
+            server.url(),
+            "test-key".to_string(),
+            "text-embedding-3-small".to_string(),
+            3,
+            30,
+            CircuitBreakerRegistry::new(),
+        );
+
+        let err = provider
+            .embed_batch(&["first".to_string(), "second".to_string()])
+            .await
+            .expect_err("out-of-range index must error before positional binding");
+        assert!(
+            err.to_string().contains("out of range"),
+            "error message should mention the index range, got: {err}"
         );
         mock.assert_async().await;
     }
@@ -828,7 +943,7 @@ mod tests {
         let key = endpoint_authority(&server_url).unwrap();
         let _ = registry.get_with_config(
             &key,
-            crate::circuit_breaker::CircuitBreakerConfig {
+            maekon_http_core::circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 3,
                 initial_cooldown: std::time::Duration::from_millis(50),
                 max_cooldown: std::time::Duration::from_millis(200),

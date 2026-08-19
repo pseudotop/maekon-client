@@ -1,3 +1,8 @@
+// Integration test binary (`tests/*.rs` is its own crate root, entirely
+// test-only) — not covered by `src/main.rs`'s `#[cfg_attr(test, allow(...))]`
+// (#7719 `significant_drop_tightening` workspace enforcement).
+#![allow(clippy::significant_drop_tightening)]
+
 use chrono::Utc;
 use maekon_core::models::suggestion::{FeedbackType, Priority, Suggestion, SuggestionType};
 use maekon_suggestion::history::SuggestionHistory;
@@ -201,6 +206,7 @@ async fn sse_to_receiver_queue_notifier_live_e2e() {
         Some(notifier.clone() as Arc<dyn DesktopNotifier>),
         queue.clone(),
         scorer,
+        None,
     );
 
     // 4. Drive receiver.run — the mock stream emits events in connection →

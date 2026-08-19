@@ -21,6 +21,20 @@ use maekon_api_contracts::ai_providers::{
 };
 use serde_json::{json, Value};
 
+fn decode_value<T>(value: Value, context: &str) -> T
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(value).unwrap_or_else(|error| panic!("{context}: {error}"))
+}
+
+fn encode_value<T>(value: T, context: &str) -> Value
+where
+    T: serde::Serialize,
+{
+    serde_json::to_value(value).unwrap_or_else(|error| panic!("{context}: {error}"))
+}
+
 /// Helper: deserialize JSON → DTO → re-serialize → compare structural
 /// equality. String-level equality is too brittle (whitespace, field order)
 /// — `serde_json::Value` equality compares the data, not the formatting.
@@ -28,9 +42,11 @@ fn round_trip<T>(reference: Value)
 where
     T: serde::de::DeserializeOwned + serde::Serialize,
 {
-    let dto: T = serde_json::from_value(reference.clone())
-        .expect("frozen JSON must deserialize into current DTO");
-    let reencoded = serde_json::to_value(&dto).expect("DTO must serialize");
+    let dto: T = decode_value(
+        reference.clone(),
+        "frozen JSON must deserialize into current DTO",
+    );
+    let reencoded = encode_value(&dto, "DTO must serialize");
     assert_eq!(
         reencoded, reference,
         "round-trip must preserve structural JSON shape"
@@ -67,10 +83,10 @@ fn provider_model_support_status_snake_case_round_trips() {
         ),
         (json!("unknown"), ProviderModelSupportStatus::Unknown),
     ] {
-        let parsed: ProviderModelSupportStatus = serde_json::from_value(sample.clone())
-            .unwrap_or_else(|e| panic!("decode {sample:?}: {e}"));
+        let parsed: ProviderModelSupportStatus =
+            decode_value(sample.clone(), &format!("decode {sample:?}"));
         assert_eq!(parsed, expected_variant);
-        let reencoded = serde_json::to_value(parsed).expect("encode");
+        let reencoded = encode_value(parsed, "encode provider model support status");
         assert_eq!(
             reencoded, sample,
             "enum re-encoding must match snake_case wire form"
@@ -93,7 +109,7 @@ fn provider_model_catalog_transport_spec_applies_serde_defaults_for_missing_fiel
         "response_shape": "openai_model_list",
     });
     let dto: ProviderModelCatalogTransportSpec =
-        serde_json::from_value(reference).expect("decode minimal v1 catalog spec");
+        decode_value(reference, "decode minimal v1 catalog spec");
 
     // The two booleans default to `true` via `default_true` per the DTO def.
     assert!(
@@ -132,8 +148,10 @@ fn forwards_compat_unknown_fields_are_ignored_on_deserialize() {
         "experimental_feature_flag": "stream_with_function_calls",
         "_meta": { "added_in_version": "v1.1" },
     });
-    let dto: ProviderTransportSpec = serde_json::from_value(reference)
-        .expect("future server JSON with extra fields must still decode");
+    let dto: ProviderTransportSpec = decode_value(
+        reference,
+        "future server JSON with extra fields must still decode",
+    );
 
     // Sanity check that the v1 fields are intact.
     assert_eq!(dto.method, "POST");
@@ -151,7 +169,7 @@ fn forwards_compat_unknown_fields_are_ignored_on_deserialize() {
 #[test]
 fn provider_model_capability_rules_decodes_empty_object_to_default() {
     let dto: ProviderModelCapabilityRules =
-        serde_json::from_value(json!({})).expect("empty object must decode to defaults");
+        decode_value(json!({}), "empty object must decode to defaults");
     assert_eq!(dto, ProviderModelCapabilityRules::default());
 
     // Each nested profile is itself default-empty.

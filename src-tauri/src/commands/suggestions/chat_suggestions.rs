@@ -12,7 +12,7 @@ use maekon_core::models::ai_session::{
 };
 use maekon_core::ports::conversation_session::SessionManager;
 
-use crate::commands::suggestion_parser::extract_suggestions;
+use crate::commands::suggestion_parser::{admit_suggestions, extract_suggestions};
 use crate::ipc_error::IpcError;
 use crate::runtime_state::{AiSessionRuntimeState, AppState, SuggestionRuntimeState};
 
@@ -20,9 +20,31 @@ use super::feedback::find_suggestion_explain_payload;
 use super::helpers::{ai_sessions_not_available, suggestions_not_available};
 
 const SUGGESTION_PROMPT: &str = r#"Based on our conversation context, generate 1-3 reviewable next-action candidates for the user.
-Format each suggestion as JSON on a single line: {"type":"...", "content":"...", "priority":"high|medium|low"}.
-Types: work_guidance, focus_reminder, task_suggestion, habit_reminder, context_insight.
-Only output the JSON objects, one per line, no other text."#;
+Each suggestion must be specific, practical, and relevant to the current discussion.
+Respond ONLY with one JSON object using this wrapper:
+{"suggestions":[{"type":"work_guidance","content":"...","priority":"medium","reasoning":"..."}]}
+Valid types: work_guidance, email_draft, productivity_tip, workflow_optimization, context_based.
+Valid priorities: low, medium, high, critical.
+Do not output JSONL, Markdown fences, or any text outside the wrapper."#;
+
+/// #9639: user-facing mapping for the screen-derived strict gate. These
+/// commands send screen-assembled content, so a failed window probe stays a
+/// denial (#9643 I2) — but the raw guard message ("External LLM blocked:
+/// active window context unavailable") reads like a security fault. Name the
+/// actual cause and the remedy instead.
+fn map_send_error(e: maekon_core::error::CoreError) -> IpcError {
+    if let maekon_core::error::CoreError::PolicyDenied { message, .. } = &e {
+        if message.contains("active window context unavailable") {
+            return IpcError::new(
+                "policy.denied",
+                "Screen context could not be read (no active window — check the \
+                 Accessibility permission), so this screen-based request was not \
+                 sent. Focus the target window and try again.",
+            );
+        }
+    }
+    IpcError::from(e)
+}
 
 /// Generate suggestions from an active chat session by sending a structured
 /// prompt and parsing the AI response. Returns the number of suggestions added.
@@ -53,6 +75,7 @@ pub async fn request_chat_suggestions(
     let session = mgr.get_session(&session_id).await.map_err(IpcError::from)?;
 
     let msg = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: SUGGESTION_PROMPT.to_string(),
         attachments: Vec::new(),
@@ -61,7 +84,7 @@ pub async fn request_chat_suggestions(
         response_format: None,
     };
 
-    let mut stream = session.send_message(&msg).await.map_err(IpcError::from)?;
+    let mut stream = session.send_message(&msg).await.map_err(map_send_error)?;
 
     // Drain stream and collect response text with a 60s timeout.
     // ResponseStream yields Result<OutboundMessage, CoreError>.
@@ -122,8 +145,7 @@ pub async fn request_chat_suggestions(
             format!("Suggestion generation failed: {e}"),
         )
     })?;
-    let count = suggestions.len() as u32;
-    if count == 0 {
+    if suggestions.is_empty() {
         return Err(IpcError::new(
             "provider.analysis_failed",
             "Suggestion generation returned no valid suggestions",
@@ -132,9 +154,7 @@ pub async fn request_chat_suggestions(
 
     // Push to queue
     let mut queue = suggestion_mgr.queue().lock().await;
-    for suggestion in suggestions {
-        queue.push(suggestion);
-    }
+    let admitted_count = admit_suggestions(&mut queue, suggestions);
     let queue_count = queue.len();
     drop(queue);
 
@@ -142,7 +162,7 @@ pub async fn request_chat_suggestions(
         overlay.emit_suggestions_changed(queue_count);
     }
 
-    Ok(count)
+    Ok(admitted_count)
 }
 
 /// Explain a suggestion in a chat session. Finds the suggestion from the queue
@@ -229,6 +249,9 @@ pub async fn explain_suggestion_in_chat(
 
     let user_content = prompt.clone();
     let msg = SessionMessage {
+        // #9643 review I2: the explain prompt quotes suggestion text that can
+        // itself derive from screen content — treat as screen-derived.
+        screen_derived: true,
         role: MessageRole::User,
         content: prompt,
         attachments: Vec::new(),
@@ -238,7 +261,7 @@ pub async fn explain_suggestion_in_chat(
     };
 
     let session_storage = ai_state.session_storage();
-    let stream = session.send_message(&msg).await.map_err(IpcError::from)?;
+    let stream = session.send_message(&msg).await.map_err(map_send_error)?;
 
     // Spawn streaming task to emit events + persist messages
     // (same pattern as send_session_message in ai_session.rs)
@@ -337,6 +360,30 @@ pub async fn explain_suggestion_in_chat(
 
 #[cfg(test)]
 mod tests {
+    use super::SUGGESTION_PROMPT;
+
+    #[test]
+    fn suggestion_prompt_matches_canonical_wrapper_and_type_contract() {
+        assert!(SUGGESTION_PROMPT.contains("{\"suggestions\":["));
+        for suggestion_type in [
+            "work_guidance",
+            "email_draft",
+            "productivity_tip",
+            "workflow_optimization",
+            "context_based",
+        ] {
+            assert!(SUGGESTION_PROMPT.contains(suggestion_type));
+        }
+        for unsupported_type in [
+            "focus_reminder",
+            "task_suggestion",
+            "habit_reminder",
+            "context_insight",
+        ] {
+            assert!(!SUGGESTION_PROMPT.contains(unsupported_type));
+        }
+    }
+
     /// #6121 regression: both chat-suggestion commands must enforce the daily
     /// token-budget gate before calling `send_message`, and must record token
     /// usage from streamed `Result` frames — mirroring `send_session_message`.

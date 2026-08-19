@@ -256,7 +256,11 @@ mod tests {
 
     #[test]
     fn anthropic_claude3_sonnet_in_warn_window() {
-        let in_warn = ts("2026-01-15T00:00:00Z");
+        // #9197: This test pins the policy JSON dates as a fixture. Correcting
+        // claude-3-sonnet to its actual retirement date (2025-07-21) moved the
+        // warning window to 2025-05-21..2025-07-21. Preserve the warning-window
+        // behavior assertion and move only the timestamp into the new window.
+        let in_warn = ts("2025-06-15T00:00:00Z");
         let decision = evaluate_model_lifecycle_at(
             AiProviderType::Anthropic,
             "claude-3-sonnet-20240229",
@@ -267,6 +271,35 @@ mod tests {
             matches!(decision, ModelLifecycleDecision::Warn { .. }),
             "expected Warn, got {decision:?}"
         );
+    }
+
+    #[test]
+    fn anthropic_retired_models_have_replacement_that_is_not_itself_retired() {
+        // #9197: The root policy defect was a retired-model-to-retired-model
+        // migration. Require every Anthropic replacement to remain absent from
+        // the retiring model set so the regression cannot return.
+        let catalog = super::catalog::policy_catalog().unwrap();
+        let retiring: std::collections::HashSet<&str> = catalog
+            .rules
+            .iter()
+            .filter(|r| r.provider_type == "Anthropic")
+            .map(|r| r.model.as_str())
+            .collect();
+
+        for rule in catalog
+            .rules
+            .iter()
+            .filter(|r| r.provider_type == "Anthropic")
+        {
+            let Some(replacement) = rule.replacement.as_deref() else {
+                continue;
+            };
+            assert!(
+                !retiring.contains(replacement),
+                "`{}` 의 replacement `{replacement}` 자체가 은퇴 대상이다",
+                rule.model
+            );
+        }
     }
 
     #[test]

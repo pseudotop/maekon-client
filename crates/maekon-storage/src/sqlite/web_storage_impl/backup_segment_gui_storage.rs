@@ -20,12 +20,13 @@ use async_trait::async_trait;
 
 use maekon_core::error::CoreError;
 use maekon_core::models::storage_records::{
-    EventExportRecord, FrameExportRecord, FrameTagLinkRecord, GuiInteractionRecord,
-    HourlyMetricsRecord, MetricExportRecord, NewGuiInteraction, SegmentDetailRecord, TagRecord,
+    EventExportRecord, FrameExportRecord, FrameTagLinkRecord, HourlyMetricsRecord,
+    MetricExportRecord, NewGuiInteraction, SegmentDetailRecord, TagRecord,
 };
-use maekon_core::ports::web_storage::{BackupStorage, GuiInteractionStorage, SegmentQueryStorage};
+use maekon_core::ports::web_storage::{
+    BackupStorage, GuiInteractionStorage, PersonalDataTableExport, SegmentQueryStorage,
+};
 
-use super::scrub_basic_pii;
 use crate::error::StorageError;
 use crate::sqlite::SqliteStorage;
 
@@ -47,11 +48,25 @@ impl BackupStorage for SqliteStorage {
             .map_err(Into::into)
     }
 
+    async fn export_personal_data_tables(&self) -> Result<Vec<PersonalDataTableExport>, CoreError> {
+        SqliteStorage::export_personal_data_tables_async(self)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn list_event_exports(
         &self,
         from: &str,
         to: &str,
     ) -> Result<Vec<EventExportRecord>, CoreError> {
+        #[cfg(debug_assertions)]
+        if let Some(fault) = super::qc_storage_pressure::export_fault_from_env() {
+            tracing::warn!(
+                qc_fault = fault.as_str(),
+                "isolated QC storage-pressure fault injected before event export read"
+            );
+            return Err(fault.into_core_error());
+        }
         SqliteStorage::list_event_exports_async(self, from, to)
             .await
             .map_err(Into::into)
@@ -62,6 +77,14 @@ impl BackupStorage for SqliteStorage {
         from: &str,
         to: &str,
     ) -> Result<Vec<MetricExportRecord>, CoreError> {
+        #[cfg(debug_assertions)]
+        if let Some(fault) = super::qc_storage_pressure::export_fault_from_env() {
+            tracing::warn!(
+                qc_fault = fault.as_str(),
+                "isolated QC storage-pressure fault injected before metric export read"
+            );
+            return Err(fault.into_core_error());
+        }
         SqliteStorage::list_metric_exports_async(self, from, to)
             .await
             .map_err(Into::into)
@@ -72,6 +95,14 @@ impl BackupStorage for SqliteStorage {
         from: &str,
         to: &str,
     ) -> Result<Vec<FrameExportRecord>, CoreError> {
+        #[cfg(debug_assertions)]
+        if let Some(fault) = super::qc_storage_pressure::export_fault_from_env() {
+            tracing::warn!(
+                qc_fault = fault.as_str(),
+                "isolated QC storage-pressure fault injected before frame export read"
+            );
+            return Err(fault.into_core_error());
+        }
         SqliteStorage::list_frame_exports_async(self, from, to)
             .await
             .map_err(Into::into)
@@ -92,7 +123,7 @@ impl BackupStorage for SqliteStorage {
         name: &str,
         color: &str,
         created_at: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<i64>, CoreError> {
         // Move owned data into the Send + 'static closure (no borrowed &str).
         SqliteStorage::upsert_backup_tag_async(
             self,
@@ -110,7 +141,7 @@ impl BackupStorage for SqliteStorage {
         frame_id: i64,
         tag_id: i64,
         created_at: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<bool, CoreError> {
         SqliteStorage::upsert_backup_frame_tag_async(self, frame_id, tag_id, created_at.to_owned())
             .await
             .map_err(Into::into)
@@ -123,7 +154,7 @@ impl BackupStorage for SqliteStorage {
         timestamp: &str,
         app_name: Option<&str>,
         window_title: Option<&str>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<bool, CoreError> {
         SqliteStorage::upsert_backup_event_async(
             self,
             event_id.to_owned(),
@@ -147,7 +178,7 @@ impl BackupStorage for SqliteStorage {
         width: i32,
         height: i32,
         ocr_text: Option<&str>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<i64>, CoreError> {
         SqliteStorage::upsert_backup_frame_async(
             self,
             id,
@@ -195,15 +226,6 @@ impl GuiInteractionStorage for SqliteStorage {
             .map_err(Into::into)
     }
 
-    async fn list_gui_interactions_for_segment(
-        &self,
-        segment_id: &str,
-    ) -> Result<Vec<GuiInteractionRecord>, CoreError> {
-        SqliteStorage::list_gui_interactions_for_segment_async(self, segment_id)
-            .await
-            .map_err(Into::into)
-    }
-
     async fn query_gui_interaction_density(
         &self,
         start: &str,
@@ -226,12 +248,8 @@ impl GuiInteractionStorage for SqliteStorage {
 /// before entering the `spawn_blocking` closure (no borrowed lifetime fields).
 pub(crate) struct OwnedGuiInteraction {
     event_id: String,
-    segment_id: Option<String>,
     timestamp: String,
-    element_text: Option<String>,
-    element_type: Option<String>,
     interaction_type: String,
-    bbox_json: Option<String>,
     app_name: String,
     type_confidence: f32,
 }
@@ -332,22 +350,13 @@ impl SqliteStorage {
         conn: &rusqlite::Connection,
         params: &OwnedGuiInteraction,
     ) -> Result<(), StorageError> {
-        // Defense-in-depth: basic PII scrub on element_text at storage boundary.
-        // Primary filtering is the caller's responsibility (see port doc comment).
-        let scrubbed_text = params.element_text.as_deref().map(scrub_basic_pii);
-        let scrubbed_ref = scrubbed_text.as_deref();
-
         conn.execute(
-            "INSERT INTO gui_interactions (event_id, segment_id, timestamp, element_text, element_type, interaction_type, bbox_json, app_name, type_confidence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO gui_interactions (event_id, timestamp, interaction_type, app_name, type_confidence)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
                 params.event_id,
-                params.segment_id,
                 params.timestamp,
-                scrubbed_ref,
-                params.element_type,
                 params.interaction_type,
-                params.bbox_json,
                 params.app_name,
                 params.type_confidence,
             ],
@@ -357,68 +366,6 @@ impl SqliteStorage {
     }
 
     // ---- gui interaction reads --------------------------------------------
-
-    /// List GUI interaction events for a given segment (sync twin).
-    pub fn list_gui_interactions_for_segment(
-        &self,
-        segment_id: &str,
-    ) -> Result<Vec<GuiInteractionRecord>, StorageError> {
-        // Read — read_lock (independent of deletion_flag).
-        let read = self.conn.read_lock();
-        Self::list_gui_interactions_for_segment_inner(read.conn(), segment_id)
-    }
-
-    /// Async `list_gui_interactions_for_segment` over the read funnel (ADR-026 PR-7).
-    pub(crate) async fn list_gui_interactions_for_segment_async(
-        &self,
-        segment_id: &str,
-    ) -> Result<Vec<GuiInteractionRecord>, StorageError> {
-        // owned move into the Send + 'static closure (no borrowed &str).
-        let segment_id = segment_id.to_owned();
-        self.with_conn_read(move |conn| {
-            Self::list_gui_interactions_for_segment_inner(conn, &segment_id)
-        })
-        .await
-    }
-
-    fn list_gui_interactions_for_segment_inner(
-        conn: &rusqlite::Connection,
-        segment_id: &str,
-    ) -> Result<Vec<GuiInteractionRecord>, StorageError> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, event_id, segment_id, timestamp, element_text, element_type,
-                        interaction_type, bbox_json, app_name, created_at, type_confidence
-                 FROM gui_interactions
-                 WHERE segment_id = ?1
-                 ORDER BY timestamp ASC",
-            )
-            .map_err(|e| {
-                StorageError::Internal(format!("Failed to prepare GUI interaction query: {e}"))
-            })?;
-
-        let records: Vec<GuiInteractionRecord> = stmt
-            .query_map(rusqlite::params![segment_id], |row| {
-                Ok(GuiInteractionRecord {
-                    id: row.get(0)?,
-                    event_id: row.get(1)?,
-                    segment_id: row.get(2)?,
-                    timestamp: row.get(3)?,
-                    element_text: row.get(4)?,
-                    element_type: row.get(5)?,
-                    interaction_type: row.get(6)?,
-                    bbox_json: row.get(7)?,
-                    app_name: row.get(8)?,
-                    created_at: row.get(9)?,
-                    type_confidence: row.get::<_, Option<f64>>(10)?.unwrap_or(1.0) as f32,
-                })
-            })
-            .map_err(|e| StorageError::Internal(format!("Failed to query GUI interactions: {e}")))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(records)
-    }
 
     /// Count GUI interactions per hour within a date range (sync twin).
     pub fn query_gui_interaction_density(
@@ -484,12 +431,8 @@ impl SqliteStorage {
 fn owned_gui_interaction(input: &NewGuiInteraction<'_>) -> OwnedGuiInteraction {
     OwnedGuiInteraction {
         event_id: input.event_id.to_owned(),
-        segment_id: input.segment_id.map(str::to_owned),
         timestamp: input.timestamp.to_owned(),
-        element_text: input.element_text.map(str::to_owned),
-        element_type: input.element_type.map(str::to_owned),
         interaction_type: input.interaction_type.to_owned(),
-        bbox_json: input.bbox_json.map(str::to_owned),
         app_name: input.app_name.to_owned(),
         type_confidence: input.type_confidence,
     }

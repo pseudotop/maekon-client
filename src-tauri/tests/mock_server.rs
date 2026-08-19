@@ -17,6 +17,26 @@ pub struct MockServerState {
     pub request_count: AtomicU64,
     pub sessions: RwLock<HashMap<String, SessionInfo>>,
     pub tokens: RwLock<HashMap<String, TokenInfo>>,
+    /// #9492: the most recent `POST /api/v1/auth/tokens` payload, so a test can
+    /// assert which request field carried the identifier and which carried the
+    /// organization id. Without it a swap on the request side is invisible —
+    /// `TokenManager` seeds its session metadata from the *arguments* it was
+    /// called with, not from the login response.
+    pub last_login: RwLock<Option<LoginRecord>>,
+}
+
+/// Identity fields observed on the login request. Deliberately excludes the
+/// password: this fixture is not a credential store and nothing should be able
+/// to read one back out of it.
+///
+/// `dead_code`-allowed for the same reason as `TokenInfo`: this file is a
+/// shared fixture `mod`-included by several integration test crate roots, and
+/// only `auth_status_mapping` reads these fields.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct LoginRecord {
+    pub identifier: String,
+    pub organization_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,6 +47,10 @@ pub struct SessionInfo {
     pub created_at: String,
 }
 
+// Mirrors the real token-storage wire shape; not every field is read back by
+// the mock server's own handlers, but this is a shared fixture (`mod
+// mock_server;`, `#[path = ...]`-included by multiple integration test crate
+// roots) so keep the full shape rather than trimming per-consumer.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TokenInfo {
@@ -34,12 +58,14 @@ pub struct TokenInfo {
     pub expires_at: i64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     #[serde(alias = "email")]
     pub identifier: String,
     pub password: String,
+    // Mirrors the real login request wire shape (shared fixture, see
+    // TokenInfo); the mock server does not branch on org scoping, but #9492
+    // records it so a test can pin which field the client populated.
     #[serde(default)]
     pub organization_id: Option<String>,
 }
@@ -52,10 +78,12 @@ pub struct LoginResponse {
     pub expires_in: i64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SessionCreateRequest {
     pub client_id: String,
+    // Mirrors the real session-create request wire shape (shared fixture,
+    // see TokenInfo); the mock server does not branch on metadata.
+    #[allow(dead_code)]
     pub metadata: Option<HashMap<String, String>>,
 }
 
@@ -141,6 +169,16 @@ impl MockServer {
     pub fn session_count(&self) -> usize {
         self.state.sessions.read().len()
     }
+
+    /// #9492: identity fields from the most recent login request, if any.
+    ///
+    /// `dead_code`-allowed for the same reason as `TokenInfo` — this file is a
+    /// shared fixture `mod`-included by several integration test crate roots,
+    /// and only `auth_status_mapping` reads this accessor.
+    #[allow(dead_code)]
+    pub fn last_login(&self) -> Option<LoginRecord> {
+        self.state.last_login.read().clone()
+    }
 }
 
 impl Drop for MockServer {
@@ -181,6 +219,12 @@ async fn handle_login(
     state
         .request_count
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    // Record before the credential check so a rejected attempt is observable too.
+    *state.last_login.write() = Some(LoginRecord {
+        identifier: req.identifier.clone(),
+        organization_id: req.organization_id.clone(),
+    });
 
     if req.identifier.is_empty() || req.password.is_empty() {
         return (

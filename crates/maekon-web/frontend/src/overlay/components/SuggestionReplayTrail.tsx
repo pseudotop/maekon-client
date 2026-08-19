@@ -63,8 +63,8 @@ export function SuggestionReplayTrail({ anchor, suggestion, compact = false }: S
               className={cn(
                 'min-w-0 rounded-md border px-1.5 py-1',
                 step.active
-                  ? 'border-brand/20 bg-brand/10 text-brand'
-                  : 'border-content-inverse/5 bg-content-inverse/5 text-content-tertiary',
+                  ? 'border-DEFAULT bg-surface-muted text-content-secondary'
+                  : 'border-muted bg-transparent text-content-tertiary',
               )}
             >
               <div className="flex items-center gap-1">

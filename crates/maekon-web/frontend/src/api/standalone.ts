@@ -159,7 +159,7 @@ function makeDefaultSettings(): AppSettings {
       excluded_app_patterns: [],
       excluded_title_patterns: [],
       auto_exclude_sensitive: true,
-      pii_filter_level: 'standard',
+      pii_filter_level: 'Standard',
     },
     schedule: {
       active_hours_enabled: false,
@@ -172,7 +172,7 @@ function makeDefaultSettings(): AppSettings {
     automation,
     sandbox: {
       enabled: true,
-      profile: 'balanced',
+      profile: 'Standard',
       allowed_read_paths: [],
       allowed_write_paths: [],
       allow_network: false,
@@ -181,9 +181,9 @@ function makeDefaultSettings(): AppSettings {
     },
     ai_provider: {
       access_mode: 'provider_api_key',
-      ocr_provider: 'local',
-      llm_provider: 'local',
-      external_data_policy: 'disabled',
+      ocr_provider: 'Local',
+      llm_provider: 'Local',
+      external_data_policy: 'PiiFilterStrict',
       bypass_pii_filter_for_external_ocr: false,
       ocr_validation: {
         enabled: true,
@@ -226,9 +226,12 @@ function makeDefaultSettings(): AppSettings {
       min_confidence: 0.5,
       max_suggestions: 5,
       embedding_enabled: true,
+      llm_summary_enabled: false,
       gui_intelligence_enabled: true,
       text_intelligence_enabled: true,
       auto_tuner_enabled: false,
+      tiered_memory_enabled: false,
+      regime_detection_interval_hours: 2,
     },
     network: {
       server_base_url: 'http://localhost:8000',
@@ -405,14 +408,14 @@ function makeDefaultAutomationStatus(): AutomationStatus {
   return {
     enabled: true,
     sandbox_enabled: true,
-    sandbox_profile: 'balanced',
-    ocr_provider: 'local',
-    llm_provider: 'local',
+    sandbox_profile: 'Standard',
+    ocr_provider: 'Local',
+    llm_provider: 'Local',
     ocr_source: 'local',
     llm_source: 'local',
     ocr_fallback_reason: null,
     llm_fallback_reason: null,
-    external_data_policy: 'disabled',
+    external_data_policy: 'PiiFilterStrict',
     pending_audit_entries: 0,
     confirmation_policy: 'AUTO',
   }
@@ -421,10 +424,10 @@ function makeDefaultAutomationStatus(): AutomationStatus {
 function makeDefaultPolicies(): PoliciesInfo {
   return {
     automation_enabled: true,
-    sandbox_profile: 'balanced',
+    sandbox_profile: 'Standard',
     sandbox_enabled: true,
     allow_network: false,
-    external_data_policy: 'disabled',
+    external_data_policy: 'PiiFilterStrict',
     scene_action_override_enabled: false,
     scene_action_override_active: false,
     scene_action_override_reason: null,
@@ -595,6 +598,12 @@ export async function handleStandaloneRequest(
   options?: RequestInit,
   force = false,
 ): Promise<Response | null> {
+  // A Tauri desktop window always depends on its authenticated local Axum API.
+  // Turning transport failures into standalone mock responses hides a broken
+  // runtime and can present fabricated dashboard totals as live data (#8201).
+  if (force && isTauriWindow()) {
+    return null
+  }
   if (!standaloneMode && !force) {
     return null
   }
@@ -681,7 +690,7 @@ export async function handleStandaloneRequest(
       .toLowerCase()
     if (provider === 'anthropic') {
       return jsonResponse({
-        models: ['claude-sonnet-4-20250514', 'claude-opus-4-1-20250805', 'claude-opus-4-20250514'],
+        models: ['claude-sonnet-5', 'claude-opus-5', 'claude-opus-5'],
       })
     }
     if (provider === 'google' || provider === 'gemini') {
@@ -749,6 +758,18 @@ export async function handleStandaloneRequest(
       cells: [],
       max_value: 0,
     })
+  }
+  // #9854: the session-interchange exports have FIXED formats. Returning the
+  // generic JSON blob below would hand a `.ics` download a JSON body, so the
+  // standalone demo would "work" while producing a file no calendar can open.
+  if (path.startsWith('/api/export/ical') && method === 'GET') {
+    return textBlobResponse(
+      ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Maekon//standalone//EN', 'END:VCALENDAR'].join('\r\n'),
+      'text/calendar; charset=utf-8',
+    )
+  }
+  if (path.startsWith('/api/export/toggl') && method === 'GET') {
+    return textBlobResponse('Email,Project,Description,Start date,Start time,Duration\n', 'text/csv; charset=utf-8')
   }
   if (path.startsWith('/api/export/') && method === 'GET') {
     return textBlobResponse(

@@ -1,6 +1,5 @@
 // OOS-TBD: ADR-013 file split applied — mod.rs (1724L) split:
 //   production code retained here (<400L), test suite extracted to tests.rs.
-#![allow(dead_code)] // Updater wired via update_runtime.rs; methods called from IPC commands and scheduler
 
 pub(crate) mod delta;
 mod github;
@@ -12,6 +11,8 @@ mod trusted_keys;
 // Re-exports from health_probe for consumers in app_runtime_launch + scheduler
 #[allow(unused_imports)]
 pub(crate) use health_probe::{HealthProbe, ProbeError, RollbackReason, StartupAction};
+
+use std::time::Duration;
 
 #[allow(unused_imports)] // UpdateChannel used in #[cfg(test)] only
 use maekon_core::config::{UpdateChannel, UpdateConfig};
@@ -34,6 +35,10 @@ pub enum UpdateAssetType {
 ///
 /// Does not verify checksums or signatures — those are enforced during
 /// the actual download performed by `download_update`.
+// #7719: only constructed by `preview_update_availability`, itself only
+// called from e2e tests today — no IPC command surfaces an update preview
+// yet. Kept for whenever that UI lands.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdatePreview {
     /// Version string of the release that was found.
@@ -61,7 +66,12 @@ pub enum UpdateError {
     #[error("Installation failed: {0}")]
     Install(String),
 
+    // Only constructed on host target_os/target_arch combos outside the 6
+    // explicitly supported ones (macOS/Windows/Linux x arm64/x64) — none of
+    // this workspace's CI/dev hosts hit that arm, so it reads as dead there;
+    // exercised by tests via direct construction.
     #[error("Unsupported platform: {0}")]
+    #[allow(dead_code)]
     UnsupportedPlatform(String),
 
     #[error("Filesystem error: {0}")]
@@ -70,7 +80,11 @@ pub enum UpdateError {
     #[error("Auto-update is disabled")]
     Disabled,
 
+    // No production call site constructs this today (the "already latest"
+    // outcome is represented by `UpdateCheckResult::UpToDate` instead) —
+    // kept as a documented possible error surface, exercised by tests.
     #[error("Already on latest version")]
+    #[allow(dead_code)]
     AlreadyLatest,
 
     #[error("No suitable release asset found for current platform")]
@@ -85,6 +99,11 @@ pub struct ReleaseInfo {
     pub tag_name: String,
     pub name: Option<String>,
     pub body: Option<String>,
+    // Mirrors the GitHub Releases API wire shape; channel filtering
+    // (prerelease vs stable) happens at the API query level
+    // (`?per_page=1` on the all-releases endpoint vs `/releases/latest`),
+    // not by reading this field back.
+    #[allow(dead_code)]
     pub prerelease: bool,
     pub assets: Vec<ReleaseAsset>,
     /// HTML URL
@@ -98,6 +117,9 @@ pub struct ReleaseAsset {
     pub browser_download_url: String,
     pub size: u64,
     /// Content-Type
+    // Mirrors the GitHub Releases API wire shape; asset selection matches on
+    // `name` (see `find_platform_asset`/`find_patch_asset`), not this field.
+    #[allow(dead_code)]
     pub content_type: String,
 }
 
@@ -114,6 +136,50 @@ pub enum UpdateCheckResult {
     UpToDate {
         current: semver::Version,
     },
+}
+
+/// #7724: shared factory for the updater's HTTP client — mirrors the
+/// connect/read timeout pattern that closed the identical stall-bug class in
+/// the Whisper model downloader
+/// (`maekon_audio::model_downloader::build_download_client`, #6205).
+///
+/// `Updater::new()` previously built a bare `reqwest::Client::builder().build()`
+/// with NO timeouts at all: a mid-stream stall on the GitHub CDN (slow-loris, a
+/// dead TCP connection that never RSTs) could hang the updater — and every
+/// subsequent update check/download reusing the same client — forever.
+///
+/// A single flat `.timeout()` would be wrong here for the same reason it is
+/// wrong for the model downloader: `download_update`/
+/// `download_update_with_progress` can legitimately stream up to the
+/// `MAX_UPDATE_BYTES` (2 GiB) cap over a slow connection. Bounding only the
+/// connect phase and the idle-between-reads gap lets a genuinely
+/// slow-but-progressing download run to completion while a stalled connection
+/// still fails fast.
+///
+/// `redirect` is an explicit parameter — not an implicit reliance on reqwest's
+/// default `Policy::limited(10)` — because this client, unlike the
+/// redirect-disabled credential-bearing clients in `maekon-network::outbound`
+/// (#6892), legitimately MUST follow redirects: GitHub's release/asset URLs 30x
+/// from `github.com`/`api.github.com` to `objects.githubusercontent.com`. Every
+/// URL this client is used against is still validated against
+/// [`Updater::ALLOWED_DOWNLOAD_HOSTS`] by `validate_download_url` before the
+/// request is sent (though — as with the pre-existing behavior this change
+/// preserves — a redirect *target* is not itself re-validated against the
+/// allowlist; that gap is pre-existing and out of scope here).
+///
+/// This helper (and the read-capped body helper in `install/download.rs`)
+/// intentionally does NOT delegate to `maekon_http_core::outbound`: `updater` is
+/// compiled unconditionally (not feature-gated) while `maekon-network` is only
+/// pulled in by the `analysis` feature, which CI's `--no-default-features`
+/// build cell excludes.
+fn build_updater_http_client(redirect: reqwest::redirect::Policy) -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(format!("maekon/{}", CURRENT_VERSION))
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(60))
+        .redirect(redirect)
+        .build()
+        .unwrap_or_else(|error| panic!("failed to build HTTP client: {error}"))
 }
 
 pub struct Updater {
@@ -141,10 +207,11 @@ impl Updater {
     }
 
     pub fn new(config: UpdateConfig) -> Self {
-        let http_client = reqwest::Client::builder()
-            .user_agent(format!("maekon/{}", CURRENT_VERSION))
-            .build()
-            .expect("failed to build HTTP client");
+        // #7724: `Policy::default()` (limited(10)) is reqwest's own default and
+        // matches this client's PREVIOUS implicit behavior exactly — GitHub CDN
+        // redirects still work unchanged. What changes is the timeout: the old
+        // bare-default client had none at all (see `build_updater_http_client`).
+        let http_client = build_updater_http_client(reqwest::redirect::Policy::default());
 
         Self {
             config,
@@ -259,6 +326,7 @@ impl Updater {
     }
 
     /// Preview available update info without downloading.
+    #[allow(dead_code)]
     pub async fn preview_update_availability(&self) -> Result<UpdatePreview, UpdateError> {
         let result = self.check_for_updates().await?;
         match result {

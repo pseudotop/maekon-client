@@ -13,15 +13,15 @@ import DateRangePicker from '../../components/DateRangePicker'
 import { Spinner } from '../../components/ui/Spinner'
 import { colors, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { formatLocalCalendarDate, localDayBoundaryIso, shiftLocalCalendarDate } from '../../utils/localDate'
 
 function createInitialWeekRange() {
-  const to = new Date()
-  const from = new Date()
-  from.setDate(from.getDate() - 7)
+  const toDate = formatLocalCalendarDate(new Date())
+  const fromDate = shiftLocalCalendarDate(toDate, -7)
 
   return {
-    from: new Date(`${from.toISOString().split('T')[0]}T00:00:00Z`),
-    to: new Date(`${to.toISOString().split('T')[0]}T23:59:59Z`),
+    from: new Date(localDayBoundaryIso(fromDate, 'start') ?? 0),
+    to: new Date(localDayBoundaryIso(toDate, 'end') ?? 0),
   }
 }
 

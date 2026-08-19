@@ -22,11 +22,19 @@ use crate::regime_detector::generate_auto_label;
 ///   is merged.
 /// - Deactivation: regimes not seen for `inactive_days` become Inactive.
 /// - Archival: regimes inactive for `archive_days` become Archived.
+/// - Retention (#8045 C1): Archived regimes are hard-deleted from the set once
+///   they have been idle for `archive_days + archived_retention_days`, so the
+///   regime set cannot grow without bound on a 24/7 agent (Archived was
+///   previously a terminal no-op state that never left `self.regimes`).
 pub struct RegimeManager {
     regimes: Vec<Regime>,
     max_active: usize,
     inactive_days: u32,
     archive_days: u32,
+    /// Extra idle days beyond `archive_days` after which an Archived regime is
+    /// permanently removed (#8045 C1). Default 30 → an idle regime is
+    /// hard-deleted ~60 days after its last activity.
+    archived_retention_days: u32,
     merge_distance_threshold: f32,
     min_samples_for_merge: u64,
 }
@@ -39,6 +47,7 @@ impl RegimeManager {
             max_active: 7,
             inactive_days: 14,
             archive_days: 30,
+            archived_retention_days: 30,
             merge_distance_threshold: 0.3,
             min_samples_for_merge: 100,
         }
@@ -49,6 +58,7 @@ impl RegimeManager {
         max_active: usize,
         inactive_days: u32,
         archive_days: u32,
+        archived_retention_days: u32,
         merge_distance_threshold: f32,
         min_samples_for_merge: u64,
     ) -> Self {
@@ -57,6 +67,7 @@ impl RegimeManager {
             max_active,
             inactive_days,
             archive_days,
+            archived_retention_days,
             merge_distance_threshold,
             min_samples_for_merge,
         }
@@ -76,6 +87,10 @@ impl RegimeManager {
     /// 2. Apply merge rule (similar centroids AND both below min_samples_for_merge)
     /// 3. Apply limit rule (> max_active → merge closest pair)
     pub fn update_from_detection(&mut self, detected: Vec<Regime>) {
+        let preexisting_len = self.regimes.len();
+        let mut rolling_window_counts: std::collections::HashMap<usize, u64> =
+            std::collections::HashMap::new();
+
         for det in detected {
             // Try to match with existing active regime
             let best_match = self
@@ -100,7 +115,13 @@ impl RegimeManager {
                         &det.centroid,
                         det.sample_count,
                     );
-                    existing.sample_count += det.sample_count;
+                    if idx < preexisting_len {
+                        let window_count = rolling_window_counts.entry(idx).or_insert(0);
+                        *window_count += det.sample_count;
+                        existing.sample_count = existing.sample_count.max(*window_count);
+                    } else {
+                        existing.sample_count += det.sample_count;
+                    }
                     existing.last_seen = det.last_seen;
                     existing.auto_label = generate_auto_label(&existing.centroid, &[]);
                     continue;
@@ -133,7 +154,13 @@ impl RegimeManager {
                     &det.centroid,
                     det.sample_count,
                 );
-                existing.sample_count += det.sample_count;
+                if idx < preexisting_len {
+                    let window_count = rolling_window_counts.entry(idx).or_insert(0);
+                    *window_count += det.sample_count;
+                    existing.sample_count = existing.sample_count.max(*window_count);
+                } else {
+                    existing.sample_count += det.sample_count;
+                }
                 existing.last_seen = det.last_seen;
                 existing.status = RegimeStatus::Active;
                 existing.auto_label = generate_auto_label(&existing.centroid, &[]);
@@ -310,10 +337,32 @@ impl RegimeManager {
         }
     }
 
-    /// Run periodic maintenance (deactivation + archival).
-    pub fn run_maintenance(&mut self, now: DateTime<Utc>) {
+    /// Run periodic maintenance (deactivation + archival + retention purge).
+    ///
+    /// Returns the `regime_id`s that were HARD-DELETED by the retention purge
+    /// (#8045 C1). The orchestrator forwards this list to the sibling per-regime
+    /// keyed state (`RegimeClassifier::remove_regimes`,
+    /// `CoachingEngine::remove_regime`) so their maps are evicted in lockstep and
+    /// cannot accumulate dead keys. An empty vec means nothing aged out.
+    ///
+    /// NOT `#[must_use]`: the workspace denies the `unused` lint group, and the
+    /// existing scheduler call site (`scheduler/analysis_pipeline/regime.rs`,
+    /// owned by a sibling bundle) currently discards the return as a statement —
+    /// a `#[must_use]` there would be a hard error. The retention hard-delete
+    /// below plus the coaching-engine `LruCache` already bound growth; the
+    /// returned ids are the cascade seam for the orchestrator to wire next.
+    pub fn run_maintenance(&mut self, now: DateTime<Utc>) -> Vec<String> {
         let inactive_cutoff = now - Duration::days(i64::from(self.inactive_days));
         let archive_cutoff = now - Duration::days(i64::from(self.archive_days));
+        // Hard-delete horizon: an Archived regime whose last activity predates
+        // archive_days + archived_retention_days is permanently removed. Using
+        // `last_seen` as the age proxy needs no schema change and is monotonic —
+        // a regime only reaches Archived once last_seen < archive_cutoff, so the
+        // retention window is strictly after archival.
+        let hard_delete_cutoff = now
+            - Duration::days(
+                i64::from(self.archive_days) + i64::from(self.archived_retention_days),
+            );
 
         for regime in &mut self.regimes {
             match regime.status {
@@ -330,6 +379,20 @@ impl RegimeManager {
                 RegimeStatus::Archived => {}
             }
         }
+
+        // Collect then drop Archived regimes past the retention horizon.
+        let is_expired =
+            |r: &Regime| r.status == RegimeStatus::Archived && r.last_seen < hard_delete_cutoff;
+        let removed: Vec<String> = self
+            .regimes
+            .iter()
+            .filter(|r| is_expired(r))
+            .map(|r| r.regime_id.clone())
+            .collect();
+        if !removed.is_empty() {
+            self.regimes.retain(|r| !is_expired(r));
+        }
+        removed
     }
 
     /// Get all active regimes.
@@ -352,25 +415,41 @@ impl RegimeManager {
         }
     }
 
-    /// User override: delete a regime.
-    pub fn delete(&mut self, regime_id: &str) {
+    /// User override: delete a regime. Returns `true` when a regime was removed,
+    /// so the orchestrator can cascade the eviction to per-regime keyed state
+    /// (#8045 C1).
+    pub fn delete(&mut self, regime_id: &str) -> bool {
+        let before = self.regimes.len();
         self.regimes.retain(|r| r.regime_id != regime_id);
+        self.regimes.len() != before
     }
 
-    /// User override: merge two regimes by ID.
-    pub fn merge(&mut self, regime_id_a: &str, regime_id_b: &str) {
+    /// User override: merge two regimes by ID. Returns `Some(removed_id)` — the
+    /// id of the losing regime that no longer exists after the merge — so the
+    /// orchestrator can cascade the eviction to per-regime keyed state (#8045 C1).
+    /// The merged regime keeps the larger sibling's id (see `merge_two`).
+    pub fn merge(&mut self, regime_id_a: &str, regime_id_b: &str) -> Option<String> {
         let idx_a = self.regimes.iter().position(|r| r.regime_id == regime_id_a);
         let idx_b = self.regimes.iter().position(|r| r.regime_id == regime_id_b);
 
         if let (Some(i), Some(j)) = (idx_a, idx_b) {
             if i != j {
                 let merged = self.merge_two(i, j);
+                let kept_id = merged.regime_id.clone();
                 let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                 self.regimes.remove(hi);
                 self.regimes.remove(lo);
                 self.regimes.push(merged);
+                // The id that is NOT the surviving id is the one that was removed.
+                let removed = if kept_id == regime_id_a {
+                    regime_id_b
+                } else {
+                    regime_id_a
+                };
+                return Some(removed.to_string());
             }
         }
+        None
     }
 }
 
@@ -517,9 +596,35 @@ mod tests {
     }
 
     #[test]
+    fn redetection_uses_window_sample_count_without_accumulating_overlap() {
+        let config = TieredMemoryConfig::default();
+        let mut mgr = RegimeManager::new(&config);
+
+        mgr.update_from_detection(vec![make_regime(
+            "r-0",
+            coding_centroid(),
+            80,
+            RegimeStatus::Active,
+        )]);
+        mgr.update_from_detection(vec![make_regime(
+            "r-0",
+            coding_centroid(),
+            90,
+            RegimeStatus::Active,
+        )]);
+
+        assert_eq!(mgr.all_regimes().len(), 1);
+        assert_eq!(
+            mgr.all_regimes()[0].sample_count,
+            90,
+            "detector sample_count is a rolling window size; overlapping windows must not accumulate"
+        );
+    }
+
+    #[test]
     fn merge_similar_regimes() {
         // Two regimes with very similar centroids and both below min_samples
-        let mut mgr = RegimeManager::with_params(7, 14, 30, 0.5, 200);
+        let mut mgr = RegimeManager::with_params(7, 14, 30, 30, 0.5, 200);
 
         let slightly_different = RegimeFeatures {
             category_coding: 0.95,
@@ -575,7 +680,7 @@ mod tests {
 
     #[test]
     fn max_active_limit_enforcement() {
-        let mut mgr = RegimeManager::with_params(2, 14, 30, 0.3, 1000);
+        let mut mgr = RegimeManager::with_params(2, 14, 30, 30, 0.3, 1000);
 
         let detected = vec![
             make_regime("r-0", coding_centroid(), 200, RegimeStatus::Active),
@@ -625,7 +730,9 @@ mod tests {
             RegimeStatus::Active,
         ));
 
-        mgr.delete("r-0");
+        // #8045 C1: delete reports whether a regime was removed (for cascade).
+        assert!(mgr.delete("r-0"), "existing-regime delete reports true");
+        assert!(!mgr.delete("r-0"), "absent-regime delete reports false");
 
         assert_eq!(mgr.all_regimes().len(), 1);
         assert_eq!(mgr.all_regimes()[0].regime_id, "r-1");
@@ -648,7 +755,13 @@ mod tests {
             RegimeStatus::Active,
         ));
 
-        mgr.merge("r-0", "r-1");
+        // #8045 C1: merge reports the removed loser id (r-1 has fewer samples).
+        assert_eq!(mgr.merge("r-0", "r-1"), Some("r-1".to_string()));
+        assert_eq!(
+            mgr.merge("r-0", "missing"),
+            None,
+            "no-op merge reports None"
+        );
 
         assert_eq!(mgr.all_regimes().len(), 1);
         assert_eq!(mgr.all_regimes()[0].sample_count, 350);
@@ -742,5 +855,43 @@ mod tests {
         assert_eq!(mgr.all_regimes().len(), 2);
         assert_eq!(mgr.all_regimes()[0].regime_id, "r1");
         assert_eq!(mgr.all_regimes()[1].regime_id, "r2");
+    }
+
+    /// #8045 C1: an Archived regime idle past `archive_days + archived_retention_days`
+    /// is HARD-DELETED (previously Archived was a terminal no-op — the set grew
+    /// without bound on a 24/7 agent), and its id is returned for cascade eviction.
+    #[test]
+    fn archived_past_retention_is_hard_deleted_and_reported() {
+        // archive_days=30, archived_retention_days=1 → hard-delete horizon 31d.
+        let mut mgr = RegimeManager::with_params(7, 14, 30, 1, 0.3, 100);
+        let mut regime = make_regime("r-0", coding_centroid(), 200, RegimeStatus::Archived);
+        regime.last_seen = Utc::now() - Duration::days(40); // older than 31d horizon
+        mgr.regimes.push(regime);
+
+        let removed = mgr.run_maintenance(Utc::now());
+        assert_eq!(removed, vec!["r-0".to_string()]);
+        assert!(
+            mgr.all_regimes().is_empty(),
+            "expired archived regime must be dropped from the set"
+        );
+    }
+
+    /// An Archived regime still within the retention window is KEPT (only aged
+    /// out after the full horizon), so recently-archived regimes are not purged.
+    #[test]
+    fn archived_within_retention_is_kept() {
+        // horizon = 30 + 30 = 60 days.
+        let mut mgr = RegimeManager::with_params(7, 14, 30, 30, 0.3, 100);
+        let mut regime = make_regime("r-0", coding_centroid(), 200, RegimeStatus::Archived);
+        regime.last_seen = Utc::now() - Duration::days(35); // > archive(30) but < 60d horizon
+        mgr.regimes.push(regime);
+
+        let removed = mgr.run_maintenance(Utc::now());
+        assert!(
+            removed.is_empty(),
+            "within-retention archived regime must be kept"
+        );
+        assert_eq!(mgr.all_regimes().len(), 1);
+        assert_eq!(mgr.all_regimes()[0].status, RegimeStatus::Archived);
     }
 }

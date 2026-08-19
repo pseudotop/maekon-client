@@ -7,10 +7,15 @@ import {
   Clock,
   FileText,
   Gauge,
+  Home,
   Image,
   Info,
   LayoutDashboard,
+  LifeBuoy,
   Lightbulb,
+  ListChecks,
+  LogIn,
+  Mail,
   MessageCircle,
   MessageSquare,
   Monitor,
@@ -23,6 +28,7 @@ import {
 } from 'lucide-react'
 import type { ComponentType, LazyExoticComponent } from 'react'
 import { lazy } from 'react'
+import { withCaptureReauthGate } from '../components/CaptureReauthGate'
 
 export interface RouteNode {
   path: string
@@ -54,23 +60,35 @@ export interface RouteLeaf {
 const DashboardLayout = lazy(() => import('../pages/dashboard/DashboardLayout'))
 const SettingsLayout = lazy(() => import('../pages/settings/SettingsLayout'))
 const AutomationLayout = lazy(() => import('../pages/automation/AutomationLayout'))
-const TimelineLayout = lazy(() => import('../pages/timeline/TimelineLayout'))
+// #8044: capture-history surfaces are wrapped in the re-auth gate — the
+// layout stays unmounted until authenticated, so frame fetches never happen
+// prematurely (the backend 403 is the backstop).
+const TimelineLayout = withCaptureReauthGate(lazy(() => import('../pages/timeline/TimelineLayout')))
 const FocusLayout = lazy(() => import('../pages/focus/FocusLayout'))
 const ReportsLayout = lazy(() => import('../pages/reports/ReportsLayout'))
 const PrivacyLayout = lazy(() => import('../pages/privacy-page/PrivacyLayout'))
 const UpdatesLayout = lazy(() => import('../pages/updates/UpdatesLayout'))
 const CoachingLayout = lazy(() => import('../pages/coaching/CoachingLayout'))
 const RecalibrationLayout = lazy(() => import('../pages/recalibration/RecalibrationLayout'))
-const ReplayLayout = lazy(() => import('../pages/session-replay/ReplayLayout'))
+const ReplayLayout = withCaptureReauthGate(lazy(() => import('../pages/session-replay/ReplayLayout')))
 const AuditLayout = lazy(() => import('../pages/audit/AuditLayout'))
 
 // --- Lazy imports: Leaf pages (no children) ---
 const DashboardDay = lazy(() => import('../pages/DashboardDay'))
 const DashboardWeek = lazy(() => import('../pages/DashboardWeek'))
-const Search = lazy(() => import('../pages/Search'))
+// Search reads capture history through the backend `/api/search` endpoint, so
+// it must use the same re-auth gate as timeline and replay. Without this
+// wrapper, the expected `auth.reauth_required` backstop is rendered as a
+// generic search failure instead of an unlock prompt.
+const Search = withCaptureReauthGate(lazy(() => import('../pages/Search')))
 const Chat = lazy(() => import('../pages/chat'))
 const Policies = lazy(() => import('../pages/policies'))
 const Playbooks = lazy(() => import('../pages/Playbooks'))
+const TasksPage = lazy(() => import('../pages/tasks/TasksPage'))
+const SupportPage = lazy(() => import('../pages/support/SupportPage'))
+const LoginPage = lazy(() => import('../pages/auth/LoginPage'))
+const ContextHomePage = lazy(() => import('../pages/home/ContextHomePage'))
+const AssignmentEmailDraftPage = lazy(() => import('../pages/assignment-email-draft/AssignmentEmailDraftPage'))
 
 // --- Lazy imports: Settings sub-routes ---
 const GeneralTab = lazy(() => import('../pages/setting-tabs/GeneralTab'))
@@ -80,6 +98,7 @@ const AiAutomationTab = lazy(() => import('../pages/setting-tabs/ai-automation')
 const DataStorageTab = lazy(() => import('../pages/setting-tabs/DataStorageTab'))
 const CoachingSettingsTab = lazy(() => import('../pages/setting-tabs/CoachingSettingsTab'))
 const SyncTab = lazy(() => import('../pages/setting-tabs/SyncTab'))
+const IntegrationsTab = lazy(() => import('../pages/setting-tabs/IntegrationsTab'))
 const AudioTab = lazy(() => import('../pages/setting-tabs/AudioTab'))
 const AdvancedTab = lazy(() => import('../pages/setting-tabs/AdvancedTab'))
 const FocusAutoTab = lazy(() => import('../pages/setting-tabs/FocusAutoTab'))
@@ -114,7 +133,12 @@ const ExportSection = lazy(() => import('../pages/reports/ExportSection'))
 // --- Lazy imports: Privacy sub-routes ---
 const DataSection = lazy(() => import('../pages/privacy-page/DataSection'))
 const ConsentSection = lazy(() => import('../pages/privacy-page/ConsentSection'))
-const PrivacyExportSection = lazy(() => import('../pages/privacy-page/ExportSection'))
+// Backup downloads can include capture OCR/window metadata, while the GDPR
+// full export contains the complete personal-data archive. Gate the export
+// leaf without blocking the other privacy controls.
+const PrivacyExportSection = withCaptureReauthGate(lazy(() => import('../pages/privacy-page/ExportSection')))
+const EgressLedgerSection = lazy(() => import('../pages/privacy-page/EgressLedgerSection'))
+const ClaimsSection = lazy(() => import('../pages/privacy-page/ClaimsSection'))
 
 // --- Lazy imports: Updates sub-routes ---
 const StatusSection = lazy(() => import('../pages/updates/StatusSection'))
@@ -295,6 +319,13 @@ export const routeTree: RouteNode[] = [
     group: 'manage',
   },
   {
+    path: '/tasks',
+    labelKey: 'nav.tasks',
+    icon: ListChecks,
+    component: TasksPage,
+    group: 'manage',
+  },
+  {
     path: '/audit',
     labelKey: 'nav.audit',
     icon: ClipboardList,
@@ -314,7 +345,7 @@ export const routeTree: RouteNode[] = [
     component: UpdatesLayout,
     children: [
       { path: 'status', labelKey: 'sidebar.currentStatus', component: StatusSection },
-      { path: 'channel', labelKey: 'sidebar.updateHistory', component: ChannelSection },
+      { path: 'channel', labelKey: 'sidebar.updateChannel', component: ChannelSection },
     ],
     group: 'manage',
   },
@@ -326,15 +357,15 @@ export const routeTree: RouteNode[] = [
     icon: Settings,
     defaultChild: 'general',
     component: SettingsLayout,
-    // SettingsLayout wraps its own RouteErrorBoundary so that
-    // SettingsFormProvider lives ABOVE the boundary. Without this, a recovery
-    // reset would remount the provider and silently destroy unsaved form edits.
+    // SettingsLayout wraps its own RouteErrorBoundary. SettingsFormProvider
+    // lives above the app route renderer so recovery and top-level navigation
+    // cannot silently destroy unsaved form edits.
     selfWraps: true,
     childGroups: [
       { labelKey: 'settings.groupCore', tabs: ['general', 'privacy', 'monitoring', 'coaching', 'audio'] },
       {
         labelKey: 'settings.groupAdvanced',
-        tabs: ['ai-automation', 'data', 'sync', 'focus-auto', 'advanced', 'tracking-schedule'],
+        tabs: ['ai-automation', 'data', 'sync', 'integrations', 'focus-auto', 'advanced', 'tracking-schedule'],
       },
     ],
     children: [
@@ -348,6 +379,7 @@ export const routeTree: RouteNode[] = [
       { path: 'ai-automation', labelKey: 'settings.tabs.aiAutomation', component: AiAutomationTab },
       { path: 'data', labelKey: 'settings.tabs.dataStorage', component: DataStorageTab },
       { path: 'sync', labelKey: 'settings.tabs.sync', component: SyncTab },
+      { path: 'integrations', labelKey: 'settings.tabs.integrations', component: IntegrationsTab },
       { path: 'focus-auto', labelKey: 'settings.tabs.focusAuto', component: FocusAutoTab },
       { path: 'advanced', labelKey: 'settings.tabs.advanced', component: AdvancedTab },
       { path: 'tracking-schedule', labelKey: 'settings.tabs.trackingSchedule', component: TrackingScheduleTab },
@@ -362,10 +394,64 @@ export const routeTree: RouteNode[] = [
     component: PrivacyLayout,
     children: [
       { path: 'data', labelKey: 'sidebar.dataControls', component: DataSection },
+      { path: 'egress', labelKey: 'sidebar.egressLedger', component: EgressLedgerSection },
+      { path: 'claims', labelKey: 'sidebar.claimsBrowser', component: ClaimsSection },
       { path: 'consent', labelKey: 'sidebar.dangerZone', component: ConsentSection },
       { path: 'export', labelKey: 'sidebar.dataExport', component: PrivacyExportSection },
     ],
     bottom: true,
+  },
+  // #8079: dedicated Support & Diagnostics destination — a childless bottom
+  // leaf (like a group leaf, it renders no SidePanel tree; the ActivityBar
+  // icon navigates directly to the page).
+  {
+    path: '/support',
+    labelKey: 'nav.support',
+    icon: LifeBuoy,
+    component: SupportPage,
+    bottom: true,
+  },
+  // #9603 WD-02.1: the connected-mode sign-in screen. Deliberately neither
+  // `group` nor `bottom`, so it claims no slot on the 48px ActivityBar rail —
+  // signing in is optional in a local-first product and does not deserve
+  // permanent nav chrome, least of all in the default build where connected
+  // mode is not compiled in at all. It is still a first-class destination:
+  // `icon` is what makes CommandPalette list it (buildNavigationItems skips
+  // iconless nodes), so it is reachable by name rather than only by deep link.
+  //
+  // It renders inside the AppShell like every other route; the page's own
+  // four-state render is what handles "this build has no connected mode".
+  {
+    path: '/login',
+    labelKey: 'nav.signIn',
+    icon: LogIn,
+    component: LoginPage,
+  },
+  // #9611 WD-02.3: where a signed-in operator lands — their own mail threads,
+  // messenger history and projects, from the single #9625 typed IPC call.
+  //
+  // A sibling of `/`, not a replacement for it. `/` is the local-first activity
+  // dashboard that works with no account at all; this route only has content
+  // once connected mode is compiled in AND signed in. Redirecting `/` here would
+  // make the default build's landing page an error state, so the two coexist and
+  // sign-in is what moves you between them.
+  //
+  // Like `/login`: no `group` and no `bottom`, so it claims no slot on the 48px
+  // rail — but it carries an `icon` so CommandPalette lists it and it is
+  // reachable by name rather than only as a post-login redirect target.
+  {
+    path: '/home',
+    labelKey: 'nav.contextHome',
+    icon: Home,
+    component: ContextHomePage,
+  },
+  // #9627 WD-04.4: receipt-only local editor and explicit OS compose handoff.
+  // It stays off the permanent rail but remains command-palette reachable.
+  {
+    path: '/assignment-email-draft',
+    labelKey: 'nav.assignmentEmailDraft',
+    icon: Mail,
+    component: AssignmentEmailDraftPage,
   },
 ]
 

@@ -33,32 +33,53 @@ pub struct CloudSttProvider {
 ///
 /// Hand-parsed (no `url` dependency): scheme is the prefix before `://`, and the
 /// authority is everything up to the first `/`, `?`, or `#`, with userinfo and
-/// port stripped and bracketed IPv6 handled.
+/// port stripped and bracketed IPv6 handled. #7723: the final host-extraction +
+/// loopback classification steps delegate to `maekon_core::net_policy`'s
+/// pure-string helpers (this crate intentionally carries no URL-parser
+/// dependency; those helpers exist for exactly that case).
 fn endpoint_is_secure(endpoint: &str) -> bool {
     let lower = endpoint.trim().to_ascii_lowercase();
     if let Some(rest) = lower.strip_prefix("https://") {
         return !rest.is_empty();
     }
     if let Some(rest) = lower.strip_prefix("http://") {
-        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or("");
         // Drop any `user:pass@` userinfo prefix.
         let host_port = authority.rsplit('@').next().unwrap_or(authority);
         // Strip the port, handling bracketed IPv6 like `[::1]:8080`.
-        let host = if let Some(stripped) = host_port.strip_prefix('[') {
-            stripped.split(']').next().unwrap_or("")
-        } else {
-            host_port.split(':').next().unwrap_or("")
-        };
+        let host = maekon_core::net_policy::authority_host(host_port);
         // "localhost", or any IP that parses as loopback (127.0.0.0/8, ::1).
         // Parsing as IpAddr rejects look-alikes like "127.0.0.1.evil.com".
-        if host == "localhost" {
-            return true;
-        }
-        return host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
+        return maekon_core::net_policy::is_loopback_host_str(host);
     }
     false
+}
+
+/// Build the cloud-STT HTTP client — extracted so the redirect-hardening
+/// invariant below is directly unit-testable (see `stt_client_does_not_follow_redirects`).
+///
+/// #7724: disables redirect following, matching the credential-bearing client
+/// hardening in `maekon-network::outbound::hardened_client_builder` (#6892).
+/// This client sends a Bearer API key (`bearer_auth` in `transcribe`) plus the
+/// raw multipart audio body to a user-configured (but `endpoint_is_secure`-gated)
+/// endpoint. reqwest's default redirect policy follows up to 10 hops and
+/// re-sends the request body verbatim on a 307/308, so a compromised/MITM'd
+/// provider endpoint could 30x to an attacker host and receive the recorded
+/// audio. `maekon-audio` cannot depend on `maekon-network`
+/// (`scripts/check-crate-boundaries.sh` forbids adapter-to-adapter crate edges
+/// per the hexagonal architecture), so this hardening is duplicated locally
+/// rather than calling `hardened_client_builder` directly.
+fn build_stt_client(timeout_secs: u32) -> Result<reqwest::Client, CoreError> {
+    // #6102-22: mirror the network helper convention — 0 means "no timeout"
+    // (unlimited), not a zero-duration deadline that would fail every request.
+    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    if timeout_secs > 0 {
+        builder = builder.timeout(Duration::from_secs(u64::from(timeout_secs)));
+    }
+    builder.build().map_err(|e| CoreError::SpeechToText {
+        code: maekon_core::error_codes::AudioCode::SttFailed,
+        message: format!("build HTTP client: {e}"),
+    })
 }
 
 impl CloudSttProvider {
@@ -88,16 +109,7 @@ impl CloudSttProvider {
             });
         }
 
-        // #6102-22: mirror the network helper convention — 0 means "no timeout"
-        // (unlimited), not a zero-duration deadline that would fail every request.
-        let mut builder = reqwest::Client::builder();
-        if timeout_secs > 0 {
-            builder = builder.timeout(Duration::from_secs(u64::from(timeout_secs)));
-        }
-        let client = builder.build().map_err(|e| CoreError::SpeechToText {
-            code: maekon_core::error_codes::AudioCode::SttFailed,
-            message: format!("build HTTP client: {e}"),
-        })?;
+        let client = build_stt_client(timeout_secs)?;
 
         Ok(Self {
             client,
@@ -152,16 +164,27 @@ fn provider_error_message(status: reqwest::StatusCode, body: &str) -> String {
 /// Whisper transcript JSON is kilobytes even for long audio, so a 16 MiB ceiling is
 /// generous while bounding memory against a malicious / compromised / MITM endpoint
 /// that streams an unbounded body. Same OOM threat model as the #6949 maekon-network
-/// response-body caps — which live behind `pub(crate)` in `maekon-network` and so
-/// cannot reach this crate (maekon-audio does not depend on maekon-network).
+/// response-body caps in `maekon_network::outbound` — `maekon-audio` cannot depend on
+/// `maekon-network` at all (`scripts/check-crate-boundaries.sh` forbids
+/// adapter-to-adapter crate edges), so this cap is a crate-local, domain-specific
+/// value rather than shared with network's own AI/integration/auth caps.
 const MAX_STT_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// #7724: pure predicate for the Content-Length early-reject below — extracted so
+/// it is directly unit-testable without a real HTTP round-trip.
+fn declared_content_length_exceeds_cap(content_length: Option<u64>, max_bytes: usize) -> bool {
+    content_length.is_some_and(|len| len > max_bytes as u64)
+}
 
 /// Read the cloud-STT response body incrementally, never buffering more than
 /// [`MAX_STT_RESPONSE_BYTES`] (#6989).
 ///
-/// Pulls the body chunk-by-chunk and aborts as soon as the accumulated size would
-/// exceed the cap, so a forged/absent `Content-Length` with an unbounded (e.g.
-/// chunked) body can never be fully buffered. Returns `Err` on cap-exceed: the
+/// #7724: rejects an honestly-oversized declared `Content-Length` up front
+/// (mirroring `maekon_network::outbound::read_body_capped` and
+/// `updater::install::download::read_body_capped_update`), THEN pulls the body
+/// chunk-by-chunk and aborts as soon as the accumulated size would exceed the
+/// cap — so a forged/absent `Content-Length` with an unbounded (e.g. chunked)
+/// body can never be fully buffered either. Returns `Err` on cap-exceed: the
 /// endpoint carries a Bearer key + raw audio and is user-configured, so an oversized
 /// response is treated as hostile rather than truncated-and-parsed.
 ///
@@ -171,6 +194,15 @@ async fn read_stt_body_capped(
     mut response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<Vec<u8>, CoreError> {
+    if declared_content_length_exceeds_cap(response.content_length(), max_bytes) {
+        return Err(CoreError::SpeechToText {
+            code: maekon_core::error_codes::AudioCode::SttFailed,
+            message: format!(
+                "cloud STT response declared Content-Length exceeds {max_bytes} byte cap"
+            ),
+        });
+    }
+
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| CoreError::Network {
         code: maekon_core::error_codes::NetworkCode::Generic,
@@ -295,8 +327,8 @@ impl SttProvider for CloudSttProvider {
                 "cloud STT provider returned error"
             );
 
-            // 상위 fallback/VAD 경로가 이 오류 문자열을 다시 로그/이벤트로 내보내므로
-            // provider 본문은 에러 메시지에도 넣지 않는다.
+            // The upstream fallback/VAD path re-emits this error string to logs/events,
+            // so the provider body is not included even in the error message.
             let message = provider_error_message(status, &body);
 
             // Semantic HTTP status mapping per iter-54/55/56 pattern — even STT
@@ -566,6 +598,7 @@ mod tests {
         assert!(endpoint_is_secure("http://127.0.0.1"));
         assert!(endpoint_is_secure("http://[::1]:9000"));
         assert!(!endpoint_is_secure("http://example.com"));
+        assert!(!endpoint_is_secure("http://example.com\\@127.0.0.1/stt"));
         assert!(!endpoint_is_secure("http://127.0.0.1.evil.com"));
         assert!(!endpoint_is_secure("ftp://example.com"));
         assert!(!endpoint_is_secure(""));
@@ -723,6 +756,84 @@ mod tests {
             matches!(err, CoreError::SpeechToText { .. }),
             "over-cap body → SpeechToText/SttFailed, got: {err:?}"
         );
+    }
+
+    // --- #7724: Content-Length early-reject ---
+    //
+    // A genuinely protocol-inconsistent response (declared `Content-Length`
+    // larger than the bytes actually sent) cannot be constructed through a real
+    // HTTP round-trip: mockito's hyper-backed server refuses to serve a
+    // manually-set `Content-Length` header that disagrees with the actual body
+    // ("payload claims content-length of N, custom content-length header claims
+    // M" — a server-side panic), and reqwest's own `Response::content_length()`
+    // is computed from the same decoded-body size hint the chunk loop reads
+    // from (confirmed empirically: a HEAD response reports `content_length() ==
+    // Some(0)`, not the value of its `Content-Length` header). So this fix's
+    // value is (a) matching the established sibling pattern
+    // (`maekon_network::outbound::read_body_capped`,
+    // `updater::install::download::read_body_capped_update`) and (b) failing
+    // fast on an honestly-oversized declared length instead of buffering up to
+    // `max_bytes` before the per-chunk check trips — not a behavior that can be
+    // proven "impossible before, possible after" via a real HTTP mock. The pure
+    // predicate below is therefore the direct fails-before/passes-after guard
+    // for the new logic (it did not exist before this PR); the existing
+    // `read_stt_body_capped_accepts_body_within_cap` /
+    // `read_stt_body_capped_rejects_oversized_body` integration tests confirm
+    // the refactor did not change end-to-end behavior for either path.
+
+    #[test]
+    fn declared_content_length_exceeds_cap_pure_predicate() {
+        assert!(
+            declared_content_length_exceeds_cap(Some(100), 10),
+            "a declared length over the cap must be flagged"
+        );
+        assert!(
+            !declared_content_length_exceeds_cap(Some(5), 10),
+            "a declared length within the cap must not be flagged"
+        );
+        assert!(
+            !declared_content_length_exceeds_cap(None, 10),
+            "an absent Content-Length must fall through to the per-chunk check, not be flagged here"
+        );
+    }
+
+    // --- #7724: redirect-following hardening on the STT client (same threat
+    // class as maekon-network::outbound's #6892 hardened builder) ---
+
+    /// Fails-before regression guard: without `.redirect(Policy::none())` on
+    /// `build_stt_client`, this client would follow the 302 to `/leaked` and the
+    /// `leaked` mock's `expect(0)` would fail the test.
+    #[tokio::test]
+    async fn stt_client_does_not_follow_redirects() {
+        let mut server = mockito::Server::new_async().await;
+        let start = server
+            .mock("GET", "/start")
+            .with_status(302)
+            .with_header("location", "/leaked")
+            .create_async()
+            .await;
+        let leaked = server
+            .mock("GET", "/leaked")
+            .with_status(200)
+            .with_body("LEAKED")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let client = build_stt_client(10).expect("STT client must build");
+        let resp = client
+            .get(format!("{}/start", server.url()))
+            .send()
+            .await
+            .expect("request must send");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            302,
+            "302 must not be followed and must be returned as-is"
+        );
+        start.assert_async().await;
+        leaked.assert_async().await; // expect(0): verifies /leaked was never called
     }
 
     // --- #7098: source PCM is wiped after encoding the multipart upload body ---

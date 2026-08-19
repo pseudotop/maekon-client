@@ -6,6 +6,19 @@ mod sbpl;
 // Cfg-free Windows Job-Object limits + token-restriction policy (#5138), same
 // rationale (the Win32 enforcement stays in the target-gated `windows` module).
 mod win_limits;
+// Cfg-free reporting for the Windows restricted-token launch probe (#10959),
+// same seam again: what the probe reports is string + file work, so it stays
+// testable off Windows while the launch itself remains target-gated.
+//
+// `#[cfg(test)]` because the probe IS a test: CI runs it as
+// `cargo test -p maekon-automation --features windows-sandbox restricted_token`
+// (maekon-client-patch-audit.yml), and every consumer of this module lives in a
+// `#[cfg(test)]` block. Left unconditional, the module compiled into non-test
+// Windows builds with nothing using it and failed the public repo's
+// `Test (windows-latest)` job on five dead_code errors — while passing here,
+// because non-test Windows is a configuration nothing in this repo builds.
+#[cfg(test)]
+mod probe_verdict;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -145,6 +158,30 @@ fn create_native_sandbox() -> Arc<dyn Sandbox> {
     }
 
     Arc::new(FailClosedSandbox)
+}
+
+/// Whether a native platform sandbox can actually enforce isolation on this
+/// host + build (#8686 AC3). Mirrors the exact probes `create_native_sandbox`
+/// uses, without constructing the automation pipeline — consumed by the
+/// feature-capability snapshot so settings surfaces can show the honest
+/// per-OS sandbox state instead of implying containment everywhere.
+pub fn native_sandbox_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        LinuxSandbox::new().is_available()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        MacOsSandbox::new().is_available()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        WindowsSandbox::new().is_available()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]

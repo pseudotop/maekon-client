@@ -35,6 +35,7 @@ pub struct SyncStatusDto {
     pub unavailable_reason: Option<String>,
     pub device_id: String,
     pub device_name: String,
+    pub last_health_state: String,
     pub last_sync_at: Option<String>,
     pub last_error: Option<String>,
     /// Known peers discovered during the last discovery scan.
@@ -46,6 +47,14 @@ pub struct SyncResultDto {
     pub applied: usize,
     pub skipped: usize,
     pub tombstoned: usize,
+    /// #8056 P3: whether the cycle attempted a push (had local changes). `false`
+    /// means "nothing to push" — a clean no-op distinct from a failed delivery.
+    pub push_attempted: bool,
+    /// #8056 P3: number of peers that confirmed receipt of the pushed changeset.
+    /// `0` with `push_attempted = true` means the local changes reached NO peer
+    /// (all peers offline/failed) — the UI can surface this as a delivery
+    /// warning instead of silently reporting a successful-looking empty cycle.
+    pub pushed_to_peers: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -53,6 +62,30 @@ pub struct SyncPeerDto {
     pub device_id: String,
     pub device_name: String,
     pub last_sync_at: String,
+}
+
+fn peer_dto(peer: maekon_core::models::sync::PeerInfo) -> SyncPeerDto {
+    SyncPeerDto {
+        device_id: peer.device_id,
+        device_name: peer.device_name,
+        last_sync_at: peer.last_sync_at,
+    }
+}
+
+fn validate_peer_id(device_id: &str) -> Result<&str, IpcError> {
+    let trimmed = device_id.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 128
+        || !trimmed.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':')
+        })
+    {
+        return Err(IpcError::new(
+            "validation.invalid_arguments",
+            "Invalid sync peer identifier",
+        ));
+    }
+    Ok(trimmed)
 }
 
 #[command]
@@ -74,11 +107,7 @@ pub async fn get_sync_status(
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .map(|p| SyncPeerDto {
-                    device_id: p.device_id,
-                    device_name: p.device_name,
-                    last_sync_at: p.last_sync_at,
-                })
+                .map(peer_dto)
                 .collect();
 
             Ok(SyncStatusDto {
@@ -88,6 +117,7 @@ pub async fn get_sync_status(
                 unavailable_reason: None,
                 device_id: engine.device_id().to_string(),
                 device_name: engine.device_name().to_string(),
+                last_health_state: engine.health_state().to_string(),
                 last_sync_at: sync_at,
                 last_error: error,
                 peers,
@@ -102,6 +132,7 @@ pub async fn get_sync_status(
             }),
             device_id: String::new(),
             device_name: String::new(),
+            last_health_state: "unavailable".to_string(),
             last_sync_at: None,
             last_error: None,
             peers: Vec::new(),
@@ -120,7 +151,11 @@ pub async fn trigger_sync_cycle(
             applied: result.applied,
             skipped: result.skipped_lww + result.skipped_dup,
             tombstoned: result.tombstoned,
+            push_attempted: result.push_attempted,
+            pushed_to_peers: result.pushed_to_peers,
         }),
+        // A `None` result means neither pull nor push happened this cycle — a
+        // genuine no-op. `SyncResultDto::default()` reports push_attempted=false.
         Ok(None) => Ok(SyncResultDto::default()),
         Err(e) => Err(IpcError::from(e)),
     }
@@ -134,49 +169,23 @@ pub async fn discover_sync_peers(
 
     let peers = engine.discover_peers().await.map_err(IpcError::from)?;
 
-    Ok(peers
-        .into_iter()
-        .map(|p| SyncPeerDto {
-            device_id: p.device_id,
-            device_name: p.device_name,
-            last_sync_at: p.last_sync_at,
-        })
-        .collect())
+    Ok(peers.into_iter().map(peer_dto).collect())
 }
 
-/// Enable or disable cross-device sync.
-///
-/// Persists the change to the config file. The engine itself is started/stopped
-/// at the next app launch — a live toggle of the background loop is not yet
-/// supported and is handled by the scheduler on startup.
 #[command]
-pub fn set_sync_enabled(
-    enabled: bool,
-    config_state: tauri::State<'_, ConfigRuntimeState>,
-) -> Result<(), IpcError> {
-    config_state
-        .config_manager()
-        .update_with(|config| {
-            config.sync.enabled = enabled;
-            Ok(())
-        })
-        .map_err(IpcError::from)?;
-    tracing::info!(enabled, "sync enabled flag updated");
-    Ok(())
-}
-
-/// Remove a peer from the known-peers list.
-///
-/// Delegates to the sync engine's transport to evict the peer from the
-/// active peer registry (LAN verified-peers map, remote REST endpoint,
-/// or file-transport changeset files).
-#[command]
-pub async fn forget_peer(
-    device_id: String,
+pub async fn forget_sync_peer(
     state: tauri::State<'_, SyncRuntimeState>,
-) -> Result<(), IpcError> {
+    device_id: String,
+) -> Result<Vec<SyncPeerDto>, IpcError> {
+    let device_id = validate_peer_id(&device_id)?;
     let engine = state.engine().ok_or_else(sync_not_enabled)?;
-    engine.forget_peer(&device_id).await.map_err(IpcError::from)
+
+    engine
+        .forget_peer(device_id)
+        .await
+        .map_err(IpcError::from)?;
+    let peers = engine.discover_peers().await.map_err(IpcError::from)?;
+    Ok(peers.into_iter().map(peer_dto).collect())
 }
 
 #[cfg(test)]
@@ -197,5 +206,29 @@ mod tests {
             classify_sync_availability(true, true),
             SyncAvailabilityDto::Ready
         ));
+    }
+
+    #[test]
+    fn sync_peer_identifier_validation_is_bounded_and_transport_safe() {
+        assert_eq!(
+            validate_peer_id(" qc-peer_01.example:2 ").unwrap(),
+            "qc-peer_01.example:2"
+        );
+        assert_eq!(
+            validate_peer_id("").unwrap_err().code,
+            "validation.invalid_arguments"
+        );
+        assert_eq!(
+            validate_peer_id("peer with spaces").unwrap_err().code,
+            "validation.invalid_arguments"
+        );
+        assert_eq!(
+            validate_peer_id("peer/with/path").unwrap_err().code,
+            "validation.invalid_arguments"
+        );
+        assert_eq!(
+            validate_peer_id(&"x".repeat(129)).unwrap_err().code,
+            "validation.invalid_arguments"
+        );
     }
 }

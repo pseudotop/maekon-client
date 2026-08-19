@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dismiss-task-candidate"
+description = "Enables the dismiss_task_candidate command without any pre-configured scope."
+commands.allow = ["dismiss_task_candidate"]
+
+[[permission]]
+identifier = "deny-dismiss-task-candidate"
+description = "Denies the dismiss_task_candidate command without any pre-configured scope."
+commands.deny = ["dismiss_task_candidate"]

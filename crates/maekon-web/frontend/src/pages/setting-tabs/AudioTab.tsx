@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Badge, Button, Checkbox, GuidancePanel, Spinner } from '../../components/ui'
+import { Alert, Badge, Button, Checkbox, GuidancePanel, Spinner } from '../../components/ui'
+import { translateError, type WireErrorLocale } from '../../i18n/translateError'
 import { colors, radius, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useSettingsFormContext } from '../settings/SettingsFormContext'
@@ -20,6 +21,8 @@ type AudioStatusResponse = {
     | { state: 'ready'; path: string; size_bytes: number }
     | { state: 'error'; message: string }
   stt_provider_loaded: boolean
+  /** #9639: false when this build has no cloud STT provider compiled in. */
+  cloud_stt_available?: boolean
 }
 
 const MODEL_LABELS: Record<ModelSize, string> = {
@@ -30,9 +33,18 @@ const MODEL_LABELS: Record<ModelSize, string> = {
 }
 
 export default function AudioTab() {
-  const { t } = useTranslation()
-  const { form } = useSettingsFormContext()
+  const { t, i18n } = useTranslation()
+  const { form, data } = useSettingsFormContext()
   const formData = form.formData
+
+  // #7600: COMPILE-capability gate, not just `config.audio.enabled`. `maekon-audio`
+  // is compiled OUT of the shipped `grpc,windows-sandbox` release build, so the
+  // enable checkbox + model download must be honestly disabled instead of
+  // offering a download that dead-ends in `service.unavailable`. Fail-closed
+  // while the capability snapshot query is still loading (`undefined`) or
+  // unavailable outside Tauri (standalone browser mode never resolves it).
+  const audioCompiled = data.featureCapabilities?.audio_compiled === true
+  const controlsDisabled = !audioCompiled
 
   const handleAudioChange = (field: string, value: unknown) => {
     form.setFormData((prev) => {
@@ -42,6 +54,20 @@ export default function AudioTab() {
   }
   const [audioStatus, setAudioStatus] = useState<AudioStatusResponse | null>(null)
   const [downloading, setDownloading] = useState(false)
+  // #8058 P2-6: surface model download/delete/reload failures. Previously these
+  // catch blocks silently reset state or `// ignore`d the error, so a failed
+  // download or a locked-file delete looked like a no-op to the user.
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  // Localize a thrown IpcError (typed wire codes) the same way GeneralTab does;
+  // falls through to the raw Display string for non-IpcError shapes.
+  const describeError = useCallback(
+    (e: unknown): string => {
+      const locale = (i18n.language?.startsWith('ko') ? 'ko' : 'en') as WireErrorLocale
+      return translateError(e, locale)
+    },
+    [i18n.language],
+  )
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -115,40 +141,61 @@ export default function AudioTab() {
   const vadSilenceMs = audio?.vad_silence_ms ?? 800
 
   const handleDownload = async () => {
+    setActionError(null)
     setDownloading(true)
     try {
       await ipc('download_whisper_model', { modelSize })
-    } catch {
+    } catch (e) {
       setDownloading(false)
+      setActionError(
+        t('settings.audio.downloadFailed', 'Could not start the model download: {{error}}', {
+          error: describeError(e),
+        }),
+      )
       fetchStatus()
     }
   }
 
   const handleCancel = async () => {
+    setActionError(null)
     try {
       await ipc('cancel_model_download')
-    } catch {
-      // ignore
+    } catch (e) {
+      setActionError(
+        t('settings.audio.cancelFailed', 'Could not cancel the download: {{error}}', {
+          error: describeError(e),
+        }),
+      )
     }
   }
 
   const handleDelete = async () => {
     if (!confirm(t('settings.audio.delete_confirm', 'Delete the downloaded model? You can re-download it later.')))
       return
+    setActionError(null)
     try {
       await ipc('delete_whisper_model', { modelSize })
       fetchStatus()
-    } catch {
-      // ignore
+    } catch (e) {
+      setActionError(
+        t('settings.audio.deleteFailed', 'Could not delete the model: {{error}}', {
+          error: describeError(e),
+        }),
+      )
     }
   }
 
   const handleReload = async () => {
+    setActionError(null)
     try {
       await ipc('reload_stt_engine')
       fetchStatus()
-    } catch {
-      // ignore
+    } catch (e) {
+      setActionError(
+        t('settings.audio.reloadFailed', 'Could not reload the speech-to-text engine: {{error}}', {
+          error: describeError(e),
+        }),
+      )
     }
   }
 
@@ -171,13 +218,27 @@ export default function AudioTab() {
             title: t('settings.guidance.audio.input.title'),
             description: t('settings.guidance.audio.input.description'),
           },
+          {
+            title: t('settings.guidance.audio.bystander.title'),
+            description: t('settings.guidance.audio.bystander.description'),
+          },
         ]}
       />
+
+      {!audioCompiled && (
+        <Alert variant="warning" title={t('settings.audio.notCompiledTitle', 'Not available in this build')}>
+          {t(
+            'settings.audio.notCompiledDescription',
+            'This build was compiled without audio/speech-to-text support. Enabling this toggle and downloading a model would not work.',
+          )}
+        </Alert>
+      )}
 
       <Checkbox
         checked={enabled}
         onChange={(e) => handleAudioChange('enabled', e.target.checked)}
         label={t('settings.audio.enable', 'Enable audio capture and STT')}
+        disabled={controlsDisabled}
       />
 
       <div className="space-y-2">
@@ -188,7 +249,7 @@ export default function AudioTab() {
           id="audio-model-size"
           value={modelSize}
           onChange={(e) => handleAudioChange('model_size', e.target.value)}
-          disabled={downloading || !enabled}
+          disabled={downloading || !enabled || controlsDisabled}
           className={cn('w-full border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
         >
           {(Object.entries(MODEL_LABELS) as [ModelSize, string][]).map(([key, label]) => (
@@ -238,7 +299,7 @@ export default function AudioTab() {
             {t('settings.audio.cancel', 'Cancel')}
           </Button>
         ) : (
-          <Button variant="primary" size="sm" onClick={handleDownload} disabled={!enabled}>
+          <Button variant="primary" size="sm" onClick={handleDownload} disabled={!enabled || controlsDisabled}>
             {modelState === 'ready'
               ? t('settings.audio.redownload', 'Re-download')
               : t('settings.audio.download', 'Download')}
@@ -246,15 +307,30 @@ export default function AudioTab() {
         )}
         {modelState === 'ready' && !downloading && (
           <>
-            <Button variant="secondary" size="sm" onClick={handleReload}>
+            <Button variant="secondary" size="sm" onClick={handleReload} disabled={controlsDisabled}>
               {t('settings.audio.reload', 'Reload Engine')}
             </Button>
-            <Button variant="danger" size="sm" onClick={handleDelete}>
+            <Button variant="danger" size="sm" onClick={handleDelete} disabled={controlsDisabled}>
               {t('settings.audio.delete', 'Delete')}
             </Button>
           </>
         )}
+        {/* #8053: a corrupt/failed model (e.g. integrity-check failure) must be
+            clearable — expose Delete in the error state too, reusing the same
+            delete_whisper_model handler so the poisoned file + its `.part` are
+            removed and the user can re-download. */}
+        {modelState === 'error' && !downloading && (
+          <Button variant="danger" size="sm" onClick={handleDelete} disabled={controlsDisabled}>
+            {t('settings.audio.delete', 'Delete')}
+          </Button>
+        )}
       </div>
+
+      {actionError && (
+        <Alert variant="error" title={t('settings.audio.actionErrorTitle', 'Model action failed')}>
+          <p>{actionError}</p>
+        </Alert>
+      )}
 
       <div className="space-y-2">
         <label htmlFor="audio-language" className={cn(typography.label, colors.text.secondary)}>
@@ -264,7 +340,7 @@ export default function AudioTab() {
           id="audio-language"
           value={language}
           onChange={(e) => handleAudioChange('language', e.target.value)}
-          disabled={!enabled}
+          disabled={!enabled || controlsDisabled}
           className={cn('w-full border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
         >
           <option value="auto">Auto-detect</option>
@@ -286,6 +362,7 @@ export default function AudioTab() {
               value="push_to_talk"
               checked={micInputMode === 'push_to_talk'}
               onChange={() => handleAudioChange('mic_input_mode', 'push_to_talk')}
+              disabled={controlsDisabled}
             />
             <span className={colors.text.primary}>{t('settings.audio.ptt', 'Push-to-Talk')}</span>
           </label>
@@ -296,6 +373,7 @@ export default function AudioTab() {
               value="voice_activity"
               checked={micInputMode === 'voice_activity'}
               onChange={() => handleAudioChange('mic_input_mode', 'voice_activity')}
+              disabled={controlsDisabled}
             />
             <span className={colors.text.primary}>{t('settings.audio.vad', 'Voice Activity')}</span>
           </label>
@@ -318,6 +396,7 @@ export default function AudioTab() {
                 step="0.005"
                 value={vadThreshold}
                 onChange={(e) => handleAudioChange('vad_threshold', Number.parseFloat(e.target.value))}
+                disabled={controlsDisabled}
                 className="flex-1"
               />
               <span className={cn('w-12 text-right text-sm tabular-nums', colors.text.secondary)}>
@@ -343,6 +422,7 @@ export default function AudioTab() {
               step="100"
               value={vadSilenceMs}
               onChange={(e) => handleAudioChange('vad_silence_ms', Number.parseInt(e.target.value, 10) || 800)}
+              disabled={controlsDisabled}
               className={cn('w-32 border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
             />
             <p className={cn(typography.caption, colors.text.tertiary)}>
@@ -365,24 +445,37 @@ export default function AudioTab() {
               value="local"
               checked={sttProvider === 'local'}
               onChange={() => handleAudioChange('stt_provider', 'local')}
+              disabled={controlsDisabled}
             />
             <span className={colors.text.primary}>{t('settings.audio.local', 'Local (Whisper)')}</span>
           </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="radio"
-              name="stt_provider"
-              value="cloud"
-              checked={sttProvider === 'cloud'}
-              onChange={() => handleAudioChange('stt_provider', 'cloud')}
-            />
-            <span className={colors.text.primary}>{t('settings.audio.cloud', 'Cloud (OpenAI)')}</span>
-          </label>
+          {/* #9639: the cloud provider is compiled into NO release target
+              today — showing the radio + API-key field was a visibly dead
+              control. Render it only when the build actually carries it. */}
+          {audioStatus?.cloud_stt_available ? (
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="stt_provider"
+                value="cloud"
+                checked={sttProvider === 'cloud'}
+                onChange={() => handleAudioChange('stt_provider', 'cloud')}
+                disabled={controlsDisabled}
+              />
+              <span className={colors.text.primary}>{t('settings.audio.cloud', 'Cloud (OpenAI)')}</span>
+            </label>
+          ) : null}
         </div>
       </fieldset>
 
       {/* Cloud STT Settings (shown when Cloud selected) */}
-      {sttProvider === 'cloud' && (
+      {/* #9643 review M9: a saved stt_provider of 'cloud' in a build without
+          the provider would otherwise leave the radio group with nothing
+          selected and no explanation. */}
+      {sttProvider === 'cloud' && audioStatus && !audioStatus.cloud_stt_available ? (
+        <Alert variant="warning">{t('settings.audio.cloudUnavailable')}</Alert>
+      ) : null}
+      {sttProvider === 'cloud' && audioStatus?.cloud_stt_available ? (
         <div className="space-y-4 rounded-lg border border-muted p-4">
           <div className="space-y-2">
             <label htmlFor="cloud-api-key" className={cn(typography.label, colors.text.secondary)}>
@@ -394,6 +487,7 @@ export default function AudioTab() {
               value={cloudApiKey}
               onChange={(e) => handleAudioChange('cloud_api_key', e.target.value)}
               placeholder="sk-..."
+              disabled={controlsDisabled}
               className={cn('w-full border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
             />
             <p className={cn(typography.caption, colors.text.tertiary)}>
@@ -410,6 +504,7 @@ export default function AudioTab() {
               value={cloudEndpoint}
               onChange={(e) => handleAudioChange('cloud_stt_endpoint', e.target.value)}
               placeholder="https://api.openai.com/v1/audio/transcriptions"
+              disabled={controlsDisabled}
               className={cn('w-full border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
             />
             <p className={cn(typography.caption, colors.text.tertiary)}>
@@ -428,11 +523,12 @@ export default function AudioTab() {
               step="5"
               value={cloudTimeoutSecs}
               onChange={(e) => handleAudioChange('cloud_timeout_secs', Number.parseInt(e.target.value, 10) || 30)}
+              disabled={controlsDisabled}
               className={cn('w-32 border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
             />
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

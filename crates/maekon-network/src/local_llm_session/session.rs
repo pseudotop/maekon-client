@@ -17,7 +17,7 @@ use super::helpers::{
     local_content_blocks, ollama_message_payload, parse_ndjson_line, render_local_message_content,
 };
 use super::types::LocalLlmSession;
-use crate::provider_error_body::provider_error_message;
+use maekon_http_core::provider_error_body::provider_error_message;
 
 /// #6206/#6207: Hard cap on the in-flight NDJSON line buffer. Ollama streams one
 /// JSON object per line, so a single un-terminated line should never approach
@@ -57,6 +57,11 @@ impl LocalLlmSession {
 #[async_trait]
 impl ConversationSession for LocalLlmSession {
     async fn send_message(&self, message: &SessionMessage) -> Result<ResponseStream, CoreError> {
+        // #7574: acquire the turn guard before any history mutation so a
+        // concurrent second `send_message` call blocks until this turn's
+        // stream is fully drained/dropped, instead of racing on `history`.
+        let turn_guard = self.send_lock.clone().lock_owned().await;
+
         // Convert SessionMessage to ChatMessage and append to history.
         let rendered_user_message = render_local_message_content(message);
         let content_blocks = local_content_blocks(&rendered_user_message, &message.attachments);
@@ -126,10 +131,12 @@ impl ConversationSession for LocalLlmSession {
         if !response.status().is_success() {
             let status = response.status();
             // #6949: cap Ollama error response body (OOM guard)
-            let body_text =
-                crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-                    .await
-                    .unwrap_or_default();
+            let body_text = maekon_http_core::outbound::read_text_capped(
+                response,
+                maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+            )
+            .await
+            .unwrap_or_default();
             // #6129: Roll back the just-pushed user message on non-success
             // status (e.g. 404 model-not-pulled, 5xx) for the same reason.
             self.pop_pending_user_message().await;
@@ -172,6 +179,11 @@ impl ConversationSession for LocalLlmSession {
         let session_id = self.session_id.clone();
 
         let stream: ResponseStream = Box::pin(try_stream! {
+            // #7574: keep the turn guard alive for the lifetime of this
+            // stream (dropped when the stream completes or is dropped early)
+            // so the next queued `send_message` cannot start until this turn
+            // releases it.
+            let _turn_guard = turn_guard;
             let mut accumulated = String::new();
             let mut line_buffer = String::new();
 
@@ -374,7 +386,7 @@ impl ConversationSession for LocalLlmSession {
     ///
     /// Mirrors ADR-023 MG-PII-02 loopback gating logic.
     fn is_external(&self) -> bool {
-        !crate::http_client::host_is_loopback(&format!("{}/", self.base_url))
+        !maekon_http_core::outbound::host_is_loopback(&format!("{}/", self.base_url))
     }
 
     fn egress_endpoint_urls(&self) -> Vec<&str> {

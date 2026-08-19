@@ -25,7 +25,10 @@ pub struct OverlayUpgradePayload {
 }
 
 /// Focus highlight bounding box.
-#[allow(dead_code)] // retained for future IPC command usage
+// #7719: only constructed by `MagicOverlayHandle::update_focus_highlight`,
+// itself dead today (see that method's doc comment) — focus-highlight
+// updates now route through the `OverlayDriver` trait instead.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayFocusPayload {
     pub x: i32,
@@ -43,6 +46,9 @@ pub struct OverlayGoalPayload {
 }
 
 /// Overlay display mode change.
+// #7719: only constructed by `MagicOverlayHandle::set_mode`, itself dead
+// today (#7686 removed its only IPC caller) — kept alongside it.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayModePayload {
     pub mode: OverlayMode,
@@ -85,8 +91,45 @@ pub struct OverlayFullscreenPolicyPayload {
     pub reason: String,
 }
 
+/// The **pure** decision of the fullscreen-suppression policy (CRT-PRV-OVL-005).
+/// Independent of any real OS state, so it is unit-testable on every platform.
+///
+/// - `owned_fullscreen`: one of the Maekon-owned webviews is fullscreen
+///   (the `app_handle.webview_windows()` path).
+/// - `external_fullscreen`: a foreground **external** app is fullscreen /
+///   monitor-covering (platform probe, #8849). `None` means undetermined
+///   (unsupported platform / missing permission / etc.).
+///
+/// If either one is fullscreen, the overlay is suppressed. When an external app
+/// is the cause, a distinct diagnostic reason is recorded.
+pub(super) fn decide_fullscreen_policy(
+    owned_fullscreen: bool,
+    external_fullscreen: Option<bool>,
+) -> OverlayFullscreenPolicyPayload {
+    let external = external_fullscreen.unwrap_or(false);
+    if owned_fullscreen || external {
+        let reason = if external {
+            "foreground external application is fullscreen"
+        } else {
+            "native fullscreen window detected"
+        };
+        OverlayFullscreenPolicyPayload {
+            fullscreen_detected: true,
+            policy: "suppress".to_string(),
+            overlay_allowed: false,
+            reason: reason.to_string(),
+        }
+    } else {
+        OverlayFullscreenPolicyPayload {
+            fullscreen_detected: false,
+            policy: "show_on_top".to_string(),
+            overlay_allowed: true,
+            reason: "no fullscreen window detected".to_string(),
+        }
+    }
+}
+
 /// A single UI element in the detection overlay scene.
-#[allow(dead_code)] // used by detection overlay IPC commands
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionElementPayload {
     pub element_id: String,
@@ -101,7 +144,6 @@ pub struct DetectionElementPayload {
 }
 
 /// Full UI scene sent to the detection overlay.
-#[allow(dead_code)] // used by detection overlay IPC commands
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionScenePayload {
     pub scene_id: String,
@@ -116,6 +158,9 @@ pub struct DetectionScenePayload {
 
 #[derive(Debug)]
 pub(super) struct OverlayState {
+    // Written by `set_mode`, read by `get_mode`/`toggle_mode` — all three
+    // dead today (#7686 removed the mode-switching IPC surface).
+    #[allow(dead_code)]
     pub(super) mode: OverlayMode,
     pub(super) visible: bool,
     pub(super) current_message_id: Option<String>,

@@ -5,8 +5,9 @@ use std::sync::Arc;
 use tauri::{command, Emitter};
 use tokio::sync::mpsc;
 
-use maekon_core::models::audio::TranscriptionResult;
-use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::models::audio::{TranscriptRecord, TranscriptionResult};
+use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
+use maekon_core::ports::transcript_storage::TranscriptStoragePort;
 
 use crate::ipc_error::IpcError;
 use crate::runtime_state::AudioRuntimeState;
@@ -40,6 +41,57 @@ fn should_rearm_vad(resume_pending: bool, mode: MicInputMode) -> bool {
     resume_pending && mode == MicInputMode::VoiceActivity
 }
 
+/// Map an [`SttProvider::provider_name`] into the persisted `transcripts.source`
+/// label (#8059). Providers report descriptive names ("whisper-local",
+/// "openai-whisper-cloud", "fallback"); the stored `source` uses the canonical
+/// `whisper | cloud | fallback` categories. `cloud` is checked BEFORE `whisper`
+/// because the cloud provider's name contains both tokens.
+fn normalize_stt_source(provider_name: &str) -> &'static str {
+    let name = provider_name.to_ascii_lowercase();
+    if name.contains("fallback") {
+        "fallback"
+    } else if name.contains("cloud") {
+        "cloud"
+    } else if name.contains("whisper") || name.contains("local") {
+        "whisper"
+    } else {
+        "unknown"
+    }
+}
+
+/// Persist a completed transcription, best-effort (#8059 G3b).
+///
+/// Persistence must NEVER fail the user-facing transcription — transcription is
+/// the primary function — so failures are logged and swallowed. Empty
+/// transcriptions (silence / empty buffer) carry no content and are skipped, and
+/// the call is a no-op when storage wiring is absent (`None`). The
+/// `TranscriptionResult.text` is already PII-masked at the STT provider boundary
+/// (see `WhisperSttProvider::with_pii_sanitizer`), so the persisted text
+/// inherits the mask — the same privacy discipline as every other stored artifact.
+///
+/// This runs only AFTER the microphone privacy gate has already permitted
+/// transcription (both PTT and VAD paths gate before reaching STT), so no
+/// transcript is ever persisted without consent.
+async fn persist_transcript(
+    storage: &Option<Arc<dyn TranscriptStoragePort>>,
+    source: &str,
+    result: &TranscriptionResult,
+) {
+    if result.text.trim().is_empty() {
+        return;
+    }
+    let Some(storage) = storage.as_ref() else {
+        return;
+    };
+    let record = TranscriptRecord::from_transcription(source, result);
+    if let Err(e) = storage.save_transcript(&record).await {
+        tracing::warn!(
+            err.code = %e.code(),
+            "failed to persist transcript (transcription still returned): {e}"
+        );
+    }
+}
+
 /// Single entry point every capture-pause toggle site must call. Fires the
 /// immediate VAD re-gate (pause → stop; unpause → no-op), AND:
 ///  - at the PAUSE edge, remembers whether VAD was running (read BEFORE the
@@ -53,6 +105,18 @@ pub(crate) fn on_capture_pause_toggled<R: tauri::Runtime>(
     new_paused: bool,
 ) {
     use tauri::Manager;
+
+    // #8094: durably audit every capture pause/resume transition. This is the
+    // single chokepoint every pause site (tray, shortcut, IPC command) routes
+    // through, so auditing here cannot miss a sibling pause entry point. The row
+    // lands in the same durable, hash-chained `audit_log` trail as consent
+    // grant/revoke. Best-effort + offloaded (blocking SQLite off the reactor).
+    if let Some(state) = app.try_state::<crate::runtime_state::AppState>() {
+        crate::commands::privacy_audit::spawn_audit_capture_pause(
+            state.storage.clone(),
+            new_paused,
+        );
+    }
 
     // PAUSE edge: capture resume intent BEFORE signaling the stop.
     if new_paused {
@@ -97,12 +161,9 @@ pub(crate) fn on_capture_pause_toggled<R: tauri::Runtime>(
 /// CONS-PI13; NOT `get()` (deep-clone of 37 sections).
 fn ensure_capture_permitted(state: &AudioRuntimeState) -> Result<(), IpcError> {
     use std::sync::atomic::Ordering;
-    // effective_permissions() returns permissions only when the state is Valid — Expired/UpdateRequired
-    // return all-false, so a stale consent record is also treated as fail-closed (Task 3).
-    let consent = state
-        .consent_manager()
-        .map(|cm| cm.effective_permissions())
-        .unwrap_or_default();
+    // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+    // consent record AND on a missing ConsentManager (#7728).
+    let consent = ConsentGate::from_ref(state.consent_manager()).permissions_snapshot();
     let paused = state.capture_paused().load(Ordering::Relaxed);
     let permitted = crate::scheduler::audio_capture_permitted_now(
         &state.config_manager().snapshot(),
@@ -192,7 +253,16 @@ pub(crate) async fn stop_and_transcribe_inner(
         });
     }
 
-    stt.transcribe(buffer).await.map_err(IpcError::from)
+    let tr = stt.transcribe(buffer).await.map_err(IpcError::from)?;
+    // G3b (#8059): persist the (masked) transcript best-effort. A persistence
+    // failure must not fail the transcription the user just requested.
+    persist_transcript(
+        &state.transcript_storage(),
+        normalize_stt_source(stt.provider_name()),
+        &tr,
+    )
+    .await;
+    Ok(tr)
 }
 
 use std::sync::atomic::Ordering;
@@ -214,6 +284,20 @@ fn try_enqueue_vad_speech_signal(tx: &VadSpeechSignalSender) -> bool {
     tx.try_send(()).is_ok()
 }
 
+fn synthetic_fixture_model_status(
+    synthetic_fixture: bool,
+    stt_loaded: bool,
+) -> Option<ModelDownloadStatus> {
+    (synthetic_fixture && stt_loaded).then(|| ModelDownloadStatus::Ready {
+        path: "qc-synthetic-audio-fixture".into(),
+        size_bytes: 0,
+    })
+}
+
+fn mic_input_mode_wire_value(mode: MicInputMode) -> String {
+    mode.to_string()
+}
+
 /// Get combined audio subsystem status (reads live config via config_manager).
 #[command]
 pub async fn get_audio_status(
@@ -221,15 +305,24 @@ pub async fn get_audio_status(
 ) -> Result<AudioStatus, IpcError> {
     let live_config = state.config_manager().get();
     let audio_cfg = &live_config.audio;
-    // model_status is async (uses tokio::fs) — await directly; no spawn_blocking needed.
-    let model_status = match state.audio().model_downloader.as_ref() {
-        Some(dl) => {
-            dl.model_status(audio_cfg.model_size, &state.audio().model_dir)
-                .await
-        }
-        None => ModelDownloadStatus::NotInstalled,
-    };
     let stt_loaded = state.audio().stt_engine.read().await.is_some();
+    // The exact debug-only synthetic fixture has its own local no-op STT and
+    // must not require a real Whisper model. Every normal runtime still uses
+    // the downloader's verified on-disk status unchanged.
+    let model_status = if let Some(status) =
+        synthetic_fixture_model_status(state.audio().synthetic_fixture, stt_loaded)
+    {
+        status
+    } else {
+        // model_status is async (uses tokio::fs) — await directly; no spawn_blocking needed.
+        match state.audio().model_downloader.as_ref() {
+            Some(dl) => {
+                dl.model_status(audio_cfg.model_size, &state.audio().model_dir)
+                    .await
+            }
+            None => ModelDownloadStatus::NotInstalled,
+        }
+    };
     let vad_state = state.audio().vad_state.lock().clone();
     Ok(AudioStatus {
         enabled: audio_cfg.enabled,
@@ -237,8 +330,9 @@ pub async fn get_audio_status(
         model_status,
         stt_provider_loaded: stt_loaded,
         stt_provider: format!("{:?}", audio_cfg.stt_provider).to_lowercase(),
-        mic_input_mode: format!("{:?}", audio_cfg.mic_input_mode).to_lowercase(),
+        mic_input_mode: mic_input_mode_wire_value(audio_cfg.mic_input_mode),
         vad_state,
+        cloud_stt_available: cfg!(feature = "cloud-stt"),
     })
 }
 
@@ -386,6 +480,7 @@ async fn run_vad_receiver(
     consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     capture_paused: Arc<std::sync::atomic::AtomicBool>,
     regate: Arc<tokio::sync::Notify>,
+    transcript_storage: Option<Arc<dyn TranscriptStoragePort>>,
     mut emit: impl FnMut(&str, serde_json::Value) + Send + 'static,
 ) {
     use std::sync::atomic::Ordering;
@@ -404,12 +499,9 @@ async fn run_vad_receiver(
     let gate_open = |cfg_mgr: &maekon_core::config_manager::ConfigManager,
                      consent_mgr: &Option<Arc<dyn ConsentManagerPort>>,
                      paused: &std::sync::atomic::AtomicBool| {
-        // effective_permissions() returns permissions only when the state is Valid — Expired/UpdateRequired
-        // return all-false, so a stale consent record is also treated as fail-closed (Task 3).
-        let consent = consent_mgr
-            .as_ref()
-            .map(|cm| cm.effective_permissions())
-            .unwrap_or_default();
+        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+        // consent record AND on a missing ConsentManager (#7728).
+        let consent = ConsentGate::from_ref(consent_mgr.as_ref()).permissions_snapshot();
         crate::scheduler::audio_capture_permitted_now(
             &cfg_mgr.snapshot(),
             &consent,
@@ -475,7 +567,17 @@ async fn run_vad_receiver(
                             .map(Arc::clone)
                             .ok_or_else(|| "STT engine not available".to_string())?
                     };
-                    stt.transcribe(buffer).await.map_err(|e| e.to_string())
+                    let tr = stt.transcribe(buffer).await.map_err(|e| e.to_string())?;
+                    // G3b (#8059): persist the (masked) transcript best-effort
+                    // before it is emitted to the chat input. A persistence
+                    // failure must not fail the transcription.
+                    persist_transcript(
+                        &transcript_storage,
+                        normalize_stt_source(stt.provider_name()),
+                        &tr,
+                    )
+                    .await;
+                    Ok(tr)
                 }
                 .await;
 
@@ -584,6 +686,7 @@ pub(crate) async fn start_vad_listening_inner<R: tauri::Runtime>(
     let consent_manager = state.consent_manager().cloned();
     let capture_paused = state.capture_paused().clone();
     let regate = state.audio_regate().clone();
+    let transcript_storage = state.transcript_storage();
 
     tokio::spawn(run_vad_receiver(
         rx,
@@ -594,6 +697,7 @@ pub(crate) async fn start_vad_listening_inner<R: tauri::Runtime>(
         consent_manager,
         capture_paused,
         regate,
+        transcript_storage,
         move |event, payload| {
             let _ = app_clone.emit(event, payload);
         },
@@ -790,6 +894,39 @@ mod tests {
 
     use crate::runtime_state::{AudioContext, AudioRuntimeState};
 
+    #[test]
+    fn synthetic_fixture_reports_ready_without_a_real_model() {
+        let status = super::synthetic_fixture_model_status(true, true)
+            .expect("validated synthetic capture + STT must be UI-ready");
+
+        match status {
+            maekon_core::models::audio::ModelDownloadStatus::Ready { path, size_bytes } => {
+                assert_eq!(path, "qc-synthetic-audio-fixture");
+                assert_eq!(size_bytes, 0);
+            }
+            other => panic!("unexpected fixture model status: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synthetic_fixture_readiness_fails_closed_without_synthetic_stt() {
+        assert!(super::synthetic_fixture_model_status(true, false).is_none());
+        assert!(super::synthetic_fixture_model_status(false, true).is_none());
+        assert!(super::synthetic_fixture_model_status(false, false).is_none());
+    }
+
+    #[test]
+    fn mic_input_mode_status_uses_canonical_wire_spelling() {
+        assert_eq!(
+            super::mic_input_mode_wire_value(maekon_core::config::MicInputMode::PushToTalk),
+            "push_to_talk"
+        );
+        assert_eq!(
+            super::mic_input_mode_wire_value(maekon_core::config::MicInputMode::VoiceActivity),
+            "voice_activity"
+        );
+    }
+
     /// Test double for the VAD receiver: records `stop_vad` calls and exposes a
     /// controllable `vad_active` flag. `drain_speech_buffer` returns a buffer
     /// built from `drain_samples` (empty for `listening()`, non-empty for
@@ -953,6 +1090,7 @@ mod tests {
             consent,
             capture_paused,
             regate,
+            None,
             emit,
         ));
         // One speech-ended signal, then close the channel.
@@ -991,6 +1129,7 @@ mod tests {
             consent,
             Arc::new(AtomicBool::new(paused)),
             AudioContext::disabled(dir.join("models")),
+            None,
         )
     }
 
@@ -1054,6 +1193,7 @@ mod tests {
             Some(Arc::new(cm)),
             Arc::new(AtomicBool::new(false)),
             AudioContext::disabled(temp.path().join("models")),
+            None,
         );
         let gate_err = super::ensure_capture_permitted(&state).unwrap_err();
         assert!(gate_err.code.contains("validation"), "audio capture must be denied when audio.enabled=false even with consent and not paused");
@@ -1259,6 +1399,7 @@ mod tests {
         .unwrap();
         let audio = AudioContext {
             capture: Some(capture as Arc<dyn AudioCapturePort>),
+            synthetic_fixture: false,
             stt_engine: Arc::new(tokio::sync::RwLock::new(Some(
                 stt as Arc<dyn maekon_core::ports::stt_provider::SttProvider>,
             ))),
@@ -1273,6 +1414,7 @@ mod tests {
             Some(Arc::new(cm)),
             Arc::new(StdAtomicBool::new(false)),
             audio,
+            None,
         )
     }
 
@@ -1407,6 +1549,7 @@ mod tests {
             consent,
             capture_paused.clone(),
             regate,
+            None,
             emit,
         ));
 
@@ -1467,6 +1610,7 @@ mod tests {
             consent,
             capture_paused.clone(),
             regate.clone(),
+            None,
             emit,
         ));
 
@@ -1514,6 +1658,7 @@ mod tests {
             consent,
             capture_paused.clone(),
             regate.clone(),
+            None,
             emit,
         ));
 
@@ -1589,6 +1734,7 @@ mod tests {
             consent,
             capture_paused.clone(),
             regate,
+            None,
             emit,
         ));
 
@@ -1674,6 +1820,7 @@ mod tests {
             consent,
             capture_paused.clone(),
             regate,
+            None,
             emit,
         ));
 
@@ -1728,6 +1875,7 @@ mod tests {
             consent,
             capture_paused,
             regate,
+            None,
             emit,
         ));
         tokio::time::advance(std::time::Duration::from_secs(2)).await;
@@ -1742,5 +1890,135 @@ mod tests {
             1,
             "battery-saver must stop the mic via the tick"
         );
+    }
+
+    // ── transcript persistence (#8059 G3b) ────────────────────────────────
+
+    /// Recording test double for `TranscriptStoragePort`: captures every saved
+    /// record, or fails every save when constructed via `failing()`.
+    struct RecordingTranscriptStore {
+        saved: parking_lot::Mutex<Vec<maekon_core::models::audio::TranscriptRecord>>,
+        fail: bool,
+    }
+    impl RecordingTranscriptStore {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                saved: parking_lot::Mutex::new(Vec::new()),
+                fail: false,
+            })
+        }
+        fn failing() -> Arc<Self> {
+            Arc::new(Self {
+                saved: parking_lot::Mutex::new(Vec::new()),
+                fail: true,
+            })
+        }
+        fn saved(&self) -> Vec<maekon_core::models::audio::TranscriptRecord> {
+            self.saved.lock().clone()
+        }
+    }
+    #[async_trait::async_trait]
+    impl maekon_core::ports::transcript_storage::TranscriptStoragePort for RecordingTranscriptStore {
+        async fn save_transcript(
+            &self,
+            record: &maekon_core::models::audio::TranscriptRecord,
+        ) -> Result<(), CoreError> {
+            if self.fail {
+                return Err(CoreError::Storage {
+                    code: maekon_core::error_codes::StorageCode::Failed,
+                    message: "forced save failure".to_string(),
+                });
+            }
+            self.saved.lock().push(record.clone());
+            Ok(())
+        }
+        async fn query_transcripts_in_range(
+            &self,
+            _window: &maekon_core::types::TimeWindow,
+        ) -> Result<Vec<maekon_core::models::audio::TranscriptRecord>, CoreError> {
+            Ok(self.saved.lock().clone())
+        }
+    }
+
+    fn transcription(text: &str, language: Option<&str>) -> super::TranscriptionResult {
+        super::TranscriptionResult {
+            text: text.to_string(),
+            language: language.map(str::to_string),
+            duration_secs: 4.0,
+            processing_secs: 1.0,
+        }
+    }
+
+    #[test]
+    fn normalize_stt_source_maps_provider_names_to_canonical_labels() {
+        // `cloud` must win over `whisper` for the cloud provider (its name has both).
+        assert_eq!(super::normalize_stt_source("whisper-local"), "whisper");
+        assert_eq!(super::normalize_stt_source("openai-whisper-cloud"), "cloud");
+        assert_eq!(super::normalize_stt_source("fallback"), "fallback");
+        assert_eq!(super::normalize_stt_source("Something-Unknown"), "unknown");
+    }
+
+    #[tokio::test]
+    async fn persist_transcript_saves_masked_text_and_normalized_source() {
+        let store = RecordingTranscriptStore::new();
+        let storage: Option<
+            Arc<dyn maekon_core::ports::transcript_storage::TranscriptStoragePort>,
+        > = Some(store.clone());
+
+        // The text handed here is already PII-masked at the provider boundary.
+        super::persist_transcript(
+            &storage,
+            "whisper",
+            &transcription("board sync notes", Some("en")),
+        )
+        .await;
+
+        let saved = store.saved();
+        assert_eq!(saved.len(), 1, "one transcript must be persisted");
+        assert_eq!(saved[0].text, "board sync notes");
+        assert_eq!(saved[0].source, "whisper");
+        assert_eq!(saved[0].language.as_deref(), Some("en"));
+        assert!(saved[0].id.starts_with("transcript-"));
+    }
+
+    #[tokio::test]
+    async fn persist_transcript_skips_empty_and_whitespace_text() {
+        let store = RecordingTranscriptStore::new();
+        let storage: Option<
+            Arc<dyn maekon_core::ports::transcript_storage::TranscriptStoragePort>,
+        > = Some(store.clone());
+
+        super::persist_transcript(&storage, "whisper", &transcription("", None)).await;
+        super::persist_transcript(&storage, "whisper", &transcription("   ", None)).await;
+
+        assert!(
+            store.saved().is_empty(),
+            "silence/empty transcriptions carry no content and must not be persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_transcript_swallows_storage_error() {
+        let store = RecordingTranscriptStore::failing();
+        let storage: Option<
+            Arc<dyn maekon_core::ports::transcript_storage::TranscriptStoragePort>,
+        > = Some(store.clone());
+
+        // A persistence failure must NOT propagate/panic — transcription is the
+        // primary function. Reaching the assert proves the error was swallowed.
+        super::persist_transcript(&storage, "cloud", &transcription("content", None)).await;
+        assert!(
+            store.saved().is_empty(),
+            "the failing store recorded nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_transcript_is_noop_without_storage_wiring() {
+        let storage: Option<
+            Arc<dyn maekon_core::ports::transcript_storage::TranscriptStoragePort>,
+        > = None;
+        // No panic, no-op — transcription still succeeds when storage is absent.
+        super::persist_transcript(&storage, "whisper", &transcription("content", None)).await;
     }
 }

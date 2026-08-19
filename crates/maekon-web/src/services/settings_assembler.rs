@@ -64,7 +64,16 @@ pub(crate) fn config_to_settings(
             excluded_app_patterns: config.privacy.excluded_app_patterns.clone(),
             excluded_title_patterns: config.privacy.excluded_title_patterns.clone(),
             auto_exclude_sensitive: config.privacy.auto_exclude_sensitive,
-            pii_filter_level: format!("{}", config.privacy.pii_filter_level),
+            // #9146: use the canonical serde token ("Strict"), NOT the
+            // lowercase log-oriented Display ("strict") — the settings UI
+            // `<select>` options and the persisted config both use the
+            // capitalized token, and a lowercase response made the select
+            // fall back to its first option ("Off") right after a save.
+            pii_filter_level: config
+                .privacy
+                .pii_filter_level
+                .as_settings_token()
+                .to_string(),
         },
         schedule: ScheduleSettings {
             active_hours_enabled: config.schedule.active_hours_enabled,
@@ -119,9 +128,15 @@ pub(crate) fn config_to_settings(
             min_confidence: config.analysis.min_confidence,
             max_suggestions: config.analysis.max_suggestions as u32,
             embedding_enabled: config.analysis.embedding.enabled,
+            llm_summary_enabled: config.analysis.embedding.llm_summary_enabled,
             gui_intelligence_enabled: config.analysis.gui_intelligence.enabled,
             text_intelligence_enabled: config.analysis.text_intelligence.enabled,
             auto_tuner_enabled: config.analysis.tiered_memory.auto_tuning.enabled,
+            tiered_memory_enabled: config.analysis.tiered_memory.enabled,
+            regime_detection_interval_hours: config
+                .analysis
+                .tiered_memory
+                .regime_detection_interval_hours,
         },
         network: NetworkSettings {
             server_base_url: config.server.base_url.clone(),

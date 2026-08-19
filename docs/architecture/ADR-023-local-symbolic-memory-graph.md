@@ -97,6 +97,35 @@ When and only when a local LLM is configured (`config.ai_provider.llm_api.is_som
 - **Belief revision over regimes**: explicitly out of scope. ADR-012's destructive centroid merge is unchanged; this ADR adds no provenance/split to regimes.
 - **Traversal-first retrieval**: Phase 1/2 keep RRF hybrid search as the primary retriever; edges augment (re-rank/expand), they do not replace `hybrid_search_service`.
 
+### 5. Scope clarification — claims as a suggestion/coaching input (deferred; 2026-07, #8058 P2-2)
+
+A 2026-07 functional audit observed that `coaching_engine` and the suggestion
+crate hold **zero** `MemoryGraphPort` references: the graph's entire read surface
+is (a) the web dashboard (`handlers/memory_claims.rs` — list/retract, i.e.
+display + user action) and (b) `belief_revision` (default **off**). Even the
+augment-retrieval read-path noted above (edges re-rank/expand `hybrid_search`)
+is **not yet wired** — `semantic_search_service` reads no claims/edges. In
+short, active claims/edges currently accumulate for **display and belief
+revision only**, and do not flow into any generative decision.
+
+This is **consistent with the ratified scope**, not a regression against it. The
+acceptance criteria (below) cover substrate, promotion, durability, belief
+revision, degradation, and markdown render — **none** asserts that claims feed
+suggestion or coaching *generation*. The ADR's intended read-path beyond display
+is retrieval augmentation (edges re-rank/expand hybrid search), **not** injection
+of claim text into a suggestion/coaching prompt. Those are materially different
+designs (retrieval re-rank vs. prompt-context injection vs. a coaching gate
+signal), each with its own privacy surface (claim text is user-derived and would
+newly cross into the generation boundary), egress-audit, and evaluation needs.
+
+**Decision**: a claims-as-generation-input consumer is a **new, unratified
+design** and is therefore deferred to a dedicated follow-up (ADR amendment or a
+new ADR), rather than being introduced ad hoc. Wiring the already-scoped
+retrieval augmentation (line above) is the smaller, ADR-aligned first step and is
+likewise tracked as follow-up. No runtime change accompanies this clarification —
+it records the boundary so the "display-only" observation is not mistaken for an
+implementation bug.
+
 ## Consequences
 
 ### Positive

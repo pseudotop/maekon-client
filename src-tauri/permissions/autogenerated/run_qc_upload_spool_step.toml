@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-run-qc-upload-spool-step"
+description = "Enables the run_qc_upload_spool_step command without any pre-configured scope."
+commands.allow = ["run_qc_upload_spool_step"]
+
+[[permission]]
+identifier = "deny-run-qc-upload-spool-step"
+description = "Denies the run_qc_upload_spool_step command without any pre-configured scope."
+commands.deny = ["run_qc_upload_spool_step"]

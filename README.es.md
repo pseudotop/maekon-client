@@ -21,17 +21,30 @@
 
 Maekon es un agente de escritorio Apache-2.0 local-first que puede usarse de forma independiente sin ONESHIM. Ofrece captura de contexto local, candidatos para la siguiente acción revisados por el usuario, automatización gobernada por políticas y un panel de control integrado. Desarrollado con Rust y Tauri v2 (shell WebView sobre un frontend React) para rendimiento nativo en macOS, Windows y Linux.
 
+El canal público es un prerelease temprano para Global Alpha por invitación. No es una stable release ni demuestra preparación operativa.
+
 ## Inicio Rápido desde Source Build
 
-El repositorio público ya está disponible, pero los artefactos públicos de GitHub Releases aún no se han publicado. Hasta que exista la primera release pública, ejecute Maekon desde un source checkout local.
+El repositorio público ya está disponible y `v0.0.1-rc.6` es el prerelease público actual. Como el endpoint `latest` de GitHub excluye prereleases, use los comandos con versión fijada de la guía de instalación para validar binarios. Para desarrollo y builds de debug, ejecute Maekon desde un source checkout local.
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
 cd maekon-client
+
+# Build the two bundled prerequisites the Tauri config requires before the app
+# can run from source (a fresh checkout has neither yet):
+#   1) the web dashboard frontend  -> crates/maekon-web/frontend/dist
+#   2) the sandbox-worker sidecar   -> src-tauri/maekon-sandbox-worker-<target-triple>
+(cd crates/maekon-web/frontend && pnpm install && pnpm build)
+cargo build -p maekon-sandbox-worker
+cp target/debug/maekon-sandbox-worker \
+  "src-tauri/maekon-sandbox-worker-$(rustc -vV | sed -n 's/host: //p')"
+
+# Run Maekon from source
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
-Los comandos del instalador de release están documentados abajo y serán la ruta recomendada después de publicar los artefactos públicos. Para fijar versiones, verificación de firmas y desinstalación:
+Los comandos del instalador de release están documentados abajo. Para fijar la versión prerelease, verificar firmas y desinstalar:
 - Inglés: [`docs/install.md`](./docs/install.md)
 - Coreano: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -39,7 +52,7 @@ Los comandos del instalador de release están documentados abajo y serán la rut
 
 - **Organice la actividad como información de trabajo gobernada**: Registre contexto, cronología, tendencias de enfoque, interrupciones y rutas de automatización aprobadas en un solo lugar.
 - **Manténgase ligero en el dispositivo**: El procesamiento edge (codificación delta, miniaturas, OCR) reduce el volumen de transferencia y mantiene respuestas rápidas.
-- **Use una pila de escritorio lista para producción**: Binario multiplataforma, actualización automática, integración con la bandeja del sistema y panel web local.
+- **Evalúe la pila de escritorio en Global Alpha**: El prerelease incluye código multiplataforma, base de actualización, integración con la bandeja del sistema y panel web local; verifique el build y la plataforma concretos antes de usarlo.
 
 ## Para Quién Es
 
@@ -60,7 +73,7 @@ Los comandos del instalador de release están documentados abajo y serán la rut
 El modo autónomo está disponible ahora.
 
 El modo conectado está disponible únicamente como una opción de vista previa opt-in.
-El modo autónomo sigue siendo la ruta predeterminada lista para producción en versiones de lanzamiento.
+El modo autónomo es la ruta de evaluación predeterminada para Global Alpha.
 
 ## Seguridad y Privacidad de un Vistazo
 
@@ -78,13 +91,30 @@ El modo autónomo sigue siendo la ruta predeterminada lista para producción en 
 - Contrato de eventos de automatización: [docs/contracts/automation-event-contract.md](./docs/contracts/automation-event-contract.md)
 - Contrato de proveedor de IA: [docs/contracts/ai-provider-contract.md](./docs/contracts/ai-provider-contract.md)
 
+### Verifica estas afirmaciones en el código fuente
+
+Las afirmaciones de privacidad anteriores no son texto de marketing — cada una corresponde a código de este repositorio que puedes leer, compilar y probar. El README y el código fuente se exportan juntos desde el mismo árbol verificado, por lo que esta tabla siempre describe el código que tiene al lado.
+
+| Afirmación | Dónde verificar |
+|---|---|
+| Las apps excluidas/sensibles se excluyen **en el momento de captura**, no solo al subir | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`), conectado a la puerta de captura en [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
+| Las rutas runtime declaradas bajo la política de egress se registran en un libro local consultable en la app (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + rutas de lectura en [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| Las creencias (claims) del grafo de memoria sobre ti son consultables y retractables con un clic (Privacy → Claims) | rutas de claims en [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| El consentimiento es fail-closed: sin permiso válido no hay captura | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
+| Las rutas cubiertas de la canalización de visión aplican el filtro PII configurado antes de sus pasos documentados de almacenamiento o egress | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| Las rutas de ejecución de automatización compatibles están diseñadas para pasar por política, sandbox y auditoría | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+
+### Política de sincronización del código fuente
+
+Este repositorio es una **exportación de instantáneas verificadas** de la fuente interna de Maekon. Las instantáneas se exportan por versión tras su verificación — las etiquetas de versión marcan estados verificados, y el repositorio sigue las versiones, no cada commit interno. El README y el código provienen siempre del mismo árbol, por lo que los enlaces de afirmación-a-código anteriores se refieren exactamente al checkout que estás leyendo.
+
 ## Características
 
 ### Características Principales
 - **Monitoreo de Contexto en Tiempo Real**: Rastrea ventanas activas, recursos del sistema y actividad del usuario
 - **Procesamiento de Imagen Edge**: Captura de pantalla, codificación delta, miniaturas y OCR
 - **Automatización Gobernada por Políticas**: Encauza acciones aprobadas mediante políticas, aislamiento en sandbox y auditoría
-- **Funciones de Servidor Conectado (Vista Previa / Opt-in)**: Los candidatos revisables para la siguiente acción y la sincronización de retroalimentación están disponibles para validación escalonada y no son la ruta de producción predeterminada
+- **Funciones de Servidor Conectado (Vista Previa / Opt-in)**: Los candidatos revisables para la siguiente acción y la sincronización de retroalimentación están disponibles para validación escalonada y no son la ruta autónoma predeterminada
 - **Bandeja del Sistema**: Se ejecuta en segundo plano con acceso rápido
 - **Actualización Automática**: Actualizaciones automáticas basadas en GitHub Releases
 - **Multiplataforma**: Compatible con macOS, Windows y Linux
@@ -164,7 +194,7 @@ MAEKON_TARGET_HARD_LIMIT_MB=6144 \
 ```
 
 El modo conectado es solo de vista previa y está intencionalmente restringido tras una configuración explícita de servidor/autenticación.
-Use el modo autónomo como la ruta de producción predeterminada a menos que su entorno haya validado el modo conectado.
+Use el modo autónomo como la ruta predeterminada de Global Alpha a menos que su entorno haya validado el modo conectado.
 
 Para sesiones de CI headless o depuración remota donde la inicialización de la bandeja de macOS puede fallar por la ausencia de WindowServer:
 ```bash
@@ -214,17 +244,17 @@ Guía de instalación completa:
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
 ```
 
 ### Recursos de Lanzamiento
@@ -257,11 +287,14 @@ identificadores técnicos estables en esta línea de lanzamiento.
 
 | Variable | Descripción | Valor Predeterminado |
 |------|------|--------|
-| `MAEKON_EMAIL` | Correo electrónico de inicio de sesión (solo modo conectado) | (opcional en autónomo) |
-| `MAEKON_PASSWORD` | Contraseña de inicio de sesión (solo modo conectado) | (opcional en autónomo) |
 | `MAEKON_TESSDATA` | Ruta de datos de Tesseract | (opcional) |
 | `MAEKON_DISABLE_TRAY` | Omitir inicialización de la bandeja del sistema (solo CI headless/prueba de humo remota de GUI) | `0` |
 | `RUST_LOG` | Nivel de registro | `info` |
+
+Las credenciales de inicio de sesión no se leen del entorno. Inicia sesión desde
+**Configuración → General → Account** (requiere una compilación con
+`--features server`); la URL del servidor se configura en
+**Configuración → Advanced → Network & Server**.
 
 ### Archivo de Configuración
 

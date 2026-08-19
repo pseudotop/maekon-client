@@ -3,12 +3,16 @@ use async_trait::async_trait;
 use maekon_core::config::DEFAULT_MIN_LLM_CONFIDENCE;
 use maekon_core::error::CoreError;
 use maekon_core::models::intent::AutomationIntent;
+use maekon_core::models::prompt_assembly::TrustedInstruction;
+use maekon_core::models::skill_pack::SkillActivationOutcome;
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::llm_provider::{
     InterpretedAction, LlmProvider, ScreenContext, SkillContext,
 };
 use maekon_core::ports::skill_loader::SkillLoader;
+use maekon_core::ports::skill_pack_registry::ActiveSkillResolverPort;
 use std::sync::Arc;
+use tracing::{debug, warn};
 
 // Re-export from core — canonical definition is in maekon-core/src/ports/intent_planner.rs
 pub use maekon_core::ports::intent_planner::IntentPlanner;
@@ -17,6 +21,9 @@ pub struct LlmIntentPlanner {
     llm_provider: Arc<dyn LlmProvider>,
     element_finder: Arc<dyn ElementFinder>,
     skill_loader: Option<Arc<dyn SkillLoader>>,
+    /// Resolves the trusted Skill Pack activation, if any (#8588). `None` means
+    /// no skill body is ever injected.
+    skill_resolver: Option<Arc<dyn ActiveSkillResolverPort>>,
     wait_timeout_ms: u64,
     /// Minimum LLM self-reported interpretation confidence to auto-execute an
     /// intent (#6333 A10). The element-finder gate only covers OCR/AX certainty,
@@ -33,6 +40,7 @@ impl LlmIntentPlanner {
             llm_provider,
             element_finder,
             skill_loader: None,
+            skill_resolver: None,
             wait_timeout_ms: 5_000,
             min_llm_confidence: DEFAULT_MIN_LLM_CONFIDENCE,
         }
@@ -49,6 +57,56 @@ impl LlmIntentPlanner {
     pub fn with_min_llm_confidence(mut self, min: f64) -> Self {
         self.min_llm_confidence = min;
         self
+    }
+
+    /// Attach the trusted Skill Pack resolver (#8588).
+    ///
+    /// Without it the planner never activates a skill body — which is the
+    /// correct fail-closed default, not a degradation.
+    pub fn with_skill_resolver(mut self, resolver: Arc<dyn ActiveSkillResolverPort>) -> Self {
+        self.skill_resolver = Some(resolver);
+        self
+    }
+
+    /// Resolve the skill cleared for instruction position, if any.
+    ///
+    /// Three outcomes, and the distinction between the last two is the whole
+    /// point of #8588:
+    ///
+    /// * no resolver wired, or nothing selected — run with an empty skill
+    ///   region;
+    /// * activated — inject the verified body;
+    /// * blocked for any other reason (missing required capability, disabled or
+    ///   unverified package, tampered body, expired activation) — return an
+    ///   error so the intent is **not executed**. Silently continuing without
+    ///   the skill would run the user's request under different assumptions
+    ///   than they approved.
+    async fn resolve_active_skill(&self) -> Result<Option<TrustedInstruction>, CoreError> {
+        let Some(ref resolver) = self.skill_resolver else {
+            return Ok(None);
+        };
+        match resolver.resolve_active_skill().await? {
+            SkillActivationOutcome::Activated(active) => {
+                debug!(
+                    skill_id = %active.skill_id,
+                    version = %active.version,
+                    granted_capabilities = active.granted_capabilities.len(),
+                    "activated verified skill pack"
+                );
+                Ok(Some(TrustedInstruction::from_activation(&active)))
+            }
+            SkillActivationOutcome::Blocked { reason, .. } if reason.is_benign_absence() => {
+                Ok(None)
+            }
+            SkillActivationOutcome::Blocked { reason, .. } => {
+                warn!(reason = %reason.code(), "skill pack activation blocked; refusing to plan");
+                Err(AutomationError::InvalidArguments(format!(
+                    "skill pack activation blocked ({}); not executing this intent (#8588)",
+                    reason.code()
+                ))
+                .into())
+            }
+        }
     }
 
     async fn build_screen_context(&self) -> ScreenContext {
@@ -133,7 +191,7 @@ impl IntentPlanner for LlmIntentPlanner {
         let interpreted = if let Some(ref loader) = self.skill_loader {
             let skill_ctx = SkillContext {
                 available_skills: loader.list_skills(),
-                active_skill_body: None,
+                active_skill: self.resolve_active_skill().await?,
             };
             self.llm_provider
                 .interpret_intent_with_skills(&screen_context, intent_hint, &skill_ctx)
@@ -221,7 +279,20 @@ fn normalize_key_name(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use maekon_core::models::extension::{
+        AccountAuthentication, Availability, CapabilityGrant, ContributionKind, Enablement,
+        ExtensionInstall, ExtensionProvenance, Health, InstallationState, SignatureState,
+        SourceKind, UpdateState,
+    };
     use maekon_core::models::intent::{ElementBounds, FinderSource, UiElement};
+    use maekon_core::models::skill::{Skill, SkillMeta};
+    use maekon_core::models::skill_pack::{
+        body_digest, resolve_activation, EffectiveGrants, SkillActivationRequest,
+        SkillBlockedReason, SkillPackEntry, SkillSelectionKind,
+    };
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
 
     struct StubElementFinder;
 
@@ -398,5 +469,223 @@ mod tests {
             Some("hello world".to_string())
         );
         assert_eq!(extract_quoted_text("no quoted text"), None);
+    }
+
+    // ── #8588 Skill Pack resolver integration (adversarial-review Fix 3) ──────
+
+    /// A `SkillLoader` that reports no skills — the planner only needs one for
+    /// the `available_skills` list, which is empty here.
+    struct StubSkillLoader;
+
+    impl SkillLoader for StubSkillLoader {
+        fn list_skills(&self) -> Vec<SkillMeta> {
+            Vec::new()
+        }
+        fn get_skill(&self, name: &str) -> Result<Skill, CoreError> {
+            Err(CoreError::NotFound {
+                code: maekon_core::error_codes::NotFoundCode::ResourceMissing,
+                resource_type: "Skill".into(),
+                id: name.into(),
+            })
+        }
+        fn reload(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    /// A resolver returning a fixed outcome, so the planner's branch handling is
+    /// tested without a database or registry.
+    struct StubResolver {
+        outcome: SkillActivationOutcome,
+    }
+
+    #[async_trait]
+    impl ActiveSkillResolverPort for StubResolver {
+        async fn resolve_active_skill(&self) -> Result<SkillActivationOutcome, CoreError> {
+            Ok(self.outcome.clone())
+        }
+    }
+
+    /// An LLM provider that records the `active_skill` body it was handed, so the
+    /// test can assert the verified body actually reached `SkillContext`.
+    struct CapturingLlmProvider {
+        action: InterpretedAction,
+        captured_skill_body: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for CapturingLlmProvider {
+        async fn interpret_intent(
+            &self,
+            _screen_context: &ScreenContext,
+            _intent_hint: &str,
+        ) -> Result<InterpretedAction, CoreError> {
+            Ok(self.action.clone())
+        }
+
+        async fn interpret_intent_with_skills(
+            &self,
+            _screen_context: &ScreenContext,
+            _intent_hint: &str,
+            skill_ctx: &SkillContext,
+        ) -> Result<InterpretedAction, CoreError> {
+            *self.captured_skill_body.lock().unwrap() = skill_ctx
+                .active_skill
+                .as_ref()
+                .map(|s| s.body().to_string());
+            Ok(self.action.clone())
+        }
+
+        fn provider_name(&self) -> &str {
+            "capturing"
+        }
+
+        fn is_external(&self) -> bool {
+            false
+        }
+    }
+
+    fn click_action(confidence: f64) -> InterpretedAction {
+        InterpretedAction {
+            target_text: Some("save".to_string()),
+            target_role: Some("button".to_string()),
+            action_type: "click".to_string(),
+            confidence,
+        }
+    }
+
+    /// Mint a genuine `Activated` outcome via the real resolver — `ActiveSkill`
+    /// has no public constructor, so this is the only honest way to obtain one.
+    fn activated_outcome(body: &str) -> SkillActivationOutcome {
+        let entry = SkillPackEntry {
+            skill_id: "sk.review".to_string(),
+            install_id: "inst_1".to_string(),
+            extension_id: "com.maekon.review".to_string(),
+            contribution_id: "review.pack".to_string(),
+            contribution_kind: ContributionKind::SkillPack,
+            version: "1.0.0".to_string(),
+            publisher_id: "maekon".to_string(),
+            body_sha256: body_digest(body),
+            required_capabilities: Vec::new(),
+            optional_capabilities: Vec::new(),
+            references: Vec::new(),
+        };
+        let install = ExtensionInstall {
+            install_id: "inst_1".to_string(),
+            extension_id: "com.maekon.review".to_string(),
+            version: "1.0.0".to_string(),
+            provenance: ExtensionProvenance::Bundled,
+            source_kind: SourceKind::AppBundle,
+            signature_state: SignatureState::AppBundleTrusted,
+            installation: InstallationState::Installed,
+            enablement: Enablement::Enabled,
+            authentication: AccountAuthentication::NotRequired,
+            grant: CapabilityGrant::Granted,
+            update: UpdateState::Current,
+            health: Health::Healthy,
+            previous_version: None,
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let graph = BTreeMap::new();
+        let grants = EffectiveGrants::new();
+        let selection = SkillSelectionKind::ExplicitUserSelection;
+        resolve_activation(SkillActivationRequest {
+            entry: &entry,
+            install: &install,
+            availability: &Availability::Available,
+            presented_body: body,
+            selection: Some(&selection),
+            effective_grants: &grants,
+            reference_graph: &graph,
+            now: Utc::now(),
+            lifetime_secs: 600,
+        })
+    }
+
+    /// A non-benign block (here: the package was disabled) must make `plan()`
+    /// refuse — the user's intent runs under different assumptions than approved
+    /// if we silently drop the skill (#8588).
+    #[tokio::test]
+    async fn blocked_activation_makes_plan_refuse() {
+        let planner = LlmIntentPlanner::new(
+            Arc::new(StubLlmProvider {
+                action: click_action(0.95),
+            }),
+            Arc::new(StubElementFinder),
+        )
+        .with_skill_loader(Arc::new(StubSkillLoader))
+        .with_skill_resolver(Arc::new(StubResolver {
+            outcome: SkillActivationOutcome::Blocked {
+                reason: SkillBlockedReason::PackageDisabled,
+                decisions: Vec::new(),
+            },
+        }));
+        let err = planner.plan("click save").await.unwrap_err();
+        assert!(
+            err.to_string().contains("skill pack activation blocked"),
+            "a blocked activation must refuse the plan, got: {err}"
+        );
+    }
+
+    /// The benign "nothing selected" block is NOT a refusal — the planner runs
+    /// with an empty skill region.
+    #[tokio::test]
+    async fn no_selection_runs_with_empty_skill_region() {
+        let captured = Arc::new(Mutex::new(None));
+        let planner = LlmIntentPlanner::new(
+            Arc::new(CapturingLlmProvider {
+                action: click_action(0.95),
+                captured_skill_body: captured.clone(),
+            }),
+            Arc::new(StubElementFinder),
+        )
+        .with_skill_loader(Arc::new(StubSkillLoader))
+        .with_skill_resolver(Arc::new(StubResolver {
+            outcome: SkillActivationOutcome::Blocked {
+                reason: SkillBlockedReason::NoSelection,
+                decisions: Vec::new(),
+            },
+        }));
+        let intent = planner
+            .plan("click save")
+            .await
+            .expect("benign absence plans");
+        assert!(matches!(intent, AutomationIntent::ClickElement { .. }));
+        assert_eq!(
+            *captured.lock().unwrap(),
+            None,
+            "no skill body must be injected"
+        );
+    }
+
+    /// An `Activated` resolution injects the verified `TrustedInstruction` body
+    /// into `SkillContext.active_skill` — the whole point of #8588.
+    #[tokio::test]
+    async fn activated_skill_body_is_injected_into_skill_context() {
+        const BODY: &str = "Summarize the diff. Never run shell commands.";
+        let captured = Arc::new(Mutex::new(None));
+        let planner = LlmIntentPlanner::new(
+            Arc::new(CapturingLlmProvider {
+                action: click_action(0.95),
+                captured_skill_body: captured.clone(),
+            }),
+            Arc::new(StubElementFinder),
+        )
+        .with_skill_loader(Arc::new(StubSkillLoader))
+        .with_skill_resolver(Arc::new(StubResolver {
+            outcome: activated_outcome(BODY),
+        }));
+        let intent = planner
+            .plan("click save")
+            .await
+            .expect("activated skill still plans");
+        assert!(matches!(intent, AutomationIntent::ClickElement { .. }));
+        assert_eq!(
+            captured.lock().unwrap().as_deref(),
+            Some(BODY),
+            "the verified skill body must reach the LLM's SkillContext"
+        );
     }
 }

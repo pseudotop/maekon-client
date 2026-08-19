@@ -24,4 +24,9 @@ message TokenResponse {
 
 message RefreshTokenRequest {
   string refresh_token = 1;
+  // Tenant scope for the refresh. RefreshToken is a public RPC (no access token
+  // yet), so the server receives no x-org-id metadata — the same request-field
+  // path GetToken uses is the only org source. The refresh token itself remains
+  // the authenticator; a wrong org simply fails token lookup.
+  string organization_id = 2;
 }

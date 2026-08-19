@@ -100,6 +100,13 @@ pub async fn export_daily_digest(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use maekon_core::models::memory_graph::{ClaimKind, MemoryClaim};
+    use maekon_core::ports::memory_graph_port::MemoryGraphPort;
+
+    use crate::services::memory_claims_service;
+
     use super::*;
 
     #[test]
@@ -114,5 +121,74 @@ mod tests {
         let json = r#"{"date": "2026-03-18"}"#;
         let query: DashboardDayQuery = serde_json::from_str(json).unwrap();
         assert_eq!(query.date.as_deref(), Some("2026-03-18"));
+    }
+
+    fn active_claim(id: &str, text: &str) -> MemoryClaim {
+        MemoryClaim {
+            claim_id: id.to_string(),
+            kind: ClaimKind::Reflective,
+            text: text.to_string(),
+            source: "digest_highlight".to_string(),
+            confidence: 0.8,
+            status: ClaimStatus::Active,
+            created_at: 1_000,
+            updated_at: 1_000,
+        }
+    }
+
+    async fn export_markdown(state: AppState, date: &str) -> String {
+        let response = export_daily_digest(
+            State(state),
+            Query(DashboardDayQuery {
+                date: Some(date.to_string()),
+            }),
+        )
+        .await
+        .expect("export should succeed");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        String::from_utf8(bytes.to_vec()).expect("utf-8 markdown")
+    }
+
+    /// Decision #3 regression: a retracted claim must disappear from the daily
+    /// digest's "Accumulated Claims" appendix — the one pre-existing claims
+    /// read surface. Retraction flips the claim to `Retracted`, so the
+    /// appendix's `list_claims_by_status(Active)` no longer surfaces it. Drives
+    /// the REAL `export_daily_digest` handler + real `SqliteStorage` + real
+    /// retraction service end-to-end.
+    #[tokio::test]
+    async fn retracted_claim_disappears_from_digest_appendix() {
+        const DATE: &str = "2026-01-02"; // a past date (cacheable, not "today")
+        let (mut state, storage) = crate::test_local_auth::test_app_state_with_storage();
+        let mg: Arc<dyn MemoryGraphPort> = storage.clone();
+        mg.save_claim(&active_claim("clm_keep", "morning deep-work blocks"))
+            .await
+            .unwrap();
+        mg.save_claim(&active_claim("clm_drop", "afternoon email triage"))
+            .await
+            .unwrap();
+        state.core.memory_graph = Some(mg.clone());
+
+        // Before retraction: both claims appear in the appendix.
+        let before = export_markdown(state.clone(), DATE).await;
+        assert!(before.contains("## Accumulated Claims"));
+        assert!(before.contains("morning deep-work blocks"));
+        assert!(before.contains("afternoon email triage"));
+
+        // Retract one claim through the real service.
+        let outcome = memory_claims_service::retract_claim(&mg, "clm_drop", 5_000)
+            .await
+            .unwrap()
+            .expect("claim exists");
+        assert!(!outcome.already_retracted);
+
+        // After retraction: the retracted claim is gone; the other remains.
+        let after = export_markdown(state, DATE).await;
+        assert!(after.contains("morning deep-work blocks"));
+        assert!(
+            !after.contains("afternoon email triage"),
+            "retracted claim must not appear in the digest appendix"
+        );
     }
 }

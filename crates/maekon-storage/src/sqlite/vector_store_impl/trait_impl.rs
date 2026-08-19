@@ -350,6 +350,21 @@ impl VectorStore for SqliteVectorStore {
     async fn enforce_retention(&self, max_days: u32) -> Result<u64, CoreError> {
         self.with_conn(move |conn| {
             let cutoff = (Utc::now() - Duration::days(max_days as i64)).to_rfc3339();
+            // #8043: `embedding_vectors` is a cross-device-synced table, so an age DELETE that
+            // leaves no tombstone lets a peer that still holds a locally-authored embedding
+            // re-push it on the next sync (peer resurrection → Art.5(1)(e) violation). Capture a
+            // LOCAL-origin suppression tombstone for each aged row BEFORE deleting — same cutoff
+            // as the DELETE so the tombstone set matches the removed rows exactly. The composite
+            // cross-device key `segment_id || char(31) || model_id` is derived from the shared
+            // table descriptor (matches the merge-side suppression key).
+            if let Some(local) = crate::sync_retention_tombstone::local_device_id(conn) {
+                crate::sync_retention_tombstone::capture_local_origin_retention_tombstones(
+                    conn,
+                    "embedding_vectors",
+                    &format!("timestamp < '{cutoff}'"),
+                    &local,
+                )?;
+            }
             let deleted = conn
                 .execute(
                     "DELETE FROM embedding_vectors WHERE timestamp < ?1",
@@ -443,7 +458,7 @@ impl VectorStore for SqliteVectorStore {
         id: i64,
         vector: Vec<f32>,
         model_id: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<u64, CoreError> {
         let blob = f32_vec_to_bytes(&vector);
         let model_id = model_id.to_string();
         let clock = self.clock.clone();
@@ -455,13 +470,14 @@ impl VectorStore for SqliteVectorStore {
             let hlc = clock
                 .next(conn)
                 .map_err(|e| StorageError::Internal(format!("hlc stamp (update_vector): {e}")))?;
-            conn.execute(
-                "UPDATE embedding_vectors SET vector = ?1, model_id = ?2, is_stale = 0, \
+            let updated = conn
+                .execute(
+                    "UPDATE embedding_vectors SET vector = ?1, model_id = ?2, is_stale = 0, \
                  hlc_wall_ms = ?4, hlc_counter = ?5 WHERE id = ?3",
-                params![blob, model_id, id, hlc.wall_ms, hlc.counter],
-            )
-            .map_err(|e| StorageError::Internal(format!("Failed to update vector: {e}")))?;
-            Ok(())
+                    params![blob, model_id, id, hlc.wall_ms, hlc.counter],
+                )
+                .map_err(|e| StorageError::Internal(format!("Failed to update vector: {e}")))?;
+            Ok(updated as u64)
         })
         .await
         .map_err(Into::into)

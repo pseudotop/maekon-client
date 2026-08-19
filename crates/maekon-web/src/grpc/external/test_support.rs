@@ -469,13 +469,300 @@ where
     }
 }
 
+// ── Noop audit / server cert PEM ────────────────────────────────────────────
+//
+// #7730: shared test-binary helpers, de-duplicated from verbatim copies that
+// previously lived in both `tests/external_grpc_integration.rs` and
+// `tests/external_grpc_stress.rs`. NOTE: `in_memory_storage` (the third
+// duplicated helper named in #7730) deliberately does NOT live here — it
+// needs `maekon-storage`, an adapter crate, and `scripts/check-crate-
+// boundaries.sh` forbids `maekon-web` from taking `maekon-storage` as a
+// normal (even optional/feature-gated) dependency — only `dev-dependencies`
+// are exempt (see that script's comment). It is instead shared via
+// `tests/support/in_memory_storage.rs`, `#[path]`-included independently by
+// both integration-test crate roots (mirrors the pre-existing
+// `tests/support/failing_storage.rs` pattern).
+
+use maekon_core::models::ai_session::SessionAuditEntry;
+use maekon_core::models::audit::{AuditEntry, AuditLevel, AuditStats, AuditStatus};
+use maekon_core::ports::audit_log::AuditLogPort;
+
+/// A no-op `AuditLogPort` impl used when tests don't need to inspect audit entries.
+pub struct NoopAudit;
+
+#[async_trait::async_trait]
+impl AuditLogPort for NoopAudit {
+    async fn pending_count(&self) -> usize {
+        0
+    }
+    async fn recent_entries(&self, _limit: usize) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn entries_by_status(&self, _status: &AuditStatus, _limit: usize) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn entries_by_action_prefix(&self, _prefix: &str, _limit: usize) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn entries_by_command_id(&self, _cmd_id: &str, _limit: usize) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn stats(&self) -> AuditStats {
+        AuditStats::default()
+    }
+    async fn has_pending_batch(&self) -> bool {
+        false
+    }
+    async fn log_event(&self, _action_type: &str, _session_id: &str, _details: &str) {}
+    async fn log_start_if(
+        &self,
+        _level: AuditLevel,
+        _command_id: &str,
+        _session_id: &str,
+        _action_type: &str,
+    ) {
+    }
+    async fn log_complete_with_time(
+        &self,
+        _level: AuditLevel,
+        _command_id: &str,
+        _session_id: &str,
+        _details: &str,
+        _execution_time_ms: u64,
+    ) {
+    }
+    async fn drain_batch(&self) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn drain_all(&self) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn record_session_event(&self, _entry: SessionAuditEntry) {}
+}
+
+/// Read the server cert PEM from the cached cert pair (see [`test_cert_pair`]).
+pub fn server_cert_pem() -> Vec<u8> {
+    let (cert_path, _) = test_cert_pair();
+    std::fs::read(&cert_path).expect("read server cert PEM")
+}
+
+// ── CapturingAudit — richer capture than MockRecorder ──────────────────────────
+//
+// `MockRecorder` (below) captures the durable `AuditEntry` row shape used by
+// `AuditBridge` unit tests (Tasks 0.6, 3.1) and only implements
+// `log_complete_with_time`. `CapturingAudit` is a distinct, more capable
+// double built for the `external_grpc_integration.rs` audit-family tests
+// (Phase 9 / CR4): it separately tracks `log_start_if` (Started rows),
+// `log_complete_with_time` (legacy Completed-only rows), AND
+// `log_with_status_and_time` (#6277 — the real terminal status/action_type),
+// and extracts `grpc_status_code` from the JSON details blob (D26 raw-code
+// visibility) into the lighter `CapturedEntry` projection. Kept as two
+// distinct doubles (#7730) rather than merged — their capture shapes and
+// call-site contracts differ enough that unifying them would blur both.
+
+/// A lightweight capture record used by Phase 9 integration tests to assert
+/// on command_id, action_type, status, grpc_status_code, and execution timing.
+///
+/// `details` preserves the raw JSON blob from `log_complete_with_time` so that
+/// tests can inspect operation names (e.g. "SubscribeEvents") without re-parsing
+/// the struct.
+#[derive(Clone, Debug)]
+pub struct CapturedEntry {
+    pub command_id: String,
+    // #7719: no test in this file currently reads `action_type`/
+    // `execution_time_ms` back off a captured entry (only `command_id`/
+    // `status`/`grpc_status_code`/`details` are asserted on today) — kept for
+    // the assertion helpers these fields were added for.
+    #[allow(dead_code)]
+    pub action_type: String,
+    pub status: AuditStatus,
+    pub grpc_status_code: Option<u32>,
+    #[allow(dead_code)]
+    pub execution_time_ms: u64,
+    /// Raw `details` string passed by the audit bridge (JSON blob or empty).
+    /// Populated by `log_complete_with_time` and `log_event`; `None` for
+    /// entries that have no details context.
+    pub details: Option<String>,
+}
+
+// Mock audit log that retains every `log_complete_with_time` and `log_event`
+// entry so the e2e tests below can inspect what AuditLayer recorded.
+//
+// Structural rewrite (Task 9.0, CR4 / R2-NI1): replaces the previous
+// action_type-as-command_id conflation with real command_id preservation and
+// grpc_status_code JSON extraction from the details blob.  Unblocks Phase 9
+// Tasks 9.1+ which assert command_id correlation and D26 raw-code visibility.
+#[derive(Default)]
+pub struct CapturingAudit {
+    // `pub` (not private): several audit-family integration tests read
+    // `capturing.entries.lock()` directly rather than going through
+    // `snapshot()` — kept as a pure move from the pre-#7730 in-file struct.
+    pub entries: std::sync::Mutex<Vec<CapturedEntry>>,
+}
+
+impl CapturingAudit {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entries: std::sync::Mutex::new(vec![]),
+        })
+    }
+
+    /// Return a snapshot of all captured entries.  Used by Phase 9.1+ tests
+    /// to assert command_id correlation and grpc_status_code visibility.
+    // #7719: no test in this file calls it today — kept for the assertion
+    // helpers it was added for.
+    #[allow(dead_code)]
+    pub fn snapshot(&self) -> Vec<CapturedEntry> {
+        self.entries.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl AuditLogPort for CapturingAudit {
+    async fn log_event(&self, action_type: &str, _session_id: &str, details: &str) {
+        // AuditBridge emits action_type "external_grpc_started" etc.
+        // alongside log_complete_with_time; use this to capture Started rows.
+        let status = match action_type {
+            "external_grpc_started" => AuditStatus::Started,
+            "external_grpc_completed" => AuditStatus::Completed,
+            "external_grpc_failed" | "external_grpc_denied" | "external_grpc_timeout" => {
+                AuditStatus::Failed
+            }
+            _ => AuditStatus::Completed,
+        };
+        self.entries.lock().unwrap().push(CapturedEntry {
+            command_id: String::new(),
+            action_type: action_type.to_string(),
+            status,
+            grpc_status_code: None,
+            execution_time_ms: 0,
+            details: Some(details.to_string()),
+        });
+    }
+
+    async fn log_start_if(
+        &self,
+        _level: AuditLevel,
+        command_id: &str,
+        _session_id: &str,
+        action_type: &str,
+    ) {
+        self.entries.lock().unwrap().push(CapturedEntry {
+            command_id: command_id.to_string(),
+            action_type: action_type.to_string(),
+            status: AuditStatus::Started,
+            grpc_status_code: None,
+            execution_time_ms: 0,
+            details: None,
+        });
+    }
+
+    async fn log_complete_with_time(
+        &self,
+        _level: AuditLevel,
+        command_id: &str,
+        _session_id: &str,
+        details: &str,
+        execution_time_ms: u64,
+    ) {
+        let status = parse_status_from_details(details);
+        let grpc_status_code: Option<u32> = serde_json::from_str::<serde_json::Value>(details)
+            .ok()
+            .and_then(|v| {
+                v.get("grpc_status_code")
+                    .and_then(|n| n.as_u64().map(|u| u as u32))
+            });
+        self.entries.lock().unwrap().push(CapturedEntry {
+            command_id: command_id.to_string(),
+            action_type: String::new(),
+            status,
+            grpc_status_code,
+            execution_time_ms,
+            details: Some(details.to_string()),
+        });
+    }
+
+    // #6277: AuditBridge now emits ONE durable row via log_with_status_and_time
+    // carrying the REAL status + action_type (replacing log_complete_with_time +
+    // a separate log_event). Capture the true status/action_type here so the mock
+    // reflects the new contract — the trait default would delegate to
+    // log_complete_with_time and lose the Started/Denied/Failed/Timeout status.
+    async fn log_with_status_and_time(
+        &self,
+        _level: AuditLevel,
+        command_id: &str,
+        _session_id: &str,
+        action_type: &str,
+        status: AuditStatus,
+        details: &str,
+        execution_time_ms: u64,
+    ) {
+        let grpc_status_code: Option<u32> = serde_json::from_str::<serde_json::Value>(details)
+            .ok()
+            .and_then(|v| {
+                v.get("grpc_status_code")
+                    .and_then(|n| n.as_u64().map(|u| u as u32))
+            });
+        self.entries.lock().unwrap().push(CapturedEntry {
+            command_id: command_id.to_string(),
+            action_type: action_type.to_string(),
+            status,
+            grpc_status_code,
+            execution_time_ms,
+            details: Some(details.to_string()),
+        });
+    }
+
+    async fn pending_count(&self) -> usize {
+        0
+    }
+    async fn recent_entries(&self, _limit: usize) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn entries_by_status(&self, _s: &AuditStatus, _l: usize) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn entries_by_action_prefix(&self, _p: &str, _l: usize) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn entries_by_command_id(&self, _cmd_id: &str, _limit: usize) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn stats(&self) -> AuditStats {
+        AuditStats::default()
+    }
+    async fn has_pending_batch(&self) -> bool {
+        false
+    }
+    async fn drain_batch(&self) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn drain_all(&self) -> Vec<AuditEntry> {
+        vec![]
+    }
+    async fn record_session_event(&self, _e: SessionAuditEntry) {}
+}
+
+/// Derive `AuditStatus` from the JSON `result` field in the details blob emitted
+/// by `AuditBridge::record`.  Returns `Completed` for any unrecognized value.
+fn parse_status_from_details(details: &str) -> AuditStatus {
+    serde_json::from_str::<serde_json::Value>(details)
+        .ok()
+        .and_then(|v| v.get("result").and_then(|r| r.as_str().map(String::from)))
+        .map(|s| match s.as_str() {
+            "ok" => AuditStatus::Completed,
+            "denied" => AuditStatus::Denied,
+            "timeout" => AuditStatus::Timeout,
+            "error" | "failed" | "auth_failed" => AuditStatus::Failed,
+            _ => AuditStatus::Completed,
+        })
+        .unwrap_or(AuditStatus::Completed)
+}
+
 // ── fixture_bridge / fixture_metrics ─────────────────────────────────────────
 
 use super::audit_bridge::AuditBridge;
 use super::metrics::ExternalMetrics;
-use maekon_core::models::ai_session::SessionAuditEntry;
-use maekon_core::models::audit::{AuditEntry, AuditLevel, AuditStats, AuditStatus};
-use maekon_core::ports::audit_log::AuditLogPort;
 
 /// Capturing `AuditLogPort` impl used by [`fixture_bridge`].
 ///
@@ -550,7 +837,7 @@ impl AuditLogPort for MockRecorder {
             })
             .unwrap_or(AuditStatus::Completed);
         self.entries.lock().unwrap().push(AuditEntry {
-            entry_id: Ulid::new().to_string(),
+            entry_id: Ulid::generate().to_string(),
             timestamp: chrono::Utc::now(),
             session_id: session_id.into(),
             command_id: command_id.into(),

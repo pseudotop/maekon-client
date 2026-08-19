@@ -1,5 +1,6 @@
 // Privacy/isolation config — PII filter level, automation sandbox, excluded-app list
 use super::super::enums::{ConfirmationRequirement, PiiFilterLevel, SandboxProfile};
+use super::reauth::ReauthConfig;
 use serde::{Deserialize, Serialize};
 
 /// Safe-by-default confidence floor for LLM-planned automation intents.
@@ -22,6 +23,10 @@ pub struct PrivacyConfig {
     pub auto_exclude_sensitive: bool,
     #[serde(default)]
     pub pii_filter_level: PiiFilterLevel,
+    /// Capture-history viewing re-authentication (biometric/PIN) settings.
+    /// Enabled by default (#8044).
+    #[serde(default)]
+    pub reauth: ReauthConfig,
 }
 
 impl Default for PrivacyConfig {
@@ -32,6 +37,7 @@ impl Default for PrivacyConfig {
             excluded_title_patterns: Vec::new(),
             auto_exclude_sensitive: true,
             pii_filter_level: PiiFilterLevel::Standard,
+            reauth: ReauthConfig::default(),
         }
     }
 }
@@ -92,10 +98,11 @@ pub struct PermissionFileSystemRules {
     pub deny: Vec<String>,
     #[serde(default = "default_secret_deny_globs")]
     pub deny_globs: Vec<String>,
-    #[serde(default)]
-    pub workspace_roots: Vec<String>,
-    #[serde(default = "default_permission_max_scan_depth")]
-    pub max_scan_depth: u8,
+    // #9638: `workspace_roots` / `max_scan_depth` were declared here for two
+    // years but never read by `access_for_path` (the sole enforcement point) —
+    // an operator setting them changed nothing. Removed rather than silently
+    // kept; serde ignores the stale keys in existing config files. Re-add only
+    // together with actual enforcement.
 }
 
 impl PermissionFileSystemRules {
@@ -128,8 +135,6 @@ impl Default for PermissionFileSystemRules {
             write: Vec::new(),
             deny: Vec::new(),
             deny_globs: default_secret_deny_globs(),
-            workspace_roots: Vec::new(),
-            max_scan_depth: default_permission_max_scan_depth(),
         }
     }
 }
@@ -343,10 +348,6 @@ fn default_permission_schema_version() -> u8 {
     PERMISSION_PROFILE_V2_SCHEMA_VERSION
 }
 
-fn default_permission_max_scan_depth() -> u8 {
-    8
-}
-
 fn normalize_permission_path(value: &str) -> String {
     let normalized = value.trim().replace('\\', "/");
     if normalized.len() > 1 {
@@ -467,15 +468,23 @@ fn network_pattern_matches(pattern: &str, target: &str, host: &str) -> bool {
     wildcard_matches(&pattern, target) || wildcard_matches(&pattern, host)
 }
 
+// #7723: the bit-math below (0.0.0.0/8, fc00::/7, fe80::/10) is shared with the
+// SSRF-guard call sites in `feature_capabilities.rs` / `ai_model_catalog_endpoint.rs`
+// via `crate::net_policy`'s primitives — see that module's doc comment for why the
+// three sites keep their own accept/reject combinations instead of one shared policy.
 fn is_local_network_host(host: &str) -> bool {
     host == "localhost"
         || host.ends_with(".localhost")
         || parse_ip(host)
             .map(|ip| match ip {
-                std::net::IpAddr::V4(ip) => ip.is_loopback() || ip.octets()[0] == 0,
+                std::net::IpAddr::V4(ip) => {
+                    ip.is_loopback() || crate::net_policy::is_ipv4_this_network(&ip)
+                }
                 std::net::IpAddr::V6(ip) => ip
                     .to_ipv4_mapped()
-                    .map(|mapped| mapped.is_loopback() || mapped.octets()[0] == 0)
+                    .map(|mapped| {
+                        mapped.is_loopback() || crate::net_policy::is_ipv4_this_network(&mapped)
+                    })
                     .unwrap_or_else(|| ip.is_loopback()),
             })
             .unwrap_or(false)
@@ -489,8 +498,8 @@ fn is_private_network_host(host: &str) -> bool {
                 if let Some(mapped) = ip.to_ipv4_mapped() {
                     mapped.is_private() || mapped.is_link_local()
                 } else {
-                    let first = ip.segments()[0];
-                    (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+                    crate::net_policy::is_unique_local_ipv6(&ip)
+                        || crate::net_policy::is_link_local_ipv6(&ip)
                 }
             }
         })
@@ -640,7 +649,6 @@ mod tests {
                 write: vec!["/workspace/out".to_string()],
                 deny: vec!["/workspace/out/private".to_string()],
                 deny_globs: Vec::new(),
-                ..PermissionFileSystemRules::default()
             },
             ..PermissionProfileV2::default()
         };
@@ -805,5 +813,240 @@ mod tests {
             PermissionAccess::Write
         );
         assert!(!migrated.network.enabled);
+    }
+}
+
+/// #10131: mutation guards for the permission matchers and network classifiers.
+///
+/// `cargo-mutants` found 23 surviving mutants in this file. These functions
+/// decide which paths a permission rule covers and whether a host is
+/// local/private, so a surviving `delete !` or `|| → &&` silently changes which
+/// rule a path is matched against.
+///
+/// Each test isolates one arm: the input is chosen so that exactly one disjunct
+/// or negation can produce the result, which is what makes flipping it
+/// observable.
+#[cfg(test)]
+mod mutation_guard_tests {
+    use super::*;
+
+    // ---- decision_for_path: allow-match AND audit are both required ------
+
+    #[test]
+    fn unix_socket_allow_requires_audit_to_be_enabled() {
+        let rules = PermissionUnixSocketRules {
+            allow: vec!["/run/app.sock".to_string()],
+            deny: vec![],
+            audit_enabled: true,
+        };
+        assert_eq!(
+            rules.decision_for_path("/run/app.sock"),
+            PermissionUnixSocketDecision::AllowedAudited
+        );
+
+        // Same allow-list match, audit off — must NOT be allowed.
+        let no_audit = PermissionUnixSocketRules {
+            audit_enabled: false,
+            ..rules.clone()
+        };
+        assert_eq!(
+            no_audit.decision_for_path("/run/app.sock"),
+            PermissionUnixSocketDecision::Denied
+        );
+
+        // Audit on, but the path is not on the allow list.
+        assert_eq!(
+            rules.decision_for_path("/run/other.sock"),
+            PermissionUnixSocketDecision::Denied
+        );
+    }
+
+    // ---- defaults: each default value is asserted ------------------------
+
+    #[test]
+    fn permission_schema_version_default_is_the_v2_constant() {
+        assert_eq!(
+            default_permission_schema_version(),
+            PERMISSION_PROFILE_V2_SCHEMA_VERSION
+        );
+        assert_eq!(default_permission_schema_version(), 2);
+    }
+
+    #[test]
+    fn min_llm_confidence_default_is_the_documented_threshold() {
+        assert_eq!(default_min_llm_confidence(), DEFAULT_MIN_LLM_CONFIDENCE);
+        assert!(
+            (default_min_llm_confidence() - 0.65).abs() < f64::EPSILON,
+            "a default of 1.0 would demand perfect confidence and silently \
+             disable every LLM-planned intent"
+        );
+    }
+
+    #[test]
+    fn default_true_is_true() {
+        assert!(default_true());
+    }
+
+    // ---- normalize_permission_path: the length guard is strict ----------
+
+    #[test]
+    fn normalize_permission_path_keeps_a_bare_root_slash() {
+        // len == 1 must take the else branch: trimming here would turn the root
+        // path into an empty string and collapse every rule that targets it.
+        assert_eq!(normalize_permission_path("/"), "/");
+        // len > 1 must trim the trailing separator.
+        assert_eq!(normalize_permission_path("/a/"), "/a");
+        assert_eq!(normalize_permission_path("/a/b/"), "/a/b");
+        // Backslashes normalize, surrounding whitespace is trimmed.
+        assert_eq!(normalize_permission_path("  C:\\x\\  "), "C:/x");
+    }
+
+    // ---- path_rule_matches: each wildcard spelling stands alone ----------
+
+    #[test]
+    fn path_rule_star_and_double_star_each_match_everything() {
+        assert!(path_rule_matches("*", "/anything/here"));
+        assert!(path_rule_matches("**", "/anything/here"));
+    }
+
+    #[test]
+    fn path_rule_recursive_suffix_matches_the_prefix_itself_and_its_children() {
+        // The prefix ITSELF matches — this is the `path == prefix` arm.
+        assert!(path_rule_matches("/a/**", "/a"));
+        // A child matches — this is the `starts_with(prefix/)` arm.
+        assert!(path_rule_matches("/a/**", "/a/b"));
+        // A sibling that merely shares a textual prefix must NOT match.
+        assert!(!path_rule_matches("/a/**", "/ab"));
+    }
+
+    // ---- glob_rule_matches: each disjunct is independently sufficient ----
+
+    #[test]
+    fn glob_literal_pattern_matches_filename_or_whole_path() {
+        assert!(glob_rule_matches("a.txt", "/dir/a.txt"));
+        assert!(glob_rule_matches("a.txt", "a.txt"));
+        assert!(!glob_rule_matches("a.txt", "/dir/b.txt"));
+    }
+
+    #[test]
+    fn glob_literal_pattern_does_not_fall_through_to_prefix_matching() {
+        // A literal (no `*`, no `/`) takes the early-return branch, which
+        // compares against the filename and the whole path only. Falling
+        // through to `wildcard_matches` would additionally treat the pattern as
+        // a directory prefix and match `logs/x`, widening every literal rule.
+        assert!(!glob_rule_matches("logs", "logs/x"));
+    }
+
+    #[test]
+    fn glob_full_path_pattern_matches_via_the_path_disjunct_alone() {
+        // Contains `/`, so the filename disjunct is disabled; no `**/` prefix,
+        // so the third disjunct is disabled. Only the path disjunct can match.
+        assert!(glob_rule_matches("/dir/*.txt", "/dir/a.txt"));
+        assert!(!glob_rule_matches("/dir/*.txt", "/other/a.txt"));
+    }
+
+    #[test]
+    fn glob_bare_pattern_matches_via_the_filename_disjunct_alone() {
+        // `a*.txt` anchored at the start cannot match the full path
+        // `/dir/ab.txt` (which begins with `/`), so only the filename disjunct
+        // can produce a match here.
+        assert!(glob_rule_matches("a*.txt", "/dir/ab.txt"));
+    }
+
+    #[test]
+    fn glob_double_star_prefix_matches_via_the_strip_prefix_disjunct_alone() {
+        // `**/a.txt` against a bare `a.txt`: the path disjunct fails (the
+        // pattern's literal `/a.txt` is absent) and the filename disjunct is
+        // disabled because the pattern contains `/`. Only the `**/` strip can
+        // match.
+        assert!(glob_rule_matches("**/a.txt", "a.txt"));
+    }
+
+    #[test]
+    fn glob_double_star_suffix_matches_the_path_independently_of_the_filename() {
+        // Isolates the INNER `||` of the `**/` branch. With a multi-segment
+        // suffix and a path that carries no leading slash:
+        //   - the outer path disjunct fails (the pattern's literal `/dir/a.txt`
+        //     is not a substring of `dir/a.txt`),
+        //   - the filename disjunct is disabled (the pattern contains `/`),
+        //   - the suffix matches the PATH but NOT the filename (`a.txt`).
+        // So only `wildcard_matches(suffix, path)` can carry the result.
+        assert!(glob_rule_matches("**/dir/a.txt", "dir/a.txt"));
+    }
+
+    // ---- wildcard_matches: both bare wildcards stand alone ---------------
+
+    #[test]
+    fn wildcard_star_and_double_star_each_match_everything() {
+        assert!(wildcard_matches("*", "/any/path"));
+        assert!(wildcard_matches("**", "/any/path"));
+    }
+
+    // ---- network_pattern_matches: suffix and exact host both count -------
+
+    #[test]
+    fn network_wildcard_suffix_matches_subdomains_and_the_apex() {
+        // Subdomain — the `ends_with(".suffix")` arm.
+        assert!(network_pattern_matches(
+            "*.example.com",
+            "api.example.com",
+            "api.example.com"
+        ));
+        // The apex itself — the `host == suffix` arm.
+        assert!(network_pattern_matches(
+            "*.example.com",
+            "example.com",
+            "example.com"
+        ));
+        // A domain that merely ends with the same letters must NOT match.
+        assert!(!network_pattern_matches(
+            "*.example.com",
+            "notexample.com",
+            "notexample.com"
+        ));
+    }
+
+    // ---- is_local_network_host: each recognition arm stands alone --------
+
+    #[test]
+    fn local_host_each_form_is_independently_recognised() {
+        assert!(is_local_network_host("localhost"));
+        assert!(is_local_network_host("app.localhost"));
+        assert!(is_local_network_host("127.0.0.1"));
+        assert!(is_local_network_host("::1"));
+        assert!(!is_local_network_host("example.com"));
+        assert!(!is_local_network_host("8.8.8.8"));
+    }
+
+    // ---- is_private_network_host: private and link-local both count ------
+
+    #[test]
+    fn private_host_private_and_link_local_are_each_sufficient() {
+        // RFC1918 private, not link-local.
+        assert!(is_private_network_host("192.168.1.1"));
+        assert!(is_private_network_host("10.0.0.1"));
+        // Link-local, not RFC1918 private.
+        assert!(is_private_network_host("169.254.1.1"));
+        // Public address is neither.
+        assert!(!is_private_network_host("8.8.8.8"));
+    }
+
+    #[test]
+    fn private_host_native_ipv6_unique_local_and_link_local_are_each_sufficient() {
+        // The native (non-v4-mapped) IPv6 branch is a SEPARATE arm from the v4
+        // one above — testing only IPv4 left it uncovered.
+        // Unique-local (fc00::/7), not link-local.
+        assert!(is_private_network_host("fd00::1"));
+        // Link-local (fe80::/10), not unique-local.
+        assert!(is_private_network_host("fe80::1"));
+        // Public IPv6 is neither.
+        assert!(!is_private_network_host("2001:4860:4860::8888"));
+    }
+
+    #[test]
+    fn private_host_v4_mapped_ipv6_reuses_the_v4_classification() {
+        assert!(is_private_network_host("::ffff:192.168.1.1"));
+        assert!(is_private_network_host("::ffff:169.254.1.1"));
+        assert!(!is_private_network_host("::ffff:8.8.8.8"));
     }
 }

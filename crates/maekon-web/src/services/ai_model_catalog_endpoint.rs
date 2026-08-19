@@ -285,38 +285,46 @@ pub(crate) async fn reject_internal_discovery_endpoint(
     Ok(addrs)
 }
 
+/// Whether a resolved discovery endpoint targets loopback (the user's own machine).
+///
+/// #8047 E4: the local discovery path (`discover_provider_models`) is allowed to skip the
+/// SSRF/internal-range guard ONLY when it targets loopback — the legitimate case being a
+/// localhost Ollama at `127.0.0.1:11434`. A non-loopback endpoint on the local path (e.g. an
+/// RFC1918 `192.168.x.x` host) must instead clear the same internal-range guard as the external
+/// integration path, so this classifier is the gate that decides which branch runs.
+///
+/// "Loopback" is `127.0.0.0/8`, `::1`, and the literal host `localhost`. The `localhost`
+/// name is trusted by name here (not resolved): on the user's own machine that is the
+/// intended local target, and this path is loopback-bound and token-gated (LOW severity).
+/// IP-literal hosts are classified by `IpAddr::is_loopback()`, which covers all of
+/// `127.0.0.0/8` and `::1`.
+pub(crate) fn is_loopback_discovery_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // `host_str()` keeps the brackets on an IPv6 literal (`[::1]`); strip them before parsing.
+    let host_ip = host.trim_start_matches('[').trim_end_matches(']');
+    host_ip
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// Whether the address is an internal one that must not be exposed externally — loopback /
 /// private / link-local / CGNAT / ULA / unspecified / multicast, etc. IPv4-mapped IPv6 is reduced
 /// to its inner v4 and checked.
+///
+/// #7723: this is `maekon_core::net_policy::InternalRangePolicy::strict_remote_discovery_guard()`
+/// — the stricter of the workspace's two SSRF blocklists (see that constructor's doc comment for
+/// the full range list and why this call site keeps the extra CGNAT/NAT64/multicast/etc. checks
+/// that the `feature_capabilities.rs` SSRF blocklist does not).
 fn is_internal_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                // 100.64.0.0/10 CGNAT (RFC 6598)
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 0x40)
-        }
-        std::net::IpAddr::V6(v6) => {
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return is_internal_ip(std::net::IpAddr::V4(mapped));
-            }
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                // fc00::/7 unique local
-                || (v6.octets()[0] & 0xFE) == 0xFC
-                // fe80::/10 link-local
-                || (v6.octets()[0] == 0xFE && (v6.octets()[1] & 0xC0) == 0x80)
-                // 0064:ff9b::/96 IANA NAT64 well-known prefix (RFC 6146) — reaches
-                // internal IPv4 addresses through a NAT64 network. to_ipv4_mapped() has a
-                // different prefix (::ffff:0:0/96) and does not catch this, so block explicitly.
-                || v6.octets()[..4] == [0x00, 0x64, 0xFF, 0x9B]
-        }
-    }
+    maekon_core::net_policy::InternalRangePolicy::strict_remote_discovery_guard().is_internal(ip)
 }
 
 #[cfg(test)]
@@ -395,6 +403,65 @@ mod ssrf_guard_tests {
         assert!(
             matches!(r, Err(ApiError::BadRequest(_))),
             "비-http(s) scheme 은 BadRequest 로 거부되어야 한다: {r:?}"
+        );
+    }
+
+    #[test]
+    fn classifies_loopback_discovery_endpoints() {
+        // #8047 E4: loopback endpoints (localhost Ollama etc.) are allowed to skip the guard.
+        for url in [
+            "http://127.0.0.1:11434/v1/models",
+            "http://127.5.6.7:8080/v1/models", // anywhere in 127.0.0.0/8
+            "http://localhost:11434/v1/models",
+            "http://LOCALHOST:11434/v1/models", // case-insensitive
+            "http://[::1]:11434/v1/models",
+        ] {
+            assert!(
+                is_loopback_discovery_endpoint(url),
+                "{url} should classify as loopback"
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_non_loopback_discovery_endpoints() {
+        // Non-loopback endpoints (RFC1918, link-local metadata, public) are NOT loopback and
+        // therefore fall through to the internal-range guard on the local path.
+        for url in [
+            "http://192.168.1.10/v1/models", // RFC1918 private — guard must then block it
+            "http://10.0.0.1/v1/models",
+            "http://169.254.169.254/latest/meta-data", // cloud metadata
+            "https://8.8.8.8/v1/models",               // public — guard then allows it
+            "https://api.openai.com/v1/models",        // public domain
+        ] {
+            assert!(
+                !is_loopback_discovery_endpoint(url),
+                "{url} should NOT classify as loopback"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn non_loopback_local_path_endpoints_are_guarded() {
+        // End-to-end intent for the local path's non-loopback branch: an RFC1918 host is
+        // blocked (Forbidden) while a public host is allowed — mirroring the external path's
+        // guard exactly (see `rejects_internal_literal_endpoints` / `allows_public_literal_endpoint`).
+        let rfc1918 = "http://192.168.1.10/v1/models";
+        assert!(!is_loopback_discovery_endpoint(rfc1918));
+        let blocked = reject_internal_discovery_endpoint(rfc1918).await;
+        assert!(
+            matches!(blocked, Err(ApiError::Forbidden(_))),
+            "RFC1918 non-loopback local endpoint must be blocked: {blocked:?}"
+        );
+
+        let public = "https://8.8.8.8/v1/models";
+        assert!(!is_loopback_discovery_endpoint(public));
+        let addrs = reject_internal_discovery_endpoint(public)
+            .await
+            .unwrap_or_else(|e| panic!("public non-loopback endpoint must be allowed: {e:?}"));
+        assert!(
+            !addrs.is_empty(),
+            "guard returns validated pins for a public host"
         );
     }
 

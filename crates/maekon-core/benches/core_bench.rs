@@ -1,5 +1,9 @@
 //! Criterion benchmarks for maekon-core quantization primitives.
 
+// Benchmark harness, not shipped code — freely uses unwrap/expect on setup
+// invariants (#7719 workspace `unwrap_used`/`expect_used` policy).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use maekon_core::binary_quantizer::{BinaryQuantizer, QuantileThresholds};
 use maekon_core::quantization::ScalarQuantizer;

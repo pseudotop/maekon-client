@@ -43,6 +43,7 @@ pub struct ContentSummaryEntry {
     pub gui_summary_line: Option<String>,
     /// GUI behavioral patterns detected from this content activity (e.g. "TestDrivenDevelopment").
     pub gui_patterns: Vec<String>,
+    pub gui_top_elements: Vec<(String, String, u32)>,
 }
 
 /// Current desktop activity snapshot.
@@ -312,14 +313,24 @@ impl ContextAssembler {
             }
 
             let mut actions = GuiActionCounts::default();
-            let all_top: Vec<(String, String, u32)> = Vec::new();
+            let mut top_counts: std::collections::HashMap<(String, String), u32> =
+                std::collections::HashMap::new();
 
-            // Parse action counts from gui_summary_line strings
             for entry in &stats.content_summary {
                 if let Some(ref line) = entry.gui_summary_line {
                     Self::parse_gui_action_counts(line, &mut actions);
                 }
+                for (text, element_type, count) in &entry.gui_top_elements {
+                    let key = (self.filter_pii(text), element_type.clone());
+                    *top_counts.entry(key).or_insert(0) += *count;
+                }
             }
+            let mut all_top: Vec<(String, String, u32)> = top_counts
+                .into_iter()
+                .map(|((text, element_type), count)| (text, element_type, count))
+                .collect();
+            all_top.sort_by_key(|(_, _, count)| std::cmp::Reverse(*count));
+            all_top.truncate(5);
 
             Some(GuiSection {
                 patterns: stats.gui_patterns.clone(),
@@ -761,6 +772,7 @@ mod tests {
                 mins: 10,
                 gui_summary_line: None,
                 gui_patterns: vec![],
+                gui_top_elements: vec![],
             }],
             gui_patterns: vec![],
         };
@@ -793,6 +805,7 @@ mod tests {
                 mins: 15,
                 gui_summary_line: Some("3 saves, 2 test runs".to_string()),
                 gui_patterns: vec![],
+                gui_top_elements: vec![],
             }],
             gui_patterns: vec![],
         };
@@ -868,6 +881,7 @@ mod tests {
                 mins: 8,
                 gui_summary_line: None,
                 gui_patterns: vec![],
+                gui_top_elements: vec![],
             }],
             gui_patterns: vec![],
         };
@@ -958,6 +972,10 @@ mod tests {
                 mins: 10,
                 gui_summary_line: Some("3 saves, 1 test runs".to_string()),
                 gui_patterns: vec!["TestDrivenDevelopment".to_string()],
+                gui_top_elements: vec![
+                    ("Save".to_string(), "Button".to_string(), 3),
+                    ("main.rs".to_string(), "TabLabel".to_string(), 2),
+                ],
             }],
             gui_patterns: vec!["TestDrivenDevelopment".to_string()],
         };
@@ -970,6 +988,9 @@ mod tests {
         assert!(ctx.user_context_json.contains("TestDrivenDevelopment"));
         assert!(ctx.user_context_json.contains("\"saves\":3"));
         assert!(ctx.user_context_json.contains("\"test_runs\":1"));
+        assert!(ctx.user_context_json.contains("\"top_elements\""));
+        assert!(ctx.user_context_json.contains("Save"));
+        assert!(ctx.user_context_json.contains("TabLabel"));
     }
 
     #[test]
@@ -988,6 +1009,7 @@ mod tests {
                 mins: 5,
                 gui_summary_line: None,
                 gui_patterns: vec![],
+                gui_top_elements: vec![],
             }],
             gui_patterns: vec![],
         };

@@ -91,6 +91,69 @@ pub struct DeletedRangeCounts {
     pub metrics_deleted: u64,
     pub process_snapshots_deleted: u64,
     pub idle_periods_deleted: u64,
+    /// #8045 B1: derived-data cascade counts. A range delete now also removes
+    /// the LLM summaries (`activity_segments`), embeddings (`embedding_vectors`),
+    /// and local suggestions overlapping the window that are derived from the
+    /// deleted events/frames — otherwise sensitive content survived in the
+    /// derived tables. Not part of the frozen `DeleteResult` HTTP contract; used
+    /// for the deletion-summary message and audit/log evidence only.
+    pub activity_segments_deleted: u64,
+    pub embedding_vectors_deleted: u64,
+    pub local_suggestions_deleted: u64,
+    /// #8059: voice transcripts (V47) removed for the window. A range delete
+    /// that clears events/frames content also removes the speech transcripts
+    /// recorded in that period (voice-activity content), keeping the "meetings
+    /// stay on your machine" data under the same erasure discipline. Local-only
+    /// table — no sync tombstone. Like the derived-data counts above, this is
+    /// audit/message-only and NOT part of the frozen `DeleteResult` HTTP contract.
+    pub transcripts_deleted: u64,
+}
+
+impl DeletedRangeCounts {
+    /// Total rows removed across primary + derived tables. Used to build the
+    /// user-facing "N records were deleted" message so the count reflects the
+    /// derived-data cascade (#8045 B1) and the voice-transcript cascade (#8059).
+    pub fn total(&self) -> u64 {
+        self.events_deleted
+            + self.frames_deleted
+            + self.metrics_deleted
+            + self.process_snapshots_deleted
+            + self.idle_periods_deleted
+            + self.activity_segments_deleted
+            + self.embedding_vectors_deleted
+            + self.local_suggestions_deleted
+            + self.transcripts_deleted
+    }
+}
+
+/// Row counts removed by a retroactive per-app deletion (#8045 B2 — Recall
+/// parity). When an app (or app pattern) is newly added to the exclusion list,
+/// its already-recorded history is purged: frame metadata + files, events, and
+/// the derived LLM summaries (`activity_segments`) + embeddings
+/// (`embedding_vectors`) attributable to that app.
+///
+/// `local_suggestions` is deliberately NOT included: it carries no reliable
+/// per-app identifier (the app context lives in a separate feedback table and
+/// the `payload` holds signal metrics, not app names), so a substring match
+/// would over-delete unrelated suggestions. It is a short-lived, regenerated
+/// cache covered by the time-range and full-wipe deletion primitives instead.
+#[derive(Debug, Clone, Default)]
+pub struct AppDeletionCounts {
+    pub events_deleted: u64,
+    pub frames_deleted: u64,
+    pub activity_segments_deleted: u64,
+    pub embedding_vectors_deleted: u64,
+}
+
+impl AppDeletionCounts {
+    /// Total rows removed across the matched tables (excludes on-disk frame
+    /// files, which the caller deletes best-effort from the returned paths).
+    pub fn total(&self) -> u64 {
+        self.events_deleted
+            + self.frames_deleted
+            + self.activity_segments_deleted
+            + self.embedding_vectors_deleted
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -363,42 +426,21 @@ pub struct SegmentDetailRecord {
 }
 
 /// Input DTO for inserting a GUI interaction event (V13, extended V22).
+///
+/// #7678 D3: `segment_id`/`element_text`/`element_type`/`bbox_json` were
+/// removed (V43) — the production writer never populated them (constant
+/// `element_type: Some("Click")` and `segment_id`/`element_text`/`bbox_json`
+/// always `None`), so the columns advertised richer data than the table ever
+/// carried. See `migration/v43_gui_interactions_drop_unused_columns.rs`.
 #[derive(Debug, Clone)]
 pub struct NewGuiInteraction<'a> {
     pub event_id: &'a str,
-    pub segment_id: Option<&'a str>,
     pub timestamp: &'a str,
-    pub element_text: Option<&'a str>,
-    pub element_type: Option<&'a str>,
     pub interaction_type: &'a str,
-    pub bbox_json: Option<&'a str>,
     pub app_name: &'a str,
     /// Classification confidence for the inferred element type (0.0-1.0).
     /// Added in V22; defaults to 1.0 for backward compatibility.
     pub type_confidence: f32,
-}
-
-/// A GUI interaction event record from the V13 gui_interactions table (extended V22).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct GuiInteractionRecord {
-    pub id: i64,
-    pub event_id: String,
-    pub segment_id: Option<String>,
-    pub timestamp: String,
-    pub element_text: Option<String>,
-    pub element_type: Option<String>,
-    pub interaction_type: String,
-    pub bbox_json: Option<String>,
-    pub app_name: String,
-    pub created_at: String,
-    /// Classification confidence for the inferred element type (0.0-1.0).
-    /// Added in V22; defaults to 1.0 for rows created before V22.
-    #[serde(default = "default_type_confidence")]
-    pub type_confidence: f32,
-}
-
-fn default_type_confidence() -> f32 {
-    1.0
 }
 
 /// Row from the `feedback_retries` table (V24).
@@ -543,5 +585,231 @@ mod tests {
         let mut record = record_with_expires_at(None);
         record.created_at = "not-a-timestamp".to_string();
         assert!(record.try_into_suggestion().is_none());
+    }
+
+    /// #10197 Wave 2: mutation guards. 48 mutants survived here — the two
+    /// deletion `total()` sums, the record->domain match arms (the SQLite read
+    /// path: a deleted arm silently drops stored suggestions/feedback on
+    /// restart), the context-scope conjunction, and the egress-ledger
+    /// recipient-count default. Nested in `tests` to reuse
+    /// `record_with_expires_at`.
+    mod mutation_guard {
+        use super::*;
+        use crate::models::suggestion::{FeedbackType, Priority, SuggestionType};
+
+        /// Powers of two make every term independently visible: any single
+        /// `+` -> `-`/`*` changes the total, and no two subsets collide.
+        #[test]
+        fn deleted_range_total_counts_every_table_exactly_once() {
+            let counts = DeletedRangeCounts {
+                events_deleted: 1,
+                frames_deleted: 2,
+                metrics_deleted: 4,
+                process_snapshots_deleted: 8,
+                idle_periods_deleted: 16,
+                activity_segments_deleted: 32,
+                embedding_vectors_deleted: 64,
+                local_suggestions_deleted: 128,
+                transcripts_deleted: 256,
+            };
+            assert_eq!(
+                counts.total(),
+                511,
+                "every table term must add exactly once"
+            );
+        }
+
+        #[test]
+        fn app_deletion_total_counts_every_table_exactly_once() {
+            let counts = AppDeletionCounts {
+                events_deleted: 1,
+                frames_deleted: 2,
+                activity_segments_deleted: 4,
+                embedding_vectors_deleted: 8,
+            };
+            assert_eq!(counts.total(), 15);
+        }
+
+        /// Both stored spellings of every suggestion-type arm must parse.
+        /// These strings are what SQLite rows actually contain; a deleted arm
+        /// makes every stored suggestion of that type vanish on read.
+        #[test]
+        fn suggestion_type_arms_parse_both_stored_spellings() {
+            let cases: &[(&str, &str, SuggestionType)] = &[
+                (
+                    "WORK_GUIDANCE",
+                    "WorkGuidance",
+                    SuggestionType::WorkGuidance,
+                ),
+                ("EMAIL_DRAFT", "EmailDraft", SuggestionType::EmailDraft),
+                (
+                    "PRODUCTIVITY_TIP",
+                    "ProductivityTip",
+                    SuggestionType::ProductivityTip,
+                ),
+                (
+                    "WORKFLOW_OPTIMIZATION",
+                    "WorkflowOptimization",
+                    SuggestionType::WorkflowOptimization,
+                ),
+                (
+                    "CONTEXT_BASED",
+                    "ContextBased",
+                    SuggestionType::ContextBased,
+                ),
+                (
+                    "BREAK_REMINDER",
+                    "BreakReminder",
+                    SuggestionType::BreakReminder,
+                ),
+                ("FOCUS_MODE", "FocusMode", SuggestionType::FocusMode),
+                ("TAKE_BREAK", "TakeBreak", SuggestionType::TakeBreak),
+                (
+                    "NEED_FOCUS_TIME",
+                    "NeedFocusTime",
+                    SuggestionType::NeedFocusTime,
+                ),
+                (
+                    "RESTORE_CONTEXT",
+                    "RestoreContext",
+                    SuggestionType::RestoreContext,
+                ),
+            ];
+            for (screaming, pascal, expected) in cases {
+                for spelling in [screaming, pascal] {
+                    let mut record = record_with_expires_at(None);
+                    record.suggestion_type = (*spelling).to_string();
+                    let suggestion = record
+                        .try_into_suggestion()
+                        .unwrap_or_else(|| panic!("{spelling} must parse"));
+                    assert_eq!(suggestion.suggestion_type, *expected, "{spelling}");
+                }
+            }
+            let mut record = record_with_expires_at(None);
+            record.suggestion_type = "NO_SUCH_TYPE".to_string();
+            assert!(
+                record.try_into_suggestion().is_none(),
+                "unknown type is a None, not a default"
+            );
+        }
+
+        #[test]
+        fn priority_and_source_arms_parse_both_stored_spellings() {
+            use crate::models::suggestion::SuggestionSource;
+            let priorities: &[(&str, &str, Priority)] = &[
+                ("LOW", "Low", Priority::Low),
+                ("HIGH", "High", Priority::High),
+                ("CRITICAL", "Critical", Priority::Critical),
+            ];
+            for (screaming, pascal, expected) in priorities {
+                for spelling in [screaming, pascal] {
+                    let mut record = record_with_expires_at(None);
+                    record.priority = (*spelling).to_string();
+                    let suggestion = record.try_into_suggestion().expect("valid record");
+                    assert_eq!(suggestion.priority, *expected, "{spelling}");
+                }
+            }
+            // Unknown priority deliberately falls back to Medium (not None).
+            let mut record = record_with_expires_at(None);
+            record.priority = "NO_SUCH_PRIORITY".to_string();
+            assert_eq!(
+                record.try_into_suggestion().expect("valid record").priority,
+                Priority::Medium
+            );
+
+            let sources: &[(&str, SuggestionSource)] = &[
+                (
+                    SuggestionSource::LLM_SERVER_STR,
+                    SuggestionSource::LlmServer,
+                ),
+                ("LlmServer", SuggestionSource::LlmServer),
+                (SuggestionSource::LLM_LOCAL_STR, SuggestionSource::LlmLocal),
+                ("LlmLocal", SuggestionSource::LlmLocal),
+            ];
+            for (spelling, expected) in sources {
+                let mut record = record_with_expires_at(None);
+                record.source = (*spelling).to_string();
+                let suggestion = record.try_into_suggestion().expect("valid record");
+                assert_eq!(suggestion.source, *expected, "{spelling}");
+            }
+        }
+
+        /// The scope vanishes only when ALL THREE axes are empty — each `&&`
+        /// arm alone must keep a one-axis scope alive. `&&` -> `||` would drop
+        /// a scope the moment ANY axis is empty, silently widening every
+        /// context-scoped suggestion to global.
+        #[test]
+        fn context_scope_survives_on_any_single_axis() {
+            let one_axis = [
+                (Some("app".to_string()), None, None),
+                (None, Some("window".to_string()), None),
+                (None, None, Some("target".to_string())),
+            ];
+            for (app, window, target) in one_axis {
+                let scope = suggestion_context_scope_from_record(
+                    app.clone(),
+                    window.clone(),
+                    target.clone(),
+                );
+                assert!(
+                    scope.is_some(),
+                    "a single populated axis must keep the scope: {app:?}/{window:?}/{target:?}"
+                );
+            }
+            assert!(
+                suggestion_context_scope_from_record(None, None, None).is_none(),
+                "all-empty must be None, not an empty scope object"
+            );
+        }
+
+        #[test]
+        fn feedback_arms_parse_both_stored_spellings() {
+            let cases: &[(&str, FeedbackType)] = &[
+                ("Accepted", FeedbackType::Accepted),
+                ("ACCEPTED", FeedbackType::Accepted),
+                ("Rejected", FeedbackType::Rejected),
+                ("REJECTED", FeedbackType::Rejected),
+                ("Deferred", FeedbackType::Deferred),
+                ("DEFERRED", FeedbackType::Deferred),
+            ];
+            for (spelling, expected) in cases {
+                let record = PendingFeedbackRecord {
+                    id: Some(1),
+                    suggestion_id: "sug-9".to_string(),
+                    feedback_type: (*spelling).to_string(),
+                    comment: Some("note".to_string()),
+                    attempts: 3,
+                    next_retry_at: "2026-01-02T03:04:05Z".to_string(),
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                };
+                let (suggestion_id, ft, comment, attempts, next_retry) =
+                    record.into_domain_parts().expect("known feedback type");
+                assert_eq!(ft, *expected, "{spelling}");
+                // Field pass-through — a `-> None` replacement or a swapped
+                // tuple slot fails one of these.
+                assert_eq!(suggestion_id, "sug-9");
+                assert_eq!(comment.as_deref(), Some("note"));
+                assert_eq!(attempts, 3);
+                assert_eq!(next_retry.to_rfc3339(), "2026-01-02T03:04:05+00:00");
+            }
+
+            let unknown = PendingFeedbackRecord {
+                id: None,
+                suggestion_id: "sug-9".to_string(),
+                feedback_type: "Shrugged".to_string(),
+                comment: None,
+                attempts: 0,
+                next_retry_at: "2026-01-02T03:04:05Z".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            };
+            assert!(unknown.into_domain_parts().is_none());
+        }
+
+        /// Egress-ledger rows predating V40 count as ONE recipient — 0 would
+        /// erase their audited volume (`bytes * recipients`), -1 would negate it.
+        #[test]
+        fn recipient_count_default_is_exactly_one() {
+            assert_eq!(default_recipient_count(), 1);
+        }
     }
 }

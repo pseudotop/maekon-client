@@ -29,6 +29,13 @@ impl RealtimeStreamQueryService {
             Err(_) => None,
         });
 
-        tokio_stream::iter(initial_event).chain(live_stream)
+        let stream = tokio_stream::iter(initial_event).chain(live_stream);
+
+        #[cfg(debug_assertions)]
+        let stream = stream.take(crate::qc_stream_recovery::stream_limit(
+            crate::qc_stream_recovery::StreamChannel::App,
+        ));
+
+        stream
     }
 }

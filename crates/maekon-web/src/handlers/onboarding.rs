@@ -12,26 +12,12 @@ pub async fn get_quickstart(
 
 #[cfg(test)]
 mod tests {
-    use crate::AppState;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use maekon_api_contracts::onboarding::{OnboardingQuickstartDto, QuickstartStepDto};
 
-    use maekon_storage::sqlite::SqliteStorage;
-    use std::sync::Arc;
-    use tokio::sync::broadcast;
+    use crate::test_local_auth::loopback_app;
     use tower::ServiceExt;
-
-    fn test_app_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-        let (event_tx, _) = broadcast::channel(16);
-        AppState::with_core(storage, event_tx)
-    }
-
-    fn loopback_app() -> axum::Router {
-        let state = test_app_state();
-        crate::test_local_auth::authed_loopback_router(state)
-    }
 
     #[tokio::test]
     async fn get_quickstart_returns_200() {

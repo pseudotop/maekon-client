@@ -62,27 +62,16 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
 
-      - name: Classify release version
-        id: release
-        shell: bash
-        run: |
-          set -euo pipefail
-          source ./scripts/release-common.sh
-          TAG_VERSION="${RELEASE_TAG#v}"
-          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "release_sha=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
-          echo "release_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
-          if is_rc_version "${TAG_VERSION}"; then
-            echo "release_kind=rc" >> "$GITHUB_OUTPUT"
-            echo "base_version=$(base_version "${TAG_VERSION}")" >> "$GITHUB_OUTPUT"
-          elif is_stable_version "${TAG_VERSION}"; then
-            echo "release_kind=stable" >> "$GITHUB_OUTPUT"
-            echo "base_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Unsupported tag format: ${RELEASE_TAG}. Use vX.Y.Z-rc.N or vX.Y.Z"
-            exit 1
-          fi
-
+      # ⚠️ 이 아래 순서는 보안 계약이다 (#11155).
+      #
+      # 위 checkout 은 `inputs.release_sha` 를 그대로 받는다 — 아직 아무것도 검증되지
+      # 않은 트리다. 그러므로 **그 트리의 코드를 실행하는 첫 스텝보다 검증이 먼저여야
+      # 한다.** 아래 두 검증은 git 연산과 `gh api` 만 쓰고 체크아웃한 트리의 스크립트를
+      # 실행하지 않는다. 쓰는 값(RELEASE_TAG·RELEASE_SHA)도 워크플로 `env:` 에서 오므로
+      # 트리에 의존하지 않는다.
+      #
+      # `Classify release version` 이 `source ./scripts/release-common.sh` 로 그 트리의
+      # 셸을 실행하는 첫 지점이라 검증 뒤로 옮겼다. 새 스텝을 넣을 때 이 경계를 넘지 말 것.
       - name: Verify release tag matches the requested commit
         shell: bash
         run: |
@@ -136,6 +125,27 @@ jobs:
           TAG_VERIFY_REASON="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}" --jq '.verification.reason // "unknown"')"
           if [ "${TAG_VERIFIED}" != "true" ]; then
             echo "::error::${RELEASE_TAG} tag signature is not GitHub-verified (reason: ${TAG_VERIFY_REASON})."
+            exit 1
+          fi
+
+      - name: Classify release version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./scripts/release-common.sh
+          TAG_VERSION="${RELEASE_TAG#v}"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_sha=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "release_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          if is_rc_version "${TAG_VERSION}"; then
+            echo "release_kind=rc" >> "$GITHUB_OUTPUT"
+            echo "base_version=$(base_version "${TAG_VERSION}")" >> "$GITHUB_OUTPUT"
+          elif is_stable_version "${TAG_VERSION}"; then
+            echo "release_kind=stable" >> "$GITHUB_OUTPUT"
+            echo "base_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unsupported tag format: ${RELEASE_TAG}. Use vX.Y.Z-rc.N or vX.Y.Z"
             exit 1
           fi
 
@@ -395,11 +405,14 @@ jobs:
               for entry in accepted.get("dependabot", []):
                   if not not_expired(entry):
                       continue
-                  number_match = entry.get("number") == alert.get("number")
-                  advisory_match = entry.get("advisory") == advisory.get("ghsa_id")
-                  package_match = entry.get("package") == (dependency.get("package") or {}).get("name")
-                  manifest_match = entry.get("manifest") == dependency.get("manifest_path")
-                  if number_match or advisory_match or (package_match and manifest_match):
+                  selectors = {
+                      "number": alert.get("number"),
+                      "advisory": advisory.get("ghsa_id"),
+                      "package": (dependency.get("package") or {}).get("name"),
+                      "manifest": dependency.get("manifest_path"),
+                  }
+                  declared = [(key, value) for key, value in selectors.items() if key in entry]
+                  if declared and all(entry.get(key) == value for key, value in declared):
                       return True
               return False
 
@@ -578,8 +591,8 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -642,34 +655,87 @@ jobs:
       # - #6118: Linux releases need `systemd-notify` for Type=notify units.
       # - #6752: shipped Linux/Windows releases must include the native sandbox
       #   feature for their platform instead of presenting unenforced sandbox UI.
+      # - #8056: shipped releases (all 3 OS) must include `lan-sync` so the
+      #   cross-device LAN sync engine compiles in — without it
+      #   `SyncTransportKind::Lan` short-circuits to "sync disabled" and
+      #   `discover_sync_peers` can never work in a shipped binary. Default
+      #   remains opt-in via `config.sync.enabled`; the feature only gates code
+      #   inclusion, not activation.
+      # - #8053: shipped releases (all 3 OS) must include `stt,download` so the
+      #   local audio/STT subsystem (~3,900 LoC `maekon-audio` crate + 10 tauri
+      #   commands + AudioTab UI) compiles in — without it `audio_wiring.rs` wires
+      #   every capability to `None` and all 10 audio commands dead-end in
+      #   `service.unavailable`. `stt` pulls in the base `audio` feature plus
+      #   `maekon-audio/whisper`; `download` adds on-demand model fetching. Models
+      #   are NOT bundled — they download on demand. `cloud-stt` is deliberately
+      #   excluded (local-only privacy posture). The feature only gates code
+      #   inclusion, not activation (opt-in via `config.audio.enabled`).
       - name: Assert native release feature sets
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -q 'FEATURES="grpc,systemd-notify,linux-sandbox"' .github/workflows/release.yml; then
-            echo "::error::Linux release build must use FEATURES=grpc,systemd-notify,linux-sandbox (#6118/#6752)." >&2
+          if ! grep -q 'FEATURES="grpc,systemd-notify,linux-sandbox,lan-sync,stt,download"' .github/workflows/release.yml; then
+            echo "::error::Linux release build must use FEATURES=grpc,systemd-notify,linux-sandbox,lan-sync,stt,download (#6118/#6752/#8056/#8053)." >&2
             exit 1
           fi
-          if ! grep -q 'FEATURES="grpc,windows-sandbox"' .github/workflows/release.yml; then
-            echo "::error::Windows release build must use FEATURES=grpc,windows-sandbox (#6752)." >&2
+          if ! grep -q 'FEATURES="grpc,windows-sandbox,lan-sync,stt,download"' .github/workflows/release.yml; then
+            echo "::error::Windows release build must use FEATURES=grpc,windows-sandbox,lan-sync,stt,download (#6752/#8056/#8053)." >&2
             exit 1
           fi
+          if ! grep -q 'FEATURES="grpc,lan-sync,stt,download"' .github/workflows/release.yml; then
+            echo "::error::macOS release build must use FEATURES=grpc,lan-sync,stt,download (#8056/#8053)." >&2
+            exit 1
+          fi
+
+      - name: Verify WebDriver dependency isolation
+        if: runner.os == 'Linux'
+        shell: bash
+        run: ./scripts/check-webdriver-security-isolation.sh
 
       - name: Build release
         shell: bash
         # Feature set is OS-conditional. Linux keeps `systemd-notify` for its
         # Type=notify unit and adds `linux-sandbox`; Windows adds
         # `windows-sandbox`. macOS has no native sandbox Cargo feature here.
+        # All three ship `lan-sync` (#8056) so the LAN cross-device sync engine
+        # is compiled into the shipped binary, and `stt,download` (#8053) so the
+        # local audio/STT subsystem + on-demand model download are live.
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            FEATURES="grpc,systemd-notify,linux-sandbox"
+            FEATURES="grpc,systemd-notify,linux-sandbox,lan-sync,stt,download"
           elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            FEATURES="grpc,windows-sandbox"
+            FEATURES="grpc,windows-sandbox,lan-sync,stt,download"
           else
-            FEATURES="grpc"
+            FEATURES="grpc,lan-sync,stt,download"
           fi
           ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features "$FEATURES"
+
+      - name: Stage signed Microsoft VC runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/stage-windows-vc-runtime.ps1 `
+            -PayloadRoot "target/${{ matrix.target }}/release"
+
+      - name: Verify prebuilt Windows runtime DLL closure
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
+          $dumpbins = @(Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse)
+          $dumpbin = $dumpbins |
+            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$dumpbin) { $dumpbin = $dumpbins | Sort-Object FullName -Descending | Select-Object -First 1 }
+          if (!$dumpbin) { throw "dumpbin.exe was not found under $installation" }
+          node scripts/verify-windows-runtime-closure.mjs `
+            --payload-root "target/${{ matrix.target }}/release" `
+            --dependency-tool $dumpbin.FullName
 
       - name: Validate WiX assets
         if: runner.os == 'Windows'
@@ -713,11 +779,13 @@ jobs:
         run: |
           set -euo pipefail
           CONFIG_PATH="${RUNNER_TEMP}/tauri-nsis-ci-config.json"
-          printf '{"build":{"beforeBuildCommand":""}}\n' > "$CONFIG_PATH"
+          RUNTIME_ROOT="$(cygpath -m "$(pwd)/target/${{ matrix.target }}/release")"
+          printf '{"build":{"beforeBuildCommand":""},"bundle":{"resources":{"%s/vcruntime140.dll":"vcruntime140.dll","%s/vcruntime140_1.dll":"vcruntime140_1.dll"}}}\n' \
+            "$RUNTIME_ROOT" "$RUNTIME_ROOT" > "$CONFIG_PATH"
           ./scripts/cargo-cache.sh tauri build \
             --bundles nsis \
             --target ${{ matrix.target }} \
-            --features grpc,windows-sandbox \
+            --features grpc,windows-sandbox,lan-sync,stt,download \
             --ci \
             --config "$CONFIG_PATH"
 
@@ -752,7 +820,46 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe,target/${{ matrix.target }}/release/maekon-sandbox-worker.exe -DestinationPath dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}
+          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe,target/${{ matrix.target }}/release/maekon-sandbox-worker.exe,target/${{ matrix.target }}/release/vcruntime140.dll,target/${{ matrix.target }}/release/vcruntime140_1.dll -DestinationPath dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}
+
+      - name: Verify packaged Windows runtime DLL closure
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
+          $dumpbins = @(Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse)
+          $dumpbin = $dumpbins |
+            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$dumpbin) { $dumpbin = $dumpbins | Sort-Object FullName -Descending | Select-Object -First 1 }
+          if (!$dumpbin) { throw "dumpbin.exe was not found under $installation" }
+
+          $zipRoot = Join-Path $env:RUNNER_TEMP "maekon-zip-runtime-closure"
+          Remove-Item -LiteralPath $zipRoot -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath "dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}" -DestinationPath $zipRoot
+          node scripts/verify-windows-runtime-closure.mjs --payload-root $zipRoot --dependency-tool $dumpbin.FullName
+
+          $msi = Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$msi) { throw "No MSI file found for runtime closure verification" }
+          $msiRoot = Join-Path $env:RUNNER_TEMP "maekon-msi-runtime-closure"
+          Remove-Item -LiteralPath $msiRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $msiRoot -Force | Out-Null
+          & msiexec.exe /a $msi.FullName /qn "TARGETDIR=$msiRoot"
+          if ($LASTEXITCODE -ne 0) { throw "MSI administrative extraction failed with exit $LASTEXITCODE" }
+          node scripts/verify-windows-runtime-closure.mjs --payload-root $msiRoot --dependency-tool $dumpbin.FullName
+
+          $setup = Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis","src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$setup) { throw "No NSIS setup file found for runtime closure verification" }
+          $nsisRoot = Join-Path $env:RUNNER_TEMP "maekon-nsis-runtime-closure"
+          Remove-Item -LiteralPath $nsisRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $nsisRoot -Force | Out-Null
+          & 7z.exe x "-o$nsisRoot" -y $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed with exit $LASTEXITCODE" }
+          node scripts/verify-windows-runtime-closure.mjs --payload-root $nsisRoot --dependency-tool $dumpbin.FullName
 
       - name: Generate checksums
         if: runner.os != 'Windows'
@@ -1275,8 +1382,8 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \

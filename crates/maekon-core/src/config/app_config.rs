@@ -10,10 +10,10 @@ use std::time::Duration;
 // Use default functions from sections for AppConfig::default_config()
 use crate::config::sections::{
     default_capture_enabled, default_capture_throttle_ms, default_heartbeat_interval_ms,
-    default_idle_threshold_secs, default_max_storage_mb, default_poll_interval_ms,
-    default_process_interval_secs, default_request_timeout_ms, default_retention_days,
-    default_sse_max_retry_secs, default_sync_interval_ms, default_thumbnail_height,
-    default_thumbnail_width,
+    default_idle_threshold_secs, default_max_storage_mb, default_ocr_languages,
+    default_poll_interval_ms, default_process_interval_secs, default_request_timeout_ms,
+    default_retention_days, default_sse_max_retry_secs, default_sync_interval_ms,
+    default_thumbnail_height, default_thumbnail_width,
 };
 
 use crate::config::sections::{
@@ -31,9 +31,9 @@ use crate::config::sections::{
 /// A config file whose `schema_version` is greater than this value was written
 /// by a newer (incompatible) client, so the downgrade guard refuses/warns on it.
 ///
-/// v2 records the #5056 telemetry default-on intent. Future versions still use
-/// this value as the downgrade guard.
-pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+/// v2 recorded the #5056 telemetry default-on intent. v3 changes fresh and
+/// sparse telemetry configuration to explicit opt-in for #8094.
+pub const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 /// The serde default for the `schema_version` field.
 ///
@@ -99,7 +99,7 @@ pub struct AppConfig {
     pub focus_auto: FocusAutoConfig,
     #[serde(default)]
     pub external_grpc: ExternalGrpcConfig,
-    /// Tracking schedule — wall-clock mute windows (Phase 9 PR-A).
+    /// Tracking schedule — wall-clock allowed windows (Phase 9 PR-A).
     #[serde(default)]
     pub tracking_schedule: TrackingScheduleConfig,
     /// Autostart — onboarding state for cross-platform autostart feature (Phase 9 PR-B1).
@@ -125,6 +125,14 @@ impl AppConfig {
                 base_url: "http://localhost:8000".to_string(),
                 request_timeout_ms: default_request_timeout_ms(),
                 sse_max_retry_secs: default_sse_max_retry_secs(),
+                // #9785: empty by default — deny-by-default for external https
+                // handoff, matching `base_url`'s local-first default. A
+                // distribution that wants its Console reachable configures it,
+                // the same way it configures the server it talks to.
+                allowed_handoff_hosts: Vec::new(),
+                // #9628: no authenticated Console origin is assumed. A
+                // distribution/operator must configure it explicitly.
+                console_base_url: None,
             },
             monitor: MonitorConfig {
                 poll_interval_ms: default_poll_interval_ms(),
@@ -147,6 +155,7 @@ impl AppConfig {
                 thumbnail_width: default_thumbnail_width(),
                 thumbnail_height: default_thumbnail_height(),
                 ocr_enabled: false,
+                ocr_languages: default_ocr_languages(),
                 privacy_mode: false,
             },
             update: UpdateConfig::default(),
@@ -180,9 +189,9 @@ impl AppConfig {
     /// corrupt and cannot be parsed.
     ///
     /// A corrupt config means the user's previously-saved choices (which may
-    /// have been an explicit opt-out) are unrecoverable. Re-seeding the
-    /// fresh-install default-on telemetry intent here would silently re-enable
-    /// collection knobs the user might have turned off. To stay fail-closed we
+    /// have been an explicit opt-out) are unrecoverable. Re-seeding collection
+    /// intents here could silently re-enable knobs the user turned off. To stay
+    /// fail-closed we
     /// start from [`Self::default_config`] and force every collection/export
     /// intent to its most privacy-preserving setting:
     ///
@@ -212,6 +221,11 @@ impl AppConfig {
         // #6177: the analysis loop builds a tokio interval from analysis.interval_secs;
         // a zero period panics the loop, so the same interval floors must be validated.
         self.analysis.validate_bounds()?;
+        // #7726 (ctd-W2 E4): idle_notification_mins == 0 is meaningless (a
+        // notification that fires continuously). Was previously enforced only by
+        // src-tauri's WebView-boundary `validate_config_bounds`; now part of the
+        // core SSOT so every write chokepoint (file-load, HTTP API, WebView) agrees.
+        self.notification.validate_bounds()?;
         // #6617: the desktop WebView CSP only allows the local dashboard fallback
         // range. Reject configured base ports outside that range at write/reload
         // chokepoints so the UI never boots against a blocked loopback API origin.
@@ -243,6 +257,9 @@ impl AppConfig {
         clamped.extend(self.vision.clamp_bounds());
         clamped.extend(self.monitor.clamp_bounds());
         clamped.extend(self.analysis.clamp_bounds());
+        // #7726: mirror the validate_bounds() addition above for the fail-open
+        // INITIAL-LOAD path.
+        clamped.extend(self.notification.clamp_bounds());
         // #6883: fail-close web.allow_external + clamp web.port on load. validate_bounds
         // (write chokepoints) already covers web; the load path must too, or a weak-token
         // config binds the integration API to 0.0.0.0 unvalidated.
@@ -623,7 +640,7 @@ mod tests {
             llm_api: Some(ExternalApiEndpoint {
                 endpoint: "https://api.anthropic.com/v1/messages".to_string(),
                 api_key: "api-key".to_string(),
-                model: Some("claude-opus-4-1-20250805".to_string()),
+                model: Some("claude-opus-5".to_string()),
                 timeout_secs: 30,
                 provider_type: AiProviderType::Anthropic,
                 surface_id: Some("provider_surface.anthropic.direct_api".to_string()),
@@ -1053,16 +1070,17 @@ mod tests {
         let config = StorageConfig {
             db_path: None,
             retention_days: 1,
-            max_storage_mb: 10,
+            max_storage_mb: 100,
         };
-        // Contract: retention_days >= 1 AND max_storage_mb >= 10 are the minimum valid bounds;
+        // Contract: retention_days >= 1 AND max_storage_mb >= 100 (#7726: raised
+        // from 10 to match the maekon-web boundary) are the minimum valid bounds;
         // both floor values must pass validation unchanged.
         config
             .validate_bounds()
-            .expect("retention_days=1 and max_storage_mb=10 are the minimum valid bounds");
+            .expect("retention_days=1 and max_storage_mb=100 are the minimum valid bounds");
         // Pin the actual field values to guard against silent default drift.
         assert_eq!(config.retention_days, 1);
-        assert_eq!(config.max_storage_mb, 10);
+        assert_eq!(config.max_storage_mb, 100);
     }
 
     #[test]
@@ -1073,6 +1091,7 @@ mod tests {
             thumbnail_width: 480,
             thumbnail_height: 270,
             ocr_enabled: false,
+            ocr_languages: default_ocr_languages(),
             privacy_mode: false,
         };
         let err = config.validate_bounds().unwrap_err();
@@ -1090,6 +1109,7 @@ mod tests {
             thumbnail_width: 480,
             thumbnail_height: 270,
             ocr_enabled: false,
+            ocr_languages: default_ocr_languages(),
             privacy_mode: false,
         };
         let err = config.validate_bounds().unwrap_err();
@@ -1100,21 +1120,47 @@ mod tests {
     fn vision_validate_bounds_accepts_min_throttle() {
         let config = VisionConfig {
             capture_enabled: true,
-            capture_throttle_ms: 100,
+            capture_throttle_ms: 1_000,
             thumbnail_width: 480,
             thumbnail_height: 270,
             ocr_enabled: false,
+            ocr_languages: default_ocr_languages(),
             privacy_mode: false,
         };
-        // Contract: capture_throttle_ms == 100 is the exact minimum allowed value;
-        // validation must not reject the floor itself.
+        // Contract: capture_throttle_ms == 1000 is the exact minimum allowed value
+        // (#7726: raised from 100 to resolve the core-vs-WebView 3-boundary
+        // disagreement); validation must not reject the floor itself.
         config.validate_bounds().expect(
-            "capture_throttle_ms=100 is the minimum valid throttle and must pass bounds check",
+            "capture_throttle_ms=1000 is the minimum valid throttle and must pass bounds check",
         );
         assert_eq!(
-            config.capture_throttle_ms, 100,
+            config.capture_throttle_ms, 1_000,
             "floor value must be preserved"
         );
+    }
+
+    /// #7726 (ctd-W2 E4): regression coverage for the pre-fix boundary
+    /// divergence. Before this change, `capture_throttle_ms = 500` was
+    /// accepted by this core validator (floor was 100) but rejected by the
+    /// Tauri WebView `update_setting` boundary (`src-tauri/src/commands/
+    /// settings.rs`, hardcoded floor 1000). `src-tauri`'s own test module
+    /// pins the WebView side of this same value so both boundaries are
+    /// pinned to agree.
+    #[test]
+    fn vision_validate_bounds_rejects_capture_throttle_500_matches_webview_boundary() {
+        let config = VisionConfig {
+            capture_enabled: true,
+            capture_throttle_ms: 500,
+            thumbnail_width: 480,
+            thumbnail_height: 270,
+            ocr_enabled: false,
+            ocr_languages: default_ocr_languages(),
+            privacy_mode: false,
+        };
+        let err = config.validate_bounds().expect_err(
+            "capture_throttle_ms=500 must now be rejected by the core SSOT (floor raised to 1000 in #7726 to agree with the WebView boundary)",
+        );
+        assert!(err.contains("capture_throttle_ms"), "got: {err}");
     }
 
     #[test]

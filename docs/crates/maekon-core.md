@@ -34,19 +34,26 @@ maekon-core/src/
 │   ├── telemetry.rs    # Telemetry-related models
 │   ├── automation.rs   # AutomationAction, MouseButton
 │   └── intent.rs       # AutomationIntent, UiElement, WorkflowPreset
-└── ports/           # Port interfaces (traits)
-    ├── mod.rs
-    ├── api_client.rs   # ApiClient, SseClient, SseEvent
-    ├── storage.rs      # StorageService
-    ├── monitor.rs      # SystemMonitor, ProcessMonitor, ActivityMonitor
-    ├── vision.rs       # CaptureTrigger, FrameProcessor
-    ├── notifier.rs     # DesktopNotifier
-    ├── compressor.rs   # Compressor
-    ├── element_finder.rs # ElementFinder — UI element discovery
-    ├── input_driver.rs   # InputDriver — mouse/keyboard input
-    ├── ocr_provider.rs   # OcrProvider — OCR text recognition
-    ├── llm_provider.rs   # LlmProvider — LLM inference
-    └── sandbox.rs        # Sandbox — OS native sandbox
+├── ports/           # Port interfaces (traits)
+│   ├── mod.rs
+│   ├── api_client.rs   # ApiClient, SseClient, SseEvent
+│   ├── storage.rs      # StorageService
+│   ├── monitor.rs      # SystemMonitor, ProcessMonitor, ActivityMonitor
+│   ├── vision.rs       # CaptureTrigger, FrameProcessor
+│   ├── notifier.rs     # DesktopNotifier
+│   ├── compressor.rs   # Compressor
+│   ├── element_finder.rs # ElementFinder — UI element discovery
+│   ├── input_driver.rs   # InputDriver — mouse/keyboard input
+│   ├── ocr_provider.rs   # OcrProvider — OCR text recognition
+│   ├── llm_provider.rs   # LlmProvider — LLM inference
+│   └── sandbox.rs        # Sandbox — OS native sandbox
+├── capture_gate.rs  # Tracking-schedule mute windows, capture privacy gate
+│                     # composite, monitor power-cadence decisions, TsNotifier
+│                     # port (moved from src-tauri, #7735 E-3: tauri-free,
+│                     # ports-only policy)
+└── sync_engine.rs   # SyncEngine — pull/merge/push sync cycle orchestration over
+                      # ChangeExtractor/ChangeMerger/SyncTransport ports (moved from
+                      # src-tauri, #7735 E-1: ports-only orchestration, tauri-free)
 ```
 
 ## Key Models

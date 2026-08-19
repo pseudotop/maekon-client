@@ -4,8 +4,8 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-// P2 PR-A nursery-hardening.
-#![deny(clippy::significant_drop_tightening)]
+// P2 PR-A nursery-hardening. (Enforced workspace-wide via
+// `[workspace.lints.clippy]`, #7719.)
 #![cfg_attr(test, allow(clippy::significant_drop_tightening))]
 
 //! Local embedding provider — fastembed-rs (ONNX Runtime) wrapper.

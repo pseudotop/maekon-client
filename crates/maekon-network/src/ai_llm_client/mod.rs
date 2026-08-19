@@ -12,8 +12,8 @@ use maekon_core::ports::llm_provider::{
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
-use crate::resilience::endpoint_authority;
+use maekon_http_core::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
+use maekon_http_core::resilience::endpoint_authority;
 
 mod parsers;
 mod request;
@@ -31,6 +31,9 @@ pub struct RemoteLlmProvider {
     model: String,
     provider_type: AiProviderType,
     surface_id: Option<String>,
+    // Cached from config; the actual timeout enforcement is baked into
+    // `http_client` at construction (`.timeout(...)` below), so this is not
+    // read back today — kept for a future diagnostics/status surface.
     #[allow(dead_code)]
     timeout_secs: u64,
     /// Token budget for the `max_output_tokens` field of Responses API bodies.
@@ -120,10 +123,14 @@ impl RemoteLlmProvider {
             CredentialSource::ApiKey(config.api_key.clone())
         };
         // #6892: redirect=none — prevents a provider 30x redirect from leaking the api-key header + prompt body.
-        let http_client = crate::outbound::hardened_client_builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
+        // #8045 C3: https_only backstop derived from the target endpoint (loopback
+        // local LLM like Ollama keeps cleartext; remote providers are HTTPS-only).
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&config.endpoint),
+        )
+        .timeout(std::time::Duration::from_secs(config.timeout_secs))
+        .build()
+        .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
         let supports_model = provider_specs::resolved_surface_supports_model_selection(
             config.provider_type,
             config.surface_id.as_deref(),
@@ -242,10 +249,14 @@ impl RemoteLlmProvider {
     ) -> Result<Self, crate::error::NetworkError> {
         use crate::error::NetworkError;
         // #6892: redirect=none — prevents a provider 30x redirect from leaking the api-key header + prompt body.
-        let http_client = crate::outbound::hardened_client_builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
+        // #8045 C3: https_only backstop derived from the target endpoint (loopback
+        // local LLM like Ollama keeps cleartext; remote providers are HTTPS-only).
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&config.endpoint),
+        )
+        .timeout(std::time::Duration::from_secs(config.timeout_secs))
+        .build()
+        .map_err(|e| NetworkError::Http(format!("HTTP client create failure: {}", e)))?;
         let supports_model = provider_specs::resolved_surface_supports_model_selection(
             config.provider_type,
             config.surface_id.as_deref(),
@@ -383,9 +394,14 @@ impl LlmProvider for RemoteLlmProvider {
         screen_context: &ScreenContext,
         intent_hint: &str,
     ) -> Result<InterpretedAction, CoreError> {
-        let user_prompt = request::build_user_prompt(screen_context, intent_hint);
+        // No skill context on this path — the skill region stays empty.
+        let prompts = request::build_prompts(&SkillContext::default(), screen_context, intent_hint);
         debug!(endpoint = %self.endpoint, model = %self.model, hint = %intent_hint, "Calling external LLM API");
-        let request_body = self.build_chat_body(request::system_prompt(), &user_prompt)?;
+        // Argument order is load-bearing: `prompts.system` (trusted region) maps
+        // to the provider's system/instruction slot and `prompts.user` (fenced
+        // untrusted data) to the user slot. Swapping them would put untrusted
+        // screen/intent text into instruction position (#8588).
+        let request_body = self.build_chat_body(&prompts.system, &prompts.user)?;
         self.send_and_parse(&request_body).await
     }
     async fn interpret_intent_with_skills(
@@ -394,10 +410,12 @@ impl LlmProvider for RemoteLlmProvider {
         intent_hint: &str,
         skill_ctx: &SkillContext,
     ) -> Result<InterpretedAction, CoreError> {
-        let user_prompt = request::build_user_prompt(screen_context, intent_hint);
-        let system_prompt = request::build_system_prompt(skill_ctx);
-        debug!(endpoint = %self.endpoint, model = %self.model, hint = %intent_hint, skills = skill_ctx.available_skills.len(), has_active_skill = skill_ctx.active_skill_body.is_some(), responses_api = self.uses_responses_api(), "Calling external LLM API (with skills)");
-        let request_body = self.build_chat_body(&system_prompt, &user_prompt)?;
+        let prompts = request::build_prompts(skill_ctx, screen_context, intent_hint);
+        debug!(endpoint = %self.endpoint, model = %self.model, hint = %intent_hint, skills = skill_ctx.available_skills.len(), has_active_skill = skill_ctx.active_skill.is_some(), responses_api = self.uses_responses_api(), "Calling external LLM API (with skills)");
+        // Argument order is load-bearing (see `interpret_intent`): trusted
+        // `prompts.system` to the instruction slot, fenced `prompts.user` to the
+        // data slot (#8588).
+        let request_body = self.build_chat_body(&prompts.system, &prompts.user)?;
         self.send_and_parse(&request_body).await
     }
     fn provider_name(&self) -> &str {

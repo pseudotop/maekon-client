@@ -105,10 +105,9 @@ jobs:
             --jq '.[0].number // empty')"
 
           if [ -n "${existing_pr}" ]; then
-            existing_author="$(gh pr view "${existing_pr}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --json author \
-              --jq '.author.login')"
+            existing_author="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/pulls/${existing_pr}" \
+              --jq '.user.login')"
             if [[ "${existing_author}" != "maekon-release-bot[bot]" && "${existing_author}" != "maekon-release-bot" ]]; then
               echo "::error::existing public export PR #${existing_pr} for ${HEAD_BRANCH} is authored by ${existing_author}. Close it before rerunning Public Export PR so the App can create an App-authored PR."
               exit 1

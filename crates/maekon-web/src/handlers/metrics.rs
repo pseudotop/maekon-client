@@ -37,24 +37,11 @@ pub async fn get_hourly_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AppState;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
 
-    use maekon_storage::sqlite::SqliteStorage;
-    use std::sync::Arc;
-    use tokio::sync::broadcast;
+    use crate::test_local_auth::{authed_loopback_router as loopback_app, test_app_state};
     use tower::ServiceExt;
-
-    fn test_app_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(16);
-        AppState::with_core(storage, event_tx)
-    }
-
-    fn loopback_app(state: AppState) -> axum::Router {
-        crate::test_local_auth::authed_loopback_router(state)
-    }
 
     #[test]
     fn metrics_response_memory_percent() {

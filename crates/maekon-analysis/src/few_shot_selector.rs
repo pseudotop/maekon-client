@@ -142,13 +142,25 @@ impl FewShotSelector {
             history.iter().collect()
         };
 
+        // `feedback_type` reaches this selector from several producers with
+        // inconsistent casing. The storage read path emits UPPERCASE
+        // ("ACCEPTED"/"REJECTED"/"DEFERRED") — both the hardcoded `suggestions`
+        // UNION branch in `get_suggestions_with_feedback` and the proto
+        // `as_str_name()` values written to `local_suggestions` — while some
+        // in-memory paths use lowercase. This selector is the single point where
+        // these strings are interpreted semantically, so compare
+        // case-insensitively here: any producer casing is accepted and few-shot
+        // personalization cannot silently die again (#7478). A case-sensitive
+        // `== "accepted"` filtered out every stored feedback, so `select()`
+        // always returned `[]` and the analyzer permanently used
+        // `build_with_history` instead of `build_with_few_shot`.
         let accepted: Vec<_> = candidates
             .iter()
-            .filter(|h| h.feedback_type == "accepted")
+            .filter(|h| h.feedback_type.eq_ignore_ascii_case("accepted"))
             .collect();
         let rejected: Vec<_> = candidates
             .iter()
-            .filter(|h| h.feedback_type == "rejected")
+            .filter(|h| h.feedback_type.eq_ignore_ascii_case("rejected"))
             .collect();
 
         let mut selected = Vec::new();
@@ -248,6 +260,32 @@ mod tests {
         let result = selector.select(&history, None);
 
         assert_eq!(result.len(), 3);
+        assert_eq!(result[0].outcome, FewShotOutcome::Accepted);
+        assert_eq!(result[1].outcome, FewShotOutcome::Rejected);
+        assert_eq!(result[2].outcome, FewShotOutcome::Accepted);
+    }
+
+    #[test]
+    fn selects_uppercase_feedback_from_storage_path() {
+        // Regression for #7478: the storage read path emits UPPERCASE
+        // feedback_type ("ACCEPTED"/"REJECTED") — the hardcoded `suggestions`
+        // UNION branch and the proto `as_str_name()` values. A case-sensitive
+        // `== "accepted"` filter dropped every entry, so `select()` returned []
+        // and few-shot personalization was permanently dead. The selector must
+        // match feedback_type case-insensitively.
+        let history = vec![
+            make_entry("ACCEPTED", None, "VSCode", "Take a break"),
+            make_entry("REJECTED", None, "Slack", "Ignore notifications"),
+            make_entry("ACCEPTED", None, "Terminal", "Commit work"),
+        ];
+        let selector = FewShotSelector::new(3);
+        let result = selector.select(&history, None);
+
+        assert_eq!(
+            result.len(),
+            3,
+            "uppercase feedback from the storage path must be selected"
+        );
         assert_eq!(result[0].outcome, FewShotOutcome::Accepted);
         assert_eq!(result[1].outcome, FewShotOutcome::Rejected);
         assert_eq!(result[2].outcome, FewShotOutcome::Accepted);

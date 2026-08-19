@@ -129,6 +129,18 @@ mod linux_tests {
         assert!(path.to_string_lossy().ends_with("maekon.desktop"));
     }
 
+    // #8058 P2-7: the enable-symlink lives under the WantedBy target's `.wants`
+    // dir; its existence — not the `.service` file's — is what `is_enabled` and
+    // the honesty contract rely on. `WantedBy=default.target` (asserted above)
+    // ⇒ `default.target.wants/`.
+    #[test]
+    fn wants_symlink_under_default_target_wants() {
+        let path = linux::wants_symlink_path().unwrap();
+        let s = path.to_string_lossy();
+        assert!(s.contains("systemd/user/default.target.wants"));
+        assert!(s.ends_with("maekon.service"));
+    }
+
     #[test]
     fn service_file_has_restart_policy() {
         let service = linux::generate_service_file("/usr/bin/maekon");

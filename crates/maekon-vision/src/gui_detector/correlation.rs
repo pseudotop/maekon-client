@@ -8,10 +8,11 @@ use super::{
     GuiElementDetector, SPATIAL_INDEX_THRESHOLD, WORD_GROUP_GAP_FACTOR, WORD_GROUP_Y_TOLERANCE,
 };
 
+// Named `IndexedRegion` from an earlier revision that keyed by position; the
+// `RTree` itself now provides the only ordering/lookup this code needs, so
+// the struct is kept only as the `RTreeObject`/`PointDistance` wrapper.
 struct IndexedRegion<'a> {
     region: &'a OcrRegion,
-    #[allow(dead_code)]
-    index: usize,
 }
 
 impl RTreeObject for IndexedRegion<'_> {
@@ -69,9 +70,9 @@ impl GuiElementDetector {
             });
 
             if should_merge {
-                let prev = grouped
-                    .last_mut()
-                    .expect("grouped is non-empty when merging");
+                let Some(prev) = grouped.last_mut() else {
+                    panic!("grouped is non-empty when merging");
+                };
                 // Merge bounding boxes
                 let min_x = prev.bbox.x.min(region.bbox.x);
                 let min_y = prev.bbox.y.min(region.bbox.y);
@@ -166,11 +167,7 @@ impl GuiElementDetector {
     ) -> Option<GuiElement> {
         let indexed: Vec<IndexedRegion> = regions
             .iter()
-            .enumerate()
-            .map(|(i, r)| IndexedRegion {
-                region: r,
-                index: i,
-            })
+            .map(|r| IndexedRegion { region: r })
             .collect();
         let tree = RTree::bulk_load(indexed);
 

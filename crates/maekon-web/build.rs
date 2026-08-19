@@ -12,8 +12,12 @@ fn main() {
 
     let dist_path = Path::new("frontend/dist");
     let index_path = dist_path.join("index.html");
+    let has_non_empty_index = index_path
+        .metadata()
+        .map(|metadata| metadata.is_file() && metadata.len() > 0)
+        .unwrap_or(false);
 
-    if !dist_path.exists() || !index_path.exists() {
+    if !dist_path.exists() || !has_non_empty_index {
         println!("cargo:warning=================================================================================");
         println!("cargo:warning= required!");
         println!("cargo:warning=  cd crates/maekon-web/frontend && pnpm install && pnpm build");

@@ -9,9 +9,9 @@ mod tests {
     use maekon_core::ports::analysis_provider::AnalysisProvider;
     use maekon_core::ports::credential_source::CredentialSource;
 
-    use crate::circuit_breaker::CircuitBreakerRegistry;
     use crate::error::NetworkError;
-    use crate::resilience::endpoint_authority;
+    use maekon_http_core::circuit_breaker::CircuitBreakerRegistry;
+    use maekon_http_core::resilience::endpoint_authority;
 
     use crate::analysis_client::responses::{
         candidate_to_suggestion, extract_text, parse_candidates, SuggestionCandidate,
@@ -158,7 +158,7 @@ mod tests {
         let config = ExternalApiEndpoint {
             endpoint: "https://api.anthropic.com/v1/messages".to_string(),
             api_key: "test-key".to_string(),
-            model: Some("claude-sonnet-4-20250514".to_string()),
+            model: Some("claude-sonnet-5".to_string()),
             timeout_secs: 30,
             provider_type: AiProviderType::Anthropic,
             surface_id: None,
@@ -167,7 +167,7 @@ mod tests {
         let client = AnalysisClient::new(&config, CircuitBreakerRegistry::new());
         let body = client.build_request_body_pub("ctx", "sys");
 
-        assert_eq!(body["model"], "claude-sonnet-4-20250514");
+        assert_eq!(body["model"], "claude-sonnet-5");
         assert_eq!(body["system"], "sys");
         assert_eq!(body["max_tokens"], 1024);
         assert!(body["messages"].is_array());
@@ -439,7 +439,7 @@ mod tests {
         let key = endpoint_authority(server_url).unwrap();
         let _ = registry.get_with_config(
             &key,
-            crate::circuit_breaker::CircuitBreakerConfig {
+            maekon_http_core::circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 3,
                 initial_cooldown: std::time::Duration::from_millis(50),
                 max_cooldown: std::time::Duration::from_millis(200),

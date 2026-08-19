@@ -2,6 +2,11 @@
 
 We take the security of Maekon seriously. If you discover a vulnerability, please follow the procedures outlined in this document to report it.
 
+General Global Alpha feedback, privacy requests, and participation withdrawal
+use `https://maekon.dev/alpha-feedback`. Do not put vulnerability details in
+that form or in a public issue; vulnerabilities use only the private channels
+below.
+
 ## Reporting a Security Vulnerability
 
 **Do not report security vulnerabilities as public issues.** Please use the private channels listed below.
@@ -32,7 +37,7 @@ To enable an effective response, please include as much of the following informa
 The following areas are of particular security importance in Maekon.
 
 - **Screen Capture and PII Filter** (`maekon-vision`): Bypassing the masking of personally identifiable information on-screen
-- **Local SQLite Storage** (`maekon-storage`): Unauthorized access to unencrypted data
+- **Local SQLite Storage** (`maekon-storage`): Compromise of the SQLCipher at-rest encryption or its key material (`.db_key`) — the database is encrypted at rest by default
 - **JWT Authentication Tokens** (`maekon-network`): Token theft or validation bypass
 - **Automation Control** (`maekon-automation`): Arbitrary command execution via policy validation bypass
 - **Auto-Update** (`maekon-app`): Bypassing integrity verification of update binaries

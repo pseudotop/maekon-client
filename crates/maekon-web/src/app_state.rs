@@ -14,10 +14,12 @@ use maekon_api_contracts::integration::IntegrationOutboundRuntimeStatus;
 use maekon_core::config::CredentialBackendKind;
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::ports::adaptive_search::AdaptiveSearchPort;
+use maekon_core::ports::audit_chain_verifier::AuditChainVerifierPort;
 use maekon_core::ports::audit_log::AuditLogPort;
 use maekon_core::ports::automation::AutomationPort;
 use maekon_core::ports::coaching::CoachingPort;
 use maekon_core::ports::conversation_session::SessionManager;
+use maekon_core::ports::egress_ledger_reader::EgressLedgerReaderPort;
 use maekon_core::ports::embedding_provider::EmbeddingProvider;
 use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::integration::{
@@ -25,9 +27,13 @@ use maekon_core::ports::integration::{
     IntegrationOutboxPort, IntegrationRuntimeTelemetryPort, IntegrationSessionPort,
 };
 use maekon_core::ports::memory_graph_port::MemoryGraphPort;
+use maekon_core::ports::memory_graph_projection::MemoryGraphProjectionPort;
+use maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort;
 use maekon_core::ports::override_store::OverrideStore;
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
+use maekon_core::ports::pomodoro_store::PomodoroStorePort;
 use maekon_core::ports::provider_model_catalog::ProviderModelCatalogPort;
+use maekon_core::ports::regime_storage::RegimeStoragePort;
 use maekon_core::ports::runtime_log_provider::RuntimeLogProvider;
 use maekon_core::ports::secret_store::{SecretStore, SecretStoreSet};
 use maekon_core::ports::system_info_provider::SystemInfoProvider;
@@ -57,9 +63,31 @@ pub struct CoreState {
     /// ADR-023: local memory-graph store (the same `SqliteStorage` as `storage`,
     /// as a `MemoryGraphPort`). Lets the digest export render accumulated claims.
     pub memory_graph: Option<Arc<dyn MemoryGraphPort>>,
+    /// ADR-033 §4: vault mirror writer — the web erase orchestrator's Phase-3
+    /// (`data_web_service::delete_all_data`). `Some` on every production
+    /// shape (a required dep); an absent handle fails the erase loud.
+    pub memory_vault_writer: Option<Arc<dyn MemoryVaultWriterPort>>,
     /// #4478 G3: one-shot erasure-propagation signal shared with the SyncEngine;
     /// the "Delete all data" endpoint sets it so a local erasure reaches LAN peers.
     pub erasure_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// #7600: durable audit-log hash-chain verifier (the same `SqliteStorage`
+    /// as `storage`, as an `AuditChainVerifierPort`). Lets `GET /audit/verify`
+    /// reach the real ADR-072 verification instead of the compliance
+    /// capability being reachable only via the desktop `verify_audit_log` IPC
+    /// command.
+    pub audit_chain_verifier: Option<Arc<dyn AuditChainVerifierPort>>,
+    /// #7910: read-only egress-ledger reader (the same `SqliteStorage` as
+    /// `storage`, cast to an `EgressLedgerReaderPort`). Lets
+    /// `GET /api/privacy/egress-ledger` render the egress transparency browser
+    /// ("what left this device") from the erase-retained #4803 ledger. Read
+    /// only — no mutation surface, since the ledger is compliance evidence.
+    pub egress_ledger_reader: Option<Arc<dyn EgressLedgerReaderPort>>,
+    /// #7678 D2: regime storage (the same `SqliteStorage`-backed store used by
+    /// the scheduler, as a `RegimeStoragePort`). Lets the dashboard digest
+    /// endpoint resolve human-readable regime labels (name > auto_label)
+    /// instead of leaking the opaque positional `regime_id` ("regime-N") into
+    /// the timeline (mirrors the #7480 coaching-path fix).
+    pub regime_storage: Option<Arc<dyn RegimeStoragePort>>,
 }
 
 /// Per-session local-API authentication (E20-41 #4833).
@@ -74,6 +102,15 @@ pub struct CoreState {
 pub struct AuthState {
     pub local_auth_token: Option<Arc<str>>,
     pub(crate) integration_auth_rate_limiter: IntegrationAuthRateLimiter,
+    /// Capture-history viewing re-authentication gate (#8044). A "view" gate
+    /// distinct from `local_auth_token` (the session token) — it blocks a
+    /// physical accessor who opens the captured screenshot timeline on an
+    /// already-authenticated session. Defaults to a **disabled** gate
+    /// (viewing allowed); the composition root injects an enabled gate from
+    /// `config.privacy.reauth`. Shares the **same `Arc`** as the Tauri
+    /// re-auth command, so this middleware immediately sees a gate the
+    /// command opened via `record_success()`.
+    pub reauth_gate: Arc<maekon_core::reauth::CaptureReauthGate>,
 }
 
 pub(crate) const INTEGRATION_AUTH_FAILURE_LIMIT: u32 = 5;
@@ -219,6 +256,10 @@ pub struct AnalysisState {
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub text_search: Option<Arc<dyn TextSearchProvider>>,
     pub adaptive_search: Option<Arc<dyn AdaptiveSearchPort>>,
+    /// ADR-032 Mode A: bounded memory-graph edge projection for retrieval
+    /// re-ranking. `Some` on every production shape (a required dep); the
+    /// off-by-default state is inside the port (empty projection), not here.
+    pub memory_graph_projection: Option<Arc<dyn MemoryGraphProjectionPort>>,
     pub model_catalog_client: Option<Arc<dyn ProviderModelCatalogPort>>,
     pub override_store: Option<Arc<dyn OverrideStore>>,
     pub recluster_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -229,14 +270,22 @@ pub struct AnalysisState {
 #[derive(Clone)]
 pub struct SessionState {
     pub manager: Option<Arc<dyn SessionManager>>,
-    pub pomodoro: Arc<std::sync::Mutex<Option<maekon_core::models::pomodoro::PomodoroSession>>>,
+    pub pomodoro: Arc<Mutex<PomodoroRuntimeState>>,
+    pub pomodoro_store: Option<Arc<dyn PomodoroStorePort>>,
+}
+
+#[derive(Default)]
+pub struct PomodoroRuntimeState {
+    pub session: Option<maekon_core::models::pomodoro::PomodoroSession>,
+    pub hydrated: bool,
 }
 
 impl Default for SessionState {
     fn default() -> Self {
         Self {
             manager: None,
-            pomodoro: Arc::new(std::sync::Mutex::new(None)),
+            pomodoro: Arc::new(Mutex::new(PomodoroRuntimeState::default())),
+            pomodoro_store: None,
         }
     }
 }
@@ -306,7 +355,11 @@ impl AppState {
                 config_manager: None,
                 update_control: None,
                 memory_graph: None,
+                memory_vault_writer: None,
                 erasure_requested: None,
+                audit_chain_verifier: None,
+                egress_ledger_reader: None,
+                regime_storage: None,
             },
             auth: Default::default(),
             secrets: Default::default(),

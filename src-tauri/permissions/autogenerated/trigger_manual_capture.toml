@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-trigger-manual-capture"
+description = "Enables the trigger_manual_capture command without any pre-configured scope."
+commands.allow = ["trigger_manual_capture"]
+
+[[permission]]
+identifier = "deny-trigger-manual-capture"
+description = "Denies the trigger_manual_capture command without any pre-configured scope."
+commands.deny = ["trigger_manual_capture"]

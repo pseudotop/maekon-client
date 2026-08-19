@@ -12,10 +12,9 @@ impl<T> AbortOnDropJoin<T> {
     }
 
     pub(crate) async fn join(mut self) -> Result<T, JoinError> {
-        let handle = self
-            .handle
-            .take()
-            .expect("abort-on-drop join handle must be present");
+        let Some(handle) = self.handle.take() else {
+            panic!("abort-on-drop join handle must be present");
+        };
         handle.await
     }
 }

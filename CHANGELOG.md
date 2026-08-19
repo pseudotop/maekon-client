@@ -7,6 +7,177 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.9] - 2026-08-18
+
+### Fixed
+
+- The published Linux `.deb` starts. `v0.0.1-rc.8`'s Linux artifact could not —
+  not "on CI", on any Linux. The tray patch maps every Linux/BSD target to a
+  backend whose constructor always errors, while the release build left the
+  default `app-tray` feature on, so the error surfaced from the setup hook and
+  panicked before the window ever appeared (#11006).
+- The app starts on Ubuntu 24.04. That release ships
+  `kernel.apparmor_restrict_unprivileged_userns=1`, and WebKitGTK sandboxes its
+  Web and Network processes in a user namespace via bubblewrap. Without an
+  explicit grant the app installed, served its dashboard for about eleven
+  seconds, then aborted with SIGTRAP. The package now ships an AppArmor profile.
+  The cause was established by measurement on one byte-identical `.deb` with a
+  single variable flipped, not by inference (#11023).
+- The `.deb` puts the application in your launcher. It previously installed a
+  GUI application with no `/usr/share/applications` entry and no icon, so after
+  `apt-get install ./maekon.deb` the only way to start it was typing `maekon` in
+  a terminal. The runtime-written `~/.config/autostart/maekon.desktop` is a
+  different file for a different purpose — it runs the app at login and never
+  placed it in a menu (#11064).
+- A configuration file written by a newer build survives an older build's
+  startup. The downgrade guard already refused to overwrite it, but two clamps
+  40 lines further down — managed policy and bounds — persisted the recovery
+  default over it anyway. In a managed deployment the clamp fires by
+  construction, so the guard covered only half of its own defect and the other
+  half appeared exactly where rollback matters (#10985).
+- An at-rest encryption key is never minted beside an existing database (#10985).
+- A failed startup says what happened and what to do. Rolling an older build
+  onto a newer profile ended in a raw non-unwinding panic two seconds in, with
+  no mention of the `data/maekon.backup.v41.*` file the newer build had already
+  written (#10998).
+- An SSE stream that cannot be built no longer takes the agent runtime down with
+  it (#10969).
+- `apt-get purge` now prints the profile data it cannot remove — settings, local
+  database and logs, and the keyring entry — instead of leaving them silently
+  behind (#11065).
+- Configuration schema error messages are complete in both locales.
+
+### Added
+
+- Maekon Console handoff, so a desktop session can hand its context to the
+  Console (#9628).
+- A standalone TMD XLSX flow that does not require a server round-trip (#11007).
+- Human-gated assignment email composition — the draft is prepared for a person
+  to review and send, never sent automatically.
+
+### Security
+
+- `lru` updated to 0.18.2 for RUSTSEC-2026-0253.
+- `react-router` upgraded to 7.18.2 rather than re-accepting the advisory.
+- 23 crates that were blocking Dependabot moved onto publisher-trust, and the
+  stale `imports.lock` that had quietly neutered publisher-trust was restored
+  (#11082).
+
+## [0.0.1-rc.8] - 2026-08-12
+
+### Fixed
+
+- Windows release artifacts are published again. `v0.0.1-rc.7` was tagged but
+  produced no downloads: the release build failed its Windows PE closure check
+  on `maekon.exe -> mmdevapi.dll`, so `Create GitHub Release` never ran.
+  `mmdevapi.dll` is the Windows Multimedia Device API that the WASAPI capture
+  enumerator imports. It ships in `%SystemRoot%\System32` on every supported
+  Windows version and is never redistributable, so it now belongs to the
+  closure validator's system allowlist beside `winmm.dll` rather than to the
+  payload. The guard is not weakened — it still fails closed on any
+  redistributable import, including the `libcrypto-3-x64.dll` omission that
+  made rc.6 unlaunchable.
+- Release verification now inspects the binary that actually ships. The
+  pre-tag CI build compiled `--features grpc` while the release build compiled
+  the full shipped feature set, so the very same closure check passed on a
+  binary that never links the audio/STT subsystem and failed for the first
+  time after the tag was already irreversible. CI, `build-smoke` and
+  `release-smoke` now build the shipped per-OS feature set and verify the
+  Windows PE closure of what they built, and `pre-release-check.sh` refuses to
+  clear a tag unless all four shipped-platform builds are already green on the
+  exact commit being tagged.
+
+There is no application behaviour change relative to `v0.0.1-rc.7`; this
+release publishes the artifacts that tag was meant to deliver.
+
+## [0.0.1-rc.7] - 2026-08-06
+
+### Added
+
+- Durable task lifecycle and interruption recovery (ADR-028): confirmed
+  suggestions become durable to-dos backed by a shipped context-recovery
+  vertical, so the core scene — capture scope → recent context → visible
+  source → reviewed next step → durable to-do → restart and resume — works
+  end to end.
+- Work-context envelope with a read-only ContextSource runtime and an
+  encrypted Context Ledger projection with timeline and retention controls
+  (ADR-030), plus a read-only Google Calendar context-source connector.
+- Extension registry and trusted Skill Pack activation behind a capability
+  resolver (ADR-029).
+- Consent-gated current-context suggestions, an explicit OCR-processing
+  consent tier, and a split activity-pattern consent gate.
+- Privacy-safe alpha intake flow with diagnostic opt-in and a withdrawal
+  path.
+- Audio capture and speech-to-text shipped in the 3-OS release builds, with
+  persisted transcriptions integrated into full-text search and local
+  erasure.
+- Semantic search: embedding/vector adaptive search wired into web analysis,
+  a dashboard keyword FTS mode, and a single AI-features toggle with
+  onboarding and search discoverability.
+- LAN sync shipped with passphrase UX and GDPR Art.20 full data export.
+- Capture-privacy hardening: biometric/PIN re-auth gate for capture history
+  viewing, pixel-level PII redaction of screenshot frames, and excluded-apps
+  enforcement at capture time rather than only at egress.
+- Automation trust chain: suggestion-to-automation bridge with a gated
+  one-click run, GUI human-in-the-loop flow with keychain HMAC
+  auto-provisioning, automation execution policies persisted across
+  restarts, learned relevance gates applied uniformly across suggestion
+  producers, and a memory-graph claims browser with user retraction.
+- Egress transparency browser ("what left this device") and resource-budget
+  self diagnostics (CPU/RSS instrumentation).
+- /support destination with recovery affordances and an integrations tab;
+  locale-aware backend user-facing strings with expanded i18n coverage;
+  Codex subprocess sessions default to GPT-5.6 Sol.
+- iCal and Toggl work-session exports in the reports UI — each in the fixed
+  format its receiving tool requires, across all five locales.
+- Built-in connector registry with per-connector feature flags ("essential
+  tools only" as a compile-time fact); the Google Calendar connector's OAuth
+  provider is registered and activates once its desktop client id is
+  provisioned.
+
+### Changed
+
+- Monitor hot path narrowed — per-tick process enumeration skipped, disk
+  stats gated to a 60s cadence, collectors parallelized — and embedding
+  lazy-load/eviction reduce idle CPU and memory footprint.
+- Integration runtime backstop polls use quiet backoff; local storage schema
+  advanced V46 → V52 with erasure and search wiring for newly persisted data
+  types.
+- Outbound HTTP mechanics extracted to a foundation crate
+  (`maekon-http-core`) and third-party connectors to their own adapter crate
+  (`maekon-integration`), so the read-only connector boundary is enforced at
+  compile time (ADR-034).
+- maekon-core mutation score raised from a measured 63% to 74% via targeted
+  mutation-guard tests across the safety, persistence, and classifier
+  surfaces; the release gate now requires a durable whole-crate score
+  receipt pinned to the exact source commit.
+
+### Fixed
+
+- Windows: SQLCipher now links a vendored, statically built OpenSSL,
+  removing the runtime dependency on a system `libcrypto-3-x64.dll` that
+  prevented first launch on clean hosts.
+- Windows ZIP, MSI, and NSIS payloads now carry the Microsoft-signed retail
+  VC runtime DLLs required by the final PE, and CI verifies the recursive
+  import closure before publishing an artifact.
+- Server-pushed suggestions are now persisted to local storage; they
+  previously lived only in the in-memory queue and were lost on restart —
+  the local store is the system of record.
+- Bundled Pretendard font removed: it shipped without its OFL license text
+  and was unreferenced by the client. A baseline guard prevents licensed
+  assets from re-entering unnoticed.
+- 370+ fixes across capture/consent state reflection, suggestion panel
+  hierarchy and tracking badges, chat suggestion contract restoration,
+  Windows release checks and VM readiness probes, Windows app-identity
+  privacy normalization, desktop notification click routing, expired
+  capture-mutation recovery, tray/capture gate alignment, and sync/storage
+  robustness.
+
+### Security
+
+- Hardened updater metadata and signing audit; Windows release lint and
+  supply-chain checks restored under the deny-by-default gate.
+
 ## [0.0.1-rc.6] - 2026-06-12
 
 ### Added

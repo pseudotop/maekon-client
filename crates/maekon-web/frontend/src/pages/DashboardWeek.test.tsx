@@ -1,13 +1,25 @@
 import { screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../__tests__/helpers/render-helpers'
-import { fetchCurrentDigest } from '../api/client'
-import type { WeeklyDigest } from '../api/contracts'
+import { fetchCurrentDigest, fetchSummary } from '../api/client'
+import type { DailySummary, WeeklyDigest } from '../api/contracts'
 import DashboardWeek from './DashboardWeek'
 
 vi.mock('../api/client', () => ({
   fetchCurrentDigest: vi.fn(),
+  fetchSummary: vi.fn(),
 }))
+
+const RAW_TODAY_SUMMARY: DailySummary = {
+  date: '2026-07-12',
+  total_active_secs: 5400,
+  total_idle_secs: 120,
+  top_apps: [],
+  cpu_avg: 25,
+  memory_avg_percent: 50,
+  frames_captured: 503,
+  events_logged: 1028,
+}
 
 /** Exact Rust wire shape (weekly_digest.rs, no serde renames) — this fixture
  *  pins the #5676 contract fix: the previous hand-written TS type
@@ -36,6 +48,12 @@ const WIRE_DIGEST: WeeklyDigest = {
 describe('DashboardWeek page (#5676)', () => {
   beforeEach(() => {
     vi.mocked(fetchCurrentDigest).mockResolvedValue(WIRE_DIGEST)
+    vi.mocked(fetchSummary).mockResolvedValue({
+      ...RAW_TODAY_SUMMARY,
+      total_active_secs: 0,
+      frames_captured: 0,
+      events_logged: 0,
+    })
   })
 
   it('renders wire-shape digest fields (pins the TS contract fix)', async () => {
@@ -85,5 +103,24 @@ describe('DashboardWeek page (#5676)', () => {
     renderWithProviders(<DashboardWeek />)
 
     expect(await screen.findByText('Last available week')).toBeInTheDocument()
+  })
+
+  it('reconciles raw capture totals while the weekly digest is still pending', async () => {
+    vi.mocked(fetchCurrentDigest).mockResolvedValueOnce({
+      ...WIRE_DIGEST,
+      total_tracked_hours: 0,
+      deep_work_hours: 0,
+      communication_hours: 0,
+      context_switches_total: 0,
+      longest_deep_work_segment_mins: 0,
+    })
+    vi.mocked(fetchSummary).mockResolvedValueOnce(RAW_TODAY_SUMMARY)
+
+    renderWithProviders(<DashboardWeek />)
+
+    expect(await screen.findByText('Captured activity is awaiting analysis')).toBeInTheDocument()
+    expect(screen.getByText('1.5h')).toBeInTheDocument()
+    expect(screen.getByText('503')).toBeInTheDocument()
+    expect(screen.getByText('1,028')).toBeInTheDocument()
   })
 })

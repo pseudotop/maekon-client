@@ -46,14 +46,23 @@ impl NativeBorderIndicator {
         })
     }
 
+    // #7719: no call site constructs the no-arg stub today (the real
+    // constructor call in setup_platform.rs is the macOS `new(mtm)` overload,
+    // itself `#[cfg(target_os = "macos")]`-gated) — kept as the symmetric
+    // graceful-degradation constructor for non-macOS platforms (struct doc:
+    // "Other platforms gracefully degrade (no border)"), for whenever a
+    // caller needs a platform-agnostic construction path without per-site
+    // `cfg` branching.
     #[cfg(not(target_os = "macos"))]
-    #[allow(dead_code)] // Stub for non-macOS platforms; called from main.rs setup
     pub fn new() -> Option<Self> {
         None
     }
 
     /// Show border on all screens. No-op if already visible.
-    #[allow(dead_code)] // Public API called from scheduler border loop
+    // #7719: called from tray.rs / commands/capture_status/mod.rs, both
+    // `#[cfg(target_os = "macos")]`-gated call sites — dead on other
+    // platforms by design (macOS-only border indicator, see module doc).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn show(&self) {
         if !self.visible.swap(true, Ordering::Relaxed) {
             #[cfg(target_os = "macos")]
@@ -66,7 +75,10 @@ impl NativeBorderIndicator {
     }
 
     /// Hide border on all screens. No-op if already hidden.
-    #[allow(dead_code)] // Public API called from scheduler border loop
+    // #7719: called from tray.rs / commands/capture_status/mod.rs, both
+    // `#[cfg(target_os = "macos")]`-gated call sites — dead on other
+    // platforms by design (macOS-only border indicator, see module doc).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn hide(&self) {
         if self.visible.swap(false, Ordering::Relaxed) {
             #[cfg(target_os = "macos")]
@@ -79,7 +91,12 @@ impl NativeBorderIndicator {
     }
 
     /// Update paused state on all screens.
-    #[allow(dead_code)] // Public API called from scheduler border loop on pause toggle
+    // #7719: called from tray.rs / setup_shortcuts.rs / commands/
+    // capture_status/mod.rs, all `#[cfg(target_os = "macos")]`-gated call
+    // sites — dead on other platforms by design (macOS-only border
+    // indicator, see module doc). (Previously mis-cited a nonexistent
+    // "scheduler border loop" — no such loop exists in scheduler/loops/.)
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
         #[cfg(target_os = "macos")]
@@ -122,7 +139,9 @@ impl NativeBorderIndicator {
     #[cfg(target_os = "macos")]
     pub fn check_and_rebuild(&self) {
         self.inner.get_on_main(|cell| {
-            let mtm = objc2::MainThreadMarker::new().expect("get_on_main guarantees main thread");
+            let Some(mtm) = objc2::MainThreadMarker::new() else {
+                panic!("get_on_main guarantees main thread");
+            };
             let new_fp = macos::screen_fingerprint(mtm);
             let old_fp = self.fingerprint.load(Ordering::Relaxed);
             if new_fp == old_fp {
@@ -170,16 +189,6 @@ impl NativeBorderIndicator {
             *cell.borrow_mut() = new_borders;
         });
     }
-
-    #[allow(dead_code)] // Public query accessor for border state inspection
-    pub fn is_visible(&self) -> bool {
-        self.visible.load(Ordering::Relaxed)
-    }
-
-    #[allow(dead_code)] // Public query accessor for border state inspection
-    pub fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::Relaxed)
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -194,5 +203,12 @@ impl Drop for NativeBorderIndicator {
 }
 
 /// Tauri managed state wrapper. Uses `Arc` for sharing with the screen monitor task.
-#[allow(dead_code)] // Tauri managed state; accessed via AppState in scheduler loops
+// #7719: `app.manage(NativeBorderState(..))` (setup_platform.rs) and every
+// `try_state::<NativeBorderState>()` consumer (tray.rs, setup_shortcuts.rs,
+// commands/capture_status/mod.rs) are all `#[cfg(target_os = "macos")]`-gated
+// — dead on other platforms by design (macOS-only border indicator, see
+// module doc). (Previously mis-cited "accessed via AppState in scheduler
+// loops" — no scheduler loop touches this type; it is only reached through
+// Tauri's `State<NativeBorderState>` extractor at the call sites above.)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct NativeBorderState(pub std::sync::Arc<NativeBorderIndicator>);

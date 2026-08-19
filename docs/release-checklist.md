@@ -8,7 +8,16 @@
 ## Automated Gates (must be green)
 - [ ] Quick suite (PR CI) — all green
 - [ ] `release-smoke.yml` — last run green on branch head
-- [ ] cargo-mutants score ≥ 70% on maekon-core
+- [ ] cargo-mutants score ≥ 70% on maekon-core, proven by a linked
+  `Maekon Mutation Score` (`maekon-client-mutants.yml`) aggregate run. Record the
+  run URL here. The run's receipt must satisfy ALL of:
+  - `source_sha` equals the exact commit to be tagged
+  - `scope` is empty (whole crate) — a scoped run is NOT a crate score and the
+    receipt records it as such
+  - the aggregate job succeeded, which means the shard set was complete
+    (`enumerated == merged_total`) and the viable score cleared the threshold
+  This box must not be ticked from a local run, a partial run, a scoped run, or
+  a run at a different SHA (#10003).
 - [ ] Zero P0/P1 flaky tests in quarantine
 - [ ] Public repository checks for the exported snapshot are green
 - [ ] Public export provenance manifest was generated and verified from the
@@ -18,6 +27,16 @@
   `MAEKON_UPDATE_PUBLIC_KEY`) or an equivalent GitHub artifact attestation
   before treating the manifest `ssot.source_sha` as authoritative
 - [ ] Public branch `CI` was manually dispatched for the exported branch when the change affects Rust, CI, release scripts, or packaged artifacts; all `Build (${{ matrix.target }})` rows are green
+- [ ] All four `Build (${{ matrix.target }})` rows are green **on the exact commit
+  to be tagged**, not merely on the export PR head. These build the shipped
+  feature set (`stt,download,lan-sync` + the per-OS sandbox feature) and run the
+  Windows PE closure check on the binary that actually ships. If the commit has
+  no Build matrix, dispatch `Build Smoke Test` with `ref=<exact SHA>`; it
+  publishes the same check-run names and the same closure verification.
+  `pre-release-check.sh` enforces this and fails closed (#10698: v0.0.1-rc.7 was
+  tagged while this gate ran only against a `--features grpc` binary, so
+  `maekon.exe -> mmdevapi.dll` first appeared in `release.yml` — after the tag
+  was irreversible, leaving a signed tag with no artifacts).
 - [ ] Fresh-checkout source checks follow `docs/testing/source-build-prerequisites.md`
 - [ ] `./scripts/check-config-sync.sh --require-artifacts` passes after `pnpm build` (or
   `MAEKON_RELEASE_REQUIRE_ARTIFACTS=1 ./scripts/pre-release-check.sh <VERSION>` is run
@@ -28,14 +47,38 @@
 - [ ] Required public repository Actions secrets for the intended release scope are configured
 - [ ] Public repository PR, issue, Dependabot, and CodeQL queues were triaged immediately before release/export merge
 - [ ] No open Dependabot or CodeQL finding affects shipped release artifacts, or each remaining finding is explicitly accepted in `supply-chain/release-alert-acceptance.json`
+- [ ] `./scripts/check-webdriver-security-isolation.sh` passes, proving any
+  accepted GTK3/glib finding remains confined to the optional WDIO test harness
+  and is absent from the exact shipped Linux feature graph
 - [ ] Provider-owned CLI compatibility gate passes:
   `provider_specs::tests::subprocess_compatibility_matrix_matches_e18_release_gate_contract`,
   `provider_specs::tests::rejects_subprocess_surface_without_compatibility_matrix`, and
   `provider_specs::tests::subprocess_output_contracts_match_e18_matrix`
+- [ ] Windows release binaries link OpenSSL **vendored from source** via
+  `openssl-src` (`rusqlite`'s `bundled-sqlcipher-vendored-openssl`), NOT a
+  system OpenSSL SDK. Plain `bundled-sqlcipher` links the system OpenSSL
+  *dynamically* on Windows, which is what shipped rc.6 without
+  `libcrypto-3-x64.dll` (#9884). The Windows setup action must not export
+  `OPENSSL_DIR`/`OPENSSL_LIB_DIR`/`OPENSSL_LIBS`/`OPENSSL_STATIC`/
+  `OPENSSL_NO_VENDOR` — any of them defeats vendoring
+  (`scripts/test-release-workflow-governance.sh` enforces this).
+- [ ] The `openssl-src` exemption in `supply-chain/config.toml` still covers the
+  vendored version in `Cargo.lock` and its `review-by` date has not passed
+  (currently `300.5.5+3.5.5`, review-by 2027-02-04). Vendoring builds OpenSSL
+  from source, so a version bump changes what actually ships.
+- [ ] Any
+  residual retail Microsoft VC runtime imports are staged from the signed
+  Visual Studio redistributable directory into the application-local payload.
+  The PE import-closure validator passes independently for the
+  prebuilt payload, ZIP, MSI administrative extraction, and NSIS extraction
+  (`node scripts/verify-windows-runtime-closure.mjs ...`).
 
 ## Manual Verification
 - [ ] `cargo build --release` succeeds on macOS
 - [ ] `cargo build --release` succeeds on Windows (or cross-compile)
+- [ ] On a clean Windows host without OpenSSL or developer tools, install the
+  MSI and NSIS packages in turn; record successful first launch, sandbox-worker
+  startup, uninstall, and the explicit keep/remove user-data choice for each.
 - [ ] App launches and shows Dashboard with real data
 - [ ] Settings save/load round-trip works
 - [ ] Auto-updater detects the new version (staging)
@@ -80,6 +123,11 @@
   checksum verifies against the generated SBOM
 - [ ] Signature sidecars are present when signature verification is advertised
 - [ ] macOS artifacts are signed, notarized, and stapled when applicable
+- [ ] Stapling was confirmed **on the published release assets**, not on the
+  notarization run's own output:
+  `./scripts/verify-published-macos-notarization.sh <TAG>`. A green Release
+  workflow does not imply notarization succeeded — `Notarize macOS Release
+  Assets` runs separately and can fail on its own (#10935)
 - [ ] The final notarized bytes for `maekon-macos-universal.dmg` and
   `maekon-macos-universal.pkg` were republished with regenerated `.sha256`,
   `.sig`, and provenance after stapling

@@ -6,6 +6,7 @@ import type {
   ProviderSurfaceSpec,
   ProviderVendorSpec,
 } from '../api/contracts'
+import { normalizeAiAccessModeForUi } from '../api/settings-normalization'
 import { providerSurfaceAvailability } from './featureCapabilities'
 
 export type EndpointSurfaceKind = 'ocr_api' | 'llm_api'
@@ -61,23 +62,24 @@ function normalizedVendorId(catalog: ProviderSurfaceCatalog, providerType: strin
 }
 
 function compatibleExecutionKinds(accessMode: string | null | undefined, endpointKind: EndpointSurfaceKind): string[] {
+  const normalizedAccessMode = normalizeAiAccessModeForUi(accessMode)
   if (endpointKind === 'ocr_api') {
-    if (accessMode === 'ProviderSubscriptionCli') {
+    if (normalizedAccessMode === 'ProviderSubscriptionCli') {
       return ['subprocess_cli', 'direct_http']
     }
 
-    if (accessMode === 'ProviderOAuth') {
+    if (normalizedAccessMode === 'ProviderOAuth') {
       return ['managed_http', 'direct_http']
     }
 
     return ['direct_http']
   }
 
-  if (accessMode === 'ProviderSubscriptionCli') {
+  if (normalizedAccessMode === 'ProviderSubscriptionCli') {
     return ['subprocess_cli']
   }
 
-  if (accessMode === 'ProviderOAuth') {
+  if (normalizedAccessMode === 'ProviderOAuth') {
     return ['managed_http', 'direct_http']
   }
 

@@ -13,7 +13,6 @@ use maekon_core::models::work_session::AppCategory;
 
 #[derive(Debug, Clone)]
 pub struct FocusAnalyzerConfig {
-    #[allow(dead_code)]
     pub deep_work_min_secs: u64,
     pub break_suggestion_mins: u32,
     pub excessive_communication_threshold: f32,
@@ -51,7 +50,6 @@ pub enum CooldownType {
     FocusTime,
     RestoreContext,
     /// Reserved for future excessive-communication cooldown.
-    #[allow(dead_code)]
     ExcessiveComm,
     PatternDetected,
 }

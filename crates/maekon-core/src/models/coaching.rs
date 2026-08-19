@@ -144,6 +144,55 @@ pub struct CoachingEventRow {
     pub feedback_score: Option<f64>,
 }
 
+/// Persisted per-`(profile, trigger)` coaching effectiveness — the restart-
+/// surviving form of `FeedbackTracker`'s in-RAM `EffectivenessScore` (#7913
+/// T2.1b). Maps 1:1 to the pre-existing `coaching_effectiveness` table (V17),
+/// which had a schema but ZERO DML until #7913 wired the writer + load-on-start.
+///
+/// This store is keyed by `(profile_name, trigger_type)` — a reaction to a
+/// COACHING MESSAGE. It is deliberately kept separate from the
+/// suggestion_id-keyed feedback stores (#7600): there is no correlation between
+/// a suggestion card's id and a coaching profile/trigger, so the two keyings
+/// must never be joined.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CoachingEffectivenessRecord {
+    pub profile_name: String,
+    pub trigger_type: String,
+    pub total_shown: u32,
+    pub positive_feedback: f32,
+    pub negative_feedback: f32,
+    pub neutral_count: u32,
+    pub behavior_change_count: u32,
+}
+
+/// Persisted state of the coaching `AdaptiveScorer` (online logistic regression)
+/// — the restart-surviving form of its in-RAM weights (#8058 P2-1). Maps 1:1 to
+/// the singleton `adaptive_scorer_state` table (V46).
+///
+/// Before #8058 the adaptive scorer was the ONLY feedback-learning component NOT
+/// persisted: its sibling stores (`coaching_effectiveness`,
+/// `feedback_scorer_tallies`, `regime_reaction_stats`) all survive restart while
+/// the scorer's weights and `train_count` evaporated on every exit. Because the
+/// scorer needs `MIN_TRAINING_SAMPLES` (50) updates before `is_ready()`, a user
+/// who restarts this 24/7 daemon before accumulating 50 in a single session
+/// could never reach the ML gate — the whole layer was silently discarded.
+///
+/// `weights` carries exactly one entry per feature (the analysis crate validates
+/// the length on hydrate and starts fresh on a mismatch, so a future
+/// feature-count change cannot load a stale-shaped vector). Advisory learning
+/// state: a load failure starts fresh, a write failure is a logged no-op —
+/// neither may panic the scheduler.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveScorerState {
+    /// Model weights, one per feature (fixed-length vector; length validated on
+    /// hydrate against the scorer's compile-time feature count).
+    pub weights: Vec<f32>,
+    /// Bias term.
+    pub bias: f32,
+    /// Number of SGD training updates performed (feeds `is_ready()`).
+    pub train_count: u32,
+}
+
 /// A single day's habit record for one regime — maps to the `habit_streaks` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HabitStreakRow {

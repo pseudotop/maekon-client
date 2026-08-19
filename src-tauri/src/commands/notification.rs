@@ -1,13 +1,10 @@
 use serde::Serialize;
-use tauri::{command, AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
-use tracing::debug;
+use tauri::{command, AppHandle};
 
 use crate::ipc_error::IpcError;
-use crate::notification_manager::{
-    notification_activation_outcome_from_route, NotificationActivationError,
-    NotificationActivationOutcome,
-};
+#[cfg(debug_assertions)]
+use crate::notification_manager::NotificationActivationError;
+use crate::notification_manager::NotificationActivationOutcome;
 
 const TEST_NOTIFICATION_TITLE_FALLBACK: &str = "Maekon test notification";
 const TEST_NOTIFICATION_BODY_FALLBACK: &str = "Notifications are ready.";
@@ -26,6 +23,7 @@ fn debug_notification_disabled() -> IpcError {
     )
 }
 
+#[cfg(debug_assertions)]
 fn activation_error_to_ipc(error: NotificationActivationError) -> IpcError {
     IpcError::new("validation.invalid_arguments", error.message())
 }
@@ -53,16 +51,28 @@ pub async fn send_test_notification(
     let title = normalize_test_notification_text(&title, TEST_NOTIFICATION_TITLE_FALLBACK);
     let body = normalize_test_notification_text(&body, TEST_NOTIFICATION_BODY_FALLBACK);
 
-    app.notification()
-        .builder()
-        .title(&title)
-        .body(&body)
-        .show()
-        .map_err(|error| IpcError::new("service.unavailable", error.to_string()))?;
+    crate::windows_notification_activation::show_actionable_notification(
+        &app,
+        &title,
+        &body,
+        crate::windows_notification_activation::DEFAULT_NOTIFICATION_ROUTE,
+    )
+    .map_err(|error| IpcError::new("service.unavailable", error))?;
 
     Ok(TestNotificationResult { delivered: true })
 }
 
+/// Debug-only harness that exercises the notification navigation seam
+/// ([`notification_activation_outcome_from_route`] → focus main window → emit the
+/// `navigate` event) as if an OS toast had been clicked.
+///
+/// This SIMULATES the click; it is not production click routing. Real desktop
+/// toasts cannot invoke this path because `tauri-plugin-notification` 2.3.3
+/// delivers no desktop click/action callback (see the routing function's doc for
+/// the full rationale, #8058 P2-8) — hence the `#[cfg(debug_assertions)]` gate,
+/// which keeps this dev/test-only affordance out of release builds so it cannot
+/// masquerade as a shipped feature. The genuine navigation surface is the in-app
+/// overlay/suggestion panel.
 #[command]
 pub async fn simulate_notification_activation(
     app: AppHandle,
@@ -70,23 +80,8 @@ pub async fn simulate_notification_activation(
 ) -> Result<NotificationActivationOutcome, IpcError> {
     #[cfg(debug_assertions)]
     {
-        let outcome = notification_activation_outcome_from_route(route.as_deref())
-            .map_err(activation_error_to_ipc)?;
-
-        if outcome.focus_main_window {
-            if let Some(window) = app.get_webview_window("main") {
-                if let Err(e) = window.show() {
-                    debug!("notification activation window show failed: {e}");
-                }
-                if let Err(e) = window.set_focus() {
-                    debug!("notification activation window focus failed: {e}");
-                }
-            }
-        }
-
-        app.emit_to("main", outcome.event_name, &outcome.route)
-            .map_err(|e| IpcError::new("internal.generic", e.to_string()))?;
-        Ok(outcome)
+        crate::windows_notification_activation::activate_notification(&app, route.as_deref())
+            .map_err(activation_error_to_ipc)
     }
 
     #[cfg(not(debug_assertions))]

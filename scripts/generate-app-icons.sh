@@ -2,12 +2,27 @@
 
 set -euo pipefail
 
-SOURCE_SVG="${1:-assets/brand/logo-icon.svg}"
-OUTPUT_DIR="${2:-src-tauri/icons}"
-TRAY_SOURCE_SVG="${3:-assets/brand/tray-template.svg}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLIENT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RENDERER_DIR="$SCRIPT_DIR/icon-renderer"
+SOURCE_SVG="${1:-$CLIENT_ROOT/assets/brand/logo-icon.svg}"
+OUTPUT_DIR="${2:-$CLIENT_ROOT/src-tauri/icons}"
+TRAY_SOURCE_SVG="${3:-$CLIENT_ROOT/assets/brand/tray-template.svg}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ ! -f "$SOURCE_SVG" ]]; then
   echo "[ERROR] Source logo not found: $SOURCE_SVG" >&2
+  exit 1
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "[ERROR] Node.js is required." >&2
+  exit 1
+fi
+
+if [[ ! -d "$RENDERER_DIR/node_modules/sharp" ]]; then
+  echo "[ERROR] Icon renderer dependencies are missing." >&2
+  echo "        Run: npm ci --prefix $RENDERER_DIR" >&2
   exit 1
 fi
 
@@ -16,28 +31,21 @@ if ! command -v magick >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "[ERROR] python3 is required." >&2
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] Python is required: $PYTHON_BIN" >&2
   exit 1
 fi
 
 mkdir -p "$OUTPUT_DIR"
 
-magick -background none "$SOURCE_SVG" -resize 32x32 PNG32:"$OUTPUT_DIR/32x32.png"
-magick -background none "$SOURCE_SVG" -resize 128x128 PNG32:"$OUTPUT_DIR/128x128.png"
-magick -background none "$SOURCE_SVG" -resize 256x256 PNG32:"$OUTPUT_DIR/128x128@2x.png"
-magick -background none "$SOURCE_SVG" -resize 1024x1024 PNG32:"$OUTPUT_DIR/icon.png"
-magick -background none "$SOURCE_SVG" -resize 1024x1024 PNG32:"$OUTPUT_DIR/dock_icon.png"
+node "$RENDERER_DIR/render-app-icon-pngs.mjs" "$SOURCE_SVG" "$OUTPUT_DIR" "$TRAY_SOURCE_SVG"
 magick "$OUTPUT_DIR/icon.png" -define icon:auto-resize=256,128,64,48,32,16 "$OUTPUT_DIR/icon.ico"
 
-if [[ -f "$TRAY_SOURCE_SVG" ]]; then
-  magick -background none "$TRAY_SOURCE_SVG" -resize 22x22 PNG32:"$OUTPUT_DIR/tray_icon.png"
-  magick -background none "$TRAY_SOURCE_SVG" -resize 44x44 PNG32:"$OUTPUT_DIR/tray_icon@2x.png"
-else
+if [[ ! -f "$TRAY_SOURCE_SVG" ]]; then
   echo "[WARN] Tray source not found, skipping tray icons: $TRAY_SOURCE_SVG" >&2
 fi
 
-python3 - "$OUTPUT_DIR/icon.png" "$OUTPUT_DIR/icon.icns" <<'PY'
+"$PYTHON_BIN" - "$OUTPUT_DIR/icon.png" "$OUTPUT_DIR/icon.icns" <<'PY'
 import sys
 from PIL import Image
 

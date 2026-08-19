@@ -274,7 +274,10 @@ pub(super) fn migrate_v6(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_metrics_date ON focus_metrics(date);
 
-        -- local suggestion table (client-only suggestions)
+        -- local suggestion table (client-only suggestions). KEPT for legacy rows +
+        -- live readers (FewShotStorage, LocalSuggestionQueryPort integration source,
+        -- WebStorage::list_recent_local_suggestions dashboard feed) — see the
+        -- module doc on edge_intelligence/suggestions/legacy.rs (#7733).
         CREATE TABLE IF NOT EXISTS local_suggestions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             suggestion_type TEXT NOT NULL,

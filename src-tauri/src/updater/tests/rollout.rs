@@ -285,3 +285,145 @@ async fn update_check_without_installation_id_is_excluded() {
         "None installation_id must be treated as rollout-excluded"
     );
 }
+
+// #9552: migrated from the retired duplicate test_cases/ module — the
+// only tests unique to it (asset-selection guards).
+
+fn current_primary_asset_name() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "maekon-macos-arm64.tar.gz"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "maekon-macos-x64.tar.gz"
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        "maekon-windows-x64.zip"
+    }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        "maekon-windows-arm64.zip"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        "maekon-linux-x64.tar.gz"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        "maekon-linux-arm64.tar.gz"
+    }
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+    )))]
+    {
+        "maekon-unknown.tar.gz"
+    }
+}
+
+#[test]
+fn find_platform_asset_ignores_sidecars_before_archive() {
+    let updater = Updater::new(test_config());
+    let asset_name = current_primary_asset_name();
+    let release = ReleaseInfo {
+        tag_name: "v0.2.0".to_string(),
+        name: Some("Sidecar release".to_string()),
+        body: None,
+        prerelease: false,
+        assets: vec![
+            ReleaseAsset {
+                name: format!("{asset_name}.sha256"),
+                browser_download_url: "https://example.com/checksum".to_string(),
+                size: 64,
+                content_type: "text/plain".to_string(),
+            },
+            ReleaseAsset {
+                name: format!("{asset_name}.sig"),
+                browser_download_url: "https://example.com/signature".to_string(),
+                size: 96,
+                content_type: "application/octet-stream".to_string(),
+            },
+            ReleaseAsset {
+                name: asset_name.to_string(),
+                browser_download_url: "https://example.com/archive".to_string(),
+                size: 1000,
+                content_type: "application/octet-stream".to_string(),
+            },
+        ],
+        html_url: "https://github.com/test/test".to_string(),
+        published_at: None,
+    };
+
+    let (url, _) = updater
+        .find_platform_asset(&release)
+        .expect("primary archive must be selected");
+
+    assert_eq!(url, "https://example.com/archive");
+}
+
+#[test]
+fn find_platform_asset_rejects_loose_substring_match() {
+    let updater = Updater::new(test_config());
+    let asset_name = current_primary_asset_name();
+    let release = ReleaseInfo {
+        tag_name: "v0.2.0".to_string(),
+        name: Some("Substring release".to_string()),
+        body: None,
+        prerelease: false,
+        assets: vec![
+            ReleaseAsset {
+                name: format!("notes-{asset_name}"),
+                browser_download_url: "https://example.com/notes".to_string(),
+                size: 100,
+                content_type: "text/plain".to_string(),
+            },
+            ReleaseAsset {
+                name: asset_name.to_string(),
+                browser_download_url: "https://example.com/archive".to_string(),
+                size: 1000,
+                content_type: "application/octet-stream".to_string(),
+            },
+        ],
+        html_url: "https://github.com/test/test".to_string(),
+        published_at: None,
+    };
+
+    let (url, _) = updater
+        .find_platform_asset(&release)
+        .expect("exact primary archive must be selected");
+
+    assert_eq!(url, "https://example.com/archive");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn find_platform_asset_supports_macos_universal_archive() {
+    let updater = Updater::new(test_config());
+    let release = ReleaseInfo {
+        tag_name: "v0.2.0".to_string(),
+        name: Some("macOS universal release".to_string()),
+        body: None,
+        prerelease: false,
+        assets: vec![ReleaseAsset {
+            name: "maekon-macos-universal.tar.gz".to_string(),
+            browser_download_url: "https://example.com/macos-universal".to_string(),
+            size: 2000,
+            content_type: "application/gzip".to_string(),
+        }],
+        html_url: "https://github.com/test/test".to_string(),
+        published_at: None,
+    };
+
+    let (url, size) = updater
+        .find_platform_asset(&release)
+        .expect("macOS universal archive must be accepted");
+
+    assert_eq!(url, "https://example.com/macos-universal");
+    assert_eq!(size, 2000);
+}

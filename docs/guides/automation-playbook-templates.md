@@ -13,13 +13,40 @@ This guide maps built-in workflow presets to practical day-to-day usage.
 
 ## Built-in templates (recommended start order)
 
-| Preset ID | When to use | Expected outcome |
+The `*-sync` / `*-loop` / `*-followup` presets are **samples**: they bring a
+specific set of apps to the front. Treat the app list as a starting point and
+edit it for the apps you actually use (see **Platform differences** below for
+what "bring to the front" means on each OS).
+
+| Preset ID | When to use | Sample flow (edit for your setup) |
 |---|---|---|
-| `daily-priority-sync` | Start of workday | Calendar/issue/chat context aligned in under 1 minute |
-| `bug-triage-loop` | Bug queue handling | Faster context switching between tracker/monitoring/IDE |
-| `customer-followup` | Customer response windows | CRM-doc-mail flow standardized |
-| `release-readiness` | Before release validation | Save + terminal + browser loop starts consistently |
-| `deep-work-start` | Focus sessions | Workspace narrowed for execution |
+| `daily-priority-sync` | Start of workday | Bring Calendar, Notion, Slack to the front |
+| `bug-triage-loop` | Bug queue handling | Bring Slack, Terminal, VS Code to the front |
+| `customer-followup` | Customer response windows | Bring Calendar, Notion, Mail to the front |
+| `release-readiness` | Before release validation | Save, then bring Terminal and a browser to the front |
+| `deep-work-start` | Focus sessions | Workspace narrowed for execution (app-agnostic) |
+
+## Platform differences (app activation)
+
+The app-switching presets above run `ActivateApp` steps. What that does depends
+on the OS, so pick apps and preconditions accordingly:
+
+| Platform | Mechanism | Behavior |
+|---|---|---|
+| macOS | `open -a "<name>"` | **Brings to the front, and launches the app if it is not already running.** |
+| Windows | `WScript.Shell.AppActivate` | Brings an **already-open** window to the front. Does **not** launch — start the app first. |
+| Linux | `wmctrl -a` / `xdotool` | Activates an **already-open** window. Does **not** launch — start the app first. Requires `wmctrl` or `xdotool` installed. |
+
+Practical guidance:
+
+- On **macOS**, make sure the named apps are installed. A name that does not
+  match a real app (e.g. a generic label) exits non-zero, and because the
+  built-in steps use `stop_on_failure`, the whole preset halts at that step.
+- On **Windows / Linux**, open the apps you want first (or edit the preset to
+  reference apps you keep running), since these presets switch focus rather than
+  launch.
+- Each `ActivateApp` shell-out is bounded by a short timeout: a wedged
+  launch/activation fails the step promptly instead of hanging the workflow.
 
 ## Operational guardrails
 

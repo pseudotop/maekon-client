@@ -1,0 +1,23 @@
+[Desktop Entry]
+# Launcher entry for the Linux .deb (#11064).
+#
+# NOT the same file as ~/.config/autostart/maekon.desktop, which
+# src-tauri/src/autostart/linux.rs generates at runtime. That one runs the app at
+# login; this one is what makes it appear in the application menu at all. Without
+# it, `apt-get install ./maekon.deb` leaves a GUI application that can only be
+# started by typing `maekon` in a terminal.
+Type=Application
+Name=Maekon
+GenericName=Work Agent
+Comment=Local-first work agent with policy-gated automation
+# Bare command: the package installs the binary to /usr/bin, which is on PATH.
+Exec=maekon
+# Resolves against /usr/share/icons/hicolor/*/apps/maekon.png, installed by the
+# same package. An Icon= naming something absent is worse than none — the entry
+# looks complete and renders blank.
+Icon=maekon
+Terminal=false
+Categories=Utility;Office;
+Keywords=agent;automation;productivity;
+StartupNotify=true
+StartupWMClass=Maekon

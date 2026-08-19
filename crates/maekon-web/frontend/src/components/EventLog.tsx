@@ -1,5 +1,5 @@
 import { AppWindow, ArrowRightLeft, Camera, Monitor, Moon } from 'lucide-react'
-import { memo, type Ref, useCallback, useEffect, useMemo, useRef } from 'react'
+import { memo, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TimelineItem } from '../api/client'
 import { iconSize, motion, typography } from '../styles/tokens'
@@ -158,9 +158,17 @@ const EventLogItem = memo(function EventLogItem({
   )
 })
 
+// #9633: a session easily reaches 1,000+ items; rendering them all flattened
+// the page into a scroll of thousands of DOM nodes. Rows render in increments
+// instead — playback jumps still work because the window auto-extends to the
+// active row.
+const RENDER_CHUNK = 200
+
 export default memo(function EventLog({ items, currentTime, onItemClick }: EventLogProps) {
   const { t } = useTranslation()
   const activeItemRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const [renderLimit, setRenderLimit] = useState(RENDER_CHUNK)
 
   const captureLabel = t('replay.capture', 'Capture')
   const idleLabel = t('replay.idle', 'Idle')
@@ -186,12 +194,37 @@ export default memo(function EventLog({ items, currentTime, onItemClick }: Event
     return closestIndex
   }, [items, currentTime])
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: activeIndex change updates activeItemRef via render
+  // #9643 review M12 (+#9639 carry-over): reset on DATASET identity, not
+  // array identity — a window-focus refetch returns a fresh array with the
+  // same rows and must not collapse an expanded list; a new session/date
+  // range (different first/last row or count) must.
+  const datasetKey = useMemo(() => {
+    if (items.length === 0) return 'empty'
+    return `${getItemKey(items[0])}|${getItemKey(items[items.length - 1])}|${items.length}`
+  }, [items])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: datasetKey IS the reset trigger
+  useEffect(() => {
+    setRenderLimit(RENDER_CHUNK)
+  }, [datasetKey])
+
+  // #9633: keep the active row inside the rendered window so playback can
+  // jump anywhere in the session regardless of how much has been revealed.
+  useEffect(() => {
+    if (activeIndex >= 0) {
+      setRenderLimit((limit) => (activeIndex >= limit ? activeIndex + RENDER_CHUNK : limit))
+    }
+  }, [activeIndex])
+
+  // #9643 review I5: renderLimit must be a dep — when a scrub jumps past the
+  // rendered window, the extend effect mounts the row on a re-render in which
+  // activeIndex is UNCHANGED, so keying on activeIndex alone left the list
+  // un-scrolled until the next scrub.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeItemRef updates via render
   useEffect(() => {
     if (activeItemRef.current) {
       activeItemRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
-  }, [activeIndex])
+  }, [activeIndex, renderLimit])
 
   const handleItemClick = useCallback(
     (time: Date) => {
@@ -212,14 +245,14 @@ export default memo(function EventLog({ items, currentTime, onItemClick }: Event
       </div>
 
       {/* event list */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" ref={listRef} tabIndex={-1}>
         {items.length === 0 ? (
           <div className={cn('flex h-32 items-center justify-center text-content-secondary', typography.body)}>
             {t('common.noData', 'No data')}
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {items.map((item, index) => {
+            {items.slice(0, renderLimit).map((item, index) => {
               const isActive = index === activeIndex
               return (
                 <EventLogItem
@@ -234,6 +267,25 @@ export default memo(function EventLog({ items, currentTime, onItemClick }: Event
                 />
               )
             })}
+            {items.length > renderLimit ? (
+              <button
+                type="button"
+                className={cn(
+                  'w-full px-4 py-3 text-center text-brand-text hover:bg-surface-muted',
+                  typography.caption,
+                )}
+                onClick={() => {
+                  // #9639: revealing the tail unmounts this button — move
+                  // focus to the list so keyboard focus does not drop to body.
+                  if (renderLimit + RENDER_CHUNK >= items.length) {
+                    listRef.current?.focus()
+                  }
+                  setRenderLimit((limit) => limit + RENDER_CHUNK)
+                }}
+              >
+                {t('replay.showMore', 'Show more')} ({items.length - renderLimit})
+              </button>
+            ) : null}
           </div>
         )}
       </div>

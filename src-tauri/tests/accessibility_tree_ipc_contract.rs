@@ -38,7 +38,7 @@ fn crt_prv_axtree_001_has_registered_extract_ax_tree_ipc() {
         "extract_ax_tree must report whether the active app matches the requested app"
     );
 
-    let main_path = src_dir().join("main.rs");
+    let main_path = src_dir().join("lib.rs");
     let main_src = fs::read_to_string(&main_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", main_path.display(), e));
     assert!(
@@ -86,7 +86,7 @@ fn crt_prv_axtree_002_has_registered_focus_observer_ipc() {
         "AX focus observer must subscribe to both UI-element and focused-window notifications"
     );
 
-    let main_path = src_dir().join("main.rs");
+    let main_path = src_dir().join("lib.rs");
     let main_src = fs::read_to_string(&main_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", main_path.display(), e));
     assert!(

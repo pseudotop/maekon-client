@@ -10,7 +10,9 @@ use tracing::{debug, warn};
 
 use crate::auth::TokenManager;
 use crate::error::NetworkError;
-use crate::resilience::{extract_retry_after, jittered_backoff_delay, MAX_RETRY_AFTER_SECS};
+use maekon_http_core::resilience::{
+    extract_retry_after, jittered_backoff_delay, MAX_RETRY_AFTER_SECS,
+};
 
 const DEFAULT_MAX_RETRIES: u32 = 3;
 
@@ -68,34 +70,9 @@ fn is_localhost(url: &str) -> bool {
         || host == "::1"
 }
 
-/// Strict loopback check for the ADR-023 MG-PII-02 enrichment egress gate.
-///
-/// Parses the URL and accepts ONLY `localhost` or an IP that is loopback (the
-/// full `127.0.0.0/8` range + `::1`, via `IpAddr::is_loopback`). Stronger than
-/// [`is_localhost`]'s literal set. **Fail-closed**: an unparseable URL, a missing
-/// host, or a non-loopback host returns `false`. Note: the IPv4-mapped IPv6
-/// loopback (`::ffff:127.0.0.1`) is NOT loopback per `IpAddr::is_loopback` and is
-/// therefore refused (safe default).
-pub fn host_is_loopback(url: &str) -> bool {
-    match reqwest::Url::parse(url) {
-        Ok(parsed) => match parsed.host_str() {
-            Some(host) => {
-                // `host_str()` serializes IPv6 WITH brackets (e.g. "[::1]"); strip
-                // them so the address parses.
-                let host = host
-                    .strip_prefix('[')
-                    .and_then(|h| h.strip_suffix(']'))
-                    .unwrap_or(host);
-                host.eq_ignore_ascii_case("localhost")
-                    || host
-                        .parse::<std::net::IpAddr>()
-                        .is_ok_and(|addr| addr.is_loopback())
-            }
-            None => false,
-        },
-        Err(_) => false,
-    }
-}
+// ADR-034 P2: `host_is_loopback` lives in `maekon-http-core::outbound` (pure
+// outbound-URL policy). Internal import only — external callers reach it there.
+use maekon_http_core::outbound::host_is_loopback;
 
 pub fn build_reqwest_client(
     tls: &TlsConfig,
@@ -217,7 +194,15 @@ impl HttpApiClient {
         self
     }
 
-    async fn authorized_request(
+    /// Build a request with the bearer already attached.
+    ///
+    /// `pub(crate)` rather than private so sibling transports in this crate
+    /// (e.g. `context_home`) can issue authenticated calls **without ever
+    /// touching the token**: this hands back a ready `RequestBuilder`, never
+    /// the credential itself, and `token_manager` stays private. Widening this
+    /// one method is the narrower option — the alternative was exposing the
+    /// token manager or duplicating bearer handling per call site.
+    pub(crate) async fn authorized_request(
         &self,
         method: reqwest::Method,
         path: &str,
@@ -244,20 +229,22 @@ impl HttpApiClient {
         let status_code = status.as_u16();
         let retry_after = extract_retry_after(&resp);
         // #6949: cap the error body read (OOM guard)
-        let text =
-            crate::outbound::read_text_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
-                .await
-                .unwrap_or_else(|e| {
-                    match e {
-                        crate::outbound::BodyReadError::Transport(te) => {
-                            tracing::warn!("response read failure: {te}");
-                        }
-                        crate::outbound::BodyReadError::TooLarge { len, cap } => {
-                            tracing::warn!("response too large: {len} > {cap}");
-                        }
-                    }
-                    String::new()
-                });
+        let text = maekon_http_core::outbound::read_text_capped(
+            resp,
+            maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            match e {
+                maekon_http_core::outbound::BodyReadError::Transport(te) => {
+                    tracing::warn!("response read failure: {te}");
+                }
+                maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
+                    tracing::warn!("response too large: {len} > {cap}");
+                }
+            }
+            String::new()
+        });
 
         match status_code {
             401 | 403 => Err(NetworkError::Auth(format!("Authentication failed: {text}"))),
@@ -358,19 +345,21 @@ impl ApiClient for HttpApiClient {
 
             let resp = self.check_response(resp).await?;
             // #6949: cap the session-create response body read (OOM guard)
-            let bytes =
-                crate::outbound::read_body_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
-                    .await
-                    .map_err(|e| match e {
-                        crate::outbound::BodyReadError::Transport(te) => {
-                            NetworkError::Internal(format!("Failed to read session response: {te}"))
-                        }
-                        crate::outbound::BodyReadError::TooLarge { len, cap } => {
-                            NetworkError::Internal(format!(
-                            "Failed to parse session response: response too large ({len} > {cap})"
-                        ))
-                        }
-                    })?;
+            let bytes = maekon_http_core::outbound::read_body_capped(
+                resp,
+                maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
+            )
+            .await
+            .map_err(|e| match e {
+                maekon_http_core::outbound::BodyReadError::Transport(te) => {
+                    NetworkError::Internal(format!("Failed to read session response: {te}"))
+                }
+                maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
+                    NetworkError::Internal(format!(
+                        "Failed to parse session response: response too large ({len} > {cap})"
+                    ))
+                }
+            })?;
             let session: SessionCreateResponse =
                 serde_json::from_slice::<SessionCreateResponse>(&bytes).map_err(|e| {
                     NetworkError::Internal(format!("Failed to parse session response: {e}"))
@@ -539,21 +528,9 @@ mod tests {
         assert!(!is_localhost("https://10.0.0.1:443"));
     }
 
-    #[test]
-    fn host_is_loopback_strict_table() {
-        // Accepted: literal localhost + any loopback IP (full 127.0.0.0/8 + ::1).
-        assert!(host_is_loopback("http://localhost:11434"));
-        assert!(host_is_loopback("http://127.0.0.1:8000"));
-        assert!(host_is_loopback("http://127.0.0.5:1"));
-        assert!(host_is_loopback("http://[::1]:50051"));
-        // Refused (fail-closed):
-        assert!(!host_is_loopback("https://api.example.com"));
-        assert!(!host_is_loopback("http://localhost.evil.com")); // not literal localhost
-        assert!(!host_is_loopback("http://10.0.0.5:11434")); // private but remote
-        assert!(!host_is_loopback("http://[::ffff:127.0.0.1]:1")); // mapped-loopback refused
-        assert!(!host_is_loopback("not a url")); // unparseable
-        assert!(!host_is_loopback("http://")); // no host
-    }
+    // `host_is_loopback_strict_table` moved to `maekon-http-core`'s
+    // `outbound.rs` with the function it pins (ADR-034 P2) — tests live at the
+    // bottom of the module that owns the behaviour.
 
     #[test]
     fn build_reqwest_client_tls_disabled_succeeds() {

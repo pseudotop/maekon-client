@@ -58,8 +58,17 @@ pub trait FrameProcessor: Send + Sync {
     ) -> Result<ProcessedFrame, CoreError>;
 
     /// Capture a lightweight thumbnail for ring buffer use.
-    /// Returns raw WebP bytes at low quality. Default returns unsupported error.
-    async fn capture_thumbnail(&self) -> Result<Vec<u8>, CoreError> {
+    ///
+    /// `window_bounds`, when set, targets the monitor containing the active
+    /// window so multi-monitor dashcam pre/post-event frames capture the
+    /// correct display instead of always the primary one (#8054 P2-3). `None`
+    /// falls back to the primary monitor. Returns raw WebP bytes at low
+    /// quality. Default returns unsupported error.
+    async fn capture_thumbnail(
+        &self,
+        window_bounds: Option<&WindowBounds>,
+    ) -> Result<Vec<u8>, CoreError> {
+        let _ = window_bounds;
         Err(CoreError::Internal {
             code: crate::error_codes::InternalCode::Generic,
             message: "thumbnail capture not supported".to_string(),

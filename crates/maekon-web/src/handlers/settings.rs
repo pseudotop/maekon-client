@@ -42,10 +42,7 @@ mod tests {
     use maekon_core::config::AppConfig;
     use maekon_core::config::UpdateChannel;
     use maekon_core::config_manager::ConfigManager;
-    use maekon_storage::sqlite::SqliteStorage;
-    use std::sync::Arc;
     use tempfile::TempDir;
-    use tokio::sync::broadcast;
 
     #[test]
     fn default_settings_valid() {
@@ -119,6 +116,73 @@ mod tests {
         assert!(json.contains("frame_count"));
     }
 
+    /// #9146: save-response parity — the value a save persists into the config
+    /// must come back byte-identical from the settings assembler. The old
+    /// Display-based assembly returned lowercase "strict", which matched no
+    /// `<select>` option in the UI and rendered as "Off" after a successful
+    /// save while `config.json` correctly held Strict.
+    #[test]
+    fn pii_level_save_response_round_trips_canonical_token() {
+        let mut app_config = AppConfig::default_config();
+        let mut settings = AppSettings::default();
+        settings.privacy.pii_filter_level = "Strict".to_string();
+
+        settings_service::apply_settings_to_config(&mut app_config, &settings).unwrap();
+        assert_eq!(
+            app_config.privacy.pii_filter_level,
+            maekon_core::config::PiiFilterLevel::Strict
+        );
+
+        let assembled = settings_assembler::config_to_settings(
+            &app_config,
+            maekon_core::config::CredentialBackendKind::Unavailable,
+        );
+        assert_eq!(assembled.privacy.pii_filter_level, "Strict");
+
+        // The parser accepts the assembled token back (full UI round trip).
+        let mut second_config = AppConfig::default_config();
+        settings_service::apply_settings_to_config(&mut second_config, &assembled).unwrap();
+        assert_eq!(
+            second_config.privacy.pii_filter_level,
+            maekon_core::config::PiiFilterLevel::Strict
+        );
+    }
+
+    /// #9785: a settings save must not wipe the handoff allowlist.
+    ///
+    /// `server.allowed_handoff_hosts` is written by the config file, not by the
+    /// settings form — the form has no field for it. The danger is the shape
+    /// this module already documents for `regime_goals` (#8083/#8052): a form
+    /// that does not know about a value round-trips it as absent and clobbers
+    /// what another writer just set. Here the allowlist decides where the app
+    /// may send the user's browser, so a silent reset to empty would break
+    /// handoff for a configured install with nothing in the logs to explain it.
+    #[test]
+    fn a_settings_save_preserves_the_configured_handoff_allowlist() {
+        let mut app_config = AppConfig::default_config();
+        app_config.server.allowed_handoff_hosts = vec![
+            "console.example.com".to_string(),
+            "preview.example.com".to_string(),
+        ];
+
+        // A form payload assembled from an unrelated state, then saved back.
+        let mut settings = AppSettings::default();
+        settings.network.server_base_url = "https://api.example.com".to_string();
+        settings_service::apply_settings_to_config(&mut app_config, &settings).unwrap();
+
+        assert_eq!(
+            app_config.server.allowed_handoff_hosts,
+            vec![
+                "console.example.com".to_string(),
+                "preview.example.com".to_string()
+            ],
+            "a settings save must leave the handoff allowlist exactly as configured"
+        );
+        // The field the form DOES own still applies, so this is not passing by
+        // the save being a no-op.
+        assert_eq!(app_config.server.base_url, "https://api.example.com");
+    }
+
     #[test]
     fn apply_settings_to_config_validates_remote_ai_requirements() {
         let mut app_config = AppConfig::default_config();
@@ -152,6 +216,27 @@ mod tests {
     }
 
     #[test]
+    fn apply_settings_to_config_wires_llm_summary_enabled() {
+        // #8059 G2a: the new flat `analysis.llm_summary_enabled` contract field
+        // must map onto the nested `analysis.embedding.llm_summary_enabled`
+        // config (write path). This mirrors the existing `embedding_enabled`
+        // mapping so the AdvancedTab "Enable AI features" master toggle can
+        // actually turn the AI daily-digest narrative on end-to-end.
+        let mut app_config = AppConfig::default_config();
+        let mut settings = AppSettings::default();
+
+        // Flip away from the config defaults to prove the write is real.
+        settings.analysis.embedding_enabled = true;
+        settings.analysis.llm_summary_enabled = true;
+        settings_service::apply_settings_to_config(&mut app_config, &settings).unwrap();
+        assert!(app_config.analysis.embedding.llm_summary_enabled);
+
+        settings.analysis.llm_summary_enabled = false;
+        settings_service::apply_settings_to_config(&mut app_config, &settings).unwrap();
+        assert!(!app_config.analysis.embedding.llm_summary_enabled);
+    }
+
+    #[test]
     fn apply_settings_to_config_rejects_unknown_sandbox_profile() {
         let mut app_config = AppConfig::default_config();
         let mut settings = AppSettings::default();
@@ -176,9 +261,8 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_path = temp_dir.path().join("config.json");
         let config_manager = ConfigManager::with_path(config_path).expect("config manager");
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(8);
-        let mut state = crate::AppState::with_core(storage, event_tx);
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
         state.core.config_manager = Some(config_manager.clone());
         let context = SettingsWebContext::from_state(&state);
 
@@ -201,9 +285,8 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_path = temp_dir.path().join("config.json");
         let config_manager = ConfigManager::with_path(config_path).expect("config manager");
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"));
-        let (event_tx, _) = broadcast::channel(8);
-        let mut state = crate::AppState::with_core(storage, event_tx);
+        // #7738 D-4: funnel through the canonical test-state helper.
+        let mut state = crate::test_local_auth::test_app_state_with_event_capacity(8);
         state.core.config_manager = Some(config_manager);
         let context = SettingsWebContext::from_state(&state);
 

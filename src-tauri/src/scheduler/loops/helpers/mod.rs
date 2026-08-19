@@ -11,13 +11,18 @@ mod overlay;
 // Re-export the full public surface previously provided by the flat helpers.rs.
 pub(super) use analysis::enqueue_and_surface;
 pub(super) use analysis::handle_event_analysis;
+// #7914: uniform learned-relevance gating seam shared by every LOCAL producer.
+// Producers name only the `relevance_gates` builder; the returned
+// `RelevanceGates` value flows to `enqueue_and_surface` via type inference, so
+// the type itself does not need re-exporting here.
+pub(super) use analysis::relevance_gates;
 pub(crate) use audit::record_to_segment_summary;
 pub(super) use audit::{audit_consent_and_pii_changes, build_segment_stats_snapshot};
 pub(super) use capture::{
     enforce_frame_retention, handle_frame_capture, redact_window_title, FRAME_RETENTION_INTERVAL,
 };
 pub(super) use coaching::{build_personalization_prompt, COACHING_SYSTEM_PROMPT};
-pub(super) use idle::handle_idle_tick;
+pub(super) use idle::{handle_idle_tick, IdleTickServices};
 pub(super) use overlay::{
     emit_heatmap_and_goals, emit_pointer_context_highlight, PointerContextEmitterState,
 };
@@ -36,9 +41,15 @@ mod tests {
 
     use chrono::Utc;
     use maekon_api_contracts::stream::RealtimeEvent;
+    use maekon_core::error::CoreError;
     use maekon_core::models::frame::ImagePayload;
+    use maekon_core::models::suggestion::Suggestion;
+    use maekon_core::ports::focus_storage::FocusStorage;
+    use maekon_core::ports::notifier::DesktopNotifier;
     use maekon_core::ports::vision::{CaptureRequest, FrameProcessor};
+    use maekon_storage::sqlite::SqliteStorage;
     use std::sync::Arc;
+    use tempfile::TempDir;
 
     // ── Minimal mock: implements SchedulerStorage + MetricsStorage ────────
     //
@@ -53,6 +64,26 @@ mod tests {
         // regression test can assert owned data survives the spawn_blocking move.
         saved_bounds: Mutex<Vec<Option<maekon_core::models::context::WindowBounds>>>,
         incremented_frames: AtomicU64,
+        // #8113: counts start_idle_period calls so the consent-gate tests can
+        // assert whether the idle_periods WRITE happened.
+        idle_starts: AtomicU64,
+    }
+
+    struct NoopDesktopNotifier;
+
+    #[async_trait::async_trait]
+    impl DesktopNotifier for NoopDesktopNotifier {
+        async fn show_suggestion(&self, _: &Suggestion) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn show_notification(&self, _: &str, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn show_error(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]
@@ -123,6 +154,7 @@ mod tests {
             &self,
             _start_time: chrono::DateTime<chrono::Utc>,
         ) -> Result<i64, maekon_core::error::CoreError> {
+            self.idle_starts.fetch_add(1, Ordering::Relaxed);
             Ok(1)
         }
 
@@ -189,7 +221,7 @@ mod tests {
         }
     }
 
-    impl crate::scheduler::config::SchedulerStorage for MockSchedulerStorage {
+    impl crate::scheduler::SchedulerStorage for MockSchedulerStorage {
         fn save_frame_metadata_with_bounds(
             &self,
             metadata: &maekon_core::models::frame::FrameMetadata,
@@ -226,6 +258,16 @@ mod tests {
             maekon_core::error::CoreError,
         > {
             unimplemented!("handle_idle_tick should not call list_weekly_digests")
+        }
+
+        fn list_daily_digests(
+            &self,
+            _: usize,
+        ) -> Result<
+            Vec<maekon_core::models::daily_digest::DailyDigest>,
+            maekon_core::error::CoreError,
+        > {
+            unimplemented!("handle_idle_tick should not call list_daily_digests")
         }
 
         fn save_weekly_digest(
@@ -274,6 +316,23 @@ mod tests {
             unimplemented!("handle_idle_tick should not call save_daily_digest")
         }
 
+        fn has_digest_processing_marker(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<bool, maekon_core::error::CoreError> {
+            unimplemented!("handle_idle_tick should not call has_digest_processing_marker")
+        }
+
+        fn save_digest_processing_marker(
+            &self,
+            _: &str,
+            _: &str,
+            _: chrono::DateTime<chrono::Utc>,
+        ) -> Result<(), maekon_core::error::CoreError> {
+            unimplemented!("handle_idle_tick should not call save_digest_processing_marker")
+        }
+
         fn get_segments_for_date(
             &self,
             _: &str,
@@ -293,6 +352,10 @@ mod tests {
 
         fn enforce_all_retention(&self) -> Result<u64, maekon_core::error::CoreError> {
             unimplemented!("handle_idle_tick should not call enforce_all_retention")
+        }
+
+        fn enforce_audit_retention(&self) -> Result<u64, maekon_core::error::CoreError> {
+            unimplemented!("handle_idle_tick should not call enforce_audit_retention")
         }
 
         fn gc_sync_tombstones(
@@ -388,7 +451,7 @@ mod tests {
         };
         let processor: Arc<dyn FrameProcessor> = Arc::new(StaticFrameProcessor { frame });
         let storage = Arc::new(MockSchedulerStorage::default());
-        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> = storage.clone();
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = storage.clone();
         let capture_req = CaptureRequest {
             trigger_type: "active_window_change".to_string(),
             importance: 1.0,
@@ -475,7 +538,7 @@ mod tests {
             frame: frame_with_ocr(raw_ocr),
         });
         let storage = Arc::new(MockSchedulerStorage::default());
-        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> = storage.clone();
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = storage.clone();
         let capture_req = CaptureRequest {
             trigger_type: "active_window_change".to_string(),
             importance: 1.0,
@@ -533,7 +596,7 @@ mod tests {
         frame.raw_rgba = Some(vec![255, 0, 0, 255]);
         let processor: Arc<dyn FrameProcessor> = Arc::new(StaticFrameProcessor { frame });
         let storage = Arc::new(MockSchedulerStorage::default());
-        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> = storage.clone();
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = storage.clone();
         let capture_req = CaptureRequest {
             trigger_type: "active_window_change".to_string(),
             importance: 1.0,
@@ -574,7 +637,7 @@ mod tests {
             saw_ocr_permitted: saw_ocr_permitted.clone(),
         });
         let storage = Arc::new(MockSchedulerStorage::default());
-        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> = storage.clone();
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = storage.clone();
         let capture_req = CaptureRequest {
             trigger_type: "active_window_change".to_string(),
             importance: 1.0,
@@ -613,7 +676,7 @@ mod tests {
             frame: frame_with_ocr(raw_ocr),
         });
         let storage = Arc::new(MockSchedulerStorage::default());
-        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> = storage.clone();
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = storage.clone();
         let capture_req = CaptureRequest {
             trigger_type: "active_window_change".to_string(),
             importance: 1.0,
@@ -665,7 +728,7 @@ mod tests {
             frame: frame_with_ocr(raw_ocr),
         });
         let storage = Arc::new(MockSchedulerStorage::default());
-        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> = storage.clone();
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = storage.clone();
         let bounds = WindowBounds {
             x: 11,
             y: 22,
@@ -761,6 +824,52 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn idle_resume_edge_resets_active_focus_session() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let storage = Arc::new(
+            SqliteStorage::open(&temp_dir.path().join("focus.db"), 30, None)
+                .expect("storage creation failed"),
+        );
+        let focus_storage: Arc<dyn FocusStorage> = storage.clone();
+        let focus = Arc::new(
+            maekon_analysis::focus_analyzer::FocusAnalyzer::with_defaults(
+                focus_storage,
+                Arc::new(NoopDesktopNotifier),
+            ),
+        );
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> =
+            Arc::new(MockSchedulerStorage::default());
+        let mut idle_tracker = maekon_monitor::idle::IdleTracker::new(Some(u64::MAX));
+
+        focus.on_app_switch("Visual Studio Code").await;
+
+        let before = storage
+            .list_work_sessions("1970-01-01", "9999-12-31", 10)
+            .expect("list work sessions before resume");
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].state, "active");
+
+        let _ = idle::handle_idle_resume_edge(
+            &mut idle_tracker,
+            &sqlite,
+            &None,
+            &Some(focus),
+            &maekon_core::consent::ConsentPermissions::default(),
+        )
+        .await;
+
+        let after = storage
+            .list_work_sessions("1970-01-01", "9999-12-31", 10)
+            .expect("list work sessions after resume");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].state, "completed");
+        assert!(
+            after[0].ended_at.is_some(),
+            "idle resume must close the active deep-work session"
+        );
+    }
+
     /// Verifies the publisher-side edge-detection invariant (spec §U2 I2):
     /// `handle_idle_tick` emits exactly one `RealtimeEvent::Idle(is_idle=true)`
     /// on the Active→Idle transition, and suppresses duplicate emission on the
@@ -771,7 +880,7 @@ mod tests {
     /// platform idle time at test runtime.
     #[tokio::test]
     async fn handle_idle_tick_emits_on_edge_only() {
-        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> =
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> =
             Arc::new(MockSchedulerStorage::default());
         // threshold=0 → check_idle() always returns Idle (any idle_secs ≥ 0).
         let mut idle_tracker = maekon_monitor::idle::IdleTracker::new(Some(0));
@@ -782,12 +891,16 @@ mod tests {
         // ── Call 1: Active→Idle edge ─────────────────────────────────────
         idle::handle_idle_tick(
             &mut idle_tracker,
-            &sqlite,
-            &None,
-            &input_collector,
+            IdleTickServices {
+                sqlite: &sqlite,
+                notif: &None,
+                focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
+                input_collector: &input_collector,
+                event_tx: &event_tx,
+            },
             0,
             false,
-            &event_tx,
         )
         .await;
 
@@ -807,12 +920,16 @@ mod tests {
         // ── Call 2: mid-Idle (Idle→Idle) — no second emission ───────────
         idle::handle_idle_tick(
             &mut idle_tracker,
-            &sqlite,
-            &None,
-            &input_collector,
+            IdleTickServices {
+                sqlite: &sqlite,
+                notif: &None,
+                focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
+                input_collector: &input_collector,
+                event_tx: &event_tx,
+            },
             0,
             false,
-            &event_tx,
         )
         .await;
 
@@ -830,6 +947,82 @@ mod tests {
         }
     }
 
+    /// #8113: pre-consent, the Active→Idle edge must NOT persist an
+    /// idle_periods row — but the realtime event (and thus notifications /
+    /// in-RAM detection) must keep working. `ConsentPermissions::default()`
+    /// is all-false (fail-closed), so this is the first-run state.
+    #[tokio::test]
+    async fn handle_idle_tick_does_not_persist_pre_consent() {
+        let mock = Arc::new(MockSchedulerStorage::default());
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = mock.clone();
+        let mut idle_tracker = maekon_monitor::idle::IdleTracker::new(Some(0));
+        let input_collector = InputActivityCollector::new();
+        let (tx, mut rx) = broadcast::channel::<RealtimeEvent>(16);
+        let event_tx: Option<broadcast::Sender<RealtimeEvent>> = Some(tx);
+
+        idle::handle_idle_tick(
+            &mut idle_tracker,
+            IdleTickServices {
+                sqlite: &sqlite,
+                notif: &None,
+                focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
+                input_collector: &input_collector,
+                event_tx: &event_tx,
+            },
+            0,
+            false,
+        )
+        .await;
+
+        assert_eq!(
+            mock.idle_starts.load(Ordering::Relaxed),
+            0,
+            "idle_periods write must be consent-gated (input_activity=false)"
+        );
+        assert!(
+            idle_tracker.idle_period_id().is_none(),
+            "no period id may be set when the write was gated"
+        );
+        // The in-RAM edge still surfaces to subscribers.
+        assert!(
+            matches!(rx.try_recv(), Ok(RealtimeEvent::Idle(u)) if u.is_idle),
+            "realtime Idle event must still be emitted pre-consent"
+        );
+    }
+
+    /// #8113 counterpart: with `input_activity` granted the write proceeds
+    /// exactly as before the gate.
+    #[tokio::test]
+    async fn handle_idle_tick_persists_with_input_activity_consent() {
+        let mock = Arc::new(MockSchedulerStorage::default());
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> = mock.clone();
+        let mut idle_tracker = maekon_monitor::idle::IdleTracker::new(Some(0));
+        let input_collector = InputActivityCollector::new();
+        let consent = maekon_core::consent::ConsentPermissions {
+            input_activity: true,
+            ..Default::default()
+        };
+
+        idle::handle_idle_tick(
+            &mut idle_tracker,
+            IdleTickServices {
+                sqlite: &sqlite,
+                notif: &None,
+                focus: &None,
+                consent,
+                input_collector: &input_collector,
+                event_tx: &None,
+            },
+            0,
+            false,
+        )
+        .await;
+
+        assert_eq!(mock.idle_starts.load(Ordering::Relaxed), 1);
+        assert_eq!(idle_tracker.idle_period_id(), Some(1));
+    }
+
     /// Bonus: verifies that Active→Active (mid-Active) ticks are also suppressed.
     ///
     /// Uses `threshold_secs=u64::MAX` so check_idle always returns Active
@@ -845,7 +1038,7 @@ mod tests {
     /// suite (`grpc_dashboard_integration.rs`).
     #[tokio::test]
     async fn handle_idle_tick_suppresses_mid_active_tick() {
-        let sqlite: Arc<dyn crate::scheduler::config::SchedulerStorage> =
+        let sqlite: Arc<dyn crate::scheduler::SchedulerStorage> =
             Arc::new(MockSchedulerStorage::default());
         // threshold=MAX → check_idle always returns Active.
         let mut idle_tracker = maekon_monitor::idle::IdleTracker::new(Some(u64::MAX));
@@ -856,12 +1049,16 @@ mod tests {
         // ── Call 1: Active→Active — no emit ──────────────────────────────
         idle::handle_idle_tick(
             &mut idle_tracker,
-            &sqlite,
-            &None,
-            &input_collector,
+            IdleTickServices {
+                sqlite: &sqlite,
+                notif: &None,
+                focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
+                input_collector: &input_collector,
+                event_tx: &event_tx,
+            },
             0,
             false,
-            &event_tx,
         )
         .await;
 
@@ -873,12 +1070,16 @@ mod tests {
         // ── Call 2: Active→Active again — still no emit ──────────────────
         idle::handle_idle_tick(
             &mut idle_tracker,
-            &sqlite,
-            &None,
-            &input_collector,
+            IdleTickServices {
+                sqlite: &sqlite,
+                notif: &None,
+                focus: &None,
+                consent: maekon_core::consent::ConsentPermissions::default(),
+                input_collector: &input_collector,
+                event_tx: &event_tx,
+            },
             0,
             false,
-            &event_tx,
         )
         .await;
 

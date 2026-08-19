@@ -33,6 +33,15 @@ pub struct PlatformOverlayDriver {
     active_processes: Mutex<HashMap<String, OverlayProcess>>,
 }
 
+// #7734: `pub mod platform_overlay` (the `[lib]` target enabler) makes this
+// type reachable, tripping clippy::new_without_default under `-D warnings`.
+// Trivial forwarding impl — no behavior change.
+impl Default for PlatformOverlayDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlatformOverlayDriver {
     pub fn new() -> Self {
         Self {
@@ -325,16 +334,37 @@ for target in payload.get('targets', []):
 root.mainloop()
 "#;
 
-    let mut command = Command::new("python3");
-    command
-        .arg("-c")
-        .arg(PYTHON_OVERLAY_SCRIPT)
-        .arg(payload_path);
+    // SEC-MON-01: resolve against the shared trusted-directory allowlist
+    // (maekon-monitor) instead of spawning a bare `python3`/`python` — fail
+    // closed (no PATH fallback) when neither binary is found under any
+    // trusted system directory. A resolution miss for `python3` is treated
+    // the same as the pre-existing `ErrorKind::NotFound` spawn failure,
+    // preserving the python3 -> python fallback semantics.
+    let spawn_result = match maekon_monitor::resolve_trusted_binary("python3") {
+        Some(python3_path) => {
+            let mut command = Command::new(python3_path);
+            command
+                .arg("-c")
+                .arg(PYTHON_OVERLAY_SCRIPT)
+                .arg(payload_path);
+            command.spawn()
+        }
+        None => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+    };
 
-    match command.spawn() {
+    match spawn_result {
         Ok(child) => Ok(child),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let mut fallback = Command::new("python");
+            let python_path =
+                maekon_monitor::resolve_trusted_binary("python").ok_or_else(|| {
+                    CoreError::ServiceUnavailable {
+                        code: maekon_core::error_codes::ServiceCode::Unavailable,
+                        message:
+                            "Python overlay runtime (python3/python) not found under the trusted directory allowlist"
+                                .to_string(),
+                    }
+                })?;
+            let mut fallback = Command::new(python_path);
             fallback
                 .arg("-c")
                 .arg(PYTHON_OVERLAY_SCRIPT)
@@ -396,8 +426,20 @@ foreach ($form in $forms) {
 [System.Windows.Forms.Application]::Run()
 "#;
 
+    // SEC-MON-01: resolve against the shared trusted-directory allowlist
+    // (maekon-monitor) instead of spawning a bare `powershell` — fail closed
+    // (no PATH fallback) when the binary is not found under the trusted
+    // System32 directories.
+    let powershell_path =
+        maekon_monitor::resolve_trusted_binary("powershell").ok_or_else(|| {
+            CoreError::ServiceUnavailable {
+                code: maekon_core::error_codes::ServiceCode::Unavailable,
+                message: "powershell not found under the trusted directory allowlist".to_string(),
+            }
+        })?;
+
     let command_script = format!("& {{ {POWERSHELL_OVERLAY_SCRIPT} }}");
-    Command::new("powershell")
+    Command::new(powershell_path)
         .args([
             "-NoProfile",
             "-NonInteractive",

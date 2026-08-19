@@ -372,7 +372,7 @@ async fn cross_family_writers_concurrent_with_erase_leave_zero_residual() {
         "regimes",
         "trigger_params_snapshots",
         "search_fts",
-        "search_trigram",
+        // (V18 `search_trigram` was dropped by V45 (#8056); no longer erased/checked.)
         "vector_binary_codes",
         "vector_index_meta",
         "ivf_centroids",
@@ -384,6 +384,8 @@ async fn cross_family_writers_concurrent_with_erase_leave_zero_residual() {
         "coaching_events",
         "regime_goals",
         "coaching_effectiveness",
+        "feedback_scorer_tallies",
+        "regime_reaction_stats",
         "ai_conversation_messages",
         "ai_sessions",
         "frame_annotations",

@@ -42,11 +42,11 @@ use crate::types::TimeWindow;
 // (additional imports retained below)
 use crate::models::daily_digest::DailyDigest;
 use crate::models::storage_records::{
-    DeletedRangeCounts, EventExportRecord, FocusInterruptionRecord, FocusWorkSessionRecord,
-    FrameExportRecord, FrameRecord, FrameTagLinkRecord, GuiInteractionRecord, HourlyMetricsRecord,
-    LocalSuggestionRecord, MetricExportRecord, NewGuiInteraction, SearchEventRow, SearchFrameRow,
-    SegmentDetailRecord, SegmentSummaryRecord, StorageStatsSummaryRecord, SuggestionRecord,
-    TagRecord,
+    AppDeletionCounts, DeletedRangeCounts, EventExportRecord, FocusInterruptionRecord,
+    FocusWorkSessionRecord, FrameExportRecord, FrameRecord, FrameTagLinkRecord,
+    HourlyMetricsRecord, LocalSuggestionRecord, MetricExportRecord, NewGuiInteraction,
+    SearchEventRow, SearchFrameRow, SegmentDetailRecord, SegmentSummaryRecord,
+    StorageStatsSummaryRecord, SuggestionRecord, TagRecord,
 };
 use crate::models::work_session::FocusMetrics;
 use crate::ports::annotation_storage::AnnotationStorage;
@@ -166,6 +166,23 @@ pub trait StorageMaintenanceStorage: Send + Sync {
     ) -> Result<DeletedRangeCounts, CoreError>;
 
     async fn delete_all_data(&self) -> Result<(), CoreError>;
+
+    /// Retroactively delete all locally-stored data attributable to the given
+    /// apps / app-name patterns (#8045 B2 — Recall-parity retroactive
+    /// exclusion). Removes matching `frames` metadata, `events`, and the derived
+    /// `activity_segments` (LLM summaries) + `embedding_vectors` for those apps,
+    /// leaving cross-device suppression tombstones for the two synced derived
+    /// tables so a peer cannot resurrect them.
+    ///
+    /// `app_names` are matched case-insensitively (exact); `app_patterns` use
+    /// the same `*`-glob semantics as the capture-time exclusion filter. Returns
+    /// the on-disk frame file paths of the deleted frames (the caller deletes the
+    /// files best-effort) plus the per-table row counts.
+    async fn delete_data_for_apps(
+        &self,
+        app_names: &[String],
+        app_patterns: &[String],
+    ) -> Result<(Vec<String>, AppDeletionCounts), CoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +332,23 @@ pub trait DigestStorage: Send + Sync {
 // Sub-trait: BackupStorage
 // ---------------------------------------------------------------------------
 
+/// One personal-data table in the GDPR Art.20 (data portability) export
+/// (#8056 P2-3). Rows are raw column→value JSON objects exactly as stored; the
+/// free-text PII masking is applied by the export handler (web layer), keeping
+/// the storage dump policy-free.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PersonalDataTableExport {
+    /// The SQLite table name.
+    pub name: String,
+    /// Every row as a JSON object keyed by column name.
+    pub rows: Vec<serde_json::Value>,
+    /// #9639: true when a per-table row cap cut the dump short (currently
+    /// only `gui_interactions`, newest-first LIMIT). An Art.20 archive must
+    /// not silently present a truncated table as complete.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 /// Backup export/import operations (tags, frame-tags, events, frames, metrics).
 ///
 /// Async per ADR-026 PR-7: every method routes through the storage
@@ -324,6 +358,13 @@ pub trait DigestStorage: Send + Sync {
 pub trait BackupStorage: Send + Sync {
     async fn list_backup_tags(&self) -> Result<Vec<TagRecord>, CoreError>;
     async fn list_backup_frame_tags(&self) -> Result<Vec<FrameTagLinkRecord>, CoreError>;
+    /// GDPR Art.20 data-portability dump: every personal-data table this device
+    /// holds, as raw column→value JSON rows. Covers the tables the scoped
+    /// `/export/*` and `/backup` surfaces omit (activity_segments, suggestions,
+    /// coaching_events, habit_streaks, memory_claims/edges, frame_annotations,
+    /// ai_sessions/messages, focus_metrics, work_sessions, digests, …). Free-text
+    /// PII masking is applied by the caller. (#8056 P2-3)
+    async fn export_personal_data_tables(&self) -> Result<Vec<PersonalDataTableExport>, CoreError>;
     async fn list_event_exports(
         &self,
         from: &str,
@@ -343,19 +384,49 @@ pub trait BackupStorage: Send + Sync {
         &self,
         from: &str,
     ) -> Result<Vec<HourlyMetricsRecord>, CoreError>;
+    /// Restore one archived tag and return the id it actually occupies, or
+    /// `None` when nothing was written.
+    ///
+    /// #9700: restore merges into the live table, so the archived id may already
+    /// belong to a different tag (and the archived name may already exist under
+    /// a different id). The caller MUST remap `frame_tags` through this return
+    /// value — writing the archived id blind produces mis-attached or dangling
+    /// relations, silently — the FK does not constrain which frame the caller
+    /// names (#9735: the PRAGMA is ON, but that is not what protects this).
+    ///
+    /// `None` means the write was skipped (the #4928 erase barrier). It is NOT
+    /// an id, and the caller must not invent one: remapping relations onto a
+    /// row that was never written is the exact failure this contract exists to
+    /// prevent.
+    ///
+    /// NOTE this arbitrates the TAG axis only. `frame_tags.frame_id` has the
+    /// same collision hazard and is not yet arbitrated — see #9708.
     async fn upsert_backup_tag(
         &self,
         id: i64,
         name: &str,
         color: &str,
         created_at: &str,
-    ) -> Result<(), CoreError>;
+    ) -> Result<Option<i64>, CoreError>;
+    /// Insert one archived frame↔tag relation; `true` when it is present
+    /// afterwards, `false` when the frame is not on this device.
+    ///
+    /// #9714: the existence guard lives INSIDE the statement, so the check and
+    /// the write are one atomic operation. Checking separately first meant two
+    /// lock acquisitions with an `.await` between them, and a concurrent frame
+    /// delete in that window made the insert fail outright
+    /// (`FOREIGN KEY constraint failed`) rather than return the `false` this
+    /// contract promises. (#9735: this doc previously blamed
+    /// `PRAGMA foreign_keys` being OFF. It is ON, and `frame_tags` does declare
+    /// the reference — the race produced an error, not a dangling row.)
     async fn upsert_backup_frame_tag(
         &self,
         frame_id: i64,
         tag_id: i64,
         created_at: &str,
-    ) -> Result<(), CoreError>;
+    ) -> Result<bool, CoreError>;
+    /// Insert one archived event; `true` when it is present afterwards,
+    /// `false` only when the erase barrier skipped the write (#9722).
     async fn upsert_backup_event(
         &self,
         event_id: &str,
@@ -363,7 +434,23 @@ pub trait BackupStorage: Send + Sync {
         timestamp: &str,
         app_name: Option<&str>,
         window_title: Option<&str>,
-    ) -> Result<(), CoreError>;
+    ) -> Result<bool, CoreError>;
+    /// Restore one archived frame and return the id it actually occupies, or
+    /// `None` when nothing was written (the erase barrier).
+    ///
+    /// #9708: `frames.id` is AUTOINCREMENT, so on a device that has been
+    /// capturing, essentially every archived id is already taken. The caller
+    /// MUST remap `frame_tags.frame_id` through this value — writing the
+    /// archived id blind attaches the relation to an unrelated local screenshot.
+    ///
+    /// Frames have no natural identity key (unlike `tags.name`), so a collision
+    /// never means "the same frame": the archived row is relocated to a fresh
+    /// id rather than merged. That is safe because restored frames are
+    /// metadata-only (`has_image = 0`, `file_path = NULL`), so no image file is
+    /// keyed to the id.
+    // NOTE: keep this attribute directly above the `async fn` and BELOW the doc
+    // comment — #9714 inserted a method between the two and silently moved the
+    // allow onto a 2-arg method, turning the CI clippy gate red.
     #[allow(clippy::too_many_arguments)]
     async fn upsert_backup_frame(
         &self,
@@ -376,7 +463,7 @@ pub trait BackupStorage: Send + Sync {
         width: i32,
         height: i32,
         ocr_text: Option<&str>,
-    ) -> Result<(), CoreError>;
+    ) -> Result<Option<i64>, CoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,14 +485,6 @@ pub trait GuiInteractionStorage: Send + Sync {
     /// is the primary safeguard.
     async fn save_gui_interaction(&self, _input: &NewGuiInteraction<'_>) -> Result<(), CoreError> {
         Ok(()) // No-op default — storage adapters override
-    }
-
-    /// List GUI interaction events for a given segment.
-    async fn list_gui_interactions_for_segment(
-        &self,
-        _segment_id: &str,
-    ) -> Result<Vec<GuiInteractionRecord>, CoreError> {
-        Ok(vec![])
     }
 
     /// Count GUI interactions per hour within a date range.

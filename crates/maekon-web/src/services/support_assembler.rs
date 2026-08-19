@@ -23,7 +23,11 @@ pub(crate) fn assemble_diagnostics_health(input: DiagnosticsHealthInput) -> Diag
         storage_ok: input.storage_error.is_none(),
         storage_error: input.storage_error,
         frames_dir_configured: input.frames_dir_path.is_some(),
-        frames_dir_path: input.frames_dir_path,
+        // An absolute frames directory reveals the local account/home path.
+        // Support diagnostics are visible before capture consent and can be
+        // copied into reports, so retain only the useful configured/existence
+        // signals and never expose the path at this transport boundary.
+        frames_dir_path: None,
         frames_dir_exists: input.frames_dir_exists,
         config_manager_configured: input.config_manager_configured,
         automation_controller_configured: input.automation_controller_configured,
@@ -113,5 +117,21 @@ mod tests {
             bundle.provider_cli[0].executable_hint.as_deref(),
             Some("codex.exe")
         );
+    }
+
+    #[test]
+    fn diagnostics_health_redacts_absolute_frames_directory() {
+        let health = assemble_diagnostics_health(DiagnosticsHealthInput {
+            storage_error: None,
+            frames_dir_path: Some("C:\\Users\\alice\\AppData\\Local\\maekon\\data".to_string()),
+            frames_dir_exists: Some(true),
+            config_manager_configured: true,
+            automation_controller_configured: true,
+            update_control_configured: true,
+        });
+
+        assert!(health.frames_dir_configured);
+        assert_eq!(health.frames_dir_exists, Some(true));
+        assert_eq!(health.frames_dir_path, None);
     }
 }

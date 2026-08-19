@@ -15,16 +15,19 @@ import {
   fetchFrameTags,
   fetchSettings,
   fetchTags,
+  fetchTimeline,
   removeTagFromFrame,
+  TAGS_QUERY_KEY,
 } from '../../api/client'
 import { isStandaloneModeEnabled } from '../../api/standalone'
 import DateRangePicker from '../../components/DateRangePicker'
 import Lightbox from '../../components/Lightbox'
+import SegmentNavigator from '../../components/SegmentNavigator'
 import { Skeleton } from '../../components/ui'
+import { useCaptureMutationRecovery } from '../../hooks/useCaptureMutationRecovery'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { addToast } from '../../hooks/useToast'
 import { colors, typography } from '../../styles/tokens'
-import { resolveImageUrl } from '../../utils/api-base'
 import { cn } from '../../utils/cn'
 
 export type ViewMode = 'grid' | 'list'
@@ -83,6 +86,7 @@ export interface TimelineContext {
 export default function TimelineLayout() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const recoverTagMutation = useCaptureMutationRecovery(t('timeline.tagUpdateFailed'))
   const [selectedFrame, setSelectedFrame] = useState<Frame | null>(null)
   const [selectedIndex, setSelectedIndex] = useState<number>(-1)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -102,12 +106,91 @@ export default function TimelineLayout() {
     },
     [page, setSearchParams],
   )
-  const [dateRange, setDateRange] = useState<{ from?: string; to?: string }>({})
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
-  const [appFilter, setAppFilter] = useState<string>('all')
-  const [importanceFilter, setImportanceFilter] = useState<ImportanceFilter>('all')
-  const [tagFilter, setTagFilter] = useState<number | 'all'>('all')
+
+  // #8078 (CJ-02-09): filter + date-range state lives in the URL search params
+  // (like `page`) so it survives route re-entry. Defaults are omitted from the
+  // URL to keep it clean.
+  const appFilter = searchParams.get('app') ?? 'all'
+  const importanceParam = searchParams.get('importance')
+  const importanceFilter: ImportanceFilter =
+    importanceParam === 'high' || importanceParam === 'medium' || importanceParam === 'low' ? importanceParam : 'all'
+  const tagParam = searchParams.get('tag')
+  const tagFilter: number | 'all' = tagParam && tagParam !== 'all' ? Number(tagParam) : 'all'
+  const dateRange = {
+    from: searchParams.get('from') ?? undefined,
+    to: searchParams.get('to') ?? undefined,
+  }
+  // #9812: the drilled-into segment lives in the URL like every other filter
+  // here, so a reload or a shared link lands on the same view. Keeping it in
+  // component state would make "send me what you were looking at" impossible.
+  const segmentStart = searchParams.get('seg')
+  const segmentEnd = searchParams.get('segEnd')
+
+  // Frames are fetched for the segment when one is selected, the whole picked
+  // range otherwise. Narrowing the QUERY rather than filtering the page is what
+  // makes this useful: a 10-minute segment holds at most ~120 frames at the
+  // default 5s throttle, so the existing pagination becomes the right size
+  // instead of paging through the whole retention window.
+  const effectiveRange = {
+    from: segmentStart ?? dateRange.from,
+    to: segmentEnd ?? dateRange.to,
+  }
+
+  const setAppFilter = useCallback<React.Dispatch<React.SetStateAction<string>>>(
+    (updater) => {
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev)
+          const current = p.get('app') ?? 'all'
+          const next = typeof updater === 'function' ? updater(current) : updater
+          if (next === 'all') p.delete('app')
+          else p.set('app', next)
+          return p
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
+  const setImportanceFilter = useCallback<React.Dispatch<React.SetStateAction<ImportanceFilter>>>(
+    (updater) => {
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev)
+          const raw = p.get('importance')
+          const current: ImportanceFilter = raw === 'high' || raw === 'medium' || raw === 'low' ? raw : 'all'
+          const next = typeof updater === 'function' ? updater(current) : updater
+          if (next === 'all') p.delete('importance')
+          else p.set('importance', next)
+          return p
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
+  const setTagFilter = useCallback<React.Dispatch<React.SetStateAction<number | 'all'>>>(
+    (updater) => {
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev)
+          const raw = p.get('tag')
+          const current: number | 'all' = raw && raw !== 'all' ? Number(raw) : 'all'
+          const next = typeof updater === 'function' ? updater(current) : updater
+          if (next === 'all') p.delete('tag')
+          else p.set('tag', String(next))
+          return p
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
   const pageSize = 50
   const standaloneMode = isStandaloneModeEnabled()
   const [selectMode, setSelectMode] = useState(false)
@@ -127,26 +210,53 @@ export default function TimelineLayout() {
     setSelectedFrames(new Set())
   }, [])
 
-  const batchTagMutation = useMutation({
-    mutationFn: ({ frameIds, tagId }: { frameIds: number[]; tagId: number }) => batchAddTag(frameIds, tagId),
-    onSuccess: (data) => {
+  const completeBatchTag = useCallback(
+    (data: { tagged_count: number }) => {
       queryClient.invalidateQueries({ queryKey: ['frames'] })
       queryClient.invalidateQueries({ queryKey: ['frame-tags'] })
       addToast('success', t('timeline.batchTagged', { count: data.tagged_count }))
       exitSelectMode()
     },
+    [exitSelectMode, queryClient, t],
+  )
+
+  const batchTagMutation = useMutation({
+    mutationFn: ({ frameIds, tagId }: { frameIds: number[]; tagId: number }) => batchAddTag(frameIds, tagId),
+    onSuccess: completeBatchTag,
+    onError: (error, { frameIds, tagId }) => {
+      void recoverTagMutation(error, async () => {
+        const data = await batchAddTag(frameIds, tagId)
+        completeBatchTag(data)
+      })
+    },
   })
 
   const handleRangeChange = useCallback(
     (from: string | undefined, to: string | undefined) => {
-      setDateRange({ from, to })
-      setPage(0)
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev)
+          const curFrom = p.get('from') ?? undefined
+          const curTo = p.get('to') ?? undefined
+          const changed = from !== curFrom || to !== curTo
+          if (from) p.set('from', from)
+          else p.delete('from')
+          if (to) p.set('to', to)
+          else p.delete('to')
+          // Reset to the first page only on a genuine range change — the
+          // DateRangePicker re-fires the same range on every mount, and we must
+          // not clobber a persisted `page` on route re-entry (CJ-02-09).
+          if (changed) p.delete('page')
+          return p
+        },
+        { replace: true },
+      )
     },
-    [setPage],
+    [setSearchParams],
   )
 
   const { data: allTags = [] } = useQuery({
-    queryKey: ['tags'],
+    queryKey: TAGS_QUERY_KEY,
     queryFn: fetchTags,
   })
 
@@ -162,23 +272,75 @@ export default function TimelineLayout() {
     enabled: !!selectedFrame,
   })
 
+  const invalidateFrameTags = useCallback(
+    (frameId: number) => queryClient.invalidateQueries({ queryKey: ['frame-tags', frameId] }),
+    [queryClient],
+  )
+
   const addTagMutation = useMutation({
     mutationFn: ({ frameId, tagId }: { frameId: number; tagId: number }) => addTagToFrame(frameId, tagId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['frame-tags', selectedFrame?.id] })
+    onSuccess: (_data, { frameId }) => {
+      invalidateFrameTags(frameId)
+    },
+    onError: (error, { frameId, tagId }) => {
+      void recoverTagMutation(error, async () => {
+        await addTagToFrame(frameId, tagId)
+        await invalidateFrameTags(frameId)
+      })
     },
   })
 
   const removeTagMutation = useMutation({
     mutationFn: ({ frameId, tagId }: { frameId: number; tagId: number }) => removeTagFromFrame(frameId, tagId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['frame-tags', selectedFrame?.id] })
+    onSuccess: (_data, { frameId }) => {
+      invalidateFrameTags(frameId)
+    },
+    onError: (error, { frameId, tagId }) => {
+      void recoverTagMutation(error, async () => {
+        await removeTagFromFrame(frameId, tagId)
+        await invalidateFrameTags(frameId)
+      })
     },
   })
 
+  // Segments come from the same `/api/timeline` the replay screen already uses
+  // — no new endpoint. Scoped to the PICKED range, never the segment, or
+  // drilling in would erase the axis you drilled from.
+  const { data: timeline } = useQuery({
+    queryKey: ['timeline-segments', dateRange.from, dateRange.to],
+    queryFn: () => fetchTimeline({ from: dateRange.from, to: dateRange.to }),
+    staleTime: 120_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const selectSegment = useCallback(
+    (segment: { start: string; end: string } | null) => {
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev)
+          if (segment) {
+            p.set('seg', segment.start)
+            p.set('segEnd', segment.end)
+          } else {
+            p.delete('seg')
+            p.delete('segEnd')
+          }
+          // Page numbers do not survive a range change — page 7 of the whole
+          // window is not page 7 of one segment, and leaving it would show an
+          // empty list that looks like "no frames here".
+          p.delete('page')
+          return p
+        },
+        { replace: true },
+      )
+      setPage(0)
+    },
+    [setPage, setSearchParams],
+  )
+
   const { data: response, isLoading } = useQuery({
-    queryKey: ['frames', page, dateRange.from, dateRange.to],
-    queryFn: () => fetchFrames(dateRange.from, dateRange.to, pageSize, page * pageSize),
+    queryKey: ['frames', page, effectiveRange.from, effectiveRange.to],
+    queryFn: () => fetchFrames(effectiveRange.from, effectiveRange.to, pageSize, page * pageSize),
     staleTime: 120_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -349,7 +511,11 @@ export default function TimelineLayout() {
             {filteredFrames.length !== frames.length && ` (${filteredFrames.length}${t('timeline.showing')})`}
           </span>
         </div>
-        <DateRangePicker onRangeChange={handleRangeChange} />
+        <DateRangePicker onRangeChange={handleRangeChange} initialFrom={dateRange.from} initialTo={dateRange.to} />
+      </div>
+
+      <div className="mb-4">
+        <SegmentNavigator segments={timeline?.segments ?? []} selectedStart={segmentStart} onSelect={selectSegment} />
       </div>
 
       <Outlet context={ctx} />
@@ -357,7 +523,7 @@ export default function TimelineLayout() {
       {/* Lightbox */}
       {lightboxOpen && selectedFrame?.image_url && (
         <Lightbox
-          imageUrl={resolveImageUrl(selectedFrame.image_url) ?? selectedFrame.image_url}
+          imageUrl={selectedFrame.image_url}
           alt={selectedFrame.window_title}
           onClose={() => setLightboxOpen(false)}
           onPrev={selectedIndex > 0 ? goToPrev : undefined}

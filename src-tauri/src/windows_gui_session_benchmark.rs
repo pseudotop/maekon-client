@@ -83,6 +83,13 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
 ) -> Value {
     let started = Instant::now();
     let catalog = benchmark_catalog();
+    // #7947: this standalone benchmark reads ONLY the explicit env override and
+    // deliberately does not consult the keychain-provisioned secret (#7916/#7933)
+    // that the app auto-provisions at launch — the keychain resolver blocks on the
+    // runtime handle from the SYNC launch path, which would panic if called from
+    // within this already-async harness. So a run without the env var set is an
+    // env-provisioning gap for this benchmark, NOT a "secret is missing"
+    // condition in the shipped app (see the caveat below).
     let hmac_secret = std::env::var("MAEKON_GUI_TICKET_HMAC_SECRET")
         .ok()
         .map(|value| value.trim().to_string())
@@ -114,7 +121,13 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
     );
 
     if !hmac_secret_present {
-        caveats.push("MAEKON_GUI_TICKET_HMAC_SECRET is missing".to_string());
+        caveats.push(
+            "MAEKON_GUI_TICKET_HMAC_SECRET env override is unset; this benchmark reads \
+             only the env override and does not consult the keychain-provisioned secret \
+             (#7916/#7933) that the app auto-provisions at launch, so it cannot exercise \
+             session creation here — set the env var to run the full GUI session E2E"
+                .to_string(),
+        );
         push_result(
             &mut results,
             CASE_LAUNCHER,
@@ -210,9 +223,27 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
     let overlay_driver = crate::platform_overlay::create_platform_overlay_driver();
     let input_driver: Arc<dyn InputDriver> = Arc::from(create_platform_input_driver());
     let audit_logger = Arc::new(RwLock::new(AuditLogger::new(200, 20)));
+    // Permissive is the only profile that reaches the Windows spawn path, and
+    // it is not a relaxation here — it is the containment Windows can actually
+    // enforce. `Standard`/`Strict` advertise filesystem, syscall and network
+    // isolation; Windows provides none of those, so
+    // `missing_required_containment_for_profile` fails them CLOSED rather than
+    // audit a resource-limited child as contained (#6422/#6734, 2026-06-23).
+    // Under Permissive the action still runs out-of-process in
+    // maekon-sandbox-worker under a restricted token (deny-only Administrators,
+    // write-restricted SID, privileges removed) inside a Job Object with the
+    // limits below — the containment this platform has.
+    //
+    // Asking for Strict here tested the guard, not the feature: the benchmark
+    // could not pass on Windows from the moment that guard landed, ten days
+    // after rc.6 was tagged, and the E19 lane had no runner afterwards (#10161)
+    // so nothing reported it. The profile in force is recorded in the readiness
+    // stage so the report states which containment the evidence was produced
+    // under rather than leaving it implied.
+    let sandbox_profile = SandboxProfile::Permissive;
     let sandbox_config = SandboxConfig {
         enabled: true,
-        profile: SandboxProfile::Strict,
+        profile: sandbox_profile,
         max_cpu_time_ms: 10_000,
         ..SandboxConfig::default()
     };
@@ -400,7 +431,73 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
     };
     let session_id = session_response.session.session_id.clone();
     let capability_token = session_response.capability_token.clone();
-    let candidate = session_response
+    // Why the matcher is reported per candidate: when it misses the fixture's
+    // Edit control it silently falls back to `.first()` — the window itself —
+    // and TypeText lands on a target that cannot change fixture text, which
+    // surfaces only as `verification_missing` two stages later with no clue
+    // about the cause. Reproduced identically on hosted Server SKU and on a
+    // Windows 11 client, so the miss is not environmental.
+    //
+    // Privacy: raw `label` is in-process only (UiSceneElement::label is
+    // skip_serializing) and must not reach the report. Emit the match verdicts
+    // and role/length metadata instead — enough to see WHICH predicate failed,
+    // with no element text.
+    // Screen rect the fixture published for its own input (see Write-State).
+    // Provider-independent identity: names and control types vary with which
+    // accessibility provider .NET serves, geometry does not.
+    let fixture_state_before = fixture.read_state().await.unwrap_or_default();
+    let input_center = fixture_input_center(&fixture_state_before);
+
+    let contains_input_center = |candidate: &maekon_core::models::gui::GuiCandidate| {
+        input_center.is_some_and(|(cx, cy)| {
+            let bbox = &candidate.element.bbox_abs;
+            let x = bbox.x as f64;
+            let y = bbox.y as f64;
+            let w = bbox.width as f64;
+            let h = bbox.height as f64;
+            // The window also contains the point; require a control-sized box so
+            // the input wins over its ancestor.
+            cx >= x && cx <= x + w && cy >= y && cy <= y + h && h <= 120.0
+        })
+    };
+
+    let candidate_diagnostics: Vec<Value> = session_response
+        .session
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let masked = candidate.element.text_masked.as_deref();
+            let effective = masked.unwrap_or(&candidate.element.label);
+            let role = candidate.element.role.as_deref().unwrap_or_default();
+            json!({
+                "element_id": candidate.element.element_id,
+                "role": role,
+                "masked_present": masked.is_some(),
+                "masked_len": masked.map(str::len).unwrap_or(0),
+                "raw_label_len": candidate.element.label.len(),
+                "bbox_abs": {
+                    "x": candidate.element.bbox_abs.x,
+                    "y": candidate.element.bbox_abs.y,
+                    "width": candidate.element.bbox_abs.width,
+                    "height": candidate.element.bbox_abs.height,
+                },
+                "match_input_rect": contains_input_center(candidate),
+                // Which predicate would have matched, evaluated on the same
+                // values the selector uses.
+                "match_effective_spaced": effective.contains("Maekon E2E Input"),
+                "match_effective_compact": effective.contains("MaekonE2EInput"),
+                "match_role_edit": role.contains("ControlType.Edit"),
+                // The raw label is what the fixture actually set; if this
+                // matches while the effective one does not, masking is the
+                // reason the selector missed.
+                "match_raw_spaced": candidate.element.label.contains("Maekon E2E Input"),
+                "match_raw_compact": candidate.element.label.contains("MaekonE2EInput"),
+                "confidence": candidate.element.confidence,
+            })
+        })
+        .collect();
+
+    let matched_candidate = session_response
         .session
         .candidates
         .iter()
@@ -414,9 +511,20 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
             label.contains("Maekon E2E Input")
                 || label.contains("MaekonE2EInput")
                 || role.contains("ControlType.Edit")
+                // Geometry last: only reached when the accessibility tree does
+                // not name or type the control, which is exactly the observed
+                // legacy-provider case.
+                || contains_input_center(candidate)
         })
-        .or_else(|| session_response.session.candidates.first())
         .cloned();
+    let selector_matched = matched_candidate.is_some();
+    // No silent fallback to `.first()`. That fallback is what turned "the input
+    // control was never found" into a TypeText aimed at the window, surfacing
+    // two stages later as an unexplained `verification_missing` — the failure
+    // this harness spent several runs mis-attributing. If the fixture's own
+    // input cannot be identified, the candidate case is what failed, and it
+    // says so with the per-candidate verdicts alongside.
+    let candidate = matched_candidate;
 
     stages.push(json!({
         "stage": "propose",
@@ -424,6 +532,8 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
         "scene_id_prefix": session_response.session.scene.scene_id.chars().take(18).collect::<String>(),
         "element_count": session_response.session.scene.elements.len(),
         "candidate_count": session_response.session.candidates.len(),
+        "selector_matched": selector_matched,
+        "candidate_diagnostics": candidate_diagnostics,
         "capability_token_present": !capability_token.trim().is_empty(),
     }));
     push_result(
@@ -441,13 +551,22 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
     );
 
     let Some(candidate) = candidate else {
-        caveats.push("GUI session produced no candidate".to_string());
+        let message = if session_response.session.candidates.is_empty() {
+            "GUI session produced no candidate".to_string()
+        } else {
+            format!(
+                "no candidate matched the fixture input among {} candidates \
+                 (see candidate_diagnostics for each predicate's verdict)",
+                session_response.session.candidates.len()
+            )
+        };
+        caveats.push(message.clone());
         push_result(
             &mut results,
             CASE_CANDIDATE,
             GuiBenchmarkOutcome::Fail,
             Some(GuiBenchmarkFailureMode::EmptyEvidence),
-            "GUI session produced no candidate",
+            &message,
             input_execution_mode,
             verification_mode,
             vec![GuiEvidenceArtifactKind::GuiSessionEvent],
@@ -637,6 +756,35 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
         .map(|result| result.result.success && result.outcome.succeeded)
         .unwrap_or(false);
 
+    // Why the reason is reported: with the right element now selected, a failed
+    // execution said only `controller_success: false` — the audit log recorded
+    // "started" then "failed" while the report carried no cause at all, on both
+    // a hosted runner and a Windows 11 client. IntentResult::error and
+    // GuiExecutionOutcome::detail already hold it; surface them (sanitized,
+    // like every other message here) so the next run names the failure instead
+    // of only proving it happened.
+    let (execute_error, execute_detail, execute_steps, execute_retries, execute_verification) =
+        match execute_result.as_ref() {
+            Ok(result) => (
+                result.result.error.as_deref().map(sanitize_error),
+                result.outcome.detail.as_deref().map(sanitize_error),
+                Some((result.outcome.steps_completed, result.outcome.total_steps)),
+                Some(result.result.retry_count),
+                result
+                    .result
+                    .verification
+                    .as_ref()
+                    .map(|v| json!({ "screen_changed": v.screen_changed, "changed_regions": v.changed_regions })),
+            ),
+            Err(error) => (
+                Some(sanitize_error(&error.to_string())),
+                None,
+                None,
+                None,
+                None,
+            ),
+        };
+
     stages.push(json!({
         "stage": "execute",
         "controller_result_ok": execute_result.is_ok(),
@@ -646,6 +794,15 @@ async fn run_windows_gui_session_e2e_benchmark_inner(
         "before_text_len": fixture_state_text_len(&before_state),
         "after_text_len": after_state.ok().as_ref().map(|state| fixture_state_text_len(state)),
         "raw_text_hash": short_hash(&expected_text),
+        // States the containment the evidence was produced under, rather than
+        // leaving it implied by the platform.
+        "sandbox_profile": format!("{sandbox_profile:?}"),
+        "sandbox_containment": "out-of-process worker under a restricted token (deny-only Administrators, write-restricted SID, privileges removed) inside a Job Object; Windows enforces no filesystem, syscall or network isolation",
+        "execute_error": execute_error,
+        "execute_detail": execute_detail,
+        "execute_steps": execute_steps.map(|(done, total)| json!({ "completed": done, "total": total })),
+        "execute_retry_count": execute_retries,
+        "execute_verification": execute_verification,
         "computer_use_separation": "fixture launch/focus only; confirmed GUI action executed through Maekon gui_execute",
     }));
 
@@ -801,7 +958,7 @@ fn benchmark_catalog() -> GuiBenchmarkHarnessCatalog {
     serde_json::from_str(include_str!(
         "../../docs/contracts/gui-benchmark-harness.v1.json"
     ))
-    .expect("GUI benchmark harness contract must be valid")
+    .unwrap_or_else(|error| panic!("GUI benchmark harness contract must be valid: {error}"))
 }
 
 fn readiness_snapshot(
@@ -1249,6 +1406,23 @@ param(
     [string]$statePath,
     [string]$title
 )
+# Opt this host process into modern WinForms accessibility BEFORE any WinForms
+# type is touched — LocalAppContextSwitches caches these on first read. Without
+# them .NET Framework serves the legacy HWND provider, under which every child
+# control surfaces as ControlType.Pane named by its window text and
+# AccessibleName is never exposed. A fixture in that state is not a realistic
+# stand-in for a target application (real apps expose Edit/Button with names),
+# and it is why candidate selection could not find this input: the observed
+# tree was Window + 3x Pane, with the text box unnamed.
+try {
+    [System.AppContext]::SetSwitch('Switch.System.Windows.Forms.UseLegacyAccessibilityFeatures', $false)
+    [System.AppContext]::SetSwitch('Switch.System.Windows.Forms.UseLegacyAccessibilityFeatures.2', $false)
+    [System.AppContext]::SetSwitch('Switch.System.Windows.Forms.UseLegacyAccessibilityFeatures.3', $false)
+    [System.AppContext]::SetSwitch('Switch.System.Windows.Forms.UseLegacyAccessibilityFeatures.4', $false)
+} catch {
+    # Older hosts without AppContext still run; the marker text below keeps the
+    # input identifiable under the legacy provider.
+}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -1269,6 +1443,13 @@ $label.Location = New-Object System.Drawing.Point(24, 24)
 $textBox = New-Object System.Windows.Forms.TextBox
 $textBox.Name = 'MaekonE2EInput'
 $textBox.AccessibleName = 'Maekon E2E Input'
+# The legacy provider names a control by its WINDOW TEXT and ignores
+# AccessibleName, so an empty input is anonymous there (observed: the only
+# name available was a 6-digit AutomationId). Seed the marker as text: it makes
+# the input identifiable under both providers, and it cannot fake the
+# verification, which looks for a unique timestamped MAEKON-E2E-<ms> string
+# that this marker never contains.
+$textBox.Text = 'MaekonE2EInput'
 $textBox.Width = 560
 $textBox.Location = New-Object System.Drawing.Point(24, 72)
 
@@ -1278,11 +1459,32 @@ $status.AutoSize = $true
 $status.Location = New-Object System.Drawing.Point(24, 118)
 
 function Write-State([string]$phase) {
+    # The fixture publishes its input's SCREEN RECT so the harness can identify
+    # that control without depending on how UIA happens to name it. Observed on
+    # hosted windows-latest and on a Windows 11 client alike: the legacy HWND
+    # provider surfaces every child as ControlType.Pane, and an Edit's window
+    # text is its VALUE rather than its Name, so the input arrives with only a
+    # numeric AutomationId. Geometry is the one identity the fixture can state
+    # exactly and every provider agrees on.
+    $rect = @{ x = 0; y = 0; width = 0; height = 0 }
+    try {
+        $origin = $textBox.PointToScreen([System.Drawing.Point]::new(0, 0))
+        $rect = @{
+            x = [int]$origin.X
+            y = [int]$origin.Y
+            width = [int]$textBox.Width
+            height = [int]$textBox.Height
+        }
+    } catch {
+        # Before the handle exists PointToScreen throws; the 'shown' write and
+        # every later write carry the real rect.
+    }
     $payload = [PSCustomObject]@{
         phase = $phase
         text = $textBox.Text
         text_len = $textBox.Text.Length
         title_hash_input_present = $true
+        input_rect = $rect
         updated_at = (Get-Date).ToString('o')
     }
     $payload | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 -Path $statePath
@@ -1305,6 +1507,23 @@ $form.Add_Shown({
 
 [System.Windows.Forms.Application]::Run($form)
 "#
+}
+
+/// Centre point of the input rect the fixture published, if it has one yet.
+///
+/// Returned in screen coordinates so it can be compared against candidate
+/// `bbox_abs` values directly.
+fn fixture_input_center(raw: &str) -> Option<(f64, f64)> {
+    let value = serde_json::from_str::<Value>(raw.trim_start_matches('\u{feff}')).ok()?;
+    let rect = value.get("input_rect")?;
+    let x = rect.get("x")?.as_f64()?;
+    let y = rect.get("y")?.as_f64()?;
+    let width = rect.get("width")?.as_f64()?;
+    let height = rect.get("height")?.as_f64()?;
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some((x + width / 2.0, y + height / 2.0))
 }
 
 fn fixture_state_text_len(raw: &str) -> usize {

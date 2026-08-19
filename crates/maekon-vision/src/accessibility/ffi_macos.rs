@@ -13,7 +13,6 @@
 #![allow(non_snake_case, non_upper_case_globals)]
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)] // consumed by sibling `macos.rs` module
 pub(crate) mod ax {
     use std::ffi::c_void;
 
@@ -28,12 +27,18 @@ pub(crate) mod ax {
     pub type AXError = i32;
     pub const kAXErrorSuccess: AXError = 0;
     pub const kAXErrorAPIDisabled: AXError = -25211;
+    // Declares the AXError surface actually documented by Apple, not just the
+    // subset current callers happen to branch on.
+    #[allow(dead_code)]
     pub const kAXErrorNoValue: AXError = -25212;
+    #[allow(dead_code)]
     pub const kAXErrorAttributeUnsupported: AXError = -25205;
+    #[allow(dead_code)]
     pub const kAXErrorNotImplemented: AXError = -25208;
     /// Returned when an AX request cannot complete — notably when a messaging
     /// timeout (see `AXUIElementSetMessagingTimeout`) elapses because the target
     /// app's main thread is hung.
+    #[allow(dead_code)]
     pub const kAXErrorCannotComplete: AXError = -25204;
 
     // Attribute key string values -- constructed at call time.
@@ -48,6 +53,9 @@ pub(crate) mod ax {
     pub const AX_PLACEHOLDER_VALUE_ATTR: &str = "AXPlaceholderValue";
     pub const AX_CHILDREN_ATTR: &str = "AXChildren";
     pub const AX_WINDOW_ATTR: &str = "AXWindow";
+    // Declares the AX attribute-key surface actually documented by Apple, not
+    // just the subset current callers happen to read.
+    #[allow(dead_code)]
     pub const AX_FOCUSED_WINDOW_ATTR: &str = "AXFocusedWindow";
 
     /// Create a CFStringRef from a Rust string constant.
@@ -234,9 +242,16 @@ pub(crate) mod ax {
         );
 
         /// Run the current thread's run loop indefinitely.
+        // Declared alongside the CFRunLoop functions actually called today
+        // (`CFRunLoopGetCurrent`/`AddSource`/`RemoveSource`) — current callers
+        // add the AX observer's source to a run loop that already runs
+        // elsewhere (the OS/Tauri main loop), so nothing here drives its own
+        // dedicated loop yet.
+        #[allow(dead_code)]
         pub fn CFRunLoopRun();
 
         /// Stop the current thread's run loop.
+        #[allow(dead_code)]
         pub fn CFRunLoopStop(rl: CFRunLoopRef);
     }
 

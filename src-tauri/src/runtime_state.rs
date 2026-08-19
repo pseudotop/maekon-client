@@ -12,6 +12,7 @@ use maekon_core::ports::monitor::ActivityMonitor;
 use maekon_core::ports::oauth::OAuthPort;
 use maekon_core::ports::session_storage::SessionStoragePort;
 use maekon_core::ports::stt_provider::SttProvider;
+use maekon_core::ports::transcript_storage::TranscriptStoragePort;
 use maekon_core::ports::vision::FrameProcessor;
 use maekon_core::ports::work_classifier::WorkTypeClassifier;
 use maekon_storage::sqlite::SqliteStorage;
@@ -22,7 +23,9 @@ use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::Arc;
 use tauri::{App, Manager};
 
+use crate::inflight_registry::InflightRegistry;
 use crate::magic_overlay::MagicOverlayHandle;
+use crate::scheduler::shared_regime_state::SharedRegimeState;
 use crate::session_manager::SessionManagerImpl;
 use crate::suggestion_manager::SuggestionManager;
 
@@ -31,6 +34,9 @@ pub(crate) type OAuthCoordinator =
     Option<Arc<maekon_network::oauth::refresh_coordinator::TokenRefreshCoordinator>>;
 #[cfg(not(feature = "analysis"))]
 pub(crate) type OAuthCoordinator = Option<()>;
+
+/// Shared finder slot observed by IPC state and scheduler even when automation builds later.
+pub(crate) type SceneFinderSlot = Arc<std::sync::OnceLock<Arc<dyn ElementFinder>>>;
 
 /// Health flags for the analysis LLM provider fallback chain.
 pub struct AnalysisHealthFlags {
@@ -57,6 +63,10 @@ pub struct CaptureContext {
 /// Audio capture, STT engine, and model management for voice input.
 pub struct AudioContext {
     pub capture: Option<Arc<dyn AudioCapturePort>>,
+    /// True only for the exact debug-only isolated QC audio fixture. The UI
+    /// readiness path uses this to avoid requiring a real Whisper model while
+    /// the synthetic adapter proves consent teardown without opening a mic.
+    pub synthetic_fixture: bool,
     /// RwLock allows hot-reload after model download.
     pub stt_engine: Arc<tokio::sync::RwLock<Option<Arc<dyn SttProvider>>>>,
     pub model_downloader: Option<Arc<dyn ModelDownloader>>,
@@ -74,6 +84,7 @@ impl AudioContext {
     pub(crate) fn disabled(model_dir: PathBuf) -> Self {
         Self {
             capture: None,
+            synthetic_fixture: false,
             stt_engine: Arc::new(tokio::sync::RwLock::new(None)),
             model_downloader: None,
             model_dir,
@@ -89,6 +100,14 @@ pub struct AiSessionRuntimeState {
     manager: Option<Arc<SessionManagerImpl>>,
     session_storage: Option<Arc<dyn SessionStoragePort>>,
     max_history_turns: u32,
+    /// #8057 (P3): abort handles for the in-flight `send_session_message` drain
+    /// tasks, keyed by session id. Lets `interrupt_session_turn` cancel a
+    /// background stream for a backend WITHOUT a native turn-interrupt
+    /// (HTTP/Ollama) so a "stop" actually halts BYOK token consumption. Each
+    /// entry carries a monotonic token so a finishing task only deregisters ITS
+    /// OWN registration (never a newer same-session turn); `abort_inflight`
+    /// aborts + removes.
+    inflight: Arc<InflightRegistry>,
 }
 
 impl Default for AiSessionRuntimeState {
@@ -97,6 +116,7 @@ impl Default for AiSessionRuntimeState {
             manager: None,
             session_storage: None,
             max_history_turns: 100,
+            inflight: Arc::new(InflightRegistry::default()),
         }
     }
 }
@@ -111,7 +131,21 @@ impl AiSessionRuntimeState {
             manager,
             session_storage,
             max_history_turns,
+            inflight: Arc::new(InflightRegistry::default()),
         }
+    }
+
+    /// Shared handle to the in-flight drain-task registry (#8057 P3). Cloned into
+    /// each spawned drain task so it can deregister itself on completion.
+    pub(crate) fn inflight_registry(&self) -> Arc<InflightRegistry> {
+        self.inflight.clone()
+    }
+
+    /// Abort the in-flight drain task for `session_id`, if any (#8057 P3):
+    /// stops background token consumption for backends without a native turn
+    /// interrupt. Returns true when a task was aborted.
+    pub(crate) fn abort_inflight(&self, session_id: &str) -> bool {
+        self.inflight.abort(session_id)
     }
 
     pub(crate) fn manager_impl(&self) -> Option<Arc<SessionManagerImpl>> {
@@ -184,6 +218,11 @@ pub struct AudioRuntimeState {
     /// Remembers (at the pause edge) whether VAD was running, so an unpause can
     /// auto-restart it. One-shot: set at pause, read-and-cleared at unpause.
     vad_resume_pending: Arc<AtomicBool>,
+    /// Local transcript persistence port (#8059). `None` in the `disabled()`
+    /// placeholder + test builders that skip storage wiring; when present, a
+    /// successful transcription is saved (best-effort) so it survives restart
+    /// and is reachable from keyword search.
+    transcript_storage: Option<Arc<dyn TranscriptStoragePort>>,
 }
 
 impl AudioRuntimeState {
@@ -192,6 +231,7 @@ impl AudioRuntimeState {
         consent_manager: Option<Arc<dyn ConsentManagerPort>>,
         capture_paused: Arc<AtomicBool>,
         audio: AudioContext,
+        transcript_storage: Option<Arc<dyn TranscriptStoragePort>>,
     ) -> Self {
         Self {
             config_manager,
@@ -200,6 +240,7 @@ impl AudioRuntimeState {
             audio,
             audio_regate: Arc::new(tokio::sync::Notify::new()),
             vad_resume_pending: Arc::new(AtomicBool::new(false)),
+            transcript_storage,
         }
     }
 
@@ -214,6 +255,7 @@ impl AudioRuntimeState {
             None,
             Arc::new(AtomicBool::new(true)),
             AudioContext::disabled(std::env::temp_dir().join("maekon-audio-models")),
+            None,
         )
     }
 
@@ -247,6 +289,13 @@ impl AudioRuntimeState {
     pub(crate) fn audio(&self) -> &AudioContext {
         &self.audio
     }
+
+    /// Local transcript persistence port (#8059). `None` when storage wiring is
+    /// absent (disabled placeholder / test builders); the persist path is a
+    /// no-op in that case, so transcription still succeeds.
+    pub(crate) fn transcript_storage(&self) -> Option<Arc<dyn TranscriptStoragePort>> {
+        self.transcript_storage.clone()
+    }
 }
 
 /// E20-41 (#4833): Tauri managed state holding the ephemeral per-session
@@ -279,11 +328,54 @@ impl ConfigRuntimeState {
     }
 }
 
+/// RAII reservation held for the duration of a single `run_suggestion_action`
+/// (T4.1 #7917). Reserve-then-execute (#6699 house pattern): the id is removed
+/// from the in-flight set when this guard drops, whether the run succeeded,
+/// errored, or panicked. No lock is held across an `.await`.
+pub(crate) struct ActionReservation {
+    in_flight: Arc<parking_lot::Mutex<std::collections::HashSet<String>>>,
+    suggestion_id: String,
+}
+
+impl Drop for ActionReservation {
+    fn drop(&mut self) {
+        self.in_flight.lock().remove(&self.suggestion_id);
+    }
+}
+
+/// Single-flight reservation for an explicit current-context suggestion run.
+/// The flag is released on every return path, including provider errors and
+/// task cancellation, because the reservation is owned by this RAII guard.
+pub(crate) struct CurrentContextRequestReservation {
+    in_flight: Arc<AtomicBool>,
+}
+
+impl Drop for CurrentContextRequestReservation {
+    fn drop(&mut self) {
+        self.in_flight
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Feature-scoped Tauri managed state for overlay suggestion IPC and shortcuts.
 #[derive(Default)]
 pub struct SuggestionRuntimeState {
     manager: Option<Arc<SuggestionManager>>,
     overlay: Option<MagicOverlayHandle>,
+    /// #7600: shared cross-loop regime snapshot, read by the feedback IPC
+    /// command to attach the live `regime_id` to `SuggestionFeedback` on
+    /// accept/reject/defer. `None` only in test builders that skip wiring.
+    shared_regime: Option<Arc<SharedRegimeState>>,
+    /// #7917: suggestion_ids with a `run_suggestion_action` currently in flight.
+    /// The command-level in-flight guard: a second concurrent run for the same
+    /// id is refused, so a double-fire cannot execute a (side-effectful) preset
+    /// twice under the Auto policy. The UI's disable-while-pending is a UX
+    /// nicety; this is the correctness guarantee.
+    in_flight: Arc<parking_lot::Mutex<std::collections::HashSet<String>>>,
+    /// At most one explicit current-context provider turn may run at once.
+    /// This prevents a double-click or concurrent IPC retry from producing two
+    /// provider calls for one user gesture.
+    current_context_in_flight: Arc<AtomicBool>,
 }
 
 impl SuggestionRuntimeState {
@@ -291,7 +383,50 @@ impl SuggestionRuntimeState {
         manager: Option<Arc<SuggestionManager>>,
         overlay: Option<MagicOverlayHandle>,
     ) -> Self {
-        Self { manager, overlay }
+        Self {
+            manager,
+            overlay,
+            shared_regime: None,
+            in_flight: Arc::default(),
+            current_context_in_flight: Arc::default(),
+        }
+    }
+
+    /// Reserve `suggestion_id` for execution. Returns `None` if a run for the
+    /// same id is already in flight (the caller must refuse). The returned guard
+    /// releases the reservation on drop (T4.1 #7917).
+    pub(crate) fn try_reserve_action(&self, suggestion_id: &str) -> Option<ActionReservation> {
+        let mut set = self.in_flight.lock();
+        if set.contains(suggestion_id) {
+            return None;
+        }
+        set.insert(suggestion_id.to_string());
+        Some(ActionReservation {
+            in_flight: self.in_flight.clone(),
+            suggestion_id: suggestion_id.to_string(),
+        })
+    }
+
+    pub(crate) fn try_reserve_current_context_request(
+        &self,
+    ) -> Option<CurrentContextRequestReservation> {
+        self.current_context_in_flight
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .ok()
+            .map(|_| CurrentContextRequestReservation {
+                in_flight: self.current_context_in_flight.clone(),
+            })
+    }
+
+    /// Attach the shared cross-loop regime snapshot (#7600, chainable).
+    pub(crate) fn with_shared_regime(mut self, shared_regime: Arc<SharedRegimeState>) -> Self {
+        self.shared_regime = Some(shared_regime);
+        self
     }
 
     pub(crate) fn manager(&self) -> Option<Arc<SuggestionManager>> {
@@ -300,6 +435,16 @@ impl SuggestionRuntimeState {
 
     pub(crate) fn overlay(&self) -> Option<MagicOverlayHandle> {
         self.overlay.clone()
+    }
+
+    /// The regime the user is (or was, as of the last monitor-loop tick) in,
+    /// read from the shared cross-loop snapshot (#7600). `None` when regime
+    /// tracking is not wired (test builders) or no regime has been
+    /// classified yet.
+    pub(crate) fn current_regime_id(&self) -> Option<String> {
+        self.shared_regime
+            .as_ref()
+            .and_then(|r| r.snapshot().regime_id)
     }
 }
 
@@ -371,17 +516,19 @@ impl AutomationRuntimeState {
 /// instance and the runtime's populating handle observe the same cell.
 #[derive(Clone, Default)]
 pub struct SyncRuntimeState {
-    engine: Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>>,
+    engine: Arc<std::sync::OnceLock<Arc<maekon_core::sync_engine::SyncEngine>>>,
 }
 
 impl SyncRuntimeState {
-    pub(crate) fn engine(&self) -> Option<Arc<crate::sync_engine::SyncEngine>> {
+    pub(crate) fn engine(&self) -> Option<Arc<maekon_core::sync_engine::SyncEngine>> {
         self.engine.get().cloned()
     }
 
     /// Shared write-once slot handle for the agent runtime to populate once the
     /// `SyncEngine` has been built (#6264).
-    pub(crate) fn slot(&self) -> Arc<std::sync::OnceLock<Arc<crate::sync_engine::SyncEngine>>> {
+    pub(crate) fn slot(
+        &self,
+    ) -> Arc<std::sync::OnceLock<Arc<maekon_core::sync_engine::SyncEngine>>> {
         self.engine.clone()
     }
 }
@@ -389,7 +536,7 @@ impl SyncRuntimeState {
 /// Feature-scoped Tauri managed state for detection overlay IPC and shortcuts.
 pub struct DetectionRuntimeState {
     active: Arc<AtomicBool>,
-    scene_finder: Option<Arc<dyn ElementFinder>>,
+    scene_finder: SceneFinderSlot,
     overlay: Option<MagicOverlayHandle>,
 }
 
@@ -397,16 +544,16 @@ impl Default for DetectionRuntimeState {
     fn default() -> Self {
         Self {
             active: Arc::new(AtomicBool::new(false)),
-            scene_finder: None,
+            scene_finder: Arc::new(std::sync::OnceLock::new()),
             overlay: None,
         }
     }
 }
 
 impl DetectionRuntimeState {
-    pub(crate) fn new(
+    pub(crate) fn with_scene_finder_slot(
         active: Arc<AtomicBool>,
-        scene_finder: Option<Arc<dyn ElementFinder>>,
+        scene_finder: SceneFinderSlot,
         overlay: Option<MagicOverlayHandle>,
     ) -> Self {
         Self {
@@ -432,7 +579,7 @@ impl DetectionRuntimeState {
     }
 
     pub(crate) fn scene_finder(&self) -> Option<Arc<dyn ElementFinder>> {
-        self.scene_finder.clone()
+        self.scene_finder.get().cloned()
     }
 
     pub(crate) fn overlay(&self) -> Option<MagicOverlayHandle> {
@@ -450,16 +597,30 @@ pub struct ConnectionStatus {
     pub cli_connected: Arc<AtomicBool>,
 }
 
-#[allow(dead_code)] // runtime_handle/update_control stored for future scheduler access
 pub struct AppState {
+    // #7719: no `State<AppState>`-based IPC command reads this back — the
+    // startup sequence's own `LaunchContext`-style builders (update_runtime,
+    // launch_resources, background_runtime, web_server_runtime) hold and use
+    // their own runtime handle before `AppState` is even constructed. Kept
+    // for whenever a command needs to spawn directly off managed state.
+    #[allow(dead_code)]
     pub runtime_handle: tokio::runtime::Handle,
-    pub background_runtime: Arc<crate::bootstrap_runtime::ManagedBackgroundRuntime>,
+    // #7734: narrowed from `pub` — `ManagedBackgroundRuntime` itself is
+    // `pub(crate)` (composition-root internal), and nothing outside this
+    // crate ever read this field (private_interfaces lint fallout from the
+    // `[lib]` target enabler; behavior-neutral).
+    pub(crate) background_runtime: Arc<crate::bootstrap_runtime::ManagedBackgroundRuntime>,
     pub config: AppConfig,
     pub storage: Arc<SqliteStorage>,
     pub update_control: Option<UpdateControl>,
     pub update_action_tx: tokio::sync::mpsc::UnboundedSender<UpdateAction>,
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Shared flag for on-demand re-clustering requests from Tauri/REST.
+    // #7719: the SAME `Arc<AtomicBool>` is also threaded through the
+    // scheduler's tracking-schedule state (`scheduler/analysis_pipeline/*.rs`
+    // access it as `ts.recluster_requested`) — that path is what's actually
+    // read; nothing reads it off `AppState` directly today.
+    #[allow(dead_code)]
     pub recluster_requested: Arc<std::sync::atomic::AtomicBool>,
     /// MagicOverlay handle for transparent coaching overlay window.
     pub magic_overlay: Option<MagicOverlayHandle>,
@@ -475,6 +636,10 @@ pub struct AppState {
     pub connection: ConnectionStatus,
     /// Focus mode state — transient, not persisted. Suppresses coaching + notifications.
     pub focus_mode: Arc<crate::focus_mode::FocusModeState>,
+    /// The same analyzer instance used by scheduler loops. Consent commands use
+    /// this handle to clear in-memory activity-pattern state immediately after
+    /// the own-field permission closes.
+    pub focus_analyzer: Option<Arc<maekon_analysis::focus_analyzer::FocusAnalyzer>>,
     /// Capture-related resources for IPC commands (A1, A2).
     pub capture: CaptureContext,
     /// Analysis provider health (None when no LLM configured).
@@ -492,7 +657,6 @@ pub struct AppState {
 
 pub struct OAuthState(pub Option<Arc<dyn OAuthPort>>);
 
-#[allow(dead_code)] // Tauri managed state; inner accessed via pattern match in commands
 pub struct OAuthCoordinatorState(pub OAuthCoordinator);
 
 #[derive(Debug, Clone, Serialize)]
@@ -507,9 +671,21 @@ pub struct SecretBackendCapabilities {
 
 pub struct SecretBackendState(pub SecretBackendCapabilities);
 
-#[allow(dead_code)] // Tauri managed state; inner accessed via pattern match in commands
+// #7719: `app.manage(self.integration_session_state)` registers this as
+// Tauri-managed state, but no IPC command currently extracts
+// `State<IntegrationSessionState>` — same "kept for state-registration
+// symmetry" situation as `IntegrationAuthState` below (#7600).
+#[allow(dead_code)]
 pub struct IntegrationSessionState(pub Option<Arc<dyn IntegrationSessionPort>>);
 
+// #7600: the IPC commands that read this (integration_auth_status,
+// integration_start_device_authorization, integration_poll_device_authorization,
+// integration_cancel_device_authorization, integration_reset_auth_state) were
+// removed as dead duplicates — the frontend drives device-auth via the
+// embedded HTTP API instead. The same `Arc<dyn IntegrationAuthPort>` value is
+// still constructed and wired to `web_server_runtime` for that HTTP path;
+// this Tauri-managed wrapper is kept for state-registration symmetry.
+#[allow(dead_code)]
 pub struct IntegrationAuthState(pub Option<Arc<dyn IntegrationAuthPort>>);
 
 #[derive(Clone)]
@@ -772,9 +948,75 @@ fn credential_backend_kind_to_wire(value: CredentialBackendKind) -> &'static str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use maekon_core::error::CoreError;
+    use maekon_core::models::intent::{ElementBounds, UiElement};
+    use maekon_core::models::ui_scene::UiScene;
     use maekon_web::update_control::UpdateAction;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
+
+    struct TestElementFinder;
+
+    #[async_trait]
+    impl ElementFinder for TestElementFinder {
+        async fn find_element(
+            &self,
+            _text: Option<&str>,
+            _role: Option<&str>,
+            _region: Option<&ElementBounds>,
+        ) -> Result<Vec<UiElement>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn analyze_scene(
+            &self,
+            _app_name: Option<&str>,
+            _screen_id: Option<&str>,
+        ) -> Result<UiScene, CoreError> {
+            Err(CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: "test finder does not analyze scenes".to_string(),
+            })
+        }
+
+        async fn analyze_scene_from_image(
+            &self,
+            _image_data: Vec<u8>,
+            _image_format: String,
+            app_name: Option<&str>,
+            screen_id: Option<&str>,
+        ) -> Result<UiScene, CoreError> {
+            self.analyze_scene(app_name, screen_id).await
+        }
+
+        fn name(&self) -> &str {
+            "test"
+        }
+    }
+
+    #[test]
+    fn detection_runtime_state_observes_late_scene_finder_slot_population() {
+        let active = Arc::new(AtomicBool::new(false));
+        let slot = Arc::new(std::sync::OnceLock::new());
+        let state = DetectionRuntimeState::with_scene_finder_slot(active, slot.clone(), None);
+        assert!(
+            state.scene_finder().is_none(),
+            "scene finder starts unavailable before automation runtime is built"
+        );
+
+        let finder: Arc<dyn ElementFinder> = Arc::new(TestElementFinder);
+        slot.set(finder.clone())
+            .unwrap_or_else(|_| panic!("scene finder slot must be empty"));
+
+        let observed = state
+            .scene_finder()
+            .expect("late-populated scene finder must be visible to state readers");
+        assert!(
+            Arc::ptr_eq(&observed, &finder),
+            "state readers must observe the exact finder Arc published later"
+        );
+    }
 
     #[test]
     fn managed_state_builder_defaults_to_unavailable_secret_backend() {
@@ -812,6 +1054,7 @@ mod tests {
                     cli_connected: Arc::new(AtomicBool::new(false)),
                 },
                 focus_mode: Arc::new(crate::focus_mode::FocusModeState::new()),
+                focus_analyzer: None,
                 capture: CaptureContext {
                     frame_processor: None,
                     frame_storage: None,

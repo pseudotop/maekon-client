@@ -558,10 +558,35 @@ pub struct AnalysisSettings {
     pub min_confidence: f64,
     pub max_suggestions: u32,
     pub embedding_enabled: bool,
+    /// Whether the local LLM generates a natural-language daily-digest narrative
+    /// before embedding (maps to `analysis.embedding.llm_summary_enabled`). The
+    /// narrative pipeline only runs when analysis, embedding, and this flag are
+    /// all enabled; the rule-based digest always runs regardless.
+    pub llm_summary_enabled: bool,
     pub gui_intelligence_enabled: bool,
     pub text_intelligence_enabled: bool,
     /// Whether the EMA-based auto-tuner (drift detection + re-clustering) is active.
     pub auto_tuner_enabled: bool,
+    /// Master switch for the tiered-memory pipeline (`analysis.tiered_memory.enabled`).
+    ///
+    /// Powers /day, /week, recalibration segments, coaching goal progress, and
+    /// habit streaks. Before this field existed (#9629) the switch was readable
+    /// at boot but writable NOWHERE (no REST, no IPC, no UI), leaving those
+    /// surfaces permanently empty. `serde(default)` keeps payloads from older
+    /// frontends valid.
+    #[serde(default)]
+    pub tiered_memory_enabled: bool,
+    /// Regime-detection interval (`analysis.tiered_memory.regime_detection_interval_hours`).
+    ///
+    /// The AdvancedTab control for this value previously (#9629) read a nested
+    /// key the server never sent and wrote a flat key serde dropped — a full
+    /// round-trip break. A flat contract field fixes both directions.
+    #[serde(default = "default_regime_detection_interval_hours")]
+    pub regime_detection_interval_hours: i64,
+}
+
+fn default_regime_detection_interval_hours() -> i64 {
+    2
 }
 
 impl Default for AnalysisSettings {
@@ -572,9 +597,12 @@ impl Default for AnalysisSettings {
             min_confidence: 0.5,
             max_suggestions: 5,
             embedding_enabled: true,
+            llm_summary_enabled: false,
             gui_intelligence_enabled: true,
             text_intelligence_enabled: true,
             auto_tuner_enabled: true,
+            tiered_memory_enabled: false,
+            regime_detection_interval_hours: default_regime_detection_interval_hours(),
         }
     }
 }

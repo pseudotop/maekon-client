@@ -27,7 +27,6 @@ pub(crate) struct JobObjectLimits {
 #[derive(Debug, Clone)]
 pub(crate) struct TokenRestrictions {
     pub(crate) disable_admin_sid: bool,
-    #[allow(dead_code)] // Reserved for future SID-level restrictions
     pub(crate) disable_most_sids: bool,
     pub(crate) remove_privileges: bool,
 }
@@ -60,7 +59,11 @@ pub(crate) fn build_job_limits(config: &SandboxConfig) -> JobObjectLimits {
 /// Resolve the restricted-token policy for `config`'s profile. `disable_admin_sid`
 /// is always set (admin SID dropped on every tier — enforced as a deny-only SID
 /// via `SidsToDisable` in `super::windows::create_restricted_token`, #7071);
-/// Standard and Strict additionally restrict most SIDs and strip privileges.
+/// Standard and Strict additionally set `disable_most_sids` and strip
+/// privileges. The Win32 layer maps `disable_most_sids` to the Windows
+/// Write Restricted Code SID through `SidsToRestrict` + `WRITE_RESTRICTED`
+/// (#7979). Standard/Strict still fail closed until their filesystem, syscall,
+/// and network containment is real.
 pub(crate) fn build_token_restrictions(config: &SandboxConfig) -> TokenRestrictions {
     match config.profile {
         SandboxProfile::Permissive => TokenRestrictions {

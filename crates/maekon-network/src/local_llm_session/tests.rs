@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 
@@ -59,6 +60,7 @@ fn parse_ndjson_invalid_json_returns_error() {
 #[test]
 fn render_local_message_content_includes_optional_sections() {
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "Summarize this".to_string(),
         attachments: vec![Attachment::File {
@@ -102,6 +104,7 @@ fn render_local_message_content_includes_optional_sections() {
 #[test]
 fn render_local_message_content_skips_binary_attachment_previews() {
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "Summarize this".to_string(),
         attachments: vec![Attachment::File {
@@ -122,6 +125,7 @@ fn render_local_message_content_skips_binary_attachment_previews() {
 #[test]
 fn render_local_message_content_falls_back_to_response_format_when_schema_missing() {
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "Summarize this".to_string(),
         attachments: Vec::new(),
@@ -413,6 +417,7 @@ async fn ollama_404_maps_to_not_found_with_model_hint() {
     );
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -462,6 +467,7 @@ async fn ollama_500_maps_to_network_generic() {
     );
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -515,6 +521,7 @@ async fn repeated_failed_sends_do_not_grow_history() {
     );
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -574,6 +581,7 @@ async fn transport_error_rolls_back_pushed_user_message() {
     assert_eq!(baseline_len, 1);
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -637,6 +645,7 @@ async fn oversized_newline_free_body_is_rejected_not_oomed() {
     );
 
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -706,6 +715,7 @@ async fn aggregate_accumulated_response_is_capped() {
         Arc::new(AiSessionConfig::default()),
     );
     let message = SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: "hello".to_string(),
         attachments: vec![],
@@ -740,6 +750,74 @@ async fn aggregate_accumulated_response_is_capped() {
         saw_cap_error,
         "stream must terminate with the aggregate-cap error once accumulated > 8 MiB"
     );
+}
+
+/// #7574 regression: concurrent `send_message` calls on the same
+/// `LocalLlmSession` must serialize — the second turn blocks while the first
+/// turn's stream is still alive, and proceeds once that stream is dropped.
+/// Before the turn-guard fix, both calls would race directly on `history`
+/// (interleaved push/read of the shared `Vec<ChatMessage>`), so this test
+/// fails before the fix (the second call returns almost immediately instead
+/// of timing out).
+#[tokio::test]
+async fn local_llm_send_message_serializes_until_stream_drops() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/api/chat")
+        .with_status(200)
+        .with_body(
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},\"done\":true,\"eval_count\":1,\"prompt_eval_count\":1}\n",
+        )
+        .create_async()
+        .await;
+
+    let session = Arc::new(LocalLlmSession::new(
+        "serialize-session".to_string(),
+        "llama3".to_string(),
+        server.url(),
+        None,
+        Arc::new(AiSessionConfig::default()),
+    ));
+
+    fn user_message(content: &str) -> SessionMessage {
+        SessionMessage {
+            screen_derived: false,
+            role: MessageRole::User,
+            content: content.to_string(),
+            attachments: vec![],
+            tools: None,
+            context: None,
+            response_format: None,
+        }
+    }
+
+    let first_stream = session
+        .send_message(&user_message("first"))
+        .await
+        .expect("first turn should start");
+
+    let mut second = {
+        let session = session.clone();
+        tokio::spawn(async move { session.send_message(&user_message("second")).await })
+    };
+
+    // `ResponseStream` (the Ok type) is not `Debug`, so `.expect_err()` cannot be used
+    // here (it would need to format the Ok value); extract the concrete `Elapsed` via
+    // `.err()` instead — this still asserts the timeout actually fired, not merely a
+    // boolean `is_err()`.
+    tokio::time::timeout(Duration::from_millis(100), &mut second)
+        .await
+        .err()
+        .expect("second turn must wait while the first turn stream is still alive");
+
+    drop(first_stream);
+
+    let second_stream = tokio::time::timeout(Duration::from_millis(500), second)
+        .await
+        .expect("second turn should start once the first stream drops")
+        .expect("second task should not panic")
+        .expect("second send_message should succeed");
+    drop(second_stream);
 }
 
 /// #6205: the session HTTP client is built with connect + per-read timeouts via

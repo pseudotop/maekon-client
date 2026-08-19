@@ -4,7 +4,7 @@ use std::sync::Arc;
 use maekon_core::config::SandboxConfig;
 use maekon_core::error::CoreError;
 use maekon_core::ports::input_driver::InputDriver;
-use maekon_core::ports::sandbox::Sandbox;
+use maekon_core::ports::sandbox::{Sandbox, SandboxCapabilities};
 
 use crate::controller::{AutomationAction, CommandResult};
 use crate::sandbox::is_permissive_noop;
@@ -12,6 +12,28 @@ use crate::sandbox::is_permissive_noop;
 #[async_trait]
 pub trait AutomationActionDispatcher: Send + Sync {
     async fn dispatch(&self, action: &AutomationAction, config: &SandboxConfig) -> CommandResult;
+
+    /// What the wired sandbox can actually enforce.
+    ///
+    /// The gate asks this before naming a profile for a trusted internal
+    /// command, so it can request the strongest profile this platform can
+    /// honor instead of one the adapter will refuse (#10665).
+    ///
+    /// The default claims full containment, which keeps the previous behavior
+    /// for any dispatcher that does not answer: the gate then names `Strict`
+    /// exactly as before, and an adapter that cannot deliver it still fails
+    /// closed. Over-claiming here therefore cannot weaken containment — it can
+    /// only reproduce today's refusal.
+    fn sandbox_capabilities(&self) -> SandboxCapabilities {
+        SandboxCapabilities {
+            filesystem_isolation: true,
+            syscall_filtering: true,
+            network_isolation: true,
+            resource_limits: true,
+            process_isolation: true,
+            privilege_restriction: true,
+        }
+    }
 }
 
 pub struct SandboxActionDispatcher {
@@ -89,6 +111,10 @@ impl SandboxActionDispatcher {
 
 #[async_trait]
 impl AutomationActionDispatcher for SandboxActionDispatcher {
+    fn sandbox_capabilities(&self) -> SandboxCapabilities {
+        self.sandbox.capabilities()
+    }
+
     async fn dispatch(&self, action: &AutomationAction, config: &SandboxConfig) -> CommandResult {
         if !config.enabled {
             return match &self.inline_driver {
@@ -150,6 +176,27 @@ impl AutomationActionDispatcher for SandboxActionDispatcher {
                     );
                 }
             }
+        }
+
+        // Enabled + non-permissive path: we are about to route to the platform
+        // sandbox worker. If the wired sandbox cannot actually contain the action —
+        // a `NoOpSandbox` (available, but zero enforcement) or one reporting itself
+        // unavailable — executing here would drop the action yet report Success,
+        // corrupting the audit trail (#7476). Fail closed instead so an enabled,
+        // non-permissive command is never a silent no-op success. A disabled or
+        // permissive-noop config never reaches here (handled above), and a real
+        // platform sandbox reports its own `platform()`/`is_available()`.
+        if self.sandbox.platform() == "noop" || !self.sandbox.is_available() {
+            tracing::error!(
+                action = %crate::sandbox::redact_action(action),
+                sandbox = self.sandbox.platform(),
+                profile = ?config.profile,
+                "enabled non-permissive config resolved to a non-enforcing sandbox; refusing silent no-op success"
+            );
+            return CommandResult::Failed(
+                "Sandbox enabled but the wired sandbox provides no enforcement; refusing to run the action uncontained"
+                    .to_string(),
+            );
         }
 
         tracing::info!(
@@ -286,6 +333,33 @@ mod tests {
         assert!(
             matches!(result, CommandResult::Failed(ref message) if message.contains("disabled")),
             "disabled sandbox without an inline driver must not be a completed no-op, got {result:?}"
+        );
+    }
+
+    /// #7476: an enabled, non-permissive config that resolves to a `NoOpSandbox`
+    /// (zero enforcement, but `is_available() == true`) must fail closed rather than
+    /// letting the NoOp sandbox return `Ok(())` → a silent no-op `Success`.
+    #[tokio::test]
+    async fn enabled_nonpermissive_config_with_noop_sandbox_fails_closed() {
+        use crate::sandbox::NoOpSandbox;
+        let sandbox: Arc<dyn Sandbox> = Arc::new(NoOpSandbox);
+        let dispatcher = SandboxActionDispatcher::new(sandbox);
+
+        // enabled + Standard profile → not disabled, not permissive-noop → the
+        // guarded platform-worker path.
+        let config = SandboxConfig {
+            enabled: true,
+            profile: maekon_core::config::SandboxProfile::Standard,
+            ..Default::default()
+        };
+        let action = AutomationAction::KeyType {
+            text: "hello".to_string(),
+        };
+        let result = dispatcher.dispatch(&action, &config).await;
+
+        assert!(
+            matches!(result, CommandResult::Failed(ref message) if message.contains("no enforcement")),
+            "an enabled non-permissive config over a NoOp sandbox must fail closed, not silently succeed, got {result:?}"
         );
     }
 

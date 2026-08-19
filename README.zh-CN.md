@@ -21,17 +21,30 @@
 
 Maekon 是一款 Apache-2.0 local-first 桌面代理，可在不依赖 ONESHIM 的情况下独立使用。它提供本地上下文采集、由用户审核的下一步行动候选、策略门控自动化和内置仪表盘。基于 Rust 和 Tauri v2（WebView 外壳 + React 前端）构建，在 macOS、Windows 和 Linux 上提供原生性能。
 
+公开渠道是面向邀请制 Global Alpha 的早期 prerelease，不代表 stable release 或运营就绪。
+
 ## Source Build 快速开始
 
-公开仓库已经可用，但公开 GitHub Release 资产尚未发布。在第一个公开版本发布之前，请从本地 source checkout 运行 Maekon。
+公开仓库已经可用，`v0.0.1-rc.6` 是当前公开 prerelease。GitHub 的 `latest` endpoint 不包含 prerelease，因此验证 release binary 时请使用安装文档中的版本固定命令。开发和 debug build 请从本地 source checkout 运行。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
 cd maekon-client
+
+# Build the two bundled prerequisites the Tauri config requires before the app
+# can run from source (a fresh checkout has neither yet):
+#   1) the web dashboard frontend  -> crates/maekon-web/frontend/dist
+#   2) the sandbox-worker sidecar   -> src-tauri/maekon-sandbox-worker-<target-triple>
+(cd crates/maekon-web/frontend && pnpm install && pnpm build)
+cargo build -p maekon-sandbox-worker
+cp target/debug/maekon-sandbox-worker \
+  "src-tauri/maekon-sandbox-worker-$(rustc -vV | sed -n 's/host: //p')"
+
+# Run Maekon from source
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
-Release 安装命令记录在下面的安装文档中，并将在公开 Release 资产发布后成为推荐路径。如需版本锁定、签名验证和卸载说明：
+Release 安装命令记录在下面的安装文档中。如需 prerelease 版本锁定、签名验证和卸载说明：
 - 英文: [`docs/install.md`](./docs/install.md)
 - 韩文: [`docs/install.ko.md`](./docs/install.ko.md)
 
@@ -39,7 +52,7 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 
 - **将活动整理为受治理的工作洞察**: 在同一个地方追踪上下文、时间线、专注趋势、中断情况和已批准的自动化路径。
 - **设备端轻量运行**: 边缘处理（增量编码、缩略图、OCR）减少传输量，保持快速响应。
-- **生产级桌面技术栈**: 跨平台二进制文件、自动更新、系统托盘集成和本地 Web 仪表盘。
+- **在 Global Alpha 中评估桌面技术栈**: Prerelease 包含跨平台源码、更新基础、系统托盘集成和本地 Web 仪表盘；使用前请验证具体 build 与平台。
 
 ## 适用人群
 
@@ -60,7 +73,7 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 独立模式现已可用。
 
 联网模式仅作为可选的预览路径提供。
-独立模式仍是正式发布的生产级默认路径。
+独立模式是 Global Alpha 当前的默认评估路径。
 
 ## 安全与隐私概览
 
@@ -78,13 +91,30 @@ Release 安装命令记录在下面的安装文档中，并将在公开 Release 
 - 自动化事件契约: [docs/contracts/automation-event-contract.md](./docs/contracts/automation-event-contract.md)
 - AI 提供商契约: [docs/contracts/ai-provider-contract.md](./docs/contracts/ai-provider-contract.md)
 
+### 在源码中验证这些声明
+
+上述隐私声明不是营销文案 — 每一条都对应本仓库中可以直接阅读、构建和测试的代码。README 与源码从同一个已验证的代码树一起导出，因此本表描述的始终是它旁边的代码。
+
+| 声明 | 验证位置 |
+|---|---|
+| 排除/敏感应用在**捕获时点**被排除，而不仅是上传时 | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`)，接入捕获门控: [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
+| 声明为 egress policy 覆盖范围的 runtime 路径会记录到本地账本，并可在应用内浏览 (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + 读取路由: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| 记忆图谱积累的关于你的信念 (claims) 可浏览并可一键撤回 (Privacy → Claims) | claims 路由: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| 同意是 fail-closed 的: 没有有效授权就不捕获 | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
+| 视觉管线中的适用路径会在其文档化存储或 egress 步骤前应用已配置的 PII 过滤 | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| 支持的自动化执行路径按设计经过策略、沙箱和审计组件 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+
+### 源码同步策略
+
+本仓库是 Maekon 内部源码的**已验证快照导出**。快照按发布版本在验证后导出 — 发布标签标记已验证状态，仓库跟踪的是发布版本而非每个内部提交。README 与代码始终来自同一代码树，因此上述声明与代码的链接精确指向你正在阅读的检出内容。
+
 ## 功能特性
 
 ### 核心功能
 - **实时上下文监控**: 追踪活动窗口、系统资源和用户活动
 - **边缘图像处理**: 截图捕获、增量编码、缩略图和 OCR
 - **策略门控自动化**: 将已批准的动作通过策略检查、沙箱隔离和审计日志执行
-- **联网服务器功能（预览/可选）**: 可审核的下一步行动候选和反馈同步可用于分阶段验证，并非默认生产路径
+- **联网服务器功能（预览/可选）**: 可审核的下一步行动候选和反馈同步可用于分阶段验证，并非默认独立路径
 - **系统托盘**: 在后台运行，支持快速访问
 - **自动更新**: 基于 GitHub Releases 的自动更新
 - **跨平台**: 支持 macOS、Windows 和 Linux
@@ -164,7 +194,7 @@ MAEKON_TARGET_HARD_LIMIT_MB=6144 \
 ```
 
 联网模式仅为预览版本，需要显式配置服务器/认证信息才能启用。
-除非您的环境已验证联网模式，否则请使用独立模式作为默认生产路径。
+除非您的环境已验证联网模式，否则请使用独立模式作为 Global Alpha 默认路径。
 
 在无头 CI/远程调试会话中，macOS 托盘初始化可能因缺少 WindowServer 而失败，此时可使用：
 ```bash
@@ -214,17 +244,17 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-bash /tmp/maekon-install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
 ```
 
 ### 发布产物
@@ -256,11 +286,13 @@ Maekon 是应用显示名称。当前发布文件名会有意保留 `maekon-*`
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `MAEKON_EMAIL` | 登录邮箱（仅联网模式） | （独立模式下可选） |
-| `MAEKON_PASSWORD` | 登录密码（仅联网模式） | （独立模式下可选） |
 | `MAEKON_TESSDATA` | Tesseract 数据路径 | （可选） |
 | `MAEKON_DISABLE_TRAY` | 跳过系统托盘初始化（仅用于无头 CI/远程 GUI 冒烟测试） | `0` |
 | `RUST_LOG` | 日志级别 | `info` |
+
+登录凭据不从环境变量读取。请在 **设置 → 常规 → Account** 中登录（需要使用
+`--features server` 构建）。服务器 URL 在
+**设置 → Advanced → Network & Server** 中配置。
 
 ### 配置文件
 

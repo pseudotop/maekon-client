@@ -2,16 +2,20 @@ import { resolveApiUrl, resolveLocalAuthToken, withResolvedLocalAuthHeaders } fr
 import type {
   AppSettings,
   AppUsage,
+  AuditChainReport,
   AuditEntry,
+  AuditExportEntry,
   AutomationContracts,
   AutomationStats,
   AutomationStatus,
   BackupArchive,
   BackupParams,
+  ClaimListResponse,
   CoachingStatsToday,
   CoachingTemplateListDto,
   ConsentPermissions,
   ConsentSnapshot,
+  CreateFrameAnnotationRequest,
   CreateOverrideRequest,
   CreateTagRequest,
   DailyDigestResponse,
@@ -20,6 +24,7 @@ import type {
   DeleteResult,
   DesktopPermissionSnapshot,
   DiagnosticsBundleResponse,
+  EgressLedgerResponse,
   Event,
   ExecuteIntentHintRequest,
   ExecuteIntentHintResponse,
@@ -31,6 +36,7 @@ import type {
   FeatureCapabilitySnapshot,
   FocusMetricsResponse,
   Frame,
+  FrameAnnotation,
   GuiConfirmRequest,
   GuiConfirmResponse,
   GuiCreateSessionRequest,
@@ -73,12 +79,15 @@ import type {
   ReportParams,
   ReportResponse,
   RestoreResult,
+  RetractClaimResponse,
   SceneCalibrationReport,
   SearchParams,
   SearchResponse,
   SecretBackendCapabilities,
+  SemanticSearchCapabilities,
   SemanticSearchResult,
   Session,
+  SessionExportKind,
   StartPomodoroRequest,
   StorageStats,
   SuggestionDto,
@@ -99,6 +108,7 @@ import type {
   WorkflowPreset,
   WorkSession,
 } from './contracts'
+import { normalizeAppSettingsForUi } from './settings-normalization'
 import { handleStandaloneRequest, isStandaloneModeEnabled } from './standalone'
 
 export type * from './contracts'
@@ -108,7 +118,7 @@ const BASE_URL = '/api'
 const DEFAULT_TIMEOUT_MS = 10_000
 const MAX_RETRIES = 2
 
-class ApiClientError extends Error {
+export class ApiClientError extends Error {
   readonly code: string
   readonly status: number
 
@@ -118,6 +128,11 @@ class ApiClientError extends Error {
     this.code = code
     this.status = status
   }
+}
+
+/** Narrow an unknown request failure by its stable backend error code. */
+export function isApiErrorCode(error: unknown, code: string): error is ApiClientError {
+  return error instanceof ApiClientError && error.code === code
 }
 
 async function apiErrorFromResponse(response: Response): Promise<ApiClientError> {
@@ -295,7 +310,7 @@ export async function fetchStorageStats(): Promise<StorageStats> {
 export async function fetchSettings(): Promise<AppSettings> {
   const res = await fetchWithRetry(`${BASE_URL}/settings`)
   if (!res.ok) throw new Error('Settings query failed')
-  return res.json()
+  return normalizeAppSettingsForUi(await res.json())
 }
 
 export async function fetchIntegrationStatus(): Promise<IntegrationStatus> {
@@ -348,6 +363,19 @@ export async function cancelIntegrationDeviceAuthorization(
   return res.json()
 }
 
+// #8080 (CRT-PRV-QC-CJ-04-10): wires the EXISTING backend endpoint
+// `POST /integration/auth/reset` (handlers::integration::reset_auth_state).
+// It clears this device's local authorization state and any pending device
+// authorization flow — it does NOT revoke credentials at the identity
+// provider (no such endpoint exists yet; see PR follow-up note).
+export async function resetIntegrationAuth(): Promise<IntegrationDeviceAuthorizationCommandResult> {
+  const res = await fetchWithRetry(`${BASE_URL}/integration/auth/reset`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error('Integration authorization reset failed')
+  return res.json()
+}
+
 export async function fetchIntegrationInbox(): Promise<IntegrationInboxResponse> {
   const res = await fetchWithRetry(`${BASE_URL}/integration/inbox`)
   if (!res.ok) throw new Error('Integration inbox query failed')
@@ -393,7 +421,7 @@ export async function updateSettings(settings: AppSettings): Promise<AppSettings
     const err = await res.json().catch(() => ({ error: 'Failed to save settings' }))
     throw new Error(err.error || 'Failed to save settings')
   }
-  return res.json()
+  return normalizeAppSettingsForUi(await res.json())
 }
 
 export async function fetchProviderSurfaces(): Promise<ProviderSurfaceCatalog> {
@@ -540,8 +568,30 @@ export async function exportData(
 
   const res = await fetchWithRetry(`${BASE_URL}/export/${dataType}?${params}`)
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Viewer request failed' }))
-    throw new Error(err.error || 'Viewer request failed')
+    throw await apiErrorFromResponse(res)
+  }
+  return res.blob()
+}
+
+/**
+ * Download work sessions in a third-party interchange format (#9854).
+ *
+ * `GET /api/export/{ical,toggl}` has existed and been contract-frozen since
+ * before this call site — the server, handlers and OpenAPI entries were all in
+ * place with zero frontend callers, so the feature was unreachable.
+ *
+ * No `format` parameter: each endpoint emits one fixed format the receiving
+ * tool requires, and passing one would imply a choice the server ignores.
+ */
+export async function exportSessions(kind: SessionExportKind, from?: string, to?: string): Promise<Blob> {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+
+  const query = params.toString()
+  const res = await fetchWithRetry(`${BASE_URL}/export/${kind}${query ? `?${query}` : ''}`)
+  if (!res.ok) {
+    throw await apiErrorFromResponse(res)
   }
   return res.blob()
 }
@@ -556,6 +606,16 @@ export function downloadBlob(blob: Blob, filename: string): void {
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
 }
+
+/**
+ * Shared react-query cache key for the tag list.
+ *
+ * Four surfaces read it — the search facet, the timeline filter, the frame tag
+ * picker, and the settings management card, which also invalidates it after a
+ * rename or delete. Declaring the key inline in each caller is how a renamed
+ * tag ends up stale on one surface but not another; keep it here.
+ */
+export const TAGS_QUERY_KEY = ['tags'] as const
 
 export async function fetchTags(): Promise<Tag[]> {
   const res = await fetchWithRetry(`${BASE_URL}/tags`)
@@ -633,6 +693,36 @@ export async function batchAddTag(frameIds: number[], tagId: number): Promise<{ 
   })
   if (!res.ok) throw new Error(`batch tag: ${res.status}`)
   return res.json()
+}
+
+// ── Frame annotations (#8078 / CJ-02-04) ────────────────────────────────────
+// Local-only user notes attached to a captured frame. Backend: V30
+// `frame_annotations` table + `handlers::annotations`.
+
+export async function fetchFrameAnnotations(frameId: number): Promise<FrameAnnotation[]> {
+  const res = await fetchWithRetry(`${BASE_URL}/frames/${frameId}/annotations`)
+  if (!res.ok) throw new Error('annotation query failed')
+  return res.json()
+}
+
+export async function createFrameAnnotation(
+  frameId: number,
+  input: CreateFrameAnnotationRequest,
+): Promise<FrameAnnotation> {
+  const res = await fetchWithRetry(`${BASE_URL}/frames/${frameId}/annotations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) throw new Error(`create annotation: ${res.status}`)
+  return res.json()
+}
+
+export async function deleteFrameAnnotation(frameId: number, annotationId: string): Promise<void> {
+  const res = await fetchWithRetry(`${BASE_URL}/frames/${frameId}/annotations/${annotationId}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(`delete annotation: ${res.status}`)
 }
 
 export async function fetchReport(params: ReportParams): Promise<ReportResponse> {
@@ -777,6 +867,113 @@ export async function fetchAuditLogs(limit = 50, status?: string): Promise<Audit
   if (status) params.set('status', status)
   const res = await fetchWithRetry(`${BASE_URL}/automation/audit?${params}`)
   if (!res.ok) throw new Error('Audit log query failed')
+  return res.json()
+}
+
+// #7600: HTTP path for the durable audit-log hash-chain integrity check
+// (ADR-072). Standalone-browser counterpart of the desktop `verify_audit_log`
+// Tauri IPC command — used by the audit page's "Verify integrity" affordance
+// via the IS_TAURI switch so the compliance capability is reachable from
+// every frontend surface, not just the desktop webview.
+export async function fetchAuditVerify(): Promise<AuditChainReport> {
+  const res = await fetchWithRetry(`${BASE_URL}/audit/verify`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Audit chain verification failed' }))
+    throw new Error(err.error || 'Audit chain verification failed')
+  }
+  return res.json()
+}
+
+// #8081-B: audit-trail export. Fetches the durable automation audit entries
+// from `GET /api/audit/export` (newest-first, DoS-capped at 1000 server-side)
+// so the audit UI can offer a downloadable, privacy-bounded evidence snapshot.
+// Each entry carries only display evidence metadata; session_id and free-form
+// details are structurally omitted. Durable chain integrity is checked through
+// the separate audit verification endpoint. Backend returns 503
+// when the audit logger is not configured — surfaced as a thrown Error.
+export interface AuditExportParams {
+  commandId?: string
+  status?: string
+  limit?: number
+}
+
+export async function fetchAuditExport(params: AuditExportParams = {}): Promise<AuditExportEntry[]> {
+  const query = new URLSearchParams()
+  if (params.commandId) query.set('command_id', params.commandId)
+  if (params.status) query.set('status', params.status)
+  if (params.limit != null) query.set('limit', String(params.limit))
+  const suffix = query.toString() ? `?${query}` : ''
+  const res = await fetchWithRetry(`${BASE_URL}/audit/export${suffix}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Audit export failed' }))
+    throw new Error(err.error || 'Audit export failed')
+  }
+  return res.json()
+}
+
+// T1.2 (#7910): read-only egress transparency browser — "what left this device".
+// Serves the erase-retained #4803 egress ledger. When both `from` and `to`
+// (RFC3339) are supplied the server returns that inclusive range; otherwise the
+// most recent entries capped at `limit`.
+export interface EgressLedgerParams {
+  limit?: number
+  from?: string
+  to?: string
+}
+
+export async function fetchEgressLedger(params: EgressLedgerParams = {}): Promise<EgressLedgerResponse> {
+  const query = new URLSearchParams()
+  if (params.limit != null) query.set('limit', String(params.limit))
+  if (params.from) query.set('from', params.from)
+  if (params.to) query.set('to', params.to)
+  const suffix = query.toString() ? `?${query}` : ''
+  const res = await fetchWithRetry(`${BASE_URL}/privacy/egress-ledger${suffix}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Egress ledger query failed' }))
+    throw new Error(err.error || 'Egress ledger query failed')
+  }
+  return res.json()
+}
+
+// T1.3 (#7911): memory-graph claims browser — the durable ADR-023 beliefs the
+// agent accumulates about the user. Filters combine (AND); `status` omitted
+// hides retracted claims (pass 'retracted' or 'all' to include them). `from`/`to`
+// are epoch SECONDS on the claim's created_at.
+export interface ClaimListParams {
+  kind?: string
+  status?: string
+  from?: number
+  to?: number
+  limit?: number
+}
+
+export async function fetchClaims(params: ClaimListParams = {}): Promise<ClaimListResponse> {
+  const query = new URLSearchParams()
+  if (params.kind) query.set('kind', params.kind)
+  if (params.status) query.set('status', params.status)
+  if (params.from != null) query.set('from', String(params.from))
+  if (params.to != null) query.set('to', String(params.to))
+  if (params.limit != null) query.set('limit', String(params.limit))
+  const suffix = query.toString() ? `?${query}` : ''
+  const res = await fetchWithRetry(`${BASE_URL}/memory/claims${suffix}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Claims query failed' }))
+    throw new Error(err.error || 'Claims query failed')
+  }
+  return res.json()
+}
+
+// Retract a claim: flips it to `retracted` (hidden from digests + retrieval),
+// preserving the record. Idempotent — retracting a retracted claim is a 200
+// no-op (`already_retracted: true`).
+export async function retractClaim(claimId: string): Promise<RetractClaimResponse> {
+  const res = await fetchWithRetry(`${BASE_URL}/memory/claims/${encodeURIComponent(claimId)}/retract`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Retract failed' }))
+    throw new Error(err.error || 'Retract failed')
+  }
   return res.json()
 }
 
@@ -1126,6 +1323,17 @@ export async function openDesktopPermissionSettings(permissionKind: DesktopPermi
 // Production consent read/write (src-tauri/src/commands/consent.rs). Like the other
 // IPC wrappers, kept as a thin wrapper; the caller handles errors via isIpcError/errorMessageFromInvoke.
 
+/**
+ * Shared react-query cache key for the consent snapshot.
+ *
+ * Two surfaces observe it — Privacy → Data Controls (which also invalidates it
+ * after a grant) and the Advanced settings tab's read-only disclosure. They must
+ * agree on the key AND on the fetch options, because react-query takes fetch
+ * behaviour from the most recently mounted observer of a key; declaring the key
+ * inline in each caller made that behaviour mount-order dependent.
+ */
+export const CONSENT_QUERY_KEY = ['consent'] as const
+
 /** Reads and returns the current consent snapshot (status + originally granted permissions). */
 export async function getConsent(): Promise<ConsentSnapshot> {
   return tauriInvoke<ConsentSnapshot>('get_consent')
@@ -1336,6 +1544,15 @@ export async function fetchSemanticSearch(
     const err = await res.json().catch(() => ({ error: 'Semantic search failed' }))
     throw new Error(err.error || 'Semantic search failed')
   }
+  return res.json()
+}
+
+// #7600: capability check the Search page uses to honestly label/disable the
+// "Semantic" mode toggle instead of silently degrading (hybrid mode) or
+// surfacing an unexplained HTTP 501 (semantic mode) after the user searches.
+export async function fetchSemanticSearchCapabilities(): Promise<SemanticSearchCapabilities> {
+  const res = await fetchWithRetry(`${BASE_URL}/semantic-search/capabilities`)
+  if (!res.ok) throw new Error('Semantic search capability query failed')
   return res.json()
 }
 

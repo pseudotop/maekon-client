@@ -4,7 +4,7 @@
 //! Ensures API contract consistency across the workspace.
 
 // P2 nursery-hardening (PR-B): derive Eq alongside PartialEq when possible.
-#![deny(clippy::derive_partial_eq_without_eq)]
+// (Enforced workspace-wide via `[workspace.lints.clippy]`, #7719.)
 #![allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -33,6 +33,8 @@ pub mod common;
 pub mod dashboard;
 pub mod data;
 pub mod digests;
+pub mod effective_mapping;
+pub mod egress_ledger;
 pub mod error;
 pub mod events;
 pub mod export;
@@ -41,6 +43,7 @@ pub mod focus;
 pub mod frames;
 pub mod idle;
 pub mod integration;
+pub mod memory_claims;
 pub mod metrics;
 pub mod onboarding;
 pub mod playbooks;
@@ -58,7 +61,9 @@ pub mod stats;
 pub mod stream;
 pub mod suggestions;
 pub mod support;
+pub mod sync_setup;
 pub mod tags;
 pub mod timeline;
 pub mod tracking_schedule;
 pub mod update;
+pub mod wbs_xlsx_client;

@@ -9,15 +9,17 @@
 //! | `tokens.rs` | `TokenResponse`, `TokenState`, `TokenManager` struct, constructors, `get_token`, `is_authenticated` |
 //! | `refresh.rs` | `refresh()` with exponential-backoff retry + `parse_retry_after` |
 //! | `mod.rs` (this file) | `login`, `login_with_org`, `verify`, `logout`, `logout_all_sessions` |
-//! | `tests.rs` | All `#[cfg(test)]` content |
+//! | `tests.rs` | `#[cfg(test)]` login/verify/logout/refresh-retry coverage |
+//! | `persistence_tests.rs` | `#[cfg(test)]` #9459 session-persistence coverage |
 
+mod persistence_tests;
 mod refresh;
 mod tests;
 mod tokens;
 
 // Re-export the sole public type so that `use maekon_network::auth::TokenManager` continues
 // to work without any callsite changes.
-pub use tokens::TokenManager;
+pub use tokens::{SessionInfo, TokenManager};
 
 use chrono::{Duration, Utc};
 use maekon_core::error::CoreError;
@@ -64,10 +66,12 @@ impl TokenManager {
         if !resp.status().is_success() {
             let status = resp.status();
             // #6949: cap the login error response body (OOM guard)
-            let text =
-                crate::outbound::read_text_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
-                    .await
-                    .unwrap_or_default();
+            let text = maekon_http_core::outbound::read_text_capped(
+                resp,
+                maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
+            )
+            .await
+            .unwrap_or_default();
             let message = format!("login failure ({status}): {text}");
             // Semantic status mapping per iter-54..60. For login specifically,
             // 401/403 are definitive auth failures, but 429/503/504 indicate
@@ -94,21 +98,21 @@ impl TokenManager {
         }
 
         // #6949: cap the login token response body (OOM guard)
-        let token_bytes =
-            crate::outbound::read_body_capped(resp, crate::outbound::MAX_AUTH_RESPONSE_BYTES)
-                .await
-                .map_err(|e| match e {
-                    crate::outbound::BodyReadError::Transport(te) => CoreError::Auth {
-                        code: maekon_core::error_codes::AuthCode::Failed,
-                        message: format!("Token parsing failed: {te}"),
-                    },
-                    crate::outbound::BodyReadError::TooLarge { len, cap } => CoreError::Auth {
-                        code: maekon_core::error_codes::AuthCode::Failed,
-                        message: format!(
-                            "Token parsing failed: response too large ({len} > {cap})"
-                        ),
-                    },
-                })?;
+        let token_bytes = maekon_http_core::outbound::read_body_capped(
+            resp,
+            maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|e| match e {
+            maekon_http_core::outbound::BodyReadError::Transport(te) => CoreError::Auth {
+                code: maekon_core::error_codes::AuthCode::Failed,
+                message: format!("Token parsing failed: {te}"),
+            },
+            maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => CoreError::Auth {
+                code: maekon_core::error_codes::AuthCode::Failed,
+                message: format!("Token parsing failed: response too large ({len} > {cap})"),
+            },
+        })?;
         let token_resp: tokens::TokenResponse =
             serde_json::from_slice(&token_bytes).map_err(|e| CoreError::Auth {
                 code: maekon_core::error_codes::AuthCode::Failed,
@@ -131,7 +135,16 @@ impl TokenManager {
             access_token: token_resp.access_token,
             refresh_token: token_resp.refresh_token,
             expires_at,
+            identifier: Some(email.to_string()),
+            organization_id: Some(organization_id.to_string()),
         });
+        // #9491: this is a session transition. Bumping under the same write
+        // lock invalidates any refresh still in flight against the session this
+        // login replaced — otherwise a logout -> re-login sequence lets the
+        // previous account's rotated tokens land on top of this one.
+        self.bump_session_generation();
+        drop(state);
+        self.persist_current_state().await;
 
         debug!("login success, token: {expires_at}");
         Ok(())
@@ -180,6 +193,11 @@ impl TokenManager {
 
         let mut state = self.state.write().await;
         *state = None;
+        // #9491: session transition — see `login_with_org` above.
+        self.bump_session_generation();
+        drop(state);
+        // State is now `None`, so this clears the whole persisted namespace.
+        self.persist_current_state().await;
         debug!("logout completed");
         Ok(())
     }
@@ -209,6 +227,11 @@ impl TokenManager {
 
         let mut state = self.state.write().await;
         *state = None;
+        // #9491: session transition — see `login_with_org` above.
+        self.bump_session_generation();
+        drop(state);
+        // State is now `None`, so this clears the whole persisted namespace.
+        self.persist_current_state().await;
         debug!("logout_all_sessions completed");
         Ok(())
     }

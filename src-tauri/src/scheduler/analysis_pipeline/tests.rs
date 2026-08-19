@@ -4,8 +4,11 @@ use super::*;
 use chrono::{DateTime, Utc};
 use maekon_core::config::{ClusteringAlgorithm, PiiFilterLevel, TieredMemoryConfig};
 use maekon_core::error::CoreError;
+use maekon_core::models::app_registry::KeystrokeProfile;
 use maekon_core::models::event::{InputActivityEvent, KeyboardActivity, MouseActivity};
-use maekon_core::models::tiered_memory::{CalibrationEntry, PresetProfile, ResolvedParams};
+use maekon_core::models::tiered_memory::{
+    CalibrationEntry, PresetProfile, ResolvedParams, WorkType,
+};
 use maekon_core::ports::calibration_store::{CalibrationReader, CalibrationWriter};
 use maekon_core::types::TimeWindow;
 use std::sync::Arc;
@@ -85,9 +88,6 @@ impl maekon_core::ports::storage::StorageService for NoopStorage {
     async fn mark_as_sent(&self, _event_ids: &[String]) -> Result<(), CoreError> {
         Ok(())
     }
-    async fn mark_unsent_as_sent_before(&self, _before: DateTime<Utc>) -> Result<usize, CoreError> {
-        Ok(0)
-    }
     async fn enforce_retention(&self) -> Result<usize, CoreError> {
         Ok(0)
     }
@@ -146,6 +146,7 @@ fn make_trigger_state() -> AdaptiveTriggerState {
         last_drift_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         llm_summarizer: None,
         embedding_pipeline: None,
+        text_search: None,
         gui_pipeline_state: None,
         gui_work_type_refiner: maekon_analysis::GuiWorkTypeRefiner,
         llm_work_type_refiner: None,
@@ -275,6 +276,44 @@ async fn content_tracker_accumulates_on_same_app() {
     // Title bar parser parses "main.rs" from the VS Code title format
     assert!(!activities.is_empty());
     assert_eq!(activities[0].content_label, "main.rs");
+}
+
+#[tokio::test]
+async fn analysis_tick_uses_subcategory_classifier_for_terminal_commands() {
+    let mut ts = make_trigger_state();
+    let storage: Arc<dyn maekon_core::ports::storage::StorageService> = Arc::new(NoopStorage);
+    let mut input = make_input_snap();
+    input.app_name = "Terminal".to_string();
+    input.keyboard = KeyboardActivity {
+        keystrokes_per_min: 30,
+        total_keystrokes: 100,
+        typing_bursts: 1,
+        shortcut_count: 0,
+        correction_count: 0,
+    };
+    input.keystroke_profile = Some(KeystrokeProfile {
+        enter_ratio: 0.20,
+        total_keystrokes: 100,
+        ..KeystrokeProfile::default()
+    });
+
+    run_analysis_tick(
+        &mut ts,
+        "Terminal",
+        "dev@host: ~/projects/oneshim",
+        &None,
+        false,
+        &input,
+        None,
+        None,
+        &storage,
+        PiiFilterLevel::Off,
+    )
+    .await;
+
+    let activities = ts.content_tracker.drain_all(Utc::now());
+    assert_eq!(activities.len(), 1);
+    assert_eq!(activities[0].work_type, WorkType::TerminalCommands);
 }
 
 #[tokio::test]
@@ -413,6 +452,81 @@ async fn llm_summary_semaphore_caps_at_four() {
         .expect("semaphore must have a free permit after all 4 are dropped");
 }
 
+/// #8051 regression: closing a segment must index its content into the FTS5
+/// `search_fts` table so the dashboard "keyword" search mode returns data.
+/// Before this wiring the only content writers were test-only (dead-writer),
+/// so keyword search always returned empty in production.
+#[tokio::test]
+async fn segment_close_indexes_content_for_keyword_search() {
+    use maekon_analysis::content_tracker::ContentUpdateInput;
+    use maekon_analysis::TriggerDecision;
+    use maekon_core::models::tiered_memory::{ContentType, EngagementMetrics, TriggerInput};
+    use maekon_core::models::work_session::AppCategory;
+    use maekon_core::ports::text_search::TextSearchProvider;
+
+    // A single real in-memory SQLite instance is used as BOTH the segment
+    // store (StorageService) and the FTS content indexer (TextSearchProvider),
+    // mirroring the production Port Instance Sharing wiring.
+    let sqlite = Arc::new(maekon_storage::sqlite::SqliteStorage::open_in_memory(30).unwrap());
+    let storage: Arc<dyn maekon_core::ports::storage::StorageService> = sqlite.clone();
+
+    let mut ts = make_trigger_state();
+    ts.text_search = Some(sqlite.clone() as Arc<dyn TextSearchProvider>);
+
+    let now = Utc::now();
+
+    // 1. Open a segment.
+    super::segment::handle_segment_lifecycle(
+        &mut ts,
+        TriggerDecision::OpenSegment,
+        TriggerInput::AppSwitchNew {
+            app_name: "VS Code".to_string(),
+            prev_app: String::new(),
+            category: AppCategory::Development,
+        },
+        now,
+        &storage,
+    )
+    .await;
+
+    // 2. Accumulate distinctive content the summary will carry.
+    ts.content_tracker.update(ContentUpdateInput {
+        content_label: "authentication refactor".to_string(),
+        content_type: ContentType::File,
+        work_type: WorkType::ActiveCoding,
+        engagement: EngagementMetrics::default(),
+        confidence: 1.0,
+        timestamp: now,
+        gui_summary: None,
+    });
+
+    // 3. Close the segment (later, so duration > 0).
+    let later = now + chrono::Duration::seconds(120);
+    super::segment::handle_segment_lifecycle(
+        &mut ts,
+        TriggerDecision::CloseSegment,
+        TriggerInput::AppPoll {
+            app_name: "VS Code".to_string(),
+        },
+        later,
+        &storage,
+    )
+    .await;
+
+    // 4. The closed segment content is now keyword-searchable.
+    let hits = sqlite.search_fts("authentication", 10).await.unwrap();
+    assert_eq!(
+        hits.len(),
+        1,
+        "closed segment content must be indexed into FTS on close"
+    );
+    assert!(hits[0].matched_text.contains("authentication"));
+
+    // Negative control: an unrelated term does not match.
+    let miss = sqlite.search_fts("nonexistentterm", 10).await.unwrap();
+    assert!(miss.is_empty());
+}
+
 #[tokio::test]
 async fn drift_detection_sets_last_drift_flag() {
     let mut ts = make_trigger_state();
@@ -431,8 +545,86 @@ async fn drift_detection_sets_last_drift_flag() {
         .load(std::sync::atomic::Ordering::Relaxed));
 }
 
+/// #8045 C1: the periodic detection tick forwards retention-purged regime ids
+/// to the classifier, so a hard-deleted regime's per-regime reaction bucket is
+/// evicted in the same sweep (no dead keys accumulate on a 24/7 agent).
 #[tokio::test]
-async fn on_demand_recluster_keeps_request_when_samples_are_insufficient() {
+async fn retention_purge_cascades_to_classifier_stats() {
+    let mut ts = make_trigger_state();
+    let now = Utc::now();
+
+    // Seed an Archived regime idle far past the retention horizon
+    // (archive_days 30 + archived_retention_days 30 = 60d; use 100d). Its
+    // centroid is comm-heavy — far from the Development-category calibration
+    // features below — so update_from_detection cannot re-bind/reactivate it
+    // before the maintenance sweep runs.
+    let stale = maekon_core::models::tiered_memory::Regime {
+        regime_id: "regime-stale".to_string(),
+        name: None,
+        auto_label: "stale".to_string(),
+        centroid: maekon_core::models::tiered_memory::RegimeFeatures {
+            category_communication: 1.0,
+            avg_event_rate: 0.9,
+            avg_importance: 0.1,
+            context_activity_signal: 0.9,
+            communication_ratio: 0.9,
+            ..Default::default()
+        },
+        optimal_params: maekon_core::models::tiered_memory::TriggerParams::default(),
+        sample_count: 200,
+        first_seen: now - chrono::Duration::days(200),
+        last_seen: now - chrono::Duration::days(100),
+        status: maekon_core::models::tiered_memory::RegimeStatus::Archived,
+    };
+    ts.regime_manager.lock().hydrate_from(vec![stale]);
+
+    // Seed a per-regime reaction bucket for that regime in the classifier.
+    ts.regime_classifier.lock().record_user_reaction(
+        &maekon_core::models::suggestion::SuggestionFeedback {
+            suggestion_id: "s1".to_string(),
+            feedback_type: maekon_core::models::suggestion::FeedbackType::Accepted,
+            timestamp: now,
+            comment: None,
+            regime_id: Some("regime-stale".to_string()),
+        },
+    );
+    assert!(
+        ts.regime_classifier
+            .lock()
+            .per_regime_stats()
+            .contains_key("regime-stale"),
+        "precondition: classifier holds a bucket for the stale regime"
+    );
+
+    // Enough calibration entries (>= 50) so the detection branch reaches the
+    // maintenance sweep.
+    ts.calibration_reader = Arc::new(FewCalibrationReader {
+        entries: (0..60)
+            .map(|i| make_calibration_entry(now - chrono::Duration::minutes(i)))
+            .collect(),
+    });
+
+    super::regime::run_periodic_regime_detection(&mut ts, now).await;
+
+    assert!(
+        !ts.regime_manager
+            .lock()
+            .all_regimes()
+            .iter()
+            .any(|r| r.regime_id == "regime-stale"),
+        "expired archived regime must be hard-deleted by the maintenance sweep"
+    );
+    assert!(
+        !ts.regime_classifier
+            .lock()
+            .per_regime_stats()
+            .contains_key("regime-stale"),
+        "the purge must cascade: classifier per-regime bucket evicted in the same tick"
+    );
+}
+
+#[tokio::test]
+async fn on_demand_recluster_clears_request_when_samples_are_insufficient() {
     let mut ts = make_trigger_state();
     let now = Utc::now();
     let previous_detection = now - chrono::Duration::minutes(10);
@@ -446,9 +638,9 @@ async fn on_demand_recluster_keeps_request_when_samples_are_insufficient() {
     super::regime::run_periodic_regime_detection(&mut ts, now).await;
 
     assert!(
-        ts.recluster_requested
+        !ts.recluster_requested
             .load(std::sync::atomic::Ordering::Relaxed),
-        "insufficient samples must not consume the on-demand request"
+        "insufficient samples must consume the on-demand request to avoid a tick hot-loop"
     );
     assert_eq!(
         ts.last_detection_time,

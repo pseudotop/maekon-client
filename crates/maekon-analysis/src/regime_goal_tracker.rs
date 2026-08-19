@@ -2,6 +2,8 @@ use chrono::{Local, NaiveDate};
 use maekon_core::models::coaching::GoalProgress;
 use std::collections::HashMap;
 
+const GOAL_THRESHOLDS: [u8; 4] = [25, 50, 75, 100];
+
 /// Tracks per-regime daily time goals and fires threshold triggers
 /// at 25/50/75/100% milestones.
 ///
@@ -33,6 +35,46 @@ impl RegimeGoalTracker {
         self.goals = regime_goals.clone();
     }
 
+    /// Seed today's accumulated minutes (and reconstruct already-passed
+    /// notification thresholds) from persisted per-regime minute totals, so a
+    /// restart of the 24/7 agent does not reset same-day goal progress (#8052).
+    ///
+    /// `entries` is an iterator of `(regime_label, minutes_logged_today)` — the
+    /// caller must pass only rows whose stored (local) date is today. Minutes
+    /// are SET, not added: they are the authoritative persisted total for the
+    /// day, and a later `record_minutes` continues accruing from there.
+    ///
+    /// The persisted schema does not record WHICH milestones already fired, so
+    /// the already-crossed thresholds are reconstructed from the minutes/target
+    /// ratio (against the tracker's currently configured target) and marked
+    /// notified. This blocks the 25/50/75/100% coaching nudges from re-firing
+    /// for milestones reached earlier today; thresholds not yet crossed stay
+    /// armed and fire normally as more minutes accrue. A regime with no
+    /// configured goal keeps its seeded minutes but arms no thresholds.
+    pub fn hydrate_today_minutes(&mut self, entries: impl IntoIterator<Item = (String, u32)>) {
+        // Apply any pending rollover first so a seed that lands just after local
+        // midnight does not repopulate a stale prior day.
+        self.ensure_date_rollover();
+        for (regime_label, minutes) in entries {
+            if minutes == 0 {
+                continue;
+            }
+            self.today_minutes.insert(regime_label.clone(), minutes);
+            // Reconstruct already-passed thresholds from the seeded minutes and
+            // the current target so previously-fired milestones do not nudge
+            // again. `current_percentage` reads the value just inserted.
+            if let Some(percentage) = self.current_percentage(&regime_label) {
+                let crossed: Vec<u8> = GOAL_THRESHOLDS
+                    .into_iter()
+                    .filter(|threshold| percentage >= *threshold as u16)
+                    .collect();
+                if !crossed.is_empty() {
+                    self.notified_thresholds.insert(regime_label, crossed);
+                }
+            }
+        }
+    }
+
     /// Record additional minutes for a regime. Triggers date rollover if needed.
     pub fn record_minutes(&mut self, regime_label: &str, additional_minutes: u32) {
         self.ensure_date_rollover();
@@ -43,38 +85,59 @@ impl RegimeGoalTracker {
         *current = current.saturating_add(additional_minutes);
     }
 
-    /// Returns a newly crossed threshold (25, 50, 75, 100) if one was just
-    /// reached, or `None` if no new threshold was crossed.
+    /// Returns a crossed threshold without marking it as notified.
     ///
-    /// Each threshold fires exactly once per day per regime.
-    pub fn check_threshold(&mut self, regime_label: &str) -> Option<u8> {
+    /// Detection must be non-consuming because coaching guards (profile
+    /// disabled, snooze, cooldown, and effectiveness) can suppress a message
+    /// after a milestone is detected. Call `mark_threshold_notified` only after
+    /// a message has passed those guards and is about to be emitted.
+    pub fn peek_threshold(&mut self, regime_label: &str) -> Option<u8> {
         // Apply any pending date rollover before reading, so a check that lands
         // after local midnight (but before the next `record_minutes`) does not
         // fire thresholds against stale prior-day minutes.
         self.ensure_date_rollover();
+        self.next_unnotified_threshold(regime_label)
+    }
 
-        let target = match self.goals.get(regime_label) {
-            Some(&t) if t > 0 => t,
-            _ => return None,
+    /// Mark a crossed threshold as notified.
+    ///
+    /// Returns `false` when the threshold is unsupported, no longer crossed, or
+    /// was already notified by another caller.
+    pub fn mark_threshold_notified(&mut self, regime_label: &str, threshold: u8) -> bool {
+        self.ensure_date_rollover();
+
+        if !GOAL_THRESHOLDS.contains(&threshold) {
+            return false;
+        }
+        let Some(percentage) = self.current_percentage(regime_label) else {
+            return false;
         };
+        if percentage < threshold as u16 {
+            return false;
+        }
 
-        let current = self.today_minutes.get(regime_label).copied().unwrap_or(0);
-        let percentage = ((current as f64 / target as f64) * 100.0).min(u16::MAX as f64) as u16;
-
-        let thresholds = [25u8, 50, 75, 100];
         let notified = self
             .notified_thresholds
             .entry(regime_label.to_string())
             .or_default();
-
-        for &threshold in &thresholds {
-            if percentage >= threshold as u16 && !notified.contains(&threshold) {
-                notified.push(threshold);
-                return Some(threshold);
-            }
+        if notified.contains(&threshold) {
+            return false;
         }
+        notified.push(threshold);
+        notified.sort_unstable();
+        true
+    }
 
-        None
+    /// Returns a newly crossed threshold (25, 50, 75, 100) if one was just
+    /// reached, or `None` if no new threshold was crossed. This is the legacy
+    /// consuming API: callers that need guard-safe behavior should use
+    /// `peek_threshold` and `mark_threshold_notified`.
+    ///
+    /// Each threshold fires exactly once per day per regime.
+    pub fn check_threshold(&mut self, regime_label: &str) -> Option<u8> {
+        let threshold = self.peek_threshold(regime_label)?;
+        self.mark_threshold_notified(regime_label, threshold)
+            .then_some(threshold)
     }
 
     /// Current progress snapshot for a single regime.
@@ -118,6 +181,25 @@ impl RegimeGoalTracker {
         Local::now().date_naive() != self.tracking_date
     }
 
+    fn current_percentage(&self, regime_label: &str) -> Option<u16> {
+        let target = *self.goals.get(regime_label)?;
+        if target == 0 {
+            return None;
+        }
+        let current = self.today_minutes.get(regime_label).copied().unwrap_or(0);
+        Some(((current as f64 / target as f64) * 100.0).min(u16::MAX as f64) as u16)
+    }
+
+    fn next_unnotified_threshold(&self, regime_label: &str) -> Option<u8> {
+        let percentage = self.current_percentage(regime_label)?;
+        let notified = self.notified_thresholds.get(regime_label);
+
+        GOAL_THRESHOLDS.into_iter().find(|threshold| {
+            percentage >= *threshold as u16
+                && !notified.is_some_and(|values| values.contains(threshold))
+        })
+    }
+
     /// Clears counters and notified thresholds if the date has changed.
     fn ensure_date_rollover(&mut self) {
         if self.is_tracking_date_stale() {
@@ -152,6 +234,42 @@ mod tests {
         // Record 25 minutes of 100 target = 25%
         tracker.record_minutes("Deep Work", 25);
         assert_eq!(tracker.check_threshold("Deep Work"), Some(25));
+    }
+
+    #[test]
+    fn peek_threshold_does_not_consume_milestone() {
+        let mut tracker = tracker_with_goal("Deep Work", 100);
+        tracker.record_minutes("Deep Work", 25);
+
+        assert_eq!(tracker.peek_threshold("Deep Work"), Some(25));
+        assert_eq!(
+            tracker.peek_threshold("Deep Work"),
+            Some(25),
+            "peek must not mark the threshold as notified"
+        );
+        assert!(tracker.mark_threshold_notified("Deep Work", 25));
+        assert_eq!(tracker.peek_threshold("Deep Work"), None);
+    }
+
+    #[test]
+    fn mark_threshold_notified_requires_crossed_unnotified_threshold() {
+        let mut tracker = tracker_with_goal("Deep Work", 100);
+
+        assert!(
+            !tracker.mark_threshold_notified("Deep Work", 25),
+            "uncrossed threshold must not be committed"
+        );
+
+        tracker.record_minutes("Deep Work", 25);
+        assert!(tracker.mark_threshold_notified("Deep Work", 25));
+        assert!(
+            !tracker.mark_threshold_notified("Deep Work", 25),
+            "already-notified threshold must not be committed again"
+        );
+        assert!(
+            !tracker.mark_threshold_notified("Deep Work", 33),
+            "unsupported threshold must not be committed"
+        );
     }
 
     #[test]
@@ -238,6 +356,82 @@ mod tests {
         let mut tracker = RegimeGoalTracker::new();
         tracker.record_minutes("Unknown", 50);
         assert_eq!(tracker.check_threshold("Unknown"), None);
+    }
+
+    /// #8052 primary regression: a restart at noon after 80 of 100 minutes must
+    /// NOT under-report progress, NOT re-fire the 25/50/75% nudges already
+    /// delivered earlier today, and must still fire the 100% milestone once it
+    /// is genuinely reached. Also proves in-RAM minutes never regress below the
+    /// hydrated value as new minutes accrue.
+    #[test]
+    fn restart_hydration_noon_80_of_100_no_regression() {
+        // "Before restart": a fresh tracker accrued 80 min and fired 25/50/75.
+        // "After restart" is a brand-new tracker (in-RAM state lost) hydrated
+        // from the persisted 80-minute total.
+        let mut tracker = tracker_with_goal("Deep Work", 100);
+        tracker.hydrate_today_minutes([("Deep Work".to_string(), 80u32)]);
+
+        // 1. No under-report: progress surfaces the hydrated 80 min (not 0).
+        let progress = tracker.progress("Deep Work").unwrap();
+        assert_eq!(progress.current_minutes, 80);
+        assert_eq!(progress.percentage, 80);
+
+        // 2. No re-fire: 25/50/75 were reconstructed as notified, so no nudge.
+        assert_eq!(
+            tracker.check_threshold("Deep Work"),
+            None,
+            "already-passed thresholds must not re-fire after restart"
+        );
+
+        // 3. The 100% milestone was NOT yet crossed at 80 min, so it stays armed
+        //    and fires exactly once when minutes genuinely reach the target.
+        tracker.record_minutes("Deep Work", 20); // 80 -> 100
+        assert_eq!(
+            tracker.progress("Deep Work").unwrap().current_minutes,
+            100,
+            "post-restart minutes must accrue on top of the hydrated value"
+        );
+        assert_eq!(tracker.check_threshold("Deep Work"), Some(100));
+        assert_eq!(tracker.check_threshold("Deep Work"), None);
+    }
+
+    #[test]
+    fn hydrate_ignores_zero_and_seeds_multiple_regimes() {
+        let mut tracker = RegimeGoalTracker::new();
+        let mut goals = HashMap::new();
+        goals.insert("Deep Work".to_string(), 100);
+        goals.insert("Communication".to_string(), 60);
+        tracker.update_goals(&goals);
+
+        tracker.hydrate_today_minutes([
+            ("Deep Work".to_string(), 50u32),
+            ("Communication".to_string(), 0u32), // zero seeds nothing
+        ]);
+
+        assert_eq!(tracker.progress("Deep Work").unwrap().current_minutes, 50);
+        assert_eq!(
+            tracker.progress("Communication").unwrap().current_minutes,
+            0
+        );
+        // Deep Work crossed 25/50 (50%) — those must not re-fire, but 75 stays armed.
+        assert_eq!(tracker.check_threshold("Deep Work"), None);
+        tracker.record_minutes("Deep Work", 25); // 50 -> 75
+        assert_eq!(tracker.check_threshold("Deep Work"), Some(75));
+    }
+
+    #[test]
+    fn hydrate_seeds_minutes_even_without_configured_goal() {
+        // A persisted regime whose goal was removed from config keeps its seeded
+        // minutes (harmless — `progress` returns None without a goal) but arms
+        // no thresholds, so a later goal re-add does not lose today's minutes.
+        let mut tracker = RegimeGoalTracker::new();
+        tracker.hydrate_today_minutes([("Orphan".to_string(), 40u32)]);
+        assert!(tracker.progress("Orphan").is_none());
+
+        let mut goals = HashMap::new();
+        goals.insert("Orphan".to_string(), 100);
+        tracker.update_goals(&goals);
+        assert_eq!(tracker.progress("Orphan").unwrap().current_minutes, 40);
     }
 
     #[test]

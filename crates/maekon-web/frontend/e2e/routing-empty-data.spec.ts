@@ -38,7 +38,11 @@ test.describe('Sub-pathname routing redirects survive empty data', () => {
     await page.goto('/')
     await page.waitForURL('**/overview')
     await expect(page).toHaveURL(/\/overview$/)
-    await expect(page.getByRole('heading', { name: i18nRegex('emptyState.dashboard.title') })).toBeVisible({ timeout: 5000 })
+    // Outside the Tauri runtime the capture status probe stays null, so the
+    // dashboard empty state resolves to its `unavailable` variant.
+    await expect(
+      page.getByRole('heading', { name: i18nRegex('emptyState.dashboard.unavailable.title') }),
+    ).toBeVisible({ timeout: 5000 })
   })
 
   test('/timeline → /timeline/all when no frames are stored yet', async ({ page }) => {
@@ -77,14 +81,14 @@ test.describe('Sub-pathname routing redirects survive empty data', () => {
     await mockStaticJson(page, '**/api/automation/status**', {
       enabled: false,
       sandbox_enabled: false,
-      sandbox_profile: 'balanced',
-      ocr_provider: 'local',
-      llm_provider: 'local',
+      sandbox_profile: 'Standard',
+      ocr_provider: 'Local',
+      llm_provider: 'Local',
       ocr_source: 'local',
       llm_source: 'local',
       ocr_fallback_reason: null,
       llm_fallback_reason: null,
-      external_data_policy: 'disabled',
+      external_data_policy: 'PiiFilterStrict',
       pending_audit_entries: 0,
     })
     // fallback automation/stats already reports all-zero totals, which together
@@ -223,14 +227,14 @@ test.describe('Empty state CTA navigation', () => {
     await mockStaticJson(page, '**/api/automation/status**', {
       enabled: false,
       sandbox_enabled: false,
-      sandbox_profile: 'balanced',
-      ocr_provider: 'local',
-      llm_provider: 'local',
+      sandbox_profile: 'Standard',
+      ocr_provider: 'Local',
+      llm_provider: 'Local',
       ocr_source: 'local',
       llm_source: 'local',
       ocr_fallback_reason: null,
       llm_fallback_reason: null,
-      external_data_policy: 'disabled',
+      external_data_policy: 'PiiFilterStrict',
       pending_audit_entries: 0,
     })
 

@@ -11,15 +11,35 @@ const mockListen = vi.fn(async (eventName: string, cb: (event: { payload: unknow
   capturedListeners.set(eventName, cb)
   return mockUnlisten
 })
+const mockConsentState = vi.hoisted(() => ({ microphone: true }))
 
 // dynamic import mock for @tauri-apps/api/event (vi.mock is hoisted)
 vi.mock('@tauri-apps/api/event', () => ({
   listen: (...args: Parameters<typeof mockListen>) => mockListen(...args),
 }))
 
-// @tauri-apps/api/core invoke mock — returns get_audio_status in voice_activity mode
+// #8053: force macOS so the mic-permission guidance path is deterministic. Harmless
+// to the other tests, which do not read the platform flags.
+vi.mock('../../../utils/platform', () => ({
+  IS_MAC: true,
+  IS_WINDOWS: false,
+  IS_LINUX: false,
+  IS_TAURI: false,
+  isTauriRuntime: () => false,
+  MOD_KEY: 'Ctrl',
+}))
+
+// @tauri-apps/api/core invoke mock — returns granted microphone consent and
+// get_audio_status in voice_activity mode.
+// #7600: get_feature_capabilities is checked FIRST (COMPILE-capability gate) — must
+// resolve audio_compiled=true here or the hook short-circuits before reaching
+// get_audio_status, and micMode never flips to 'voice_activity' (the VAD listener
+// registration below depends on that transition).
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
+    if (cmd === 'get_feature_capabilities') {
+      return { features: [], audio_compiled: true }
+    }
     if (cmd === 'get_audio_status') {
       return {
         enabled: true,
@@ -27,6 +47,16 @@ vi.mock('@tauri-apps/api/core', () => ({
         stt_provider_loaded: true,
         mic_input_mode: 'voice_activity',
       }
+    }
+    if (cmd === 'get_consent') {
+      return {
+        status: 'Valid',
+        permissions: { microphone: mockConsentState.microphone },
+      }
+    }
+    // #8053: simulate a microphone permission denial for the guidance test.
+    if (cmd === 'start_vad_listening' || cmd === 'start_audio_capture') {
+      throw new Error('microphone access was not granted')
     }
     return undefined
   }),
@@ -36,6 +66,7 @@ describe('useAudioCapture — privacy_gate_closed toast', () => {
   let addToastSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
+    mockConsentState.microphone = true
     capturedListeners.clear()
     mockListen.mockClear()
     mockUnlisten.mockClear()
@@ -87,5 +118,62 @@ describe('useAudioCapture — privacy_gate_closed toast', () => {
     })
 
     expect(addToastSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('useAudioCapture — mic permission guidance (#8053)', () => {
+  let addToastSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    mockConsentState.microphone = true
+    capturedListeners.clear()
+    mockListen.mockClear()
+    mockUnlisten.mockClear()
+    addToastSpy = vi.spyOn(useToastModule, 'addToast')
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('마이크 시작 실패 시 OS별 권한 안내를 토스트에 포함한다', async () => {
+    const { useAudioCapture } = await import('./useAudioCapture')
+    const setInput = vi.fn() as React.Dispatch<React.SetStateAction<string>>
+    const { result } = renderHook(() => useAudioCapture(false, setInput))
+    await waitFor(() => expect(capturedListeners.has('vad-state-changed')).toBe(true))
+
+    // start_vad_listening rejects (permission denied) → the error toast must carry
+    // OS-aware guidance for 8s. IS_MAC is forced true, so the macOS path appears.
+    await act(async () => {
+      await result.current.handleVadToggle()
+    })
+
+    expect(addToastSpy).toHaveBeenCalledWith('error', expect.stringContaining('System Settings'), 8000)
+    expect(addToastSpy).toHaveBeenCalledWith('error', expect.stringContaining('If microphone access was blocked'), 8000)
+  })
+})
+
+describe('useAudioCapture — microphone consent readiness', () => {
+  beforeEach(() => {
+    mockConsentState.microphone = true
+    capturedListeners.clear()
+    mockListen.mockClear()
+    mockUnlisten.mockClear()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('disables the microphone affordance when microphone consent is absent', async () => {
+    mockConsentState.microphone = false
+    const { useAudioCapture } = await import('./useAudioCapture')
+    const setInput = vi.fn() as React.Dispatch<React.SetStateAction<string>>
+    const { result } = renderHook(() => useAudioCapture(false, setInput))
+
+    await waitFor(() => expect(result.current.audioAvailable).toBe(false))
+
+    expect(result.current.audioTooltip).toContain('consent')
+    expect(capturedListeners.has('vad-state-changed')).toBe(false)
   })
 })

@@ -1,8 +1,11 @@
 use maekon_core::error::CoreError;
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 
 use super::command_timeout::{command_output_with_timeout, ACCESSIBILITY_COMMAND_TIMEOUT};
 use super::types::{parse_accessibility_lines, AccessibilityNode};
+
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(target_os = "windows")]
 pub(super) fn query_windows_accessibility_nodes() -> Result<Vec<AccessibilityNode>, CoreError> {
@@ -32,16 +35,15 @@ pub(super) fn query_windows_accessibility_nodes() -> Result<Vec<AccessibilityNod
             $procName = ''
         }
 
-        $all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+        # Include the traversal root. Some WebView/native surfaces expose the
+        # focused surface itself (for example, a Pane) but no descendants.
+        $all = $window.FindAll([System.Windows.Automation.TreeScope]::Subtree, [System.Windows.Automation.Condition]::TrueCondition)
         $limit = [Math]::Min(300, $all.Count)
         for ($i = 0; $i -lt $limit; $i++) {
             $node = $all.Item($i)
             $label = $node.Current.Name
             if ([string]::IsNullOrWhiteSpace($label)) {
                 $label = $node.Current.AutomationId
-            }
-            if ([string]::IsNullOrWhiteSpace($label)) {
-                continue
             }
 
             $role = $node.Current.ControlType.ProgrammaticName
@@ -54,7 +56,23 @@ pub(super) fn query_windows_accessibility_nodes() -> Result<Vec<AccessibilityNod
         }
     "#;
 
-    let mut command = Command::new("powershell");
+    // SEC-MON-01: resolve against the shared trusted-directory allowlist
+    // (maekon-monitor) instead of spawning a bare `powershell` — fail closed
+    // (no PATH fallback) when the binary is not found under the trusted
+    // System32 directories.
+    let powershell_path =
+        maekon_monitor::resolve_trusted_binary("powershell").ok_or_else(|| {
+            CoreError::ServiceUnavailable {
+                code: maekon_core::error_codes::ServiceCode::Unavailable,
+                message: "powershell not found under the trusted directory allowlist".to_string(),
+            }
+        })?;
+
+    let mut command = Command::new(powershell_path);
+    // A visible console can steal focus before `FocusedElement` is read,
+    // causing the probe to inspect its own PowerShell window instead of the
+    // user's foreground application.
+    command.creation_flags(CREATE_NO_WINDOW);
     command.args([
         "-NoProfile",
         "-NonInteractive",

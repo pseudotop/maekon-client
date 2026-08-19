@@ -11,11 +11,12 @@ use tempfile::tempdir;
 use tokio::process::Command;
 
 use super::{
-    append_model_flag, append_oneshot_flags, build_intent_prompt,
+    append_codex_reasoning_effort, append_model_flag, append_oneshot_flags, build_intent_prompt,
     classify_subprocess_error_with_redactions, default_llm_model_for_surface,
     invocation_runtime_for_surface, is_gemini_json_flag_error, parse_interpreted_action_output,
     provider_name_for_surface_id, write_prompt_and_collect_output, BoxFuture,
-    DetectedSubprocessCli, SubprocessKind, ACTION_SCHEMA_JSON, DEFAULT_SUBPROCESS_TIMEOUT_SECS,
+    DetectedSubprocessCli, SubprocessKind, ACTION_SCHEMA_JSON, DEFAULT_CODEX_SUBPROCESS_MODEL,
+    DEFAULT_SUBPROCESS_TIMEOUT_SECS,
 };
 use maekon_api_contracts::provider_specs::subprocess_supports_json_output;
 
@@ -25,9 +26,31 @@ pub struct SubprocessLlmProvider {
     pub(super) provider_name: String,
     pub(super) model: String,
     pub(super) timeout: Duration,
+    /// Structured-output schema handed to the CLI (`--json-schema` /
+    /// `--output-schema`). #10050: parameterized so the same one-shot runner
+    /// serves both the action port (`ACTION_SCHEMA_JSON`) and the analysis port
+    /// (`SUGGESTION_SCHEMA_JSON`) without a second copy of the invocation
+    /// contract. Gemini ignores it — that surface has no schema flag and steers
+    /// via the prompt instead.
+    pub(super) schema: &'static str,
 }
 
 impl SubprocessLlmProvider {
+    /// #10050: run this provider's one-shot CLI contract for the ANALYSIS port
+    /// and return the raw stdout/envelope. Dispatch goes through the same
+    /// per-surface runtime table as `interpret_intent`, so a surface added there
+    /// works for both ports automatically.
+    pub(super) async fn run_analysis_oneshot(&self, prompt: &str) -> Result<String, CoreError> {
+        let runtime = invocation_runtime_for_surface(&self.surface.surface_id)?;
+        (runtime.llm_invoke)(self, prompt).await
+    }
+
+    /// Construct with a non-default structured-output schema (#10050).
+    pub fn with_schema(mut self, schema: &'static str) -> Self {
+        self.schema = schema;
+        self
+    }
+
     pub fn new(surface: DetectedSubprocessCli, config: &AiProviderConfig) -> Self {
         let model = config
             .llm_api
@@ -41,7 +64,7 @@ impl SubprocessLlmProvider {
                     .ok()
                     .flatten()
             })
-            .unwrap_or_else(|| "gpt-5.4".to_string());
+            .unwrap_or_else(|| DEFAULT_CODEX_SUBPROCESS_MODEL.to_string());
         let timeout_secs = config
             .llm_api
             .as_ref()
@@ -55,6 +78,7 @@ impl SubprocessLlmProvider {
             surface,
             model,
             timeout: Duration::from_secs(timeout_secs),
+            schema: ACTION_SCHEMA_JSON,
         }
     }
 
@@ -79,7 +103,7 @@ impl SubprocessLlmProvider {
         let schema_path = temp_dir.path().join("action.schema.json");
         let output_path = temp_dir.path().join("codex-output.json");
         // F-RC-10: use tokio::fs::write in async context
-        tokio::fs::write(&schema_path, ACTION_SCHEMA_JSON)
+        tokio::fs::write(&schema_path, self.schema)
             .await
             .map_err(|err| CoreError::Internal {
                 code: maekon_core::error_codes::InternalCode::Generic,
@@ -106,6 +130,7 @@ impl SubprocessLlmProvider {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
+        append_codex_reasoning_effort(&mut child, &self.surface.surface_id);
 
         let child = child.spawn().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
@@ -151,7 +176,7 @@ impl SubprocessLlmProvider {
             .arg("--output-format")
             .arg("json")
             .arg("--json-schema")
-            .arg(ACTION_SCHEMA_JSON)
+            .arg(self.schema)
             .current_dir(temp_dir.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -317,6 +342,29 @@ pub(super) fn gemini_llm_runtime<'a>(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn explicit_codex_model_override_wins_over_catalog_default() {
+        let mut config = AiProviderConfig::default();
+        config.llm_api = Some(maekon_core::config::ExternalApiEndpoint {
+            endpoint: String::new(),
+            api_key: String::new(),
+            model: Some("gpt-explicit-override".to_string()),
+            timeout_secs: DEFAULT_SUBPROCESS_TIMEOUT_SECS,
+            provider_type: Default::default(),
+            surface_id: None,
+            credential: None,
+        });
+        let provider = SubprocessLlmProvider::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.openai.subprocess_cli".to_string(),
+                executable_path: PathBuf::from("codex"),
+            },
+            &config,
+        );
+
+        assert_eq!(provider.model, "gpt-explicit-override");
+    }
 
     #[tokio::test]
     async fn claude_llm_invocation_uses_json_output_envelope() {

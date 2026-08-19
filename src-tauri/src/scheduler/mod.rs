@@ -7,31 +7,45 @@
 // 3. retry_queue             (tokio::sync::Mutex — async, held briefly)
 // 4. shared_regime_state     (parking_lot::RwLock — sync, <1μs ops)
 // 5. capture_context         (AppState sub-struct fields)
+// 6. context_analyzer        (parking_lot::RwLock — sync, <1μs ops; #7652)
 //
 // Never acquire a lower-numbered lock while holding a higher-numbered one.
+// `context_analyzer` is always acquired standalone (read-clone-drop or
+// write-replace-drop) and never held across an `.await`, so it has no
+// ordering interaction with the locks above.
 
 mod analysis_pipeline;
 mod config;
+mod egress_policy;
 /// GUI Activity Intelligence pipeline — wired into the monitor loop.
 /// Called after `run_analysis_tick()` each cycle when `gui_intelligence.enabled`.
 pub(crate) mod gui_pipeline;
 pub(crate) mod heatmap;
 mod loops;
+pub(crate) mod required_deps;
 pub(crate) mod schedule;
 pub(crate) mod shared_regime_state;
 pub(crate) mod trigger_state;
 
 // ── Public re-exports (external API) ────────────────────────────────────────
-pub use config::{SchedulerConfig, SchedulerStorage};
-pub(crate) use loops::record_to_segment_summary;
+pub use config::SchedulerConfig;
+pub use required_deps::SchedulerRequiredDeps;
+// #7731: `SchedulerStorage` relocated to `maekon-core` (Hexagonal Architecture
+// port); re-exported here so existing `crate::scheduler::SchedulerStorage`
+// call sites are unaffected.
+pub use maekon_core::ports::scheduler_storage::SchedulerStorage;
 pub use schedule::audio_capture_permitted_now;
 pub use schedule::capture_permitted_now;
-pub(crate) use schedule::set_battery_saver_active_for_scheduler;
-pub(crate) use schedule::should_run_now_with_time;
+pub use schedule::set_battery_saver_active_for_scheduler;
 #[cfg(feature = "server")]
-pub(crate) use schedule::tracking_schedule_active;
+pub(crate) use schedule::tracking_schedule_allows_capture;
+// #7735 E-3: `should_run_now_with_time` re-export removed — its only consumer
+// (`capture_permitted_now_inner`, formerly in `tracking_schedule_helper.rs`)
+// moved into `maekon_core::capture_gate` and now calls the core-crate-local
+// `should_run_now_with_time` directly (no `crate::scheduler::` path needed).
 pub(crate) use trigger_state::AdaptiveTriggerState;
 
+use maekon_analysis::focus_analyzer::FocusAnalyzer;
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::models::activity::SessionStats;
 use maekon_core::ports::accessibility::AccessibilityExtractor;
@@ -39,6 +53,7 @@ use maekon_core::ports::accessibility::AccessibilityExtractor;
 use maekon_core::ports::ann_index::AnnIndex;
 use maekon_core::ports::api_client::ApiClient;
 use maekon_core::ports::batch_sink::BatchSink;
+use maekon_core::ports::calibration_store::CalibrationReader;
 use maekon_core::ports::coaching_storage::CoachingStoragePort;
 use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::frame_storage::FrameStoragePort;
@@ -54,8 +69,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use crate::focus_analyzer::FocusAnalyzer;
 use crate::notification_manager::NotificationManager;
+use crate::runtime_state::SceneFinderSlot;
 
 // ── Scheduler struct ─────────────────────────────────────────────────────────
 
@@ -76,7 +91,20 @@ pub struct Scheduler {
     pub(super) focus_analyzer: Option<Arc<FocusAnalyzer>>,
     #[cfg(feature = "analysis")]
     pub(super) oauth_coordinator: Option<Arc<TokenRefreshCoordinator>>,
-    pub(super) context_analyzer: Option<Arc<maekon_analysis::ContextAnalyzer>>,
+    /// #7652: shared runtime slot for the LLM analysis pipeline, wrapped in a
+    /// `parking_lot::RwLock` (not a plain `Option`) so `spawn_analysis_loop`
+    /// can install/tear down the analyzer WITHOUT an app restart when
+    /// `analysis.enabled` flips at runtime. Single-writer: only the analysis
+    /// loop writes to this slot; `spawn_monitor_loop` only reads it (clone +
+    /// drop the guard immediately, never held across an `.await`).
+    pub(super) context_analyzer:
+        Arc<parking_lot::RwLock<Option<Arc<maekon_analysis::ContextAnalyzer>>>>,
+    /// #7652: reusable factory that (re)builds the analyzer from the CURRENT
+    /// (live) config on demand — the mechanism the analysis loop uses to
+    /// honor a runtime enable/BYOK-provider change without a restart.
+    #[cfg(feature = "analysis")]
+    pub(super) context_analyzer_factory:
+        Option<crate::agent_runtime_support::ContextAnalyzerFactory>,
     pub(super) config_manager: Option<ConfigManager>,
     pub(super) vector_store: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
     pub(super) embedding_provider:
@@ -86,7 +114,7 @@ pub struct Scheduler {
     #[cfg(feature = "hnsw")]
     pub(super) ann_index: Option<Arc<dyn AnnIndex>>,
     pub(super) adaptive_trigger: Mutex<Option<AdaptiveTriggerState>>,
-    pub(super) sync_engine: Option<Arc<crate::sync_engine::SyncEngine>>,
+    pub(super) sync_engine: Option<Arc<maekon_core::sync_engine::SyncEngine>>,
     pub(super) accessibility_extractor: Option<Arc<dyn AccessibilityExtractor>>,
     pub(super) consent_manager: Option<Arc<dyn ConsentManagerPort>>,
     /// #5069: per-feature performance emitter (buffer + consent-gated flush).
@@ -104,7 +132,7 @@ pub struct Scheduler {
     pub(super) coaching_storage: Option<Arc<dyn CoachingStoragePort>>,
     pub(super) capture_paused: Arc<std::sync::atomic::AtomicBool>,
     pub(super) detection_active: Arc<std::sync::atomic::AtomicBool>,
-    pub(super) scene_finder: Option<Arc<dyn maekon_core::ports::element_finder::ElementFinder>>,
+    pub(super) scene_finder_slot: Option<SceneFinderSlot>,
     pub(super) server_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub(super) llm_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub(super) cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -129,6 +157,9 @@ pub struct Scheduler {
     /// local-LLM-gated + consent-built by the composition root; the aggregation
     /// loop additionally gates each run on consent + `belief_revision_enabled`.
     pub(super) belief_revision: Option<Arc<maekon_analysis::BeliefRevision>>,
+    /// ADR-033 §7.5: vault mirror writer for the aggregation loop.
+    pub(super) memory_vault_writer:
+        Option<Arc<dyn maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort>>,
     /// #5810: periodic regime checkpoint storage port.
     ///
     /// Shares the same `SqliteRegimeManagerStateStore` Arc as the shutdown
@@ -140,6 +171,12 @@ pub struct Scheduler {
     /// #5810: live regime manager Arc — same instance as AdaptiveTriggerState and
     /// AppState.regime_manager_snapshot so checkpoints reflect in-flight regimes.
     pub(super) regime_manager_arc: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeManager>>>,
+    /// #7678 D4: calibration-log retention enforcement in the aggregation loop's
+    /// housekeeping block. Shares the same underlying `SqliteStorage` instance as
+    /// `AdaptiveTriggerState.calibration_reader`/`calibration_writer` (Port
+    /// Instance Sharing guardrail — no second handle). `None` in builds that do
+    /// not wire the calibration store.
+    pub(super) calibration_reader: Option<Arc<dyn CalibrationReader>>,
 }
 
 // ── Builder methods ──────────────────────────────────────────────────────────
@@ -155,7 +192,6 @@ impl Scheduler {
         frame_processor: Arc<dyn FrameProcessor>,
         storage: Arc<dyn StorageService>,
         sqlite_storage: Arc<dyn SchedulerStorage>,
-        frame_storage: Option<Arc<dyn FrameStoragePort>>,
         batch_sink: Option<Arc<dyn BatchSink>>,
         api_client: Option<Arc<dyn ApiClient>>,
     ) -> Self {
@@ -168,7 +204,7 @@ impl Scheduler {
             frame_processor,
             storage,
             sqlite_storage,
-            frame_storage,
+            frame_storage: None,
             batch_sink,
             api_client,
             event_tx: None,
@@ -176,7 +212,9 @@ impl Scheduler {
             focus_analyzer: None,
             #[cfg(feature = "analysis")]
             oauth_coordinator: None,
-            context_analyzer: None,
+            context_analyzer: Arc::new(parking_lot::RwLock::new(None)),
+            #[cfg(feature = "analysis")]
+            context_analyzer_factory: None,
             config_manager: None,
             vector_store: None,
             embedding_provider: None,
@@ -197,7 +235,7 @@ impl Scheduler {
             coaching_storage: None,
             capture_paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             detection_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            scene_finder: None,
+            scene_finder_slot: None,
             server_health_flag: None,
             llm_health_flag: None,
             cli_health_flag: None,
@@ -214,39 +252,41 @@ impl Scheduler {
             shared_regime: None,
             memory_graph: None,
             belief_revision: None,
+            memory_vault_writer: None,
             regime_storage: None,
             regime_manager_arc: None,
+            calibration_reader: None,
         }
     }
 
-    /// ADR-023: inject the local memory-graph store used by the aggregation loop
-    /// to promote daily-digest content into durable claims + evidence edges.
-    pub fn with_memory_graph(
-        mut self,
-        memory_graph: Arc<dyn maekon_core::ports::memory_graph_port::MemoryGraphPort>,
-    ) -> Self {
+    /// Consume the 9-field VERIFIED-unconditional dependency set (#7737 C1
+    /// PR-2). Every field is destructured by name (no `..`), so a field
+    /// added to `SchedulerRequiredDeps` without a matching line here fails
+    /// to compile instead of silently staying unset. Mirrors
+    /// `maekon_web::WebServer::with_required_deps` (#7738 D-2). CRITICAL:
+    /// every one of `Scheduler`'s own fields stays `Option<Arc<T>>` exactly
+    /// as before this split — only `SchedulerRequiredDeps` is non-Option.
+    pub fn with_required_deps(mut self, deps: SchedulerRequiredDeps) -> Self {
+        let SchedulerRequiredDeps {
+            frame_storage,
+            notification_manager,
+            focus_analyzer,
+            config_manager,
+            memory_graph,
+            calibration_reader,
+            belief_revision,
+            regime_storage,
+            memory_vault_writer,
+        } = deps;
+        self.frame_storage = Some(frame_storage);
+        self.notification_manager = Some(notification_manager);
+        self.focus_analyzer = Some(focus_analyzer);
+        self.config_manager = Some(config_manager);
         self.memory_graph = Some(memory_graph);
-        self
-    }
-
-    /// ADR-023 Phase-2: inject the LLM belief-revision component (local-gated +
-    /// consent-built by the composition root).
-    pub fn with_belief_revision(
-        mut self,
-        belief_revision: Arc<maekon_analysis::BeliefRevision>,
-    ) -> Self {
+        self.calibration_reader = Some(calibration_reader);
         self.belief_revision = Some(belief_revision);
-        self
-    }
-
-    /// #5810: inject the regime storage port for periodic crash-durability
-    /// checkpoints. Must be the same instance as the shutdown-path store so
-    /// both paths write to the same SQLite file.
-    pub fn with_regime_storage(
-        mut self,
-        storage: Arc<dyn maekon_core::ports::regime_storage::RegimeStoragePort>,
-    ) -> Self {
-        self.regime_storage = Some(storage);
+        self.regime_storage = Some(regime_storage);
+        self.memory_vault_writer = Some(memory_vault_writer);
         self
     }
 
@@ -261,23 +301,8 @@ impl Scheduler {
         self
     }
 
-    pub fn with_config_manager(mut self, config_manager: ConfigManager) -> Self {
-        self.config_manager = Some(config_manager);
-        self
-    }
-
     pub fn with_event_tx(mut self, event_tx: broadcast::Sender<RealtimeEvent>) -> Self {
         self.event_tx = Some(event_tx);
-        self
-    }
-
-    pub fn with_notification_manager(mut self, manager: Arc<NotificationManager>) -> Self {
-        self.notification_manager = Some(manager);
-        self
-    }
-
-    pub fn with_focus_analyzer(mut self, analyzer: Arc<FocusAnalyzer>) -> Self {
-        self.focus_analyzer = Some(analyzer);
         self
     }
 
@@ -287,11 +312,21 @@ impl Scheduler {
         self
     }
 
-    pub fn with_context_analyzer(
+    pub fn with_context_analyzer(self, analyzer: Arc<maekon_analysis::ContextAnalyzer>) -> Self {
+        *self.context_analyzer.write() = Some(analyzer);
+        self
+    }
+
+    /// #7652: wire the runtime-rebuild factory so the analysis loop can honor
+    /// an `analysis.enabled` flip (or a freshly-saved BYOK `ai_provider.llm_api`
+    /// key) WITHOUT an app restart, even when `with_context_analyzer` above was
+    /// never called (analysis disabled, or no provider configured, at startup).
+    #[cfg(feature = "analysis")]
+    pub fn with_context_analyzer_factory(
         mut self,
-        analyzer: Arc<maekon_analysis::ContextAnalyzer>,
+        factory: crate::agent_runtime_support::ContextAnalyzerFactory,
     ) -> Self {
-        self.context_analyzer = Some(analyzer);
+        self.context_analyzer_factory = Some(factory);
         self
     }
 
@@ -325,13 +360,16 @@ impl Scheduler {
     }
 
     #[cfg(feature = "hnsw")]
-    #[allow(dead_code)]
     pub fn with_ann_index(mut self, ann: Arc<dyn AnnIndex>) -> Self {
         self.ann_index = Some(ann);
         self
     }
 
-    pub fn with_adaptive_trigger(self, state: AdaptiveTriggerState) -> Self {
+    // #7734: narrowed from `pub` — `AdaptiveTriggerState` itself is
+    // `pub(crate)` and every call site is internal to this crate
+    // (private_interfaces lint fallout from the `[lib]` target enabler;
+    // behavior-neutral).
+    pub(crate) fn with_adaptive_trigger(self, state: AdaptiveTriggerState) -> Self {
         *self.adaptive_trigger.lock().unwrap_or_else(|poisoned| {
             warn!("adaptive trigger lock poisoned — recovering inner data");
             poisoned.into_inner()
@@ -339,7 +377,7 @@ impl Scheduler {
         self
     }
 
-    pub fn with_sync_engine(mut self, engine: Arc<crate::sync_engine::SyncEngine>) -> Self {
+    pub fn with_sync_engine(mut self, engine: Arc<maekon_core::sync_engine::SyncEngine>) -> Self {
         self.sync_engine = Some(engine);
         self
     }
@@ -390,7 +428,6 @@ impl Scheduler {
         self
     }
 
-    #[allow(dead_code)]
     pub fn with_coaching_storage(mut self, storage: Arc<dyn CoachingStoragePort>) -> Self {
         self.coaching_storage = Some(storage);
         self
@@ -406,12 +443,19 @@ impl Scheduler {
         self
     }
 
-    #[allow(dead_code)]
     pub fn with_scene_finder(
         mut self,
         finder: Arc<dyn maekon_core::ports::element_finder::ElementFinder>,
     ) -> Self {
-        self.scene_finder = Some(finder);
+        let slot = Arc::new(std::sync::OnceLock::new());
+        let _ = slot.set(finder);
+        self.scene_finder_slot = Some(slot);
+        self
+    }
+
+    /// #7817: observes the same scene_finder slot populated after automation builds.
+    pub fn with_scene_finder_slot(mut self, slot: SceneFinderSlot) -> Self {
+        self.scene_finder_slot = Some(slot);
         self
     }
 
@@ -467,6 +511,25 @@ impl Scheduler {
         self
     }
 
+    /// #7914: the shared `FeedbackScorer` handle used for uniform learned
+    /// relevance gating of every LOCAL suggestion producer, or `None` when the
+    /// local-suggestion pipeline is not compiled in (`--no-default-features`).
+    /// Keeping the `local-suggestions` cfg fork here lets the LOC-capped monitor
+    /// loop read the handle in a single, cfg-free line. #7913 (T2.1) will back
+    /// this scorer with persisted state; this accessor stays the seam.
+    pub(in crate::scheduler) fn relevance_scorer(
+        &self,
+    ) -> Option<Arc<tokio::sync::Mutex<maekon_suggestion::scorer::FeedbackScorer>>> {
+        #[cfg(feature = "local-suggestions")]
+        {
+            self.suggestion_manager.as_ref().map(|m| m.scorer().clone())
+        }
+        #[cfg(not(feature = "local-suggestions"))]
+        {
+            None
+        }
+    }
+
     pub fn with_focus_mode(mut self, focus_mode: Arc<crate::focus_mode::FocusModeState>) -> Self {
         self.focus_mode = focus_mode;
         self
@@ -506,7 +569,7 @@ impl Scheduler {
             sync_ms = self.config.sync_interval.as_millis() as u64,
             heartbeat_ms = self.config.heartbeat_interval.as_millis() as u64,
             aggregation_ms = self.config.aggregation_interval.as_millis() as u64,
-            health_check_secs = 60,
+            health_check_secs = config::HEALTH_CHECK_INTERVAL_SECS,
             coaching_secs = config::COACHING_INTERVAL_SECS,
             sqlite_maintenance_mins = config::SQLITE_MAINTENANCE_INTERVAL_MINS,
             "scheduler loops starting"

@@ -43,31 +43,57 @@ impl FeedbackSender {
         self
     }
 
+    /// `regime_id`: the active regime at the moment the user reacted (#7600).
+    /// The caller (the Tauri command / handler on the accept path) reads this
+    /// from its own live regime snapshot; `FeedbackSender` never resolves it
+    /// itself — this crate has no access to the regime pipeline, which lives
+    /// entirely in `maekon-analysis` + the `src-tauri` composition root.
     pub async fn accept(
         &self,
         suggestion_id: &str,
         comment: Option<String>,
+        regime_id: Option<String>,
     ) -> Result<(), SuggestionError> {
-        self.send_feedback(suggestion_id, FeedbackType::Accepted, comment, false)
-            .await
+        self.send_feedback(
+            suggestion_id,
+            FeedbackType::Accepted,
+            comment,
+            regime_id,
+            false,
+        )
+        .await
     }
 
     pub async fn reject(
         &self,
         suggestion_id: &str,
         comment: Option<String>,
+        regime_id: Option<String>,
     ) -> Result<(), SuggestionError> {
-        self.send_feedback(suggestion_id, FeedbackType::Rejected, comment, false)
-            .await
+        self.send_feedback(
+            suggestion_id,
+            FeedbackType::Rejected,
+            comment,
+            regime_id,
+            false,
+        )
+        .await
     }
 
     pub async fn defer(
         &self,
         suggestion_id: &str,
         comment: Option<String>,
+        regime_id: Option<String>,
     ) -> Result<(), SuggestionError> {
-        self.send_feedback(suggestion_id, FeedbackType::Deferred, comment, false)
-            .await
+        self.send_feedback(
+            suggestion_id,
+            FeedbackType::Deferred,
+            comment,
+            regime_id,
+            false,
+        )
+        .await
     }
 
     /// Re-attempt a previously failed feedback post from the retry queue.
@@ -76,11 +102,20 @@ impl FeedbackSender {
     /// does **not** fire the `FeedbackSignalSink`. The sink already fired on
     /// the initial user action; suppressing it here prevents double-counting
     /// in frequency/weight scoring. See issue #6004.
+    ///
+    /// `regime_id` is always `None` on retry: `PendingFeedback` does not
+    /// persist the originally-observed regime (#7600 scoped this out — the
+    /// sink, the only consumer that needs regime attribution, never fires on
+    /// a retry, so the omission only affects the regime label attached to the
+    /// server-bound payload for a delayed retry send, not the local learning
+    /// loop). Tracked in #7600 if server-side regime telemetry on retries
+    /// becomes a real requirement.
     pub async fn retry_attempt(&self, pending: &PendingFeedback) -> Result<(), SuggestionError> {
         self.send_feedback(
             &pending.suggestion_id,
             pending.feedback_type.clone(),
             pending.comment.clone(),
+            None,
             true,
         )
         .await
@@ -96,6 +131,7 @@ impl FeedbackSender {
         suggestion_id: &str,
         feedback_type: FeedbackType,
         comment: Option<String>,
+        regime_id: Option<String>,
         is_retry: bool,
     ) -> Result<(), SuggestionError> {
         let feedback = SuggestionFeedback {
@@ -103,6 +139,7 @@ impl FeedbackSender {
             feedback_type: feedback_type.clone(),
             timestamp: Utc::now(),
             comment,
+            regime_id,
         };
 
         // Fire-and-forget into the local sink BEFORE the server call.
@@ -208,14 +245,14 @@ mod tests {
     #[tokio::test]
     async fn accept_feedback() {
         let sender = FeedbackSender::new(Arc::new(MockApiClient));
-        sender.accept("sug_001", None).await.unwrap();
+        sender.accept("sug_001", None, None).await.unwrap();
     }
 
     #[tokio::test]
     async fn reject_feedback_with_comment() {
         let sender = FeedbackSender::new(Arc::new(MockApiClient));
         sender
-            .reject("sug_002", Some("not relevant".to_string()))
+            .reject("sug_002", Some("not relevant".to_string()), None)
             .await
             .unwrap();
     }
@@ -223,7 +260,7 @@ mod tests {
     #[tokio::test]
     async fn defer_feedback() {
         let sender = FeedbackSender::new(Arc::new(MockApiClient));
-        sender.defer("sug_003", None).await.unwrap();
+        sender.defer("sug_003", None, None).await.unwrap();
     }
 
     struct MockEgressLedger {
@@ -245,7 +282,7 @@ mod tests {
         let sender =
             FeedbackSender::new(Arc::new(MockApiClient)).with_egress_ledger(ledger.clone());
         sender
-            .accept("sug_777", Some("useful".to_string()))
+            .accept("sug_777", Some("useful".to_string()), None)
             .await
             .unwrap();
 
@@ -274,7 +311,7 @@ mod tests {
     async fn feedback_without_ledger_is_noop() {
         // No ledger wired (the None branch) — the send still succeeds, no panic.
         let sender = FeedbackSender::new(Arc::new(MockApiClient));
-        sender.accept("sug_888", None).await.unwrap();
+        sender.accept("sug_888", None, None).await.unwrap();
     }
 
     #[tokio::test]
@@ -330,7 +367,7 @@ mod tests {
             Arc::new(OrderingApi(timeline.clone())),
             Some(Arc::new(OrderingSink(timeline.clone()))),
         );
-        sender.accept("sug_ord", None).await.unwrap();
+        sender.accept("sug_ord", None, None).await.unwrap();
 
         let observed = timeline.lock().unwrap().clone();
         assert_eq!(observed, vec!["sink", "api"]);
@@ -394,7 +431,7 @@ mod tests {
         );
 
         // Initial attempt: network fails, but sink must have fired once.
-        let _ = sender.accept("sug_retry_test", None).await;
+        let _ = sender.accept("sug_retry_test", None, None).await;
         assert_eq!(
             sink_count.load(Ordering::SeqCst),
             1,
@@ -414,6 +451,121 @@ mod tests {
             sink_count.load(Ordering::SeqCst),
             1,
             "sink must NOT fire on retry — double-count regression (#6004)"
+        );
+    }
+
+    /// #7600 — `accept()`'s `regime_id` argument must land on the
+    /// `SuggestionFeedback` observed by BOTH the sink (the local learning
+    /// signal) and the `ApiClient` (the server-bound payload). Before this
+    /// change `SuggestionFeedback` had no `regime_id` field at all, so this
+    /// test could not have compiled — it is a fails-before regression guard
+    /// for the field's existence and for `send_feedback` actually populating
+    /// it end-to-end instead of leaving it `None` unconditionally.
+    #[tokio::test]
+    async fn accept_threads_regime_id_into_sink_and_api_payload() {
+        use async_trait::async_trait;
+        use maekon_core::ports::feedback_signal_sink::FeedbackSignalSink;
+        use std::sync::Mutex;
+
+        struct CapturingSink(Arc<Mutex<Option<Option<String>>>>);
+        #[async_trait]
+        impl FeedbackSignalSink for CapturingSink {
+            async fn record_user_reaction(
+                &self,
+                feedback: &SuggestionFeedback,
+            ) -> Result<(), CoreError> {
+                *self.0.lock().unwrap() = Some(feedback.regime_id.clone());
+                Ok(())
+            }
+        }
+
+        struct CapturingApi(Arc<Mutex<Option<Option<String>>>>);
+        #[async_trait]
+        impl ApiClient for CapturingApi {
+            async fn create_session(
+                &self,
+                client_id: &str,
+            ) -> Result<maekon_core::ports::api_client::SessionCreateResponse, CoreError>
+            {
+                Ok(maekon_core::ports::api_client::SessionCreateResponse {
+                    session_id: format!("sess_{client_id}"),
+                    user_id: "u".into(),
+                    client_id: client_id.into(),
+                    capabilities: vec![],
+                })
+            }
+            async fn end_session(&self, _: &str) -> Result<(), CoreError> {
+                Ok(())
+            }
+            async fn upload_batch(&self, _: &EventBatch) -> Result<(), CoreError> {
+                Ok(())
+            }
+            async fn send_feedback(&self, feedback: &SuggestionFeedback) -> Result<(), CoreError> {
+                *self.0.lock().unwrap() = Some(feedback.regime_id.clone());
+                Ok(())
+            }
+            async fn send_heartbeat(&self, _: &str) -> Result<(), CoreError> {
+                Ok(())
+            }
+        }
+
+        let sink_observed = Arc::new(Mutex::new(None));
+        let api_observed = Arc::new(Mutex::new(None));
+        let sender = FeedbackSender::new_with_sink(
+            Arc::new(CapturingApi(api_observed.clone())),
+            Some(Arc::new(CapturingSink(sink_observed.clone()))),
+        );
+
+        sender
+            .accept("sug_regime", None, Some("regime-focus".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sink_observed.lock().unwrap().clone(),
+            Some(Some("regime-focus".to_string())),
+            "sink must observe the regime_id passed to accept()"
+        );
+        assert_eq!(
+            api_observed.lock().unwrap().clone(),
+            Some(Some("regime-focus".to_string())),
+            "server-bound payload must carry the same regime_id"
+        );
+    }
+
+    /// #7600 — omitting `regime_id` (the pre-existing call shape) must still
+    /// compile and leave the field `None` — the backward-compat contract the
+    /// `Option` type + `#[serde(default)]` are meant to preserve.
+    #[tokio::test]
+    async fn accept_without_regime_id_leaves_field_none() {
+        use async_trait::async_trait;
+        use maekon_core::ports::feedback_signal_sink::FeedbackSignalSink;
+        use std::sync::Mutex;
+
+        struct CapturingSink(Arc<Mutex<Option<Option<String>>>>);
+        #[async_trait]
+        impl FeedbackSignalSink for CapturingSink {
+            async fn record_user_reaction(
+                &self,
+                feedback: &SuggestionFeedback,
+            ) -> Result<(), CoreError> {
+                *self.0.lock().unwrap() = Some(feedback.regime_id.clone());
+                Ok(())
+            }
+        }
+
+        let sink_observed = Arc::new(Mutex::new(None));
+        let sender = FeedbackSender::new_with_sink(
+            Arc::new(MockApiClient),
+            Some(Arc::new(CapturingSink(sink_observed.clone()))),
+        );
+
+        sender.accept("sug_no_regime", None, None).await.unwrap();
+
+        assert_eq!(
+            sink_observed.lock().unwrap().clone(),
+            Some(None),
+            "regime_id must default to None when the caller does not supply one"
         );
     }
 }

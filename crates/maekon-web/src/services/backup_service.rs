@@ -120,6 +120,10 @@ impl BackupCommandService {
 
     pub async fn restore_backup(&self, archive: &BackupArchive) -> Result<RestoreResult, ApiError> {
         let mut errors = Vec::new();
+        // Non-failing observations. Kept out of `errors` because `success` is
+        // `errors.is_empty()` and a relation pointing at a frame this device no
+        // longer has is data-hygiene noise from #9721, not a failed restore.
+        let mut notes: Vec<String> = Vec::new();
         let mut restored = empty_restore_counts();
 
         if let Some(settings) = &archive.settings {
@@ -140,6 +144,19 @@ impl BackupCommandService {
             }
         }
 
+        // #9700: restore merges into the live table, so an archived tag id is
+        // not authoritative — it may already belong to a different tag here, and
+        // the archived name may already exist under a different id. Record where
+        // each archived id actually landed so the relations below follow it.
+        let mut tag_id_remap: std::collections::HashMap<i64, i64> =
+            std::collections::HashMap::new();
+        let mut frame_id_remap: std::collections::HashMap<i64, i64> =
+            std::collections::HashMap::new();
+        let mut skipped_relations_by_tag: std::collections::BTreeMap<i64, u64> =
+            std::collections::BTreeMap::new();
+        let mut skipped_relations_by_frame: std::collections::BTreeMap<i64, u64> =
+            std::collections::BTreeMap::new();
+
         if let Some(tags) = &archive.tags {
             for tag in tags {
                 match self
@@ -148,7 +165,25 @@ impl BackupCommandService {
                     .upsert_backup_tag(tag.id, &tag.name, &tag.color, &tag.created_at)
                     .await
                 {
-                    Ok(()) => restored.tags += 1,
+                    Ok(Some(effective_id)) => {
+                        // A malformed archive can list the same id twice; the
+                        // second entry would silently steal the first's
+                        // relations, which is the mis-attachment this whole
+                        // change exists to prevent.
+                        if tag_id_remap.insert(tag.id, effective_id).is_some() {
+                            errors.push(format!(
+                                "Archive lists tag id {} more than once; its relations may be mis-attached",
+                                tag.id
+                            ));
+                        }
+                        restored.tags += 1;
+                    }
+                    // The erase barrier skipped the write — no row exists, so
+                    // there is no id to remap onto.
+                    Ok(None) => errors.push(format!(
+                        "Tag '{}' was not restored (data deletion in progress)",
+                        tag.name
+                    )),
                     Err(error) => {
                         errors.push(format!("Failed to restore tag '{}': {error}", tag.name))
                     }
@@ -156,46 +191,10 @@ impl BackupCommandService {
             }
         }
 
-        if let Some(frame_tags) = &archive.frame_tags {
-            for frame_tag in frame_tags {
-                match self
-                    .ctx
-                    .storage
-                    .upsert_backup_frame_tag(
-                        frame_tag.frame_id,
-                        frame_tag.tag_id,
-                        &frame_tag.created_at,
-                    )
-                    .await
-                {
-                    Ok(()) => restored.frame_tags += 1,
-                    Err(error) => {
-                        errors.push(format!("Failed to restore frame-tag relation: {error}"))
-                    }
-                }
-            }
-        }
-
-        if let Some(events) = &archive.events {
-            for event in events {
-                match self
-                    .ctx
-                    .storage
-                    .upsert_backup_event(
-                        &event.event_id,
-                        &event.event_type,
-                        &event.timestamp,
-                        event.app_name.as_deref(),
-                        event.window_title.as_deref(),
-                    )
-                    .await
-                {
-                    Ok(()) => restored.events += 1,
-                    Err(error) => errors.push(format!("Failed to restore event: {error}")),
-                }
-            }
-        }
-
+        // #9708: frames must land before the relations that reference them, so
+        // `frame_id` can be remapped the same way `tag_id` is. `frames.id` is
+        // AUTOINCREMENT, so on a device that has been capturing, nearly every
+        // archived id is already taken.
         if let Some(frames) = &archive.frames {
             for frame in frames {
                 match self
@@ -214,13 +213,132 @@ impl BackupCommandService {
                     )
                     .await
                 {
-                    Ok(()) => restored.frames += 1,
+                    Ok(Some(effective_id)) => {
+                        if frame_id_remap.insert(frame.id, effective_id).is_some() {
+                            errors.push(format!(
+                                "Archive lists frame id {} more than once; its relations may be mis-attached",
+                                frame.id
+                            ));
+                        }
+                        restored.frames += 1;
+                    }
+                    Ok(None) => errors.push(format!(
+                        "Frame {} was not restored (data deletion in progress)",
+                        frame.id
+                    )),
                     Err(error) => errors.push(format!("Failed to restore frame: {error}")),
                 }
             }
         }
 
-        Ok(assemble_restore_result(restored, errors))
+        if let Some(frame_tags) = &archive.frame_tags {
+            for frame_tag in frame_tags {
+                // A relation whose tag is missing from the archive (or whose tag
+                // failed to restore) has nowhere valid to point. Writing it
+                // anyway used to create a dangling row that no error surfaced,
+                // because foreign keys are not enforced.
+                let Some(&tag_id) = tag_id_remap.get(&frame_tag.tag_id) else {
+                    // Aggregate by tag: an archive missing one tag would
+                    // otherwise emit one near-identical string per relation,
+                    // thousands of them in a single JSON response.
+                    skipped_relations_by_tag
+                        .entry(frame_tag.tag_id)
+                        .and_modify(|count| *count += 1)
+                        .or_insert(1u64);
+                    continue;
+                };
+                // Unlike tags — which the export always emits together with
+                // `frame_tags` under one `include_tags` flag — frames are
+                // governed by a SEPARATE `include_frames` flag. So an archive
+                // legitimately carries relations without any frames, and those
+                // ids refer to frames already on this device. Pass them through
+                // in that case; only arbitrate when the archive brought frames
+                // of its own and the ids may have moved.
+                // The archive brought no frames: this id refers to a frame
+                // already on THIS device, so pass it through. The write itself
+                // verifies the frame exists (atomically, in the same statement),
+                // so no separate check is needed here.
+                let frame_id = match frame_id_remap.get(&frame_tag.frame_id) {
+                    Some(&remapped) => remapped,
+                    None if archive.frames.is_none() => frame_tag.frame_id,
+                    None => {
+                        skipped_relations_by_frame
+                            .entry(frame_tag.frame_id)
+                            .and_modify(|count| *count += 1)
+                            .or_insert(1u64);
+                        continue;
+                    }
+                };
+                match self
+                    .ctx
+                    .storage
+                    .upsert_backup_frame_tag(frame_id, tag_id, &frame_tag.created_at)
+                    .await
+                {
+                    Ok(true) => restored.frame_tags += 1,
+                    // The frame is not on this device — the guarded insert
+                    // declined rather than writing a dangling row.
+                    Ok(false) => {
+                        skipped_relations_by_frame
+                            .entry(frame_tag.frame_id)
+                            .and_modify(|count| *count += 1)
+                            .or_insert(1u64);
+                    }
+                    Err(error) => {
+                        errors.push(format!("Failed to restore frame-tag relation: {error}"))
+                    }
+                }
+            }
+        }
+
+        // Tag axis stays an ERROR, unlike the frame axis. The export emits
+        // `tags` and `frame_tags` together under one `include_tags` flag, so a
+        // self-produced archive can never reference a tag it does not carry —
+        // that shape means a corrupt or hand-edited archive, which #9700
+        // deliberately surfaces as a failure.
+        //
+        // The frame axis stays a NOTE for two reasons that both survive #9721:
+        // a cross-device archive legitimately references frames this device
+        // never had, and installs that ran retention before #9721 still carry
+        // orphaned relations from that era.
+        for (tag_id, count) in &skipped_relations_by_tag {
+            errors.push(format!(
+                "Skipped {count} frame-tag relation(s): tag {tag_id} is not in the archive"
+            ));
+        }
+
+        for (frame_id, count) in &skipped_relations_by_frame {
+            notes.push(format!(
+                "Skipped {count} frame-tag relation(s): frame {frame_id} is not on this device"
+            ));
+        }
+
+        if let Some(events) = &archive.events {
+            for event in events {
+                match self
+                    .ctx
+                    .storage
+                    .upsert_backup_event(
+                        &event.event_id,
+                        &event.event_type,
+                        &event.timestamp,
+                        event.app_name.as_deref(),
+                        event.window_title.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(true) => restored.events += 1,
+                    // The erase barrier skipped the write — nothing landed.
+                    Ok(false) => errors.push(format!(
+                        "Event {} was not restored (data deletion in progress)",
+                        event.event_id
+                    )),
+                    Err(error) => errors.push(format!("Failed to restore event: {error}")),
+                }
+            }
+        }
+
+        Ok(assemble_restore_result(restored, errors, notes))
     }
 }
 

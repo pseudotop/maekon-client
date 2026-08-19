@@ -44,6 +44,15 @@ pub struct AnalysisConfig {
     /// HIGH — a wrong supersede destroys a durable user belief. Default 0.9.
     #[serde(default = "default_supersede_confidence_threshold")]
     pub supersede_confidence_threshold: f64,
+    /// ADR-032 §2: bounds for the shared memory-graph generation-input
+    /// projection helper (single named config section — three mode consumers
+    /// inventing three config paths would void the single-helper guarantee).
+    #[serde(default)]
+    pub memory_graph_projection: MemoryGraphProjectionConfig,
+    /// ADR-033 §2.2: memory vault mirror configuration (user-owned local
+    /// Markdown vault of digests + Active claims).
+    #[serde(default)]
+    pub memory_vault: MemoryVaultConfig,
 }
 
 impl Default for AnalysisConfig {
@@ -63,18 +72,152 @@ impl Default for AnalysisConfig {
             text_intelligence: TextIntelligenceConfig::default(),
             belief_revision_enabled: false,
             supersede_confidence_threshold: default_supersede_confidence_threshold(),
+            memory_graph_projection: MemoryGraphProjectionConfig::default(),
+            memory_vault: MemoryVaultConfig::default(),
         }
     }
 }
 
-/// Floor for `analysis.interval_secs` (#6177). Mirrors the IPC validator
-/// (`commands::analysis::validate_analysis_config`, `interval_secs >= 10`) so a
-/// hand-edited / downgrade config cannot drive a sub-10s analysis loop.
+/// ADR-033 §2.2: memory vault mirror configuration.
+///
+/// Off by default at both layers: `enabled = false` AND the dedicated
+/// Tier-13 `memory_vault_mirror` consent defaults false. A `custom_path`
+/// only takes effect once `custom_path_acknowledged` is set through the
+/// explicit UI flow (ADR-033 §3.3) — config mutation paths must reject an
+/// unacknowledged custom path rather than silently mirroring into it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryVaultConfig {
+    /// Master switch. Default false (opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+    /// User-chosen vault root. `None` = the app-owned default
+    /// (`<data_dir()>/vault`). Ignored until acknowledged (§3.3).
+    #[serde(default)]
+    pub custom_path: Option<std::path::PathBuf>,
+    /// ADR-033 §3.3: the user completed the explicit custom-path
+    /// acknowledgement flow (overwrite/delete + possible-sync risks stated).
+    /// Default false — a custom path without this flag is rejected.
+    #[serde(default)]
+    pub custom_path_acknowledged: bool,
+    /// ADR-033 §3.2: cloud-sync detection result stored at path-acceptance
+    /// time (coarse provider label, e.g. `icloud`; never a path). `Some`
+    /// gates the §3.4 egress-ledger record; `None` = not detected.
+    #[serde(default)]
+    pub cloud_provider: Option<String>,
+    /// ADR-033 §1.4: bounded mirror window in days. Must be ≥ 1 and
+    /// ≤ `embedding.retention_days`; a violation is an unevaluable gate
+    /// (complete no-op cycle — no writes AND no deletes). Default 90.
+    #[serde(default = "default_mirror_window_days")]
+    pub mirror_window_days: u32,
+}
+
+impl Default for MemoryVaultConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            custom_path: None,
+            custom_path_acknowledged: false,
+            cloud_provider: None,
+            mirror_window_days: default_mirror_window_days(),
+        }
+    }
+}
+
+fn default_mirror_window_days() -> u32 {
+    90
+}
+
+/// ADR-032 §2 bounds for the shared memory-graph projection helper.
+///
+/// The starting defaults are CONTRACTUAL starting values (ADR-032 §2):
+/// tunable via config, but the fields must exist, be enforced by the helper,
+/// and be covered by fail-closed contract tests. The generation window is
+/// independent of — and must stay ≤ — the `embedding.retention_days` storage
+/// floor; the helper treats a violation as an unevaluable bound (empty
+/// projection), never as permission to widen selection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryGraphProjectionConfig {
+    /// Master switch for the projection helper. Default false (opt-in);
+    /// additionally gated per mode by its dedicated consent permission
+    /// (Mode A: `memory_graph_retrieval_ranking`, Tier 10).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Bounded `updated_at` recency window in days (ADR-032 §2.2).
+    /// Must be ≥ 1 and ≤ `embedding.retention_days`. Default 30.
+    #[serde(default = "default_generation_window_days")]
+    pub generation_window_days: u32,
+    /// Input-side claim confidence floor (ADR-032 §2.3). Distinct from the
+    /// output-side `supersede_confidence_threshold` (0.9), which must not be
+    /// reused here. Must be within [0.0, 1.0]. Default 0.5.
+    #[serde(default = "default_min_input_confidence")]
+    pub min_input_confidence: f64,
+    /// Hard claim-selection cap (ADR-032 §2.4), ordered `updated_at DESC`
+    /// with `claim_id` tie-break. Must be ≥ 1. Default 64.
+    #[serde(default = "default_projection_max_claims")]
+    pub max_claims: usize,
+    /// Hard edge-selection cap (ADR-032 §2.4), ordered `created_at DESC`
+    /// with `edge_id` tie-break. Must be ≥ 1. Default 256.
+    #[serde(default = "default_projection_max_edges")]
+    pub max_edges: usize,
+}
+
+impl Default for MemoryGraphProjectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            generation_window_days: default_generation_window_days(),
+            min_input_confidence: default_min_input_confidence(),
+            max_claims: default_projection_max_claims(),
+            max_edges: default_projection_max_edges(),
+        }
+    }
+}
+
+fn default_generation_window_days() -> u32 {
+    30
+}
+
+fn default_min_input_confidence() -> f64 {
+    0.5
+}
+
+fn default_projection_max_claims() -> usize {
+    64
+}
+
+fn default_projection_max_edges() -> usize {
+    256
+}
+
+/// Floor for `analysis.interval_secs` (#6177). Originally mirrored the now-deleted
+/// `commands::analysis::validate_analysis_config` IPC validator (`interval_secs`
+/// floor of 10, removed as a dead duplicate in #7637) so a hand-edited / downgrade
+/// config cannot drive a sub-10s analysis loop.
 pub(crate) const ANALYSIS_INTERVAL_SECS_FLOOR: u64 = 10;
 
-/// Floor for `analysis.throttle_secs` (#6177). Mirrors the IPC validator
-/// (`throttle_secs >= 1`).
-pub(crate) const ANALYSIS_THROTTLE_SECS_FLOOR: u64 = 1;
+/// Floor for `analysis.throttle_secs` (#6177, raised #7726).
+///
+/// #6177 originally set this to 1, citing the now-deleted
+/// `commands::analysis::validate_analysis_config` (`throttle_secs >= 1`,
+/// removed in #7637 for having zero frontend callers). That validator was
+/// never the live gate for the actual Settings-UI write path — the WebView
+/// `update_setting` command (`src-tauri/src/commands/settings.rs`) has
+/// independently required `throttle_secs >= 10` since the original client
+/// migration, and every analysis-throttle change made through the primary
+/// desktop UI has gone through that path. Raised to 10 (#7726 ctd-W2 E4) to
+/// match the actually-enforced value and resolve the 3-boundary disagreement.
+pub(crate) const ANALYSIS_THROTTLE_SECS_FLOOR: u64 = 10;
+
+/// Floor for `analysis.max_suggestions` (#7726 ctd-W2 E4). Mirrors the floor
+/// from the now-deleted `commands::analysis::validate_analysis_config`
+/// (`max_suggestions >= 1`, removed in #7637) — zero suggestions is a
+/// meaningless configuration.
+pub(crate) const ANALYSIS_MAX_SUGGESTIONS_FLOOR: usize = 1;
+/// Cap for `analysis.max_suggestions` (#7726 ctd-W2 E4). Adopted from
+/// `src-tauri/src/commands/settings.rs`'s WebView-only `validate_config_bounds`
+/// hardcode, which was the only boundary bounding this field's ceiling; core
+/// had none.
+pub(crate) const ANALYSIS_MAX_SUGGESTIONS_CAP: usize = 200;
 
 impl AnalysisConfig {
     /// Validate that analysis interval values are within acceptable bounds (#6177).
@@ -98,6 +241,16 @@ impl AnalysisConfig {
         if self.throttle_secs < ANALYSIS_THROTTLE_SECS_FLOOR {
             return Err(format!(
                 "analysis.throttle_secs must be >= {ANALYSIS_THROTTLE_SECS_FLOOR}"
+            ));
+        }
+        if self.max_suggestions < ANALYSIS_MAX_SUGGESTIONS_FLOOR {
+            return Err(format!(
+                "analysis.max_suggestions must be >= {ANALYSIS_MAX_SUGGESTIONS_FLOOR}"
+            ));
+        }
+        if self.max_suggestions > ANALYSIS_MAX_SUGGESTIONS_CAP {
+            return Err(format!(
+                "analysis.max_suggestions must be <= {ANALYSIS_MAX_SUGGESTIONS_CAP}"
             ));
         }
         Ok(())
@@ -124,6 +277,13 @@ impl AnalysisConfig {
         if self.throttle_secs < ANALYSIS_THROTTLE_SECS_FLOOR {
             self.throttle_secs = ANALYSIS_THROTTLE_SECS_FLOOR;
             clamped.push("analysis.throttle_secs");
+        }
+        if self.max_suggestions < ANALYSIS_MAX_SUGGESTIONS_FLOOR {
+            self.max_suggestions = ANALYSIS_MAX_SUGGESTIONS_FLOOR;
+            clamped.push("analysis.max_suggestions");
+        } else if self.max_suggestions > ANALYSIS_MAX_SUGGESTIONS_CAP {
+            self.max_suggestions = ANALYSIS_MAX_SUGGESTIONS_CAP;
+            clamped.push("analysis.max_suggestions");
         }
         clamped
     }
@@ -173,10 +333,6 @@ pub struct AutoTuningConfig {
     /// Drift detection threshold in sigma units.
     #[serde(default = "default_drift_threshold")]
     pub drift_threshold: f32,
-
-    /// Adjusted Rand Index threshold below which re-clustering is triggered.
-    #[serde(default = "default_reclustering_ari_threshold")]
-    pub reclustering_ari_threshold: f32,
 }
 
 impl Default for AutoTuningConfig {
@@ -185,7 +341,6 @@ impl Default for AutoTuningConfig {
             enabled: default_auto_tuning_enabled(),
             ema_alpha: default_ema_alpha(),
             drift_threshold: default_drift_threshold(),
-            reclustering_ari_threshold: default_reclustering_ari_threshold(),
         }
     }
 }
@@ -198,9 +353,6 @@ fn default_ema_alpha() -> f32 {
 }
 fn default_drift_threshold() -> f32 {
     2.0
-}
-fn default_reclustering_ari_threshold() -> f32 {
-    0.7
 }
 
 /// Configuration for the Adaptive Tiered Memory subsystem.
@@ -804,5 +956,223 @@ mod tests {
                 .map(|r| r.namespace.as_str()),
             Some("provider/openai/embedding")
         );
+    }
+
+    // ── #7726 (ctd-W2 E4): max_suggestions floor/cap ────────────────────
+
+    #[test]
+    fn analysis_validate_bounds_rejects_zero_max_suggestions() {
+        let cfg = AnalysisConfig {
+            max_suggestions: 0,
+            ..Default::default()
+        };
+        let err = cfg.validate_bounds().unwrap_err();
+        assert!(err.contains("max_suggestions"), "got: {err}");
+    }
+
+    #[test]
+    fn analysis_validate_bounds_rejects_max_suggestions_above_cap() {
+        let cfg = AnalysisConfig {
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_CAP + 1,
+            ..Default::default()
+        };
+        let err = cfg.validate_bounds().unwrap_err();
+        assert!(err.contains("max_suggestions"), "got: {err}");
+    }
+
+    #[test]
+    fn analysis_validate_bounds_accepts_max_suggestions_boundary() {
+        for val in [ANALYSIS_MAX_SUGGESTIONS_FLOOR, ANALYSIS_MAX_SUGGESTIONS_CAP] {
+            let cfg = AnalysisConfig {
+                max_suggestions: val,
+                ..Default::default()
+            };
+            cfg.validate_bounds()
+                .unwrap_or_else(|e| panic!("max_suggestions={val} must be accepted; got {e:?}"));
+        }
+    }
+
+    #[test]
+    fn analysis_clamp_bounds_raises_zero_max_suggestions_to_floor() {
+        let mut cfg = AnalysisConfig {
+            max_suggestions: 0,
+            ..Default::default()
+        };
+        let clamped = cfg.clamp_bounds();
+        assert!(clamped.contains(&"analysis.max_suggestions"));
+        assert_eq!(cfg.max_suggestions, ANALYSIS_MAX_SUGGESTIONS_FLOOR);
+        cfg.validate_bounds()
+            .expect("clamped config must satisfy validate_bounds");
+    }
+
+    #[test]
+    fn analysis_clamp_bounds_lowers_over_cap_max_suggestions() {
+        let mut cfg = AnalysisConfig {
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_CAP + 50,
+            ..Default::default()
+        };
+        let clamped = cfg.clamp_bounds();
+        assert!(clamped.contains(&"analysis.max_suggestions"));
+        assert_eq!(cfg.max_suggestions, ANALYSIS_MAX_SUGGESTIONS_CAP);
+        cfg.validate_bounds()
+            .expect("clamped config must satisfy validate_bounds");
+    }
+
+    // ── #7726: capture_throttle / throttle_secs boundary-agreement regression ──
+    //
+    // Pre-fix (before #7726), `analysis.throttle_secs = 5` was accepted by this
+    // core validator (floor was 1) but rejected by the WebView `update_setting`
+    // boundary (`src-tauri/src/commands/settings.rs`, hardcoded floor 10) — a
+    // live 3-boundary disagreement. Both boundaries must now agree: this test
+    // pins the core side; `src-tauri/src/commands/settings.rs`'s test module
+    // pins the WebView side against the same value.
+    #[test]
+    fn analysis_validate_bounds_rejects_throttle_secs_five_matches_webview_boundary() {
+        let cfg = AnalysisConfig {
+            throttle_secs: 5,
+            ..Default::default()
+        };
+        let err = cfg
+            .validate_bounds()
+            .expect_err("throttle_secs=5 must now be rejected by the core SSOT (floor raised to 10 in #7726 to agree with the WebView boundary)");
+        assert!(err.contains("throttle_secs"), "got: {err}");
+    }
+}
+
+/// #10197 Wave 1: mutation guards for the analysis config defaults and clamps.
+///
+/// The full-crate measurement (run 31027028682) left 72 surviving mutants
+/// here, 67 of them constant-replacements of `default_*` functions — nothing
+/// asserted any default's VALUE, so `0`/`1`/`Default::default()` all passed.
+/// These defaults govern analysis cadence, retention, and PII extraction; a
+/// silent change ships as a behaviour change for every fresh install
+/// (the #10131 `default_*` pattern, at scale).
+#[cfg(test)]
+mod mutation_guard_tests {
+    use super::*;
+
+    /// Every default function's exact value, asserted individually. This is
+    /// deliberately a value table, not `AnalysisConfig::default()` field
+    /// checks: serde `#[serde(default = "…")]` calls these functions directly
+    /// on deserialization, so a function whose Default-impl wiring differs
+    /// would still be covered here.
+    #[test]
+    fn every_default_function_value_is_pinned() {
+        assert_eq!(default_aggregation_window_secs(), 300);
+        assert!(default_auto_tuning_enabled());
+        assert_eq!(default_buffer_capacity(), 100);
+        assert_eq!(default_buffer_flush_interval_secs(), 30);
+        assert_eq!(default_calibration_max_rows(), 500_000);
+        assert_eq!(default_calibration_retention_days(), 14);
+        assert!((default_drift_threshold() - 2.0).abs() < f32::EPSILON);
+        assert!((default_ema_alpha() - 0.05).abs() < f32::EPSILON);
+        assert_eq!(default_embedding_provider(), EmbeddingProviderType::Local);
+        assert_eq!(default_embedding_retention_days(), 90);
+        assert_eq!(default_generation_window_days(), 30);
+        assert!(!default_gui_enabled());
+        assert_eq!(default_index_strategy(), "auto");
+        assert_eq!(default_local_model(), "all-MiniLM-L6-v2-Q");
+        assert_eq!(default_max_events_per_segment(), 500);
+        assert_eq!(default_max_search_results(), 5);
+        assert_eq!(default_max_segment_secs(), 600);
+        assert_eq!(default_max_suggestions(), 3);
+        assert!((default_min_confidence() - 0.6).abs() < f64::EPSILON);
+        assert!((default_min_input_confidence() - 0.5).abs() < f64::EPSILON);
+        assert_eq!(default_min_segment_for_summary(), 300);
+        assert_eq!(default_min_segment_secs(), 120);
+        assert_eq!(default_mirror_window_days(), 90);
+        assert_eq!(default_oversample_factor(), 10);
+        assert_eq!(
+            default_pii_extraction_level(),
+            crate::config::enums::PiiFilterLevel::Standard,
+            "PII extraction floor is Standard — weakening this default is a privacy change"
+        );
+        assert_eq!(default_projection_max_claims(), 64);
+        assert_eq!(default_projection_max_edges(), 256);
+        assert_eq!(default_proximity_threshold_px(), 40);
+        assert!(default_quantization_float32_retention());
+        assert_eq!(default_regime_detection_interval_hours(), 2);
+        assert_eq!(default_server_coexistence_lookback_secs(), 300);
+        assert!((default_supersede_confidence_threshold() - 0.9).abs() < f64::EPSILON);
+        assert!((default_time_decay_hours() - 168.0).abs() < f32::EPSILON);
+    }
+
+    /// clamp_bounds' comparisons are strict on purpose: a value AT the floor
+    /// is legal and must pass through untouched. `<` -> `<=` would clamp (and
+    /// report) a legal config on every startup.
+    #[test]
+    fn clamp_bounds_leaves_exact_floor_values_untouched() {
+        let mut config = AnalysisConfig {
+            interval_secs: ANALYSIS_INTERVAL_SECS_FLOOR,
+            full_interval_secs: ANALYSIS_INTERVAL_SECS_FLOOR, // == interval: legal
+            throttle_secs: ANALYSIS_THROTTLE_SECS_FLOOR,
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_FLOOR,
+            ..AnalysisConfig::default()
+        };
+
+        let clamped = config.clamp_bounds();
+        assert!(
+            clamped.is_empty(),
+            "at-floor values are legal and must not be clamped: {clamped:?}"
+        );
+        assert_eq!(config.interval_secs, ANALYSIS_INTERVAL_SECS_FLOOR);
+        assert_eq!(config.full_interval_secs, ANALYSIS_INTERVAL_SECS_FLOOR);
+    }
+
+    #[test]
+    fn clamp_bounds_raises_each_sub_floor_field_independently() {
+        // One field below floor at a time, so each comparison is individually
+        // load-bearing rather than shadowed by a sibling clamp.
+        let mut config = AnalysisConfig {
+            interval_secs: ANALYSIS_INTERVAL_SECS_FLOOR - 1,
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.interval_secs"));
+        assert_eq!(config.interval_secs, ANALYSIS_INTERVAL_SECS_FLOOR);
+
+        let default_interval = AnalysisConfig::default().interval_secs;
+        let mut config = AnalysisConfig {
+            full_interval_secs: default_interval - 1,
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.full_interval_secs"));
+        assert_eq!(config.full_interval_secs, config.interval_secs);
+
+        let mut config = AnalysisConfig {
+            throttle_secs: ANALYSIS_THROTTLE_SECS_FLOOR - 1,
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.throttle_secs"));
+        assert_eq!(config.throttle_secs, ANALYSIS_THROTTLE_SECS_FLOOR);
+
+        let mut config = AnalysisConfig {
+            max_suggestions: 0, // FLOOR is 1, so 0 is the only sub-floor value
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.max_suggestions"));
+        assert_eq!(config.max_suggestions, ANALYSIS_MAX_SUGGESTIONS_FLOOR);
+    }
+
+    #[test]
+    fn clamp_bounds_caps_max_suggestions_exclusively_at_the_cap() {
+        // AT the cap is legal; one past it clamps down. `>` -> `>=` would
+        // clamp (and report) the exact-cap config.
+        let mut config = AnalysisConfig {
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_CAP,
+            ..AnalysisConfig::default()
+        };
+        assert!(config.clamp_bounds().is_empty(), "exact cap is legal");
+
+        let mut config = AnalysisConfig {
+            max_suggestions: ANALYSIS_MAX_SUGGESTIONS_CAP + 1,
+            ..AnalysisConfig::default()
+        };
+        let clamped = config.clamp_bounds();
+        assert!(clamped.contains(&"analysis.max_suggestions"));
+        assert_eq!(config.max_suggestions, ANALYSIS_MAX_SUGGESTIONS_CAP);
     }
 }

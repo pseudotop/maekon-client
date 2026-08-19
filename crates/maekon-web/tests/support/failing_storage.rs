@@ -28,9 +28,9 @@ use maekon_core::models::dashboard_streaming::{
 use maekon_core::models::event::Event;
 use maekon_core::models::storage_records::{
     DeletedRangeCounts, EventExportRecord, FocusInterruptionRecord, FocusWorkSessionRecord,
-    FrameExportRecord, FrameRecord, FrameTagLinkRecord, GuiInteractionRecord, HourlyMetricsRecord,
-    LocalSuggestionRecord, MetricExportRecord, NewGuiInteraction, SearchEventRow, SearchFrameRow,
-    SegmentSummaryRecord, StorageStatsSummaryRecord, SuggestionRecord, TagRecord,
+    FrameExportRecord, FrameRecord, FrameTagLinkRecord, HourlyMetricsRecord, LocalSuggestionRecord,
+    MetricExportRecord, NewGuiInteraction, SearchEventRow, SearchFrameRow, SegmentSummaryRecord,
+    StorageStatsSummaryRecord, SuggestionRecord, TagRecord,
 };
 use maekon_core::models::suggestion::Suggestion;
 use maekon_core::models::system::SystemMetrics;
@@ -41,8 +41,8 @@ use maekon_core::ports::storage::{MetricsStorage, StorageService};
 use maekon_core::ports::web_storage::{
     ActivityStatsStorage, BackupStorage, CoachingQueryStorage, DashboardStreamingStorage,
     DigestStorage, EventQueryStorage, FocusQueryStorage, FrameQueryStorage, GuiInteractionStorage,
-    HabitStorage, SegmentQueryStorage, StorageMaintenanceStorage, SuggestionQueryStorage,
-    TagStorage,
+    HabitStorage, PersonalDataTableExport, SegmentQueryStorage, StorageMaintenanceStorage,
+    SuggestionQueryStorage, TagStorage,
 };
 use maekon_core::types::TimeWindow;
 use maekon_storage::sqlite::SqliteStorage;
@@ -91,10 +91,6 @@ impl StorageService for FailingStorage {
 
     async fn mark_as_sent(&self, event_ids: &[String]) -> Result<(), CoreError> {
         self.inner.mark_as_sent(event_ids).await
-    }
-
-    async fn mark_unsent_as_sent_before(&self, before: DateTime<Utc>) -> Result<usize, CoreError> {
-        self.inner.mark_unsent_as_sent_before(before).await
     }
 
     async fn enforce_retention(&self) -> Result<usize, CoreError> {
@@ -421,6 +417,22 @@ impl StorageMaintenanceStorage for FailingStorage {
             .await
             .map_err(Into::into)
     }
+
+    async fn delete_data_for_apps(
+        &self,
+        app_names: &[String],
+        app_patterns: &[String],
+    ) -> Result<
+        (
+            Vec<String>,
+            maekon_core::models::storage_records::AppDeletionCounts,
+        ),
+        CoreError,
+    > {
+        StorageMaintenanceStorage::delete_data_for_apps(&*self.inner, app_names, app_patterns)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 // ── ActivityStatsStorage ─────────────────────────────────────────────────────
@@ -634,6 +646,13 @@ impl BackupStorage for FailingStorage {
         BackupStorage::list_backup_frame_tags(&*self.inner).await
     }
 
+    // #8056 P2-3: delegates like every other BackupStorage method above — this
+    // impl only injects faults for the specific methods named in the file
+    // header doc comment (currently `start_idle_period`), not this trait.
+    async fn export_personal_data_tables(&self) -> Result<Vec<PersonalDataTableExport>, CoreError> {
+        BackupStorage::export_personal_data_tables(&*self.inner).await
+    }
+
     async fn list_event_exports(
         &self,
         from: &str,
@@ -671,7 +690,7 @@ impl BackupStorage for FailingStorage {
         name: &str,
         color: &str,
         created_at: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<i64>, CoreError> {
         BackupStorage::upsert_backup_tag(&*self.inner, id, name, color, created_at).await
     }
 
@@ -680,7 +699,7 @@ impl BackupStorage for FailingStorage {
         frame_id: i64,
         tag_id: i64,
         created_at: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<bool, CoreError> {
         BackupStorage::upsert_backup_frame_tag(&*self.inner, frame_id, tag_id, created_at).await
     }
 
@@ -691,7 +710,7 @@ impl BackupStorage for FailingStorage {
         timestamp: &str,
         app_name: Option<&str>,
         window_title: Option<&str>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<bool, CoreError> {
         BackupStorage::upsert_backup_event(
             &*self.inner,
             event_id,
@@ -714,7 +733,7 @@ impl BackupStorage for FailingStorage {
         width: i32,
         height: i32,
         ocr_text: Option<&str>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<i64>, CoreError> {
         BackupStorage::upsert_backup_frame(
             &*self.inner,
             id,
@@ -737,13 +756,6 @@ impl BackupStorage for FailingStorage {
 impl GuiInteractionStorage for FailingStorage {
     async fn save_gui_interaction(&self, input: &NewGuiInteraction<'_>) -> Result<(), CoreError> {
         GuiInteractionStorage::save_gui_interaction(&*self.inner, input).await
-    }
-
-    async fn list_gui_interactions_for_segment(
-        &self,
-        segment_id: &str,
-    ) -> Result<Vec<GuiInteractionRecord>, CoreError> {
-        GuiInteractionStorage::list_gui_interactions_for_segment(&*self.inner, segment_id).await
     }
 
     async fn query_gui_interaction_density(

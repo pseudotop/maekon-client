@@ -46,7 +46,16 @@ fn query_disk_free_mb(path: &Path) -> u64 {
         let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
             return u64::MAX;
         };
+        // SAFETY: `libc::statvfs` is a plain-old-data C struct of integer fields
+        // with no invalid bit patterns and no `Drop`, so an all-zero value is a
+        // valid initial state. It is fully overwritten by the `statvfs()` call
+        // below before any field is read.
         let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        // SAFETY: `c_path` is a valid NUL-terminated C string (constructed above
+        // via `CString::new`) that lives for the duration of the call, and `stat`
+        // is a valid, writable `statvfs` out-parameter. `statvfs()` only reads
+        // through the path pointer and writes through the struct pointer, so both
+        // accesses are in-bounds and sound.
         if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } == 0 {
             (stat.f_bavail as u64 * stat.f_frsize) / (1024 * 1024)
         } else {
@@ -63,6 +72,12 @@ fn query_disk_free_mb(path: &Path) -> u64 {
             .chain(std::iter::once(0))
             .collect();
         let mut free_bytes: u64 = 0;
+        // SAFETY: `wide` is a valid NUL-terminated UTF-16 path buffer (built above)
+        // that outlives the call, and `free_bytes` is a valid writable `u64`
+        // out-parameter passed for `lpFreeBytesAvailableToCaller`. The remaining
+        // two output pointers are null, which the API explicitly permits to skip
+        // those outputs. GetDiskFreeSpaceExW only reads the path string and writes
+        // through the non-null out-pointer, so every access is sound.
         let ok = unsafe {
             GetDiskFreeSpaceExW(
                 wide.as_ptr(),

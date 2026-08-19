@@ -510,6 +510,31 @@ fn daily_digest_list_ordering() {
 }
 
 #[test]
+fn digest_processing_marker_roundtrip() {
+    let storage = SqliteStorage::open_in_memory(30).unwrap();
+    let kind = "daily_claim_promotion";
+    let period_key = "2026-06-30";
+
+    assert!(
+        !storage
+            .has_digest_processing_marker(kind, period_key)
+            .unwrap(),
+        "marker should be absent before save"
+    );
+
+    storage
+        .save_digest_processing_marker(kind, period_key, Utc::now())
+        .unwrap();
+
+    assert!(
+        storage
+            .has_digest_processing_marker(kind, period_key)
+            .unwrap(),
+        "marker should be present after save"
+    );
+}
+
+#[test]
 fn daily_digest_get_nonexistent_returns_none() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
     let result = storage.get_daily_digest("2020-01-01").unwrap();
@@ -947,15 +972,6 @@ fn fts_available_set_after_open_in_memory() {
 }
 
 #[test]
-fn gui_interactions_available_set_after_open_in_memory() {
-    let _storage = SqliteStorage::open_in_memory(30).unwrap();
-    assert!(
-        GUI_INTERACTIONS_AVAILABLE.load(Ordering::Relaxed),
-        "GUI_INTERACTIONS_AVAILABLE should be true after migrations create gui_interactions"
-    );
-}
-
-#[test]
 fn fts_available_set_after_disk_open() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test_fts_flag.db");
@@ -963,17 +979,6 @@ fn fts_available_set_after_disk_open() {
     assert!(
         FTS_AVAILABLE.load(Ordering::Relaxed),
         "FTS_AVAILABLE should be true after disk open with migrations"
-    );
-}
-
-#[test]
-fn gui_interactions_available_set_after_disk_open() {
-    let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("test_gui_flag.db");
-    let _storage = SqliteStorage::open(&db_path, 30, None).unwrap();
-    assert!(
-        GUI_INTERACTIONS_AVAILABLE.load(Ordering::Relaxed),
-        "GUI_INTERACTIONS_AVAILABLE should be true after disk open with migrations"
     );
 }
 
@@ -1427,10 +1432,19 @@ fn recent_audit_entries_respects_limit_clamp() {
     use maekon_core::models::audit::{AuditEntry, AuditStatus};
 
     let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    // #7600: a single fixed base timestamp with a 1-second-per-row gap, instead
+    // of calling `Utc::now()` once per iteration with millisecond offsets. The
+    // old pattern could tie on fast hosts (repeated `Utc::now()` calls are not
+    // guaranteed to advance at sub-millisecond granularity), making the
+    // `ORDER BY timestamp DESC` tiebreak — and thus which row lands first —
+    // nondeterministic (observed as `rae-lim-1` racing `rae-lim-0`). A coarse,
+    // strictly decreasing offset from one captured base removes any dependency
+    // on wall-clock call timing.
+    let base = Utc::now();
     for i in 0..10_i64 {
         let entry = AuditEntry {
             entry_id: format!("rae-lim-{i}"),
-            timestamp: Utc::now() - chrono::Duration::milliseconds(i),
+            timestamp: base - chrono::Duration::seconds(i),
             session_id: "s".to_string(),
             command_id: "cmd".to_string(),
             action_type: "test".to_string(),
@@ -1450,6 +1464,49 @@ fn recent_audit_entries_respects_limit_clamp() {
 fn recent_audit_entries_empty_when_no_rows() {
     let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
     assert!(storage.recent_audit_entries(100).is_empty());
+}
+
+#[test]
+fn audit_stats_aggregate_terminal_statuses_from_storage() {
+    use chrono::Utc;
+    use maekon_core::models::audit::{AuditEntry, AuditStatus};
+
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    let statuses = [
+        AuditStatus::Completed,
+        AuditStatus::Failed,
+        AuditStatus::Denied,
+        AuditStatus::Timeout,
+        AuditStatus::Started,
+    ];
+    for (index, status) in statuses.into_iter().enumerate() {
+        storage.save_audit_entry(&AuditEntry {
+            entry_id: format!("audit-stats-{index}"),
+            timestamp: Utc::now(),
+            session_id: "system.privacy".to_string(),
+            command_id: "system.privacy".to_string(),
+            action_type: "test".to_string(),
+            status,
+            details: None,
+            execution_time_ms: None,
+        });
+    }
+
+    let stats = storage.audit_stats();
+
+    assert_eq!(stats.total, 4, "Started is not a terminal execution");
+    assert_eq!(stats.completed, 1);
+    assert_eq!(stats.failed, 1);
+    assert_eq!(stats.denied, 1);
+    assert_eq!(stats.timeout, 1);
+}
+
+#[test]
+fn audit_stats_are_empty_when_storage_has_no_rows() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    let stats = storage.audit_stats();
+    assert_eq!(stats.total, 0);
+    assert_eq!(stats.completed, 0);
 }
 
 // ── Egress audit ledger (V36, #4803/E20) ────────────────────────────
@@ -1697,6 +1754,47 @@ fn verify_audit_chain_clean_is_ok() {
     assert_eq!(report.verified_count, 5);
     assert_eq!(report.legacy_unchained_count, 0);
     assert!(report.first_break.is_none());
+}
+
+/// #7600: the async wrapper (used by the `GET /audit/verify` HTTP handler via
+/// `AuditChainVerifierPort`) must agree with the sync `verify_audit_chain` it
+/// delegates to — same underlying `verify_audit_chain_impl`, just offloaded
+/// onto `spawn_blocking`.
+#[tokio::test]
+async fn verify_audit_chain_async_matches_sync_report() {
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    for i in 0..5 {
+        storage.save_audit_entry(&make_audit_entry(&format!("ok-{i}"), Some("d")));
+    }
+    let sync_report = storage.verify_audit_chain();
+    let async_report = storage.verify_audit_chain_async().await;
+    assert_eq!(sync_report, async_report);
+    assert!(
+        async_report.ok,
+        "clean chain should be ok: {async_report:?}"
+    );
+    assert_eq!(async_report.verified_count, 5);
+}
+
+/// The `AuditChainVerifierPort` trait impl must reach the same real logic —
+/// not a stub — when invoked through a `dyn` port reference, mirroring how
+/// `AppState.core.audit_chain_verifier` is consumed by the HTTP handler.
+#[tokio::test]
+async fn audit_chain_verifier_port_impl_reaches_real_verification() {
+    use maekon_core::ports::audit_chain_verifier::AuditChainVerifierPort;
+    use std::sync::Arc;
+
+    let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("sqlite"));
+    storage.save_audit_entry(&make_audit_entry("via-port", Some("d")));
+
+    let verifier: Arc<dyn AuditChainVerifierPort> = storage.clone();
+    let report = verifier.verify_audit_chain().await;
+
+    assert!(
+        report.ok,
+        "port-mediated verification should be ok: {report:?}"
+    );
+    assert_eq!(report.verified_count, 1);
 }
 
 #[test]
@@ -1962,4 +2060,65 @@ fn save_session_audit_entry_persists_row() {
     let payload_json: serde_json::Value =
         serde_json::from_str(&payload.expect("payload stored")).expect("payload is valid json");
     assert_eq!(payload_json["role"], "user");
+}
+
+/// #7946: WHY upload producers must pair the persisted id with the payload —
+/// egress filtering can change id-relevant fields (a Context event's window
+/// title feeds the id), so an id derived from the FILTERED payload would
+/// stamp the wrong (or no) row as sent.
+#[test]
+fn storage_event_id_diverges_when_title_is_redacted() {
+    use maekon_core::models::event::{ContextEvent, Event};
+
+    let original = Event::Context(ContextEvent {
+        app_name: "Mail".to_string(),
+        window_title: "Quarterly numbers — draft".to_string(),
+        prev_app_name: None,
+        timestamp: chrono::Utc::now(),
+        ..Default::default()
+    });
+    let redacted = match &original {
+        Event::Context(ctx) => Event::Context(ContextEvent {
+            window_title: "[REDACTED_WINDOW_TITLE]".to_string(),
+            ..ctx.clone()
+        }),
+        _ => unreachable!(),
+    };
+
+    let id_original = crate::sqlite::storage_event_id(&original);
+    let id_redacted = crate::sqlite::storage_event_id(&redacted);
+    assert_ne!(
+        id_original, id_redacted,
+        "title redaction changes the derived id — producers must capture the id BEFORE egress filtering"
+    );
+}
+
+#[test]
+fn vault_mirror_state_is_erased_by_gdpr_delete_all_data() {
+    // #9465/ADR-033 §1.4 regression guard (fail-before/pass-after at the
+    // hash-state layer): an erase-surviving vault_mirror_state row would make
+    // the next mirror cycle see "hash matches" and silently skip regenerating
+    // files Art.17 Phase-3 just deleted. The table must be in ALL_TABLES.
+    let storage = SqliteStorage::open_in_memory(30).expect("sqlite");
+    {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "INSERT INTO vault_mirror_state (file_name, content_hash, updated_at)
+             VALUES ('claims.md', 'h1', 1), ('daily/2026-07-29.md', 'h2', 2)",
+            [],
+        )
+        .expect("seed vault hashes");
+    }
+
+    storage.delete_all_data().expect("delete_all_data");
+
+    let remaining: i64 = {
+        let conn = storage.conn.test_lock();
+        conn.query_row("SELECT COUNT(*) FROM vault_mirror_state", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        remaining, 0,
+        "vault_mirror_state must be emptied by GDPR delete_all_data (ADR-033 §1.4)"
+    );
 }

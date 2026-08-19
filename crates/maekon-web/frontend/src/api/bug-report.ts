@@ -3,7 +3,7 @@ import type { BugReportBundle, ProviderCliDiagnosticSummary } from './contracts'
 
 const BASE_URL = '/api'
 
-export async function createBugReport(includeLogs = true, piiLevel?: string): Promise<BugReportBundle> {
+export async function createBugReport(includeLogs = false, piiLevel?: string): Promise<BugReportBundle> {
   // E20-41 (#4833): resolve loopback URL and local-auth before leaving the shared client chokepoint.
   const url = await resolveApiUrl(`${BASE_URL}/support/bug-report`)
   const res = await fetch(
@@ -25,9 +25,27 @@ export type ClipboardFormat = 'json' | 'text'
 
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi
 const PROVIDER_SECRET_PATTERN = /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9_-]+\b/g
+const COMMON_SECRET_PATTERN =
+  /(?:\bsk-[A-Za-z0-9_-]{16,}\b|\bAKIA[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*|-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----)/gi
+const POSIX_LOCAL_PATH_PATTERN = /(?:~\/|\/(?:Users|home|private|Volumes|tmp|var\/folders)\/)[^\s"'<>]+/g
+const WINDOWS_LOCAL_PATH_PATTERN = /(?:\b[A-Z]:\\|\\\\)[^\s"'<>]+/gi
 
 export function sanitizeSupportText(text: string): string {
-  return text.replace(EMAIL_PATTERN, '[EMAIL]').replace(PROVIDER_SECRET_PATTERN, '[PROVIDER_SECRET]')
+  return text
+    .replace(EMAIL_PATTERN, '[EMAIL]')
+    .replace(PROVIDER_SECRET_PATTERN, '[PROVIDER_SECRET]')
+    .replace(COMMON_SECRET_PATTERN, '[SECRET]')
+    .replace(POSIX_LOCAL_PATH_PATTERN, '[LOCAL_PATH]')
+    .replace(WINDOWS_LOCAL_PATH_PATTERN, '[LOCAL_PATH]')
+}
+
+function sanitizeUnknown<T>(value: T): T {
+  if (typeof value === 'string') return sanitizeSupportText(value) as T
+  if (Array.isArray(value)) return value.map((entry) => sanitizeUnknown(entry)) as T
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, sanitizeUnknown(entry)])) as T
+  }
+  return value
 }
 
 function executableFileNameHint(value: string): string {
@@ -50,22 +68,23 @@ function sanitizeProviderCliDiagnostic(summary: ProviderCliDiagnosticSummary): P
 }
 
 export function sanitizeBugReportBundleForDisplay(bundle: BugReportBundle): BugReportBundle {
+  const sanitized = sanitizeUnknown(bundle)
   return {
-    ...bundle,
+    ...sanitized,
     diagnostics: {
-      ...bundle.diagnostics,
+      ...sanitized.diagnostics,
       provider_cli: (bundle.diagnostics.provider_cli ?? []).map(sanitizeProviderCliDiagnostic),
     },
-    runtime_logs: bundle.runtime_logs
+    runtime_logs: sanitized.runtime_logs
       ? {
-          ...bundle.runtime_logs,
-          log_dir: sanitizeSupportText(bundle.runtime_logs.log_dir),
-          log_file: bundle.runtime_logs.log_file
-            ? sanitizeSupportText(bundle.runtime_logs.log_file)
-            : bundle.runtime_logs.log_file,
-          recent_text: sanitizeSupportText(bundle.runtime_logs.recent_text),
+          ...sanitized.runtime_logs,
+          log_dir: sanitizeSupportText(sanitized.runtime_logs.log_dir),
+          log_file: sanitized.runtime_logs.log_file
+            ? sanitizeSupportText(sanitized.runtime_logs.log_file)
+            : sanitized.runtime_logs.log_file,
+          recent_text: sanitizeSupportText(sanitized.runtime_logs.recent_text),
         }
-      : bundle.runtime_logs,
+      : sanitized.runtime_logs,
   }
 }
 
@@ -182,7 +201,7 @@ export function buildBugReportIssueUrl(bundle: BugReportBundle): string {
 export function buildMailtoUrl(bugId: string): string {
   const subject = encodeURIComponent(`Bug Report ${bugId}`)
   const body = encodeURIComponent(
-    `Bug ID: ${bugId}\n\nPlease attach the exported diagnostic report (maekon-report-${bugId}.json) to this email.\n\nDescribe the issue:\n`,
+    `Bug ID: ${bugId}\n\nAttach the exported diagnostic report (maekon-report-${bugId}.json) only after reviewing it. Do not send raw screens, OCR/window text, prompts, secrets, customer data, or full local paths.\n\nDescribe the issue:\n`,
   )
   return `mailto:support@maekon.dev?subject=${subject}&body=${body}`
 }

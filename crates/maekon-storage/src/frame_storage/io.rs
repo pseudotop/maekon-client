@@ -72,7 +72,7 @@ pub(super) async fn create_dir_owner_only(dir: &Path) -> Result<(), StorageError
     }
     #[cfg(windows)]
     {
-        if let Err(e) = crate::encryption::set_owner_only_dacl(dir) {
+        if let Err(e) = crate::encryption::set_owner_only_directory_dacl(dir) {
             warn!(
                 dir = %dir.display(),
                 "frame directory: failed to set owner-only DACL: {e}"

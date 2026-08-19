@@ -9,6 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
 [features]
 default = ["native-vision", "linux-atspi"]
 ocr = ["leptess"]
@@ -31,7 +34,6 @@ base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-uuid = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -61,6 +63,10 @@ futures = { workspace = true, optional = true }
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = { workspace = true }
+# #7729 ctd-W2 G2: canonical `FakeOcrProvider` test double lives in maekon-core
+# next to the `OcrProvider` port, gated `test-support`. Enabled ONLY here (dev
+# builds), never via `[dependencies]`, so it never reaches the shipped binary.
+maekon-core = { workspace = true, features = ["test-support"] }
 
 [[bench]]
 name = "vision_bench"

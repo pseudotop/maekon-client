@@ -1,3 +1,5 @@
+// OOS-TBD: ADR-013 file split — baselined past the 900-line giant
+// threshold while growing for #9700; split per ADR-003 when next touched.
 // ADR-013: maintenance module split (was 1533 lines)
 // Responsibilities:
 //   backup.rs    — backup upsert/list helpers (tags, frames, events)
@@ -6,11 +8,16 @@
 //   export.rs    — data export queries (events, metrics, frames, search)
 //   vacuum.rs    — SQLite VACUUM, WAL checkpoint, FTS5, ANALYZE
 
+mod app_deletion;
 mod backup;
 mod export;
+mod frame_dependents;
 mod retention;
 mod stats;
 mod vacuum;
+
+#[cfg(test)]
+mod work_context_erasure_tests;
 
 #[cfg(test)]
 mod tests {
@@ -39,6 +46,127 @@ mod tests {
                 id, timestamp, "manual", "Code", "main.rs", 0.5, 1920, 1080, None,
             )
             .unwrap();
+    }
+
+    fn seed_frame_dependents(storage: &SqliteStorage, frame_id: i64) {
+        let conn = storage.conn.test_lock();
+        conn.execute(
+            "INSERT INTO tags (id, name, color, created_at) VALUES (?1, ?2, '#3b82f6', '2025-06-01T00:00:00Z')",
+            rusqlite::params![frame_id, format!("tag-{frame_id}")],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO frame_tags (frame_id, tag_id, created_at) VALUES (?1, ?1, '2025-06-01T00:00:00Z')",
+            rusqlite::params![frame_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO frame_annotations (annotation_id, frame_id, annotation_type, x, y, text, created_at)
+             VALUES (?1, ?2, 'memo', 0.1, 0.1, 'private note', '2025-06-01T00:00:00Z')",
+            rusqlite::params![format!("ann-{frame_id}"), frame_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interruptions (interrupted_at, from_app, from_category, to_app, to_category, snapshot_frame_id)
+             VALUES ('2025-06-01T10:00:00Z', 'Code', 'dev', 'Slack', 'chat', ?1)",
+            rusqlite::params![frame_id],
+        )
+        .unwrap();
+    }
+
+    fn count_rows(storage: &SqliteStorage, sql: &str) -> i64 {
+        let conn = storage.conn.test_lock();
+        conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    /// #9721: `frame_annotations` declares no FK (v30.rs:9), so SQLite's engine
+    /// cannot remove it with its frame — and the rows carry the user's own memo
+    /// text on a path whose whole purpose is deletion.
+    ///
+    /// `frame_tags` (CASCADE) and `interruptions` (SET NULL) are asserted too,
+    /// but the engine already handles those: they are a scoping check, not a
+    /// regression guard for this fix. See #9735.
+    #[test]
+    fn deleting_frames_in_a_range_removes_the_annotations_the_fk_engine_cannot() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        insert_frame(&storage, 1, "2025-06-01T10:00:00Z");
+        seed_frame_dependents(&storage, 1);
+        // A frame OUTSIDE the window, with its own dependents. Without this the
+        // assertions below pass even if the cleanup dropped its WHERE clause and
+        // wiped the tables wholesale.
+        insert_frame(&storage, 2, "2025-07-01T10:00:00Z");
+        seed_frame_dependents(&storage, 2);
+
+        let window =
+            TimeWindow::from_rfc3339_pair("2025-06-01T00:00:00Z", "2025-06-02T00:00:00Z").unwrap();
+        let counts = storage
+            .delete_data_in_range(&window, false, true, false, false, false)
+            .unwrap();
+        assert_eq!(counts.frames_deleted, 1);
+
+        // The deleted frame's dependents are gone.
+        assert_eq!(
+            count_rows(
+                &storage,
+                "SELECT COUNT(*) FROM frame_annotations WHERE frame_id = 1"
+            ),
+            0,
+            "the user's memo must not outlive the deletion that removed its frame"
+        );
+        assert_eq!(
+            count_rows(
+                &storage,
+                "SELECT COUNT(*) FROM frame_tags WHERE frame_id = 1"
+            ),
+            0,
+            "CASCADE (SQLite's own): the relation goes with its frame"
+        );
+        assert_eq!(
+            count_rows(
+                &storage,
+                "SELECT COUNT(*) FROM interruptions WHERE snapshot_frame_id = 1"
+            ),
+            0,
+            "SET NULL (SQLite's own): the snapshot reference is cleared"
+        );
+
+        // The surviving frame keeps everything — this is what proves the
+        // cleanup is SCOPED rather than a table-wide wipe.
+        assert_eq!(
+            count_rows(
+                &storage,
+                "SELECT COUNT(*) FROM frame_annotations WHERE frame_id = 2"
+            ),
+            1,
+            "an out-of-range frame's annotation must survive"
+        );
+        assert_eq!(
+            count_rows(
+                &storage,
+                "SELECT COUNT(*) FROM frame_tags WHERE frame_id = 2"
+            ),
+            1,
+            "an out-of-range frame's relation must survive"
+        );
+        assert_eq!(
+            count_rows(
+                &storage,
+                "SELECT COUNT(*) FROM interruptions WHERE snapshot_frame_id = 2"
+            ),
+            1,
+            "an out-of-range frame's snapshot reference must survive"
+        );
+
+        assert_eq!(
+            count_rows(&storage, "SELECT COUNT(*) FROM interruptions"),
+            2,
+            "SET NULL must not delete the interruption rows themselves"
+        );
+        assert_eq!(
+            count_rows(&storage, "SELECT COUNT(*) FROM tags"),
+            2,
+            "tags are not frame dependents"
+        );
     }
 
     fn insert_metric(storage: &SqliteStorage, timestamp: &str) {
@@ -650,6 +778,206 @@ mod tests {
         assert_eq!(tags[1].name, "personal");
     }
 
+    /// #9700: restore merges into a live table, so the three collision shapes
+    /// must each resolve to a real, correct tag id — the caller remaps
+    /// `frame_tags` through the returned value.
+    ///
+    /// Before this, `INSERT OR IGNORE` swallowed both collisions and the caller
+    /// wrote the ARCHIVE's id, so a restore silently mis-attached or orphaned
+    /// relations while reporting every tag as restored.
+    #[test]
+    fn restoring_a_tag_returns_the_id_it_actually_occupies() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+        // 1. Free id, unseen name -> keeps the archived id.
+        let fresh = storage
+            .upsert_backup_tag(7, "work", "#3b82f6", "2025-06-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(fresh, Some(7), "an unclaimed id must be honoured");
+
+        // 2. Name already present under a different archived id -> that row IS
+        //    this tag. Returning the existing id is what stops the relation
+        //    from dangling.
+        let same_name = storage
+            .upsert_backup_tag(99, "work", "#ef4444", "2025-06-02T00:00:00Z")
+            .unwrap();
+        assert_eq!(
+            same_name,
+            Some(7),
+            "an existing name must map onto its own row"
+        );
+        assert_eq!(
+            storage.list_backup_tags().unwrap().len(),
+            1,
+            "no duplicate row may be created for a name that already exists"
+        );
+
+        // 3. Id taken by a DIFFERENT tag -> insert under a fresh id and report
+        //    it, so the relation follows this tag rather than the squatter.
+        let relocated = storage
+            .upsert_backup_tag(7, "personal", "#10b981", "2025-06-03T00:00:00Z")
+            .unwrap();
+        assert_ne!(relocated, Some(7), "a taken id must not be reused");
+        let relocated = relocated.expect("a real write must report its id");
+
+        let tags = storage.list_backup_tags().unwrap();
+        assert_eq!(tags.len(), 2);
+        let personal = tags.iter().find(|t| t.name == "personal").unwrap();
+        assert_eq!(
+            personal.id, relocated,
+            "the reported id must be where the tag really landed"
+        );
+        // The pre-existing tag is untouched — the squatter was not overwritten.
+        assert_eq!(tags.iter().find(|t| t.id == 7).unwrap().name, "work");
+    }
+
+    /// #9700 review: during a GDPR erase the write funnel SKIPS the insert.
+    /// The return value must say "nothing was written" rather than hand back an
+    /// id — the caller remaps `frame_tags` through it, and an invented id is
+    /// exactly the mis-attachment this change removes. `i64::default()` is `0`,
+    /// which this codebase also uses as a live tag sentinel, so `Option` is what
+    /// makes the skip unambiguous.
+    #[test]
+    fn a_skipped_write_reports_none_rather_than_an_id() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        storage.set_deletion_flag(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            true,
+        )));
+
+        let result = storage
+            .upsert_backup_tag(7, "work", "#3b82f6", "2025-06-01T00:00:00Z")
+            .unwrap();
+
+        assert_eq!(result, None, "an erase-skipped write must not report an id");
+        assert!(
+            storage.list_backup_tags().unwrap().is_empty(),
+            "nothing may be written while the deletion flag is set"
+        );
+    }
+
+    /// The test above exercises the SYNC inherent twin, where `None` is a
+    /// literal in `run(None, ...)`. The ASYNC twin is the production path — the
+    /// one that was returning `0` — and it derives `None` from
+    /// `Option::<i64>::default()` via `with_conn`. Pin that axis too: the
+    /// realistic regression is someone switching it to
+    /// `with_conn_skip(Some(id), ...)` or changing the return type, which the
+    /// sync test would not catch.
+    #[tokio::test]
+    async fn a_skipped_async_write_also_reports_none() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        storage.set_deletion_flag(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            true,
+        )));
+
+        let result = storage
+            .upsert_backup_tag_async(
+                7,
+                "work".to_string(),
+                "#3b82f6".to_string(),
+                "2025-06-01T00:00:00Z".to_string(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result, None,
+            "the production twin must report a skipped write as None, not an id"
+        );
+        assert!(
+            storage.list_backup_tags().unwrap().is_empty(),
+            "nothing may be written while the deletion flag is set"
+        );
+    }
+
+    /// #9708: frames have no natural identity key, so a taken id means "a
+    /// different frame", never "the same frame". Relocate and report where it
+    /// landed — dropping it silently (the old behaviour) both over-counted the
+    /// restore and left the caller writing relations against an id belonging to
+    /// an unrelated local screenshot.
+    #[test]
+    fn restoring_a_frame_relocates_rather_than_dropping_on_id_collision() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        insert_frame(&storage, 1, "2025-06-01T10:00:00Z");
+
+        let landed = storage
+            .upsert_backup_frame(
+                1,
+                "2025-01-01T09:00:00Z",
+                "manual",
+                "archived-app",
+                "archived-title",
+                0.9,
+                200,
+                200,
+                None,
+            )
+            .unwrap()
+            .expect("a real write must report its id");
+
+        assert_ne!(landed, 1, "a taken id must not be reused");
+
+        // A free id is honoured as-is.
+        let free = storage
+            .upsert_backup_frame(
+                4242,
+                "2025-01-02T09:00:00Z",
+                "manual",
+                "app",
+                "title",
+                0.5,
+                100,
+                100,
+                None,
+            )
+            .unwrap();
+        assert_eq!(free, Some(4242), "an unclaimed id must be honoured");
+    }
+
+    /// #9722: the last of the four restore writes to report the erase barrier
+    /// honestly. `events` used to return `Ok(())` on skip, so the caller counted
+    /// rows that were never written — the same over-count #9700/#9708 removed
+    /// for tags and frames.
+    #[test]
+    fn a_skipped_event_write_reports_false() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        storage.set_deletion_flag(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            true,
+        )));
+
+        let landed = storage
+            .upsert_backup_event("evt-1", "focus", "2025-06-01T10:00:00Z", None, None)
+            .unwrap();
+
+        assert!(!landed, "an erase-skipped write must not report success");
+        assert_eq!(
+            count_rows(&storage, "SELECT COUNT(*) FROM events"),
+            0,
+            "nothing may be written while the deletion flag is set"
+        );
+    }
+
+    /// #9735: CI holds the premise that FK enforcement is ON.
+    ///
+    /// Flipping this silently breaks things in both directions. Turned OFF, the
+    /// frame/tag dependent cleanups start leaking again (#9721). Left ON while
+    /// the code believes otherwise, inserts are rejected underneath a comment
+    /// promising they cannot be — which is what this issue was. The point is
+    /// less the value than making explicit what this crate reasons from.
+    #[test]
+    fn foreign_key_enforcement_is_on() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        let conn = storage.conn.test_lock();
+        let enabled: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read PRAGMA foreign_keys");
+        assert_eq!(
+            enabled, 1,
+            "this crate assumes FK enforcement — configure_connection turns it on \
+             explicitly. Turning it off means amending ADR-028 B3 and every \
+             comment that reasons from it, in the same change."
+        );
+    }
+
     #[test]
     fn backup_frame_tag_roundtrip() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
@@ -766,6 +1094,9 @@ mod tests {
         let middle = "2026-04-15T00:00:00+00:00";
         insert_events(&storage, &[middle]);
         insert_frame(&storage, 1, middle);
+        // #9721: the annotation cleanup runs inside the same transaction, so a
+        // mid-way abort must roll it back too.
+        seed_frame_dependents(&storage, 1);
         insert_metric(&storage, middle);
         {
             // Seed one idle_periods row so the aborting DELETE has a target row,
@@ -814,6 +1145,11 @@ mod tests {
             .list_metric_exports("2026-01-01T00:00:00Z", "2026-12-31T23:59:59Z")
             .unwrap();
         assert_eq!(metrics.len(), 1, "metrics must be rolled back");
+        assert_eq!(
+            count_rows(&storage, "SELECT COUNT(*) FROM frame_annotations"),
+            1,
+            "the #9721 annotation cleanup must roll back with the parent delete"
+        );
     }
 
     // ── hourly-rollup boundary row (#7) ─────────────────────────────

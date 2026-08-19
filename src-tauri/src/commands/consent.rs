@@ -17,8 +17,9 @@ use std::sync::Arc;
 
 use maekon_core::consent::{ConsentPermissions, ConsentStatus};
 use maekon_core::models::audit::{AuditEntry, AuditStatus};
-use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
 use maekon_core::ports::frame_storage::FrameStoragePort;
+use maekon_core::ports::memory_vault_writer::MemoryVaultWriterPort;
 use maekon_storage::sqlite::SqliteStorage;
 use serde::{Deserialize, Serialize};
 use tauri::command;
@@ -265,6 +266,20 @@ fn consent_mgr(state: &AppState) -> Result<&Arc<dyn ConsentManagerPort>, IpcErro
         .ok_or_else(|| IpcError::new("service.unavailable", "consent manager not available"))
 }
 
+/// Reconcile the in-memory workflow-pattern learner immediately after a consent
+/// write. The gate is re-read from the shared authority after persistence, so a
+/// missing, expired, update-required, revoked, or explicitly narrowed consent
+/// snapshot all clear pattern state. App-usage aggregation remains untouched.
+async fn reconcile_activity_pattern_gate(state: &AppState) {
+    let permissions =
+        ConsentGate::from_ref(state.capture.consent_manager.as_ref()).permissions_snapshot();
+    if let Some(focus_analyzer) = state.focus_analyzer.as_ref() {
+        focus_analyzer
+            .reconcile_activity_pattern_consent(&permissions)
+            .await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tauri IPC commands
 // ---------------------------------------------------------------------------
@@ -312,6 +327,7 @@ pub async fn set_consent(
                     format!("set_consent task join failed: {join_err}"),
                 )
             })??;
+    reconcile_activity_pattern_gate(&state).await;
     // After persisting succeeds (after the blocking guard is released), fire the VAD
     // re-gate signal.
     crate::commands::audio::signal_vad_regate(&app);
@@ -320,6 +336,11 @@ pub async fn set_consent(
     // immediately; any other grant is a no-op re-apply. Best-effort — never
     // fails the consent write.
     reapply_telemetry_gate(&app);
+    // #8094: reconcile the recording-indicator surfaces to the new effective
+    // capture gate. Granting screen_capture consent surfaces the border at once;
+    // a grant that omits screen_capture leaves it hidden. Best-effort.
+    crate::magic_overlay::reconcile_capture_indicator(&app);
+    crate::commands::capture_status::emit_current_capture_status(&app, &state);
     Ok(snapshot)
 }
 
@@ -363,6 +384,8 @@ pub async fn withdraw_consent(
                 )
             })??;
 
+    reconcile_activity_pattern_gate(&state).await;
+
     // After the revoke persist succeeds, fire the VAD re-gate signal (F-MIC-2).
     // Firing the signal has the effect of immediately blocking new captures
     // (is_permitted = false).
@@ -372,11 +395,29 @@ pub async fn withdraw_consent(
     // OTLP exporter OFF immediately (fail-closed) rather than waiting for the
     // next config change. Best-effort — never fails the revoke.
     reapply_telemetry_gate(&app);
+    // #8094: reconcile the recording-indicator surfaces to the now-closed
+    // effective capture gate — a revoke tears the border down within this command
+    // rather than only after the next pause/indicator toggle. Best-effort.
+    crate::magic_overlay::reconcile_capture_indicator(&app);
+    crate::commands::capture_status::emit_current_capture_status(&app, &state);
 
     // Step 2: GDPR Art. 17 local data erasure (R5: cannot return Ok on failure).
     let frame_storage = state.capture.frame_storage.clone();
     let storage = state.storage.clone();
-    erase_all_local_data(storage, frame_storage).await?;
+    // ADR-033 Phase-3: vault writer built over the same shared storage Arc
+    // (stateless — see vault_wiring). Absent ConfigRuntimeState ⇒ None ⇒
+    // Phase-3 fails loud rather than reporting a false success.
+    use tauri::Manager;
+    let vault_writer = app
+        .try_state::<crate::runtime_state::ConfigRuntimeState>()
+        .map(|cs| {
+            crate::vault_wiring::build_vault_writer(
+                state.storage.clone(),
+                state.capture.consent_manager.clone(),
+                cs.config_manager().clone(),
+            )
+        });
+    erase_all_local_data(storage, frame_storage, vault_writer).await?;
 
     Ok(snapshot)
 }
@@ -415,9 +456,11 @@ impl Drop for EraseWindowGuard {
 /// 1. Phase-1: atomic deletion of all SQLite user-data tables.
 ///    - On failure, return `IpcError` immediately (R5: do not report Ok with
 ///      residual SQLite data).
-/// 2. Phase-2: deletion of frame image files (when frame_storage is Some).
-///    - On failure, write a `pending_local_erase=1` marker via `set_meta_checked`
-///      (R2/R3).
+/// 2. Phase-2: deletion of frame image files.
+///    - On failure (including `frame_storage` being unwired — #8039: this is
+///      never a legitimate state on a live `AppState`, so it is treated the
+///      same as any other Phase-2 failure, not a silent skip), write a
+///      `pending_local_erase=1` marker via `set_meta_checked` (R2/R3).
 ///    - Report the error to the caller regardless of whether the marker write
 ///      succeeded (R5).
 ///
@@ -426,6 +469,7 @@ impl Drop for EraseWindowGuard {
 async fn erase_all_local_data(
     storage: Arc<SqliteStorage>,
     frame_storage: Option<Arc<dyn FrameStoragePort>>,
+    vault_writer: Option<Arc<dyn MemoryVaultWriterPort>>,
 ) -> Result<(), IpcError> {
     // #4928 round-3 (FIX B): block the grant_consent-during-erase TOCTOU.
     //
@@ -441,6 +485,32 @@ async fn erase_all_local_data(
     // handle is visible to both funnels. The RAII guard (`EraseWindowGuard`) clears
     // it on every exit path (success/Err/panic-unwind).
     let _erase_window = EraseWindowGuard::set(storage.erasing());
+
+    // ADR-033 IMPORTANT#2: snapshot vault roots BEFORE Phase-1 — the stored
+    // last-active-root row lives in `vault_mirror_state`, which Phase-1's
+    // ALL_TABLES sweep destroys; a post-wipe read could never see it.
+    let vault_roots = match vault_writer.as_ref() {
+        Some(vw) => Some(vw.snapshot_generated_roots().await),
+        None => None,
+    };
+
+    // #8043 (Phase-1 durability): write the `pending_local_erase` marker BEFORE Phase-1
+    // attempts its delete, not only in the Phase-2 error arms below. Previously a Phase-1
+    // failure returned `Err` with NO marker, and a crash mid-erase left nothing for
+    // `retry_pending_local_erase` (which keys off this marker) to resume — so an
+    // interrupted Art.17 erasure was never retried on restart while the local data
+    // remained. Writing it up-front makes the marker cover BOTH phases: it survives a
+    // Phase-1 crash/failure and is cleared only after Phase-2 confirms success below.
+    // `set_meta_checked` writes `app_meta` via the retained write lock (never skipped by
+    // the erase barrier), so the marker persists across the wipe. A marker-write failure is
+    // logged but does not abort the erase (the erase itself is the priority).
+    if let Err(e) = storage.set_meta_checked(PENDING_LOCAL_ERASE_KEY, "1") {
+        tracing::error!(
+            err = %e,
+            "GDPR: pre-Phase-1 retry marker write failed — a crash before completion may not \
+             auto-retry on restart"
+        );
+    }
 
     // ── Phase-1: atomic SQLite deletion ──────────────────────────────────────
     // `delete_all_data` is blocking I/O, so isolate it on spawn_blocking.
@@ -462,9 +532,32 @@ async fn erase_all_local_data(
     tracing::info!("GDPR Art.17 Phase-1 complete: full SQLite deletion succeeded");
 
     // ── Phase-2: frame image file deletion ───────────────────────────────────
+    // #8039: `frame_storage` used to be treated as a legitimate "offline/test
+    // environment" `None` here, silently skipping Phase-2 and reporting `Ok`.
+    // Since `AppState.capture.frame_storage` is now populated unconditionally
+    // by the composition root (`build_capture_wiring` fails closed on a
+    // capture-services build failure — #8039), a live erase call reaching
+    // `None` here is no longer a legitimate state: it means the caller never
+    // wired a frame_storage handle at all, NOT that "there is nothing to
+    // erase". Reporting `Ok` in that case would let GDPR Art. 17 erase claim
+    // success while any on-disk frame files remain untouched. Fail loud (R5):
+    // write the retry marker (matching every other Phase-2 failure path) and
+    // report the error instead of a false success.
     let Some(fs) = frame_storage else {
-        // When there is no frame storage (offline/test environment) — skip Phase-2.
-        return Ok(());
+        tracing::error!(
+            "GDPR Art.17 Phase-2 skipped: no frame_storage handle wired — refusing to report \
+             success while frame files may remain undeleted"
+        );
+        if let Err(meta_err) = storage.set_meta_checked(PENDING_LOCAL_ERASE_KEY, "1") {
+            tracing::error!(
+                err = %meta_err,
+                "GDPR: retry marker write failed — automatic retry after restart is not possible"
+            );
+        }
+        return Err(IpcError::new(
+            "storage.unavailable",
+            "frame storage unavailable — cannot verify GDPR frame erasure completed",
+        ));
     };
 
     match fs.delete_all_frames().await {
@@ -473,8 +566,75 @@ async fn erase_all_local_data(
                 count,
                 "GDPR Art.17 Phase-2 complete: frame file deletion succeeded"
             );
-            // On Phase-2 success, clear the retry marker if present (recover from a
-            // prior partial deletion).
+
+            // ── Phase-3: ADR-033 vault mirror generated-file deletion ────────
+            // Runs INSIDE the pending_local_erase envelope (marker cleared only
+            // after Phase-3 confirms), so a crash or failure here re-runs vault
+            // erasure on the next launch. §4.3: failures surface as an
+            // incomplete erasure — never warn-and-continue; the vault files
+            // carry disclosed claim text (compliance surface, not a best-effort
+            // asset class). An absent writer handle mirrors the #8039
+            // frame_storage discipline: refuse to report success while
+            // generated vault files may remain on disk.
+            let Some(vw) = vault_writer else {
+                tracing::error!(
+                    "GDPR Art.17 Phase-3 skipped: no vault writer wired — refusing to report \
+                     success while generated vault files may remain undeleted"
+                );
+                if let Err(meta_err) = storage.set_meta_checked(PENDING_LOCAL_ERASE_KEY, "1") {
+                    tracing::error!(
+                        err = %meta_err,
+                        "GDPR: retry marker write failed — automatic retry after restart is not possible"
+                    );
+                }
+                return Err(IpcError::new(
+                    "storage.unavailable",
+                    "vault writer unavailable — cannot verify ADR-033 vault erasure completed",
+                ));
+            };
+            match vw
+                .erase_generated_files(vault_roots.unwrap_or_default())
+                .await
+            {
+                Ok(report) if report.is_complete() => {
+                    tracing::info!(
+                        deleted = report.deleted,
+                        "GDPR Art.17 Phase-3 complete: vault mirror deletion succeeded"
+                    );
+                }
+                Ok(report) => {
+                    tracing::error!(
+                        failed = report.failures.len(),
+                        "GDPR Art.17 Phase-3 incomplete: vault mirror files remain"
+                    );
+                    if let Err(meta_err) = storage.set_meta_checked(PENDING_LOCAL_ERASE_KEY, "1") {
+                        tracing::error!(
+                            err = %meta_err,
+                            "GDPR: retry marker write failed — automatic retry after restart is not possible"
+                        );
+                    }
+                    return Err(IpcError::new(
+                        "storage.failed",
+                        format!(
+                            "vault erasure incomplete: {} file(s) could not be deleted",
+                            report.failures.len()
+                        ),
+                    ));
+                }
+                Err(e) => {
+                    tracing::error!(err = %e, "GDPR Art.17 Phase-3 failed: vault mirror deletion errored");
+                    if let Err(meta_err) = storage.set_meta_checked(PENDING_LOCAL_ERASE_KEY, "1") {
+                        tracing::error!(
+                            err = %meta_err,
+                            "GDPR: retry marker write failed — automatic retry after restart is not possible"
+                        );
+                    }
+                    return Err(IpcError::from(e));
+                }
+            }
+
+            // On Phase-2 + Phase-3 success, clear the retry marker if present
+            // (recover from a prior partial deletion).
             if let Err(e) = storage.delete_meta_checked(PENDING_LOCAL_ERASE_KEY) {
                 // A marker-deletion failure is acceptable: it only means the retry
                 // happens again on the next launch.
@@ -514,6 +674,7 @@ async fn erase_all_local_data(
 pub(crate) async fn retry_pending_local_erase(
     storage: Arc<SqliteStorage>,
     frame_storage: Option<Arc<dyn FrameStoragePort>>,
+    vault_writer: Option<Arc<dyn MemoryVaultWriterPort>>,
 ) {
     // If there is no marker, return immediately (normal startup path).
     if storage.get_meta(PENDING_LOCAL_ERASE_KEY).is_none() {
@@ -522,7 +683,7 @@ pub(crate) async fn retry_pending_local_erase(
 
     tracing::warn!("GDPR Art.17: detected incomplete local-erasure marker — starting retry");
 
-    match erase_all_local_data(storage.clone(), frame_storage).await {
+    match erase_all_local_data(storage.clone(), frame_storage, vault_writer).await {
         Ok(()) => {
             tracing::info!("GDPR Art.17: retry succeeded — deleting retry marker");
             // Phase-2 succeeded, so the marker is deleted (already handled inside
@@ -560,10 +721,8 @@ pub async fn take_microphone_upgrade_notice(
 
     tokio::task::spawn_blocking(move || {
         let already_shown = storage.get_meta(MIC_UPGRADE_NOTICE_FLAG).is_some();
-        let microphone_granted = consent_manager
-            .as_ref()
-            .map(|cm| cm.effective_permissions().microphone)
-            .unwrap_or(false);
+        let microphone_granted =
+            ConsentGate::from_ref(consent_manager.as_ref()).may_capture_microphone();
         let show =
             should_show_microphone_upgrade_notice(audio_enabled, microphone_granted, already_shown);
         if show {
@@ -748,19 +907,85 @@ mod tests {
     ///
     /// Controls the `delete_all_frames` call count and the result it returns.
     /// Pure manual implementation without mockall (ADR-001 §5).
-    struct MockFrameStorage {
+    /// ADR-033 Phase-3 test double.
+    pub(super) struct MockVaultWriter {
+        fail: bool,
+        erase_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockVaultWriter {
+        pub(super) fn ok() -> Arc<Self> {
+            Arc::new(Self {
+                fail: false,
+                erase_calls: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+        pub(super) fn failing() -> Arc<Self> {
+            Arc::new(Self {
+                fail: true,
+                erase_calls: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+        pub(super) fn erase_call_count(&self) -> usize {
+            self.erase_calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryVaultWriterPort for MockVaultWriter {
+        async fn run_mirror_cycle(
+            &self,
+            _now_secs: i64,
+        ) -> Result<maekon_core::models::memory_vault::VaultCycleStats, maekon_core::error::CoreError>
+        {
+            Ok(Default::default())
+        }
+        async fn snapshot_generated_roots(&self) -> Vec<std::path::PathBuf> {
+            Vec::new()
+        }
+        async fn erase_generated_files(
+            &self,
+            _roots: Vec<std::path::PathBuf>,
+        ) -> Result<
+            maekon_core::models::memory_vault::VaultEraseReport,
+            maekon_core::error::CoreError,
+        > {
+            self.erase_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail {
+                Ok(maekon_core::models::memory_vault::VaultEraseReport {
+                    deleted: 0,
+                    failures: vec![maekon_core::models::memory_vault::VaultEraseFailure {
+                        file_name: "claims.md".to_string(),
+                        message: "locked".to_string(),
+                    }],
+                })
+            } else {
+                Ok(Default::default())
+            }
+        }
+    }
+
+    pub(super) struct MockFrameStorage {
         /// `delete_all_frames` call count.
         delete_call_count: std::sync::atomic::AtomicU32,
         /// If true, `delete_all_frames` returns CoreError::Storage.
         should_fail: bool,
+        /// #8043: when set, `delete_all_frames` (Phase-2) records the observed
+        /// `pending_local_erase` marker value at call time, proving the marker was
+        /// written up-front (before Phase-1) rather than only in a Phase-2 error arm.
+        peek: Option<Arc<maekon_storage::sqlite::SqliteStorage>>,
+        observed_marker: std::sync::Mutex<Option<Option<String>>>,
     }
 
     impl MockFrameStorage {
         /// Mock that returns success.
-        fn success() -> Arc<Self> {
+        pub(super) fn success() -> Arc<Self> {
             Arc::new(Self {
                 delete_call_count: std::sync::atomic::AtomicU32::new(0),
                 should_fail: false,
+                peek: None,
+                observed_marker: std::sync::Mutex::new(None),
             })
         }
 
@@ -769,7 +994,26 @@ mod tests {
             Arc::new(Self {
                 delete_call_count: std::sync::atomic::AtomicU32::new(0),
                 should_fail: true,
+                peek: None,
+                observed_marker: std::sync::Mutex::new(None),
             })
+        }
+
+        /// #8043: success mock that snapshots the `pending_local_erase` marker when
+        /// Phase-2 runs (so a test can assert the marker was already set by then).
+        fn success_peeking(storage: Arc<maekon_storage::sqlite::SqliteStorage>) -> Arc<Self> {
+            Arc::new(Self {
+                delete_call_count: std::sync::atomic::AtomicU32::new(0),
+                should_fail: false,
+                peek: Some(storage),
+                observed_marker: std::sync::Mutex::new(None),
+            })
+        }
+
+        /// The `pending_local_erase` marker value observed during Phase-2 (`None` if
+        /// Phase-2 never ran or the mock was not constructed with `success_peeking`).
+        fn observed_marker(&self) -> Option<Option<String>> {
+            self.observed_marker.lock().unwrap().clone()
         }
 
         fn delete_call_count(&self) -> u32 {
@@ -802,6 +1046,12 @@ mod tests {
             unimplemented!("not used in tests")
         }
 
+        async fn load_latest_frame(
+            &self,
+        ) -> Result<Option<(Vec<u8>, String)>, maekon_core::error::CoreError> {
+            unimplemented!("not used in tests")
+        }
+
         async fn enforce_retention(&self) -> Result<usize, maekon_core::error::CoreError> {
             unimplemented!("not used in tests")
         }
@@ -813,6 +1063,10 @@ mod tests {
         async fn delete_all_frames(&self) -> Result<usize, maekon_core::error::CoreError> {
             self.delete_call_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(storage) = &self.peek {
+                *self.observed_marker.lock().unwrap() =
+                    Some(storage.get_meta(PENDING_LOCAL_ERASE_KEY));
+            }
             if self.should_fail {
                 Err(maekon_core::error::CoreError::Storage {
                     code: maekon_core::error_codes::StorageCode::Failed,
@@ -825,7 +1079,8 @@ mod tests {
     }
 
     /// Helper: opens a `SqliteStorage` in a temp directory and inserts some user data.
-    fn open_storage_with_data() -> (maekon_storage::sqlite::SqliteStorage, tempfile::TempDir) {
+    pub(super) fn open_storage_with_data(
+    ) -> (maekon_storage::sqlite::SqliteStorage, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let storage =
             maekon_storage::sqlite::SqliteStorage::open(&dir.path().join("s.db"), 1, None).unwrap();
@@ -873,6 +1128,7 @@ mod tests {
         erase_all_local_data(
             storage.clone(),
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
+            Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
         )
         .await
         .expect("erase_all_local_data must succeed");
@@ -894,6 +1150,38 @@ mod tests {
         );
     }
 
+    // ── Test 1b (#8043): durable marker is written BEFORE Phase-1, cleared on success ──
+
+    /// #8043 Phase-1 durability: the `pending_local_erase` marker must be written
+    /// up-front (before the Phase-1 SQLite wipe), not only in a Phase-2 error arm — so a
+    /// crash/failure in EITHER phase leaves a marker for `retry_pending_local_erase` to
+    /// resume. Proven by observing the marker is already set when Phase-2 runs; on full
+    /// success it is then cleared.
+    #[tokio::test]
+    async fn erase_writes_durable_marker_before_phase1_and_clears_on_success() {
+        let (storage, _dir) = open_storage_with_data();
+        let storage = Arc::new(storage);
+        let mock_fs = MockFrameStorage::success_peeking(storage.clone());
+
+        erase_all_local_data(
+            storage.clone(),
+            Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
+            Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
+        )
+        .await
+        .expect("erase must succeed");
+
+        assert_eq!(
+            mock_fs.observed_marker(),
+            Some(Some("1".to_string())),
+            "the marker must already be set when Phase-2 runs (written before Phase-1)"
+        );
+        assert!(
+            storage.get_meta(PENDING_LOCAL_ERASE_KEY).is_none(),
+            "the marker must be cleared after a fully-successful erase"
+        );
+    }
+
     // ── Test 2: Phase-2 failure → marker written + Err returned (R3/R5) ──────
 
     /// On Phase-2 (frame deletion) failure, the pending_local_erase marker is written and Err is returned (#4801 R3/R5).
@@ -906,6 +1194,7 @@ mod tests {
         let result = erase_all_local_data(
             storage.clone(),
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
+            Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
         )
         .await;
 
@@ -948,6 +1237,7 @@ mod tests {
         retry_pending_local_erase(
             storage.clone(),
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
+            Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
         )
         .await;
 
@@ -978,6 +1268,7 @@ mod tests {
         retry_pending_local_erase(
             storage.clone(),
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
+            Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
         )
         .await;
 
@@ -995,25 +1286,140 @@ mod tests {
         );
     }
 
-    // ── Test 5: when frame_storage is None, Phase-2 is skipped ───────────────
+    // ── Test 5 (#8039): frame_storage=None must fail loud, not report false success ──
 
-    /// When frame_storage is None, only Phase-1 runs and Ok is returned.
+    /// #8039 regression: `frame_storage=None` used to be treated as a
+    /// legitimate "offline/test environment" state, silently skipping Phase-2
+    /// and reporting `Ok`. Since a live `AppState.capture.frame_storage` is
+    /// now always `Some` (capture services fail closed on build failure), a
+    /// `None` reaching here means no frame_storage handle was wired at all —
+    /// treated as a Phase-2 failure: Phase-1 (SQLite) still completes, but the
+    /// retry marker is written and `Err` is returned (R5) instead of a false
+    /// `Ok` that would let a caller believe the erase was complete.
     #[tokio::test]
-    async fn erase_all_local_data_no_frame_storage_erases_sqlite_only() {
+    async fn erase_all_local_data_no_frame_storage_fails_loud_not_false_success() {
         let (storage, _dir) = open_storage_with_data();
         let storage = Arc::new(storage);
 
         assert!(count_rows(&storage, "events") > 0);
 
-        // frame_storage = None — skip Phase-2.
-        erase_all_local_data(storage.clone(), None)
-            .await
-            .expect("Ok must be returned even when frame_storage is None");
+        let result = erase_all_local_data(
+            storage.clone(),
+            None,
+            Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
+        )
+        .await;
+
+        let ipc_err = result.unwrap_err();
+        assert!(
+            ipc_err.code.contains("storage"),
+            "a storage IpcError must be returned when frame_storage is unwired (R5), got: {}",
+            ipc_err.code
+        );
 
         assert_eq!(
             count_rows(&storage, "events"),
             0,
-            "SQLite must be deleted even when frame_storage=None"
+            "Phase-1 (SQLite deletion) must still complete even though Phase-2 fails"
+        );
+
+        assert_eq!(
+            storage.get_meta(PENDING_LOCAL_ERASE_KEY),
+            Some("1".to_string()),
+            "the pending_local_erase=1 retry marker must be written, matching every other \
+             Phase-2 failure path (R3)"
+        );
+    }
+}
+
+// ── ADR-033 Phase-3 regression guards (#4479 pattern, src-tauri orchestrator) ─
+
+#[cfg(test)]
+mod vault_phase3_tests {
+    use super::tests::{open_storage_with_data, MockFrameStorage, MockVaultWriter};
+    use super::*;
+
+    /// Pass-after half: a complete vault erase lets the full erase succeed,
+    /// Phase-3 is actually invoked, and the retry marker is cleared.
+    #[tokio::test]
+    async fn erase_runs_vault_phase3_and_clears_marker_on_success() {
+        let (storage, _dir) = open_storage_with_data();
+        let storage = Arc::new(storage);
+        let mock_fs = MockFrameStorage::success();
+        let vault = MockVaultWriter::ok();
+
+        erase_all_local_data(
+            storage.clone(),
+            Some(mock_fs as Arc<dyn FrameStoragePort>),
+            Some(vault.clone() as Arc<dyn MemoryVaultWriterPort>),
+        )
+        .await
+        .expect("erase must succeed with a complete vault erase");
+
+        assert_eq!(
+            vault.erase_call_count(),
+            1,
+            "Phase-3 erase_generated_files must be called exactly once"
+        );
+        assert!(
+            storage.get_meta(PENDING_LOCAL_ERASE_KEY).is_none(),
+            "marker must be cleared only after Phase-3 succeeds"
+        );
+    }
+
+    /// Fail-before half (§4.3): an incomplete vault erase returns Err and
+    /// keeps the retry marker so crash-recovery re-runs Phase-3.
+    #[tokio::test]
+    async fn erase_fails_and_keeps_marker_when_vault_erase_incomplete() {
+        let (storage, _dir) = open_storage_with_data();
+        let storage = Arc::new(storage);
+        let mock_fs = MockFrameStorage::success();
+        let vault = MockVaultWriter::failing();
+
+        let result = erase_all_local_data(
+            storage.clone(),
+            Some(mock_fs as Arc<dyn FrameStoragePort>),
+            Some(vault.clone() as Arc<dyn MemoryVaultWriterPort>),
+        )
+        .await;
+
+        let err = result.expect_err("incomplete vault erase must surface as Err");
+        assert!(
+            err.message.contains("vault erasure incomplete"),
+            "error must name the incomplete vault erasure, got: {}",
+            err.message
+        );
+        assert_eq!(
+            storage.get_meta(PENDING_LOCAL_ERASE_KEY),
+            Some("1".to_string()),
+            "retry marker must survive so Phase-3 re-runs on next launch"
+        );
+    }
+
+    /// #8039 discipline: an absent vault writer refuses to report success.
+    #[tokio::test]
+    async fn erase_fails_loud_without_vault_writer() {
+        let (storage, _dir) = open_storage_with_data();
+        let storage = Arc::new(storage);
+        let mock_fs = MockFrameStorage::success();
+
+        let result = erase_all_local_data(
+            storage.clone(),
+            Some(mock_fs as Arc<dyn FrameStoragePort>),
+            None,
+        )
+        .await;
+
+        let err = result.expect_err("absent vault writer must fail loud");
+        assert!(
+            err.message.contains("vault writer unavailable"),
+            "error must name the missing vault writer, got: {}",
+            err.message
+        );
+        assert_eq!(
+            storage.get_meta(PENDING_LOCAL_ERASE_KEY),
+            Some("1".to_string()),
+            "retry marker must be written when Phase-3 cannot run"
         );
     }
 }

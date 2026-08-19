@@ -13,8 +13,8 @@
     clippy::option_if_let_else,
     clippy::redundant_pub_crate
 )]
-// P2 PR-A nursery-hardening.
-#![deny(clippy::significant_drop_tightening)]
+// P2 PR-A nursery-hardening. (Enforced workspace-wide via
+// `[workspace.lints.clippy]`, #7719.)
 #![cfg_attr(test, allow(clippy::significant_drop_tightening))]
 
 //! # maekon-suggestion

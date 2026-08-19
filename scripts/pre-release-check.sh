@@ -260,6 +260,58 @@ if [ -x "scripts/check-config-sync.sh" ]; then
   echo ""
 fi
 
+# --- Shipped Build Evidence Gate ---
+# A build gate only protects a release if it has already run, green, on the
+# EXACT commit being tagged. The v0.0.1-rc.7 incident (#10698) broke both
+# halves of that at once:
+#
+#   1. Wrong binary. ci.yml built `--features grpc`, so the Windows PE closure
+#      check it runs inspected a binary without `stt` — and therefore without
+#      cpal's `mmdevapi.dll` import. The gate passed on every export PR and the
+#      real check first executed inside release.yml, which only runs on a tag
+#      push. v0.0.1-rc.7 was left as a signed tag with no artifacts, and
+#      docs/release-policy.md forbids moving a published tag.
+#   2. Wrong order. Even at feature parity, nothing stopped `publish-rc-tag.sh`
+#      from tagging a freshly merged main while its Build matrix was still
+#      queued, or already red.
+#
+# ci.yml now builds at release parity (half 1). This gate closes half 2.
+#
+# Either lane satisfies a platform: ci.yml's `Build (<triple>)`, which runs
+# automatically on main pushes and public export PRs, or a `Build Smoke Test`
+# dispatched at this exact SHA — it publishes the identical check-run name and,
+# since #10698, runs the same Windows closure verification.
+echo "[Shipped Build Evidence]"
+RELEASE_HEAD_SHA="$(git rev-parse HEAD)"
+if ! command -v gh >/dev/null 2>&1; then
+  fail "gh CLI not available — cannot prove the shipped-binary build matrix is green at ${RELEASE_HEAD_SHA}"
+else
+  RELEASE_CHECK_RUNS="$(gh api --paginate \
+    "repos/{owner}/{repo}/commits/${RELEASE_HEAD_SHA}/check-runs?per_page=100" \
+    --jq '.check_runs[] | select(.conclusion == "success") | .name' 2>/dev/null || true)"
+  if [ -z "$RELEASE_CHECK_RUNS" ]; then
+    fail "No successful check runs for ${RELEASE_HEAD_SHA} — run this from the public maekon-client clone whose CI built this commit, and wait for the Build matrix to finish"
+  else
+    for platform_spec in \
+      "windows:Build (x86_64-pc-windows-msvc):Build Release Smoke (windows)" \
+      "linux:Build (x86_64-unknown-linux-gnu):Build Release Smoke (linux)" \
+      "macos-arm64:Build (aarch64-apple-darwin):Build Release Smoke (macos-arm64)" \
+      "macos-x64:Build (x86_64-apple-darwin):Build Release Smoke (macos-x64)"; do
+      platform="${platform_spec%%:*}"
+      platform_rest="${platform_spec#*:}"
+      ci_job="${platform_rest%%:*}"
+      smoke_job="${platform_rest#*:}"
+      if printf '%s\n' "$RELEASE_CHECK_RUNS" | grep -Fxq "$ci_job" ||
+        printf '%s\n' "$RELEASE_CHECK_RUNS" | grep -Fxq "$smoke_job"; then
+        pass "${platform}: shipped-binary build green at ${RELEASE_HEAD_SHA:0:12}"
+      else
+        fail "${platform}: no green '${ci_job}' (or '${smoke_job}') at ${RELEASE_HEAD_SHA} — dispatch Build Smoke Test with ref=${RELEASE_HEAD_SHA}, or wait for the main-push Build matrix, before tagging"
+      fi
+    done
+  fi
+fi
+echo ""
+
 # --- Desktop Release Decision Gate ---
 echo "[Desktop Release Decision]"
 if [ -z "${MAEKON_RELEASE_DECISION_MANIFEST:-}" ]; then
@@ -294,6 +346,12 @@ echo ""
 
 # --- Dependency Security Gate ---
 echo "[Dependency Security]"
+if scripts/check-webdriver-security-isolation.sh; then
+  pass "WebDriver-only vulnerable dependency isolation verified"
+else
+  fail "WebDriver dependency isolation failed — shipped artifacts may contain test-only GTK3 dependencies"
+fi
+
 if command -v gh >/dev/null 2>&1; then
   # Check for open security advisories via dependabot alerts.
   # Distinguish genuine "0 open alerts" from "Dependabot disabled / query failed" —
@@ -381,11 +439,14 @@ def accepted_dependabot(alert):
     for entry in accepted.get("dependabot", []):
         if not not_expired(entry):
             continue
-        if entry.get("number") == alert.get("number"):
-            return True
-        if entry.get("advisory") == advisory.get("ghsa_id"):
-            return True
-        if entry.get("package") == package and entry.get("manifest") == manifest:
+        selectors = {
+            "number": alert.get("number"),
+            "advisory": advisory.get("ghsa_id"),
+            "package": package,
+            "manifest": manifest,
+        }
+        declared = [(key, value) for key, value in selectors.items() if key in entry]
+        if declared and all(entry.get(key) == value for key, value in declared):
             return True
     return False
 

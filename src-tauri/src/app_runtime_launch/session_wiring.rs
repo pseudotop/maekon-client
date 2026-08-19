@@ -14,6 +14,22 @@ pub(super) type SessionManagerLaunch = Option<(Arc<SessionManagerImpl>, std::tim
 /// command (single-instance dead-writer guard).
 pub(super) type CodexApprovalRegistry = crate::provider_adapters::CodexApprovalRegistry;
 
+/// Builds the ONE shared `Arc<PolicyClient>` over the durable policy store that
+/// the composition root injects into BOTH the Codex approval decider (via
+/// [`build_session_manager`]) AND the automation controller (via the web
+/// wiring). Port Instance Sharing: this is the single owner of the policy-store
+/// handle, so a within-session CRUD add via the controller is immediately
+/// visible to the decider's `verdict_for` — previously the two held separate
+/// instances that converged only across restart (#7915 made them share the
+/// file, #7932 makes them share the live instance).
+pub(super) fn build_shared_policy_client(
+    data_dir_path: &std::path::Path,
+) -> Arc<maekon_automation::policy::PolicyClient> {
+    Arc::new(maekon_automation::policy::PolicyClient::with_persistence(
+        data_dir_path.join(maekon_automation::policy::POLICY_STORE_FILE_NAME),
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_session_manager(
     app_handle: &AppHandle,
@@ -30,6 +46,16 @@ pub(super) fn build_session_manager(
     // registry from the composition root, threaded into the session manager so
     // `HttpApiSession`s share one breaker with the other network adapters.
     breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    // #7932 Part B: the ONE shared Arc<PolicyClient> from the composition root
+    // (Port Instance Sharing). The Codex approval decider below uses THIS instance
+    // — the SAME one injected into the automation controller — so a within-session
+    // CRUD add via the controller is immediately visible to `verdict_for`.
+    policy_client: Arc<maekon_automation::policy::PolicyClient>,
+    // #8050: shared LLM-connectivity flag. Threaded into every session's
+    // `AuditingSession` decorator so a send success/failure on any provider
+    // drives the tray's "Local LLM" connection status (the health-check loop
+    // reads this flag). It is the SAME Arc the scheduler holds as `llm_ok`.
+    llm_health_flag: Arc<std::sync::atomic::AtomicBool>,
 ) -> (SessionManagerLaunch, CodexApprovalRegistry) {
     let storage_for_audit = sqlite_storage.clone();
     // #6123: blocking SQLite must not run on the tokio reactor. Wrap the
@@ -129,7 +155,12 @@ pub(super) fn build_session_manager(
     let approval_registry: CodexApprovalRegistry =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
     let codex_approval_decider = {
-        let policy_client = Arc::new(maekon_automation::policy::PolicyClient::new());
+        // #7915 + #7932 Part B: use the ONE shared Arc<PolicyClient> from the
+        // composition root (Port Instance Sharing) — the SAME instance the
+        // automation controller holds. A previously-granted process is matched
+        // instead of re-escalating as NoMatch (across restart, #7915), AND a
+        // within-session CRUD add via the controller is now immediately visible
+        // here (#7932) instead of converging only on the next restart.
         let policy_port: Arc<dyn maekon_core::ports::codex_approval::ApprovalPolicyPort> =
             Arc::new(crate::codex_approval_policy::PolicyClientApprovalAdapter::new(policy_client));
         let ui_hook: Arc<dyn maekon_core::ports::codex_approval::UiApprovalHook> =
@@ -150,6 +181,10 @@ pub(super) fn build_session_manager(
     }
     manager = manager.with_app_handle(app_handle.clone());
     manager = manager.with_privacy_guard(privacy_guard);
+    manager =
+        manager
+            .with_egress_ledger(sqlite_storage.clone()
+                as Arc<dyn maekon_core::ports::egress_ledger::EgressLedgerSink>);
     // E21 #4871: gate the Codex app-server transport behind the rollout flag
     // (default Off → codex exec; app-server failures fall back to exec).
     manager = manager.with_codex_app_server_rollout(config.ai_provider.codex_app_server_rollout);
@@ -164,6 +199,9 @@ pub(super) fn build_session_manager(
     manager = manager.with_local_llm_target(
         crate::session_manager::factory::resolve_local_llm_target(&config.ai_provider),
     );
+    // #8050: share the composition root's LLM-connectivity flag so every session
+    // created by this manager reports its send outcomes to the tray.
+    manager = manager.with_llm_health_flag(llm_health_flag);
     (
         Some((Arc::new(manager), idle_reaper_interval)),
         approval_registry,

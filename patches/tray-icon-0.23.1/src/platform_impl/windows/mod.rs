@@ -13,8 +13,9 @@ use windows_sys::{
         Foundation::{FALSE, HWND, LPARAM, LRESULT, POINT, RECT, S_OK, TRUE, WPARAM},
         UI::{
             Shell::{
-                Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP,
-                NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER,
+                Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP,
+                NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW,
+                NOTIFYICONIDENTIFIER, NOTIFYICON_VERSION_4, NIN_SELECT,
             },
             WindowsAndMessaging::{
                 ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
@@ -47,6 +48,7 @@ const WM_USER_UPDATE_TRAYTOOLTIP: u32 = 6007;
 const WM_USER_LEAVE_TIMER_ID: u32 = 6008;
 const WM_USER_SHOW_MENU_ON_LEFT_CLICK: u32 = 6009;
 const WM_USER_SHOW_MENU_ON_RIGHT_CLICK: u32 = 6010;
+const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 /// When the taskbar is created, it registers a message with the "TaskbarCreated" string and then broadcasts this message to all top-level windows
 /// When the application receives this message, it should assume that any taskbar icons it added have been removed and add them again.
 static S_U_TASKBAR_RESTART: Lazy<u32> =
@@ -152,6 +154,7 @@ impl TrayIcon {
     pub fn set_icon(&mut self, icon: Option<Icon>) -> crate::Result<()> {
         unsafe {
             let mut nid = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as _,
                 uFlags: NIF_ICON,
                 hWnd: self.hwnd,
                 uID: self.internal_id,
@@ -203,6 +206,7 @@ impl TrayIcon {
     pub fn set_tooltip<S: AsRef<str>>(&mut self, tooltip: Option<S>) -> crate::Result<()> {
         unsafe {
             let mut nid = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as _,
                 uFlags: NIF_TIP,
                 hWnd: self.hwnd,
                 uID: self.internal_id,
@@ -378,19 +382,24 @@ unsafe extern "system" fn tray_proc(
 
         WM_USER_TRAYICON
             if matches!(
-                lparam as u32,
+                lparam as u32 & 0xffff,
                 WM_LBUTTONDOWN
                     | WM_RBUTTONDOWN
                     | WM_MBUTTONDOWN
                     | WM_LBUTTONUP
                     | WM_RBUTTONUP
                     | WM_MBUTTONUP
+                    | NIN_SELECT
+                    | NIN_KEYSELECT
                     | WM_LBUTTONDBLCLK
                     | WM_RBUTTONDBLCLK
                     | WM_MBUTTONDBLCLK
                     | WM_MOUSEMOVE
             ) =>
         {
+            // NOTIFYICON_VERSION_4 packs the notification code into LOWORD
+            // and the icon id into HIWORD. Older versions used the full LPARAM.
+            let notification_message = lparam as u32 & 0xffff;
             let mut cursor = POINT { x: 0, y: 0 };
             if GetCursorPos(&mut cursor as _) == 0 {
                 return 0;
@@ -404,7 +413,7 @@ unsafe extern "system" fn tray_proc(
                 None => return 0,
             };
 
-            let event = match lparam as u32 {
+            let event = match notification_message {
                 WM_LBUTTONDOWN => TrayIconEvent::Click {
                     id,
                     rect,
@@ -427,6 +436,13 @@ unsafe extern "system" fn tray_proc(
                     button_state: MouseButtonState::Down,
                 },
                 WM_LBUTTONUP => TrayIconEvent::Click {
+                    id,
+                    rect,
+                    position,
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                },
+                NIN_SELECT | NIN_KEYSELECT => TrayIconEvent::Click {
                     id,
                     rect,
                     position,
@@ -488,8 +504,12 @@ unsafe extern "system" fn tray_proc(
 
             TrayIconEvent::send(event);
 
-            if (userdata.menu_on_right_click && lparam as u32 == WM_RBUTTONUP)
-                || (userdata.menu_on_left_click && lparam as u32 == WM_LBUTTONUP)
+            if (userdata.menu_on_right_click && notification_message == WM_RBUTTONUP)
+                || (userdata.menu_on_left_click
+                    && matches!(
+                        notification_message,
+                        WM_LBUTTONUP | NIN_SELECT | NIN_KEYSELECT
+                    ))
             {
                 if let Some(menu) = userdata.hpopupmenu {
                     show_tray_menu(hwnd, menu, cursor.x, cursor.y);
@@ -574,7 +594,10 @@ unsafe fn register_tray_icon(
     }
 
     if let Some(tooltip) = tooltip {
-        flags |= NIF_TIP;
+        // Windows 7+ suppresses the standard tooltip for version 4 icons unless
+        // NIF_SHOWTIP is present. The tooltip is also the notification area's
+        // accessible Name, so omitting this flag makes the icon anonymous to UIA.
+        flags |= NIF_TIP | NIF_SHOWTIP;
         let tip = util::encode_wide(tooltip);
         #[allow(clippy::manual_memcpy)]
         for i in 0..tip.len().min(128) {
@@ -583,6 +606,7 @@ unsafe fn register_tray_icon(
     }
 
     let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as _,
         uFlags: flags,
         hWnd: hwnd,
         uID: tray_id,
@@ -592,12 +616,26 @@ unsafe fn register_tray_icon(
         ..std::mem::zeroed()
     };
 
-    Shell_NotifyIconW(NIM_ADD, &mut nid as _) == TRUE
+    if Shell_NotifyIconW(NIM_ADD, &mut nid as _) != TRUE {
+        eprintln!("Error registering system tray icon with the Windows Shell");
+        return false;
+    }
+
+    // Opt in after every add (including Explorer restart re-registration).
+    // Version 4 is the documented Shell contract for accessible notification
+    // area interaction and changes callback packing handled by tray_proc below.
+    nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+    if Shell_NotifyIconW(NIM_SETVERSION, &mut nid as _) != TRUE {
+        eprintln!("Error setting Windows system tray icon behavior version");
+        return false;
+    }
+    true
 }
 
 #[inline]
 unsafe fn remove_tray_icon(hwnd: HWND, id: u32) {
     let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as _,
         uFlags: NIF_ICON,
         hWnd: hwnd,
         uID: id,

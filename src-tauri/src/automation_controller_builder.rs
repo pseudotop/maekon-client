@@ -8,13 +8,14 @@ use maekon_automation::sandbox::create_platform_sandbox;
 use maekon_core::config::{AiAccessMode, AiProviderConfig, AppConfig};
 use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::skill_loader::SkillLoader;
+use maekon_core::ports::skill_pack_registry::ActiveSkillResolverPort;
 // C1: provider port imports move to 'analysis' — BYOK/OAuth adapters available
 // without 'server' transport feature.
+use maekon_core::ports::frame_storage::FrameStoragePort;
 use maekon_core::ports::llm_provider::LlmCallHealth;
 #[cfg(feature = "analysis")]
 use maekon_core::ports::{oauth::OAuthPort, secret_store::SecretStoreSet};
 use maekon_monitor::process::ProcessTracker;
-use maekon_storage::frame_storage::FrameFileStorage;
 use maekon_web::AiRuntimeStatus;
 use tokio::runtime::Handle;
 use tokio::sync::RwLock;
@@ -38,7 +39,7 @@ pub(crate) struct AutomationControllerBuilder<'a> {
     data_dir: &'a Path,
     _runtime_handle: &'a Handle,
     audit_logger: Arc<RwLock<AuditLogger>>,
-    frame_storage: Option<Arc<FrameFileStorage>>,
+    frame_storage: Option<Arc<dyn FrameStoragePort>>,
     app_handle: Option<tauri::AppHandle>,
     cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     consent_manager: Option<Arc<dyn ConsentManagerPort>>,
@@ -51,6 +52,17 @@ pub(crate) struct AutomationControllerBuilder<'a> {
     /// Defaults to a fresh registry for standalone use; the composition root
     /// overrides it with the shared Arc via `with_breaker_registry`.
     breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    /// #7932 Part B: the ONE shared `Arc<PolicyClient>` from the composition root
+    /// (Port Instance Sharing). Injected so the automation controller and the
+    /// Codex approval decider hold the SAME durable policy store instance — a
+    /// within-session CRUD add via the controller is then immediately visible to
+    /// the decider's `verdict_for`. `None` for standalone construction, where the
+    /// controller builds its own persistent client.
+    policy_client: Option<Arc<PolicyClient>>,
+    /// Durable storage used to build the trusted Skill Pack resolver (#8588).
+    /// `None` leaves the planner with no skill activation path at all — the
+    /// fail-closed default.
+    skill_pack_storage: Option<Arc<maekon_storage::sqlite::SqliteStorage>>,
 }
 
 impl<'a> AutomationControllerBuilder<'a> {
@@ -59,7 +71,7 @@ impl<'a> AutomationControllerBuilder<'a> {
         data_dir: &'a Path,
         runtime_handle: &'a Handle,
         audit_logger: Arc<RwLock<AuditLogger>>,
-        frame_storage: Option<Arc<FrameFileStorage>>,
+        frame_storage: Option<Arc<dyn FrameStoragePort>>,
     ) -> Self {
         Self {
             config,
@@ -75,7 +87,29 @@ impl<'a> AutomationControllerBuilder<'a> {
             #[cfg(feature = "analysis")]
             oauth_port: None,
             breaker_registry: crate::breaker_registry::CircuitBreakerRegistry::new(),
+            policy_client: None,
+            skill_pack_storage: None,
         }
+    }
+
+    /// Inject the shared `SqliteStorage` handle backing the Extension registry
+    /// and Skill Pack catalog (#8588, Port Instance Sharing — the SAME Arc the
+    /// composition root uses, never a second connection).
+    pub(crate) fn with_skill_pack_storage(
+        mut self,
+        storage: Arc<maekon_storage::sqlite::SqliteStorage>,
+    ) -> Self {
+        self.skill_pack_storage = Some(storage);
+        self
+    }
+
+    /// Inject the single shared `Arc<PolicyClient>` from the composition root
+    /// (#7932 Part B, Port Instance Sharing). The built controller uses THIS
+    /// instance instead of constructing its own, so it shares the in-memory
+    /// policy set with the Codex approval decider within a session.
+    pub(crate) fn with_policy_client(mut self, policy_client: Arc<PolicyClient>) -> Self {
+        self.policy_client = Some(policy_client);
+        self
     }
 
     /// Inject the single shared workspace-wide circuit-breaker registry from the
@@ -140,6 +174,22 @@ impl<'a> AutomationControllerBuilder<'a> {
         );
         let skill_loader = discover_skill_loader();
 
+        // #8588: the trusted Skill Pack resolver. Requires BOTH a storage handle
+        // (registry + catalog truth) and a body source; absent either one the
+        // planner simply never activates a skill body.
+        let skill_resolver: Option<Arc<dyn ActiveSkillResolverPort>> =
+            match (self.skill_pack_storage.as_ref(), skill_loader.as_ref()) {
+                (Some(storage), Some(loader)) => Some(Arc::new(
+                    crate::skill_pack_resolver::RegistryActiveSkillResolver::new(
+                        storage.clone(),
+                        storage.clone(),
+                        storage.clone(),
+                        loader.clone(),
+                    ),
+                )),
+                _ => None,
+            };
+
         // Create the per-call LLM health handle shared between the provider
         // instance and the status assembly path.  The handle is created here so
         // the builder controls lifetime and can forward it to the web runtime
@@ -166,6 +216,7 @@ impl<'a> AutomationControllerBuilder<'a> {
                 self.breaker_registry.clone(),
                 Some(llm_call_health.clone()),
                 self.config.automation.min_llm_confidence,
+                skill_resolver.clone(),
             )
         });
 
@@ -180,6 +231,7 @@ impl<'a> AutomationControllerBuilder<'a> {
             self.breaker_registry.clone(),
             Some(llm_call_health.clone()),
             self.config.automation.min_llm_confidence,
+            skill_resolver,
         );
 
         match runtime {
@@ -204,6 +256,8 @@ impl<'a> AutomationControllerBuilder<'a> {
                     self.app_handle,
                     self.cli_health_flag.clone(),
                     self._runtime_handle,
+                    self.data_dir,
+                    self.policy_client.clone(),
                 ))),
                 // Forward the live handle so the web layer can read it at request time
                 // (as_option_bool()) even after the build-time SSE snapshot is stale.
@@ -225,6 +279,8 @@ impl<'a> AutomationControllerBuilder<'a> {
                         controller: Some(Arc::new(build_noop_controller(
                             self.config,
                             self.audit_logger,
+                            self.data_dir,
+                            self.policy_client.clone(),
                         ))),
                         llm_call_health: None, // NoOp fallback — rule-matcher only, no Ollama
                     };
@@ -263,6 +319,7 @@ fn discover_skill_loader() -> Option<Arc<dyn SkillLoader>> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_controller_from_runtime(
     config: &AppConfig,
     audit_logger: Arc<RwLock<AuditLogger>>,
@@ -271,6 +328,8 @@ fn build_controller_from_runtime(
     app_handle: Option<tauri::AppHandle>,
     cli_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     runtime_handle: &Handle,
+    data_dir: &Path,
+    shared_policy_client: Option<Arc<PolicyClient>>,
 ) -> AutomationController {
     // Clone handle early so we can wire the confirmation callback after
     // the overlay driver consumes the original.
@@ -281,7 +340,19 @@ fn build_controller_from_runtime(
         llm = runtime.llm_provider_name,
         "AI provider adapters resolved"
     );
-    let policy_client = Arc::new(PolicyClient::new());
+    // #7915 + #7932 Part B: durable policy store so CRUD-granted execution
+    // policies survive restart. Prefer the ONE shared Arc<PolicyClient> injected
+    // from the composition root (Port Instance Sharing) so a within-session CRUD
+    // add via this controller is immediately visible to the Codex approval
+    // decider, which holds the SAME instance. Fall back to a self-built
+    // persistent client only for standalone construction (no injected handle),
+    // where cross-instance convergence still happens across restart via the
+    // shared file.
+    let policy_client = shared_policy_client.unwrap_or_else(|| {
+        Arc::new(PolicyClient::with_persistence(
+            data_dir.join(maekon_automation::policy::POLICY_STORE_FILE_NAME),
+        ))
+    });
     let sandbox = create_platform_sandbox(&config.automation.sandbox);
     let mut controller = if let Some(flag) = cli_health_flag {
         AutomationController::new(
@@ -325,7 +396,20 @@ fn build_controller_from_runtime(
             crate::platform_overlay::create_platform_overlay_driver()
         };
 
-    let hmac_secret = std::env::var("MAEKON_GUI_TICKET_HMAC_SECRET").ok();
+    // #7916: auto-provision the GUI HITL ticket HMAC secret. An explicit
+    // `MAEKON_GUI_TICKET_HMAC_SECRET` env var still overrides (power-user / test
+    // / benchmark path); otherwise the secret is loaded-or-generated in the OS
+    // keychain via the same secret-store backend that holds provider
+    // credentials. If neither source yields a secret the resolver returns
+    // `None` and the trust core stays fail-closed (`require_hmac_secret`). The
+    // store factory is invoked lazily, so the env-override fast path never
+    // touches the keychain.
+    let hmac_secret =
+        crate::gui_ticket_secret::resolve_gui_ticket_hmac_secret(runtime_handle, || {
+            let config_dir = maekon_core::config_manager::ConfigManager::config_dir()
+                .unwrap_or_else(|_| data_dir.to_path_buf());
+            crate::provider_secret_backend::create_os_secret_store(&config_dir)
+        });
     if let Err(error) = controller.configure_gui_interaction(
         focus_probe,
         overlay_driver,
@@ -350,8 +434,19 @@ fn build_controller_from_runtime(
 fn build_noop_controller(
     config: &AppConfig,
     audit_logger: Arc<RwLock<AuditLogger>>,
+    data_dir: &Path,
+    shared_policy_client: Option<Arc<PolicyClient>>,
 ) -> AutomationController {
-    let policy_client = Arc::new(PolicyClient::new());
+    // #7915 + #7932 Part B: even on the NoOp fallback path, persist policy CRUD
+    // so the set is durable. This path DOES persist, so it takes the SAME shared
+    // Arc<PolicyClient> as the Codex approval decider (Port Instance Sharing) for
+    // within-session convergence; it falls back to a self-built persistent client
+    // only for standalone construction with no injected handle.
+    let policy_client = shared_policy_client.unwrap_or_else(|| {
+        Arc::new(PolicyClient::with_persistence(
+            data_dir.join(maekon_automation::policy::POLICY_STORE_FILE_NAME),
+        ))
+    });
     let sandbox = create_platform_sandbox(&config.automation.sandbox);
     let mut controller = AutomationController::new(
         policy_client,

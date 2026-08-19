@@ -2,12 +2,14 @@
 // documenting CJK bigram full-text search behavior; they must remain non-English.
 use async_trait::async_trait;
 use maekon_core::error::CoreError;
+use maekon_core::models::tiered_memory::{compose_searchable_content, ContentActivity};
 use maekon_core::ports::text_search::{TextSearchProvider, TextSearchResult};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use tracing::{debug, warn};
 
 use super::cjk_shadow::{build_fts_match_query, build_fts_phrase_query, cjk_bigram_shadow};
-use super::{SqliteStorage, FTS_AVAILABLE, GUI_INTERACTIONS_AVAILABLE};
+use super::{SqliteStorage, FTS_AVAILABLE};
 use crate::error::StorageError;
 
 #[async_trait]
@@ -139,17 +141,22 @@ impl TextSearchProvider for SqliteStorage {
             vec![]
         }))
     }
-}
 
-// ── Enriched FTS indexing (storage-level, not a port method) ───────
-impl SqliteStorage {
     /// Index a segment with enriched content from multiple sources.
     ///
-    /// In addition to the base `searchable_text` (llm_summary + dominant_category),
-    /// this method gathers window titles from `events`, `element_text` from
-    /// `gui_interactions`, and suggestion `content` from `suggestions` that fall
-    /// within the segment's time range and concatenates them into the FTS index.
-    pub async fn sync_segment_enriched(
+    /// Overrides the `TextSearchProvider` default (which indexes only the base
+    /// text): in addition to `searchable_text` (llm_summary + dominant_category
+    /// + content labels + app names), this gathers window titles from `events`
+    /// and suggestion `content` from `suggestions` that fall within the
+    /// segment's `[start_time, end_time]` range and concatenates them into the
+    /// FTS index.
+    ///
+    /// #7678 D3: previously also gathered `element_text` from
+    /// `gui_interactions` keyed by `segment_id` — removed because the
+    /// production writer never populates `segment_id` (always `NULL`), so this
+    /// join could never match a row (dead-in-practice; the columns themselves
+    /// were dropped in V43).
+    async fn sync_segment_enriched(
         &self,
         segment_id: &str,
         searchable_text: &str,
@@ -169,12 +176,6 @@ impl SqliteStorage {
                 parts.push(titles);
             }
 
-            // Gather GUI interaction element_text from gui_interactions table
-            let gui_text = Self::collect_gui_element_text(conn, &segment_id);
-            if !gui_text.is_empty() {
-                parts.push(gui_text);
-            }
-
             // Gather suggestion content from suggestions table
             let suggestion_text = Self::collect_suggestion_content(conn, &start_time, &end_time);
             if !suggestion_text.is_empty() {
@@ -187,9 +188,114 @@ impl SqliteStorage {
         .await
         .map_err(Into::into)
     }
+}
+
+// ── FTS content backfill + helpers (storage-level, not port methods) ───────
+impl SqliteStorage {
+    /// Backfill FTS content for activity segments persisted before the live
+    /// segment-close FTS indexing path existed (#8051).
+    ///
+    /// Historically the only `search_fts` content writers were test-only, so
+    /// every previously-closed segment is absent from the index and keyword
+    /// search returns nothing for it. This indexes up to `max_segments` of the
+    /// most recent still-unindexed segments in a single blocking pass
+    /// (offloaded via `with_conn` → `spawn_blocking`, so it never touches the
+    /// async runtime hot path).
+    ///
+    /// The searchable text is rebuilt from already-persisted columns
+    /// (`llm_summary`, `dominant_category`, content-activity labels, app names)
+    /// using the same [`compose_searchable_content`] SSOT the live path uses,
+    /// but WITHOUT the per-segment events/suggestions time-range joins — that
+    /// keeps a large-backlog pass bounded in cost.
+    ///
+    /// Bounded + resumable: unindexed rows are selected with
+    /// `id NOT IN (SELECT segment_id FROM search_fts)`, so each run makes
+    /// forward progress and a subsequent run drains the next batch. A very
+    /// large backlog is therefore indexed across restarts without any single
+    /// run exceeding `max_segments`.
+    ///
+    /// Returns the number of segments indexed. Non-fatal by contract: the
+    /// caller logs and continues.
+    pub async fn backfill_unindexed_segments_fts(
+        &self,
+        max_segments: usize,
+    ) -> Result<usize, CoreError> {
+        if !FTS_AVAILABLE.load(Ordering::Relaxed) {
+            debug!("search_fts table not available; skipping segment backfill");
+            return Ok(0);
+        }
+        if max_segments == 0 {
+            return Ok(0);
+        }
+
+        self.with_conn(move |conn| {
+            // 1. Read a bounded batch of still-unindexed segments (most recent
+            //    first — those are the ones a user is most likely to search).
+            let rows: Vec<(String, String, String, String, Option<String>)> = {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, dominant_category, content_activities_json, \
+                                app_breakdown, llm_summary \
+                         FROM activity_segments \
+                         WHERE id NOT IN (SELECT segment_id FROM search_fts) \
+                         ORDER BY start_time DESC \
+                         LIMIT ?1",
+                    )
+                    .map_err(|e| {
+                        StorageError::Internal(format!("FTS backfill prepare failed: {e}"))
+                    })?;
+                let mapped = stmt
+                    .query_map(rusqlite::params![max_segments as i64], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    })
+                    .map_err(|e| {
+                        StorageError::Internal(format!("FTS backfill query failed: {e}"))
+                    })?;
+                mapped.filter_map(|r| r.ok()).collect()
+            };
+
+            // 2. Rebuild searchable text per row and upsert.
+            let mut indexed = 0usize;
+            for (id, dominant_category, content_json, app_breakdown_json, llm_summary) in &rows {
+                let content_labels: Vec<String> =
+                    serde_json::from_str::<Vec<ContentActivity>>(content_json)
+                        .map(|acts| acts.into_iter().map(|a| a.content_label).collect())
+                        .unwrap_or_default();
+                let app_names: Vec<String> =
+                    serde_json::from_str::<HashMap<String, u64>>(app_breakdown_json)
+                        .map(|m| m.into_keys().collect())
+                        .unwrap_or_default();
+
+                let text = compose_searchable_content(
+                    llm_summary.as_deref(),
+                    dominant_category,
+                    content_labels.iter().map(String::as_str),
+                    app_names.iter().map(String::as_str),
+                );
+                if text.trim().is_empty() {
+                    continue;
+                }
+                Self::upsert_fts(conn, id, "segment", &text)?;
+                indexed += 1;
+            }
+            Ok(indexed)
+        })
+        .await
+        .map_err(Into::into)
+    }
 
     /// Insert or replace a row in the FTS5 search_fts table.
-    fn upsert_fts(
+    ///
+    /// `pub(super)` so the sibling `transcript_storage_impl` can index a
+    /// persisted transcript through the SAME writer the segment path uses
+    /// (single-source the CJK-shadow computation + delete-then-insert upsert).
+    pub(super) fn upsert_fts(
         conn: &rusqlite::Connection,
         segment_id: &str,
         content_type: &str,
@@ -243,26 +349,6 @@ impl SqliteStorage {
             let rows = stmt.query_map(rusqlite::params![start_time, end_time], |row| {
                 row.get::<_, String>(0)
             })?;
-            Ok(rows.filter_map(|r| r.ok()).collect())
-        })();
-
-        result.unwrap_or_default().join(" ")
-    }
-
-    /// Collect GUI interaction element_text for the given segment.
-    fn collect_gui_element_text(conn: &rusqlite::Connection, segment_id: &str) -> String {
-        if !GUI_INTERACTIONS_AVAILABLE.load(Ordering::Relaxed) {
-            return String::new();
-        }
-        let result: Result<Vec<String>, rusqlite::Error> = (|| {
-            let mut stmt = conn.prepare_cached(
-                "SELECT DISTINCT element_text FROM gui_interactions
-                 WHERE segment_id = ?1
-                   AND element_text IS NOT NULL AND element_text != ''
-                 LIMIT 100",
-            )?;
-            let rows =
-                stmt.query_map(rusqlite::params![segment_id], |row| row.get::<_, String>(0))?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         })();
 
@@ -463,37 +549,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enriched_sync_includes_gui_interactions() {
-        let storage = SqliteStorage::open_in_memory(30).unwrap();
-
-        // Insert a gui_interaction for the segment (V13 schema: event_id, segment_id,
-        // timestamp, element_text, element_type, interaction_type, app_name)
-        {
-            let conn = storage.conn.test_lock();
-            conn.execute(
-                "INSERT INTO gui_interactions (event_id, segment_id, timestamp, element_type, element_text, interaction_type, app_name)
-                 VALUES ('gui-evt-1', 'seg-enriched-3', '2026-03-01T10:00:00Z', 'button', 'Submit Pull Request', 'click', 'GitHub')",
-                [],
-            )
-            .unwrap();
-        }
-
-        storage
-            .sync_segment_enriched(
-                "seg-enriched-3",
-                "development work",
-                "2026-03-01T09:00:00Z",
-                "2026-03-01T11:00:00Z",
-            )
-            .await
-            .unwrap();
-
-        let results = storage.search_fts("Pull Request", 10).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].segment_id, "seg-enriched-3");
-    }
-
-    #[tokio::test]
     async fn enriched_sync_no_extra_sources_works_like_basic() {
         let storage = SqliteStorage::open_in_memory(30).unwrap();
 
@@ -642,5 +697,197 @@ mod tests {
 
         let results = storage.search_fts_phrase("   ", 10).await.unwrap();
         assert!(results.is_empty());
+    }
+
+    // ── FTS content backfill (#8051) ─────────────────────────────────────────
+    //
+    // Existing users have segments in `activity_segments` that predate the live
+    // segment-close FTS wiring, so they are absent from `search_fts`. These
+    // tests exercise the one-shot startup backfill that indexes them.
+
+    use maekon_core::models::tiered_memory::{
+        ContentType, EngagementMetrics, SegmentSummary, TriggerReason, WorkType,
+    };
+    use maekon_core::ports::storage::StorageService;
+
+    fn content_activity(label: &str) -> ContentActivity {
+        ContentActivity {
+            content_label: label.to_string(),
+            content_type: ContentType::File,
+            start_time: chrono::Utc::now(),
+            duration_secs: 300,
+            confidence: 0.9,
+            work_type: WorkType::ActiveCoding,
+            engagement: EngagementMetrics::default(),
+            gui_summary: None,
+        }
+    }
+
+    /// Build a segment summary with distinctive searchable content but leave it
+    /// out of the FTS index (as `save_activity_segment` does in production).
+    fn make_summary(id: &str, dominant: &str, labels: &[&str], app: &str) -> SegmentSummary {
+        let now = chrono::Utc::now();
+        let mut app_breakdown = HashMap::new();
+        app_breakdown.insert(app.to_string(), 300u64);
+        SegmentSummary {
+            segment_id: id.to_string(),
+            start_time: now - chrono::Duration::minutes(10),
+            end_time: now,
+            duration_secs: 600,
+            regime_id: None,
+            trigger_reason: TriggerReason::ScoreLow,
+            event_count: 0,
+            app_breakdown,
+            category_breakdown: HashMap::new(),
+            context_switch_count: 0,
+            dominant_category: dominant.to_string(),
+            avg_importance: 0.0,
+            patterns_detected: vec![],
+            content_activities: labels.iter().map(|l| content_activity(l)).collect(),
+            container: None,
+            llm_summary: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn backfill_indexes_previously_saved_segments() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+
+        // Persist segments the way production does — this does NOT touch FTS.
+        storage
+            .save_activity_segment(&make_summary(
+                "seg-bf-1",
+                "Development",
+                &["authentication.rs"],
+                "VS Code",
+            ))
+            .await
+            .unwrap();
+        storage
+            .save_activity_segment(&make_summary(
+                "seg-bf-2",
+                "Communication",
+                &["team standup"],
+                "Slack",
+            ))
+            .await
+            .unwrap();
+
+        // Pre-condition: keyword search is empty (the dead-writer symptom).
+        assert!(storage
+            .search_fts("authentication", 10)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Backfill indexes both.
+        let indexed = storage.backfill_unindexed_segments_fts(100).await.unwrap();
+        assert_eq!(indexed, 2);
+
+        // Now keyword search returns the segments (content-label + app-name text).
+        let hits = storage.search_fts("authentication", 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].segment_id, "seg-bf-1");
+
+        let app_hits = storage.search_fts("Slack", 10).await.unwrap();
+        assert_eq!(app_hits.len(), 1);
+        assert_eq!(app_hits[0].segment_id, "seg-bf-2");
+    }
+
+    #[tokio::test]
+    async fn backfill_is_idempotent_and_skips_indexed() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        storage
+            .save_activity_segment(&make_summary(
+                "seg-idem",
+                "Development",
+                &["main.rs"],
+                "VS Code",
+            ))
+            .await
+            .unwrap();
+
+        // First run indexes the one unindexed segment.
+        assert_eq!(
+            storage.backfill_unindexed_segments_fts(100).await.unwrap(),
+            1
+        );
+        // Second run finds nothing new (NOT IN search_fts already excludes it).
+        assert_eq!(
+            storage.backfill_unindexed_segments_fts(100).await.unwrap(),
+            0
+        );
+
+        // A live sync_segment write is also treated as indexed by the backfill.
+        storage
+            .sync_segment("seg-live", "already indexed content")
+            .await
+            .unwrap();
+        storage
+            .save_activity_segment(&make_summary(
+                "seg-live",
+                "Development",
+                &["live.rs"],
+                "VS Code",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.backfill_unindexed_segments_fts(100).await.unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn backfill_respects_max_segments_cap() {
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        for i in 0..5 {
+            storage
+                .save_activity_segment(&make_summary(
+                    &format!("seg-cap-{i}"),
+                    "Development",
+                    &["capkeyword.rs"],
+                    "VS Code",
+                ))
+                .await
+                .unwrap();
+        }
+
+        // Cap at 2 per run — the pass is bounded.
+        assert_eq!(storage.backfill_unindexed_segments_fts(2).await.unwrap(), 2);
+        // Remaining drain across subsequent runs (resumable).
+        assert_eq!(storage.backfill_unindexed_segments_fts(2).await.unwrap(), 2);
+        assert_eq!(storage.backfill_unindexed_segments_fts(2).await.unwrap(), 1);
+        assert_eq!(storage.backfill_unindexed_segments_fts(2).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn backfill_korean_content_is_searchable() {
+        // CJK smoke: a Korean content label backfilled from activity_segments
+        // must be reachable via the bigram-shadow keyword query (mirrors the
+        // `ko_document_matches_ko_query` sync-path test).
+        let storage = SqliteStorage::open_in_memory(30).unwrap();
+        storage
+            .save_activity_segment(&make_summary(
+                "seg-ko-bf",
+                "Documentation",
+                &["월별 급여 지급 보고서"],
+                "한글",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage.backfill_unindexed_segments_fts(100).await.unwrap(),
+            1
+        );
+
+        let hits = storage.search_fts("급여", 10).await.unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "Korean backfilled content must match Korean query"
+        );
+        assert_eq!(hits[0].segment_id, "seg-ko-bf");
     }
 }

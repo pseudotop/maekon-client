@@ -21,6 +21,9 @@
 
 Maekon is an Apache-2.0 local-first desktop agent that can be used independently without ONESHIM. It provides local context capture, user-reviewed next-action candidates, policy-gated automation, and a built-in dashboard. Built with Rust and Tauri v2 (WebView shell around a React frontend) for native performance across macOS, Windows, and Linux.
 
+The public channel is an early prerelease for the invite-based Global Alpha. It
+is not a stable release or evidence of production readiness.
+
 ## Table of Contents
 
 - [Source Build Quick Start](#source-build-quick-start)
@@ -49,6 +52,17 @@ from a local source checkout:
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
 cd maekon-client
+
+# Build the two bundled prerequisites the Tauri config requires before the app
+# can run from source (a fresh checkout has neither yet):
+#   1) the web dashboard frontend  -> crates/maekon-web/frontend/dist
+#   2) the sandbox-worker sidecar   -> src-tauri/maekon-sandbox-worker-<target-triple>
+(cd crates/maekon-web/frontend && pnpm install && pnpm build)
+cargo build -p maekon-sandbox-worker
+cp target/debug/maekon-sandbox-worker \
+  "src-tauri/maekon-sandbox-worker-$(rustc -vV | sed -n 's/host: //p')"
+
+# Run Maekon from source
 ./scripts/cargo-cache.sh run -p maekon-app -- --offline
 ```
 
@@ -61,14 +75,14 @@ signature enforcement, and uninstall:
 
 - **Turn activity into governed work insight**: Track context, timeline, focus trends, interruptions, and approved automation paths in one place.
 - **Stay lightweight on-device**: Edge processing (delta encoding, thumbnailing, OCR) reduces transfer volume and keeps response fast.
-- **Use a production-ready desktop stack**: Cross-platform binary, auto-update, system tray integration, and local web dashboard.
+- **Evaluate the desktop stack in Global Alpha**: The prerelease includes cross-platform source, update plumbing, system-tray integration, and a local web dashboard; verify the exact build and platform before relying on it.
 
 ### Market positioning (2026)
 
 Google DeepMind (AI Pointer, 2026-05) and OpenAI (Codex Chronicle, 2026-04) both entered the same problem space — **AI that understands screen context and acts on natural pointing/typing intent**. Maekon differentiates on four axes:
 
 1. **Local-first by default** — pixels, OCR, and signals stay on-device; cloud round-trips are opt-in
-2. **Source-first audit** — every signal has a traceable origin, retention policy, and PII filter step
+2. **Source-first audit** — declared signal paths document origin, retention, and PII-filter steps
 3. **Policy-gated automation** — natural intent ("summarize this", "organize that") resolves to **next-action candidates** with explicit review/approval boundaries, not direct execution
 4. **App- and OS-crossing** — works across Chrome, native apps, terminals, and OS-level workflows (3 OS: macOS, Windows, Linux), not bound to a single vendor's ecosystem
 
@@ -93,7 +107,7 @@ See [`docs/market-positioning-references.md`](./docs/market-positioning-referenc
 Standalone mode is available now.
 
 Connected mode is available only as an opt-in preview path.
-Standalone mode remains the production-ready default path for release use.
+Standalone mode is the current default evaluation path for Global Alpha.
 
 ## Safety and Privacy at a Glance
 
@@ -110,13 +124,30 @@ Standalone mode remains the production-ready default path for release use.
 - Automation event contract: [docs/contracts/automation-event-contract.md](./docs/contracts/automation-event-contract.md)
 - AI provider contract: [docs/contracts/ai-provider-contract.md](./docs/contracts/ai-provider-contract.md)
 
+### Verify these claims in source
+
+The privacy claims above are not marketing copy — each maps to code in this repository that you can read, build, and test. The README and the source are exported together from the same verified tree, so this table always describes the code sitting next to it.
+
+| Claim | Where to verify |
+|---|---|
+| Excluded and sensitive apps are excluded **at capture time**, not only at upload | [`crates/maekon-vision/src/privacy/detection.rs`](./crates/maekon-vision/src/privacy/detection.rs) (`should_exclude_by_policy`), wired into the capture gate in [`src-tauri/src/scheduler/loops/monitor_phases.rs`](./src-tauri/src/scheduler/loops/monitor_phases.rs) |
+| Declared runtime egress paths covered by the egress policy write to a local ledger, browsable in-app (Privacy → Egress ledger) | [`src-tauri/src/scheduler/egress_policy.rs`](./src-tauri/src/scheduler/egress_policy.rs) + the reader routes in [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| The memory graph's beliefs (claims) about you are browsable and one-click retractable (Privacy → Claims) | claims routes in [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
+| Consent is fail-closed: no valid grant means no capture | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
+| Covered vision-pipeline paths apply configured PII filtering before their documented storage or egress steps | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
+| Supported automation execution paths are designed to route through policy, sandbox, and audit components | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+
+### Source sync policy
+
+This repository is a **vetted snapshot export** of Maekon's internal source of truth. Snapshots are exported per release after verification — release tags mark verified states, and the repository tracks releases rather than every internal commit. README and code always come from the same tree, so the claim-to-code links above refer to the exact checkout you are reading.
+
 ## Features
 
 ### Core Features
 - **Real-time Context Monitoring**: Tracks active windows, system resources, and user activity
 - **Edge Image Processing**: Screenshot capture, delta encoding, thumbnails, and OCR
 - **Policy-Gated Automation**: Routes approved actions through policy checks, sandbox isolation, and audit logging
-- **Connected Server Features (Preview / Opt-in)**: Real-time suggestions and feedback sync are available for staged validation and are not the default production path
+- **Connected Server Features (Preview / Opt-in)**: Real-time suggestions and feedback sync are available for staged validation and are not the default standalone path
 - **System Tray**: Runs in the background with quick access
 - **Auto-Update**: Automatic updates based on GitHub Releases
 - **Cross-Platform**: Supports macOS, Windows, and Linux
@@ -210,7 +241,71 @@ MAEKON_TARGET_HARD_LIMIT_MB=6144 \
 ```
 
 Connected mode is preview-only and intentionally gated behind explicit server/auth configuration.
-Use standalone mode as the default production path unless your environment has validated connected mode.
+Use standalone mode as the default Global Alpha path unless your environment has validated connected mode.
+
+`server` is deliberately **not** a default feature: the OSS build is a
+self-contained local-first product and every feature works without an account.
+To run a build that can sign in to a ONESHIM server, ask for the feature
+explicitly:
+
+```bash
+# Connected mode. Add `grpc` instead of `server` for the gRPC transport
+# (`grpc` implies `server`).
+./scripts/cargo-cache.sh run -p maekon-app --features server
+```
+
+Rebuild the dashboard bundle (`./scripts/build-frontend.sh`) whenever the
+frontend changed since your last run: `crates/maekon-web/frontend/dist` is
+git-ignored and is embedded into the binary at compile time, so a stale `dist/`
+silently ships a stale dashboard. See the from-source prerequisites above.
+
+Then open **Sign in** from the command palette (or navigate to `/login`) and
+enter identifier / password / organization ID. In a build without `--features
+server` the same screen states that connected mode is not included rather than
+offering a form that could never submit — no feature is withheld from you for
+declining to sign in.
+
+Both feature combinations are gated in CI: `.github/workflows/ci.yml` runs
+clippy and `cargo test --locked --workspace` for `--features server` and
+`--features grpc` on top of the default-feature matrix.
+
+#### Building a login-capable macOS `.app`
+
+The commands above run the binary from a source checkout. If you need an
+installable bundle that can sign in — a demo machine, connected-mode QC —
+`--features` has to reach the bundler too. Pass it through
+`MAEKON_DEV_BUNDLE_FEATURES`:
+
+```bash
+# Login-capable debug bundle
+MAEKON_DEV_BUNDLE_FEATURES=server ./scripts/build-macos-dev-bundle.sh
+
+# Default bundle — no sign-in compiled in (unchanged behaviour)
+./scripts/build-macos-dev-bundle.sh
+```
+
+The script reports what it actually produced, and fails if the artifact does
+not match the features you asked for:
+
+```
+Capability: server=on
+Login: AVAILABLE — Sign in (/login) and Settings > General > Account render the form.
+OK: artifact capabilities match the requested feature set.
+```
+
+You can re-check any bundle later without rebuilding it. This reads a marker
+compiled into the binary by `src-tauri/src/build_capabilities.rs`, so it
+reports what the artifact *is*, not what the build was asked for:
+
+```bash
+./scripts/verify-bundle-capabilities.sh "target/debug/bundle/macos/Maekon Dev.app"
+```
+
+> Before #9659 the bundle script did not forward `--features` at all, so this
+> was the only documented `.app` route and it silently produced a build in
+> which sign-in was not compiled — indistinguishable from a login-capable one
+> until someone tried to log in. If you are preparing a demo, run the check
+> above on the artifact you are about to install.
 
 For headless CI/remote debug sessions where macOS tray bootstrap can fail due missing WindowServer:
 ```bash
@@ -266,17 +361,17 @@ Full install guide:
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
 ```
 
 ### Release Assets
@@ -312,15 +407,36 @@ identifiers for this release line.
 
 | Variable | Description | Default |
 |------|------|--------|
-| `MAEKON_EMAIL` | Login email (connected mode only) | (optional in standalone) |
-| `MAEKON_PASSWORD` | Login password (connected mode only) | (optional in standalone) |
 | `MAEKON_TESSDATA` | Tesseract data path | (optional) |
 | `MAEKON_DISABLE_TRAY` | Skip system tray initialization (headless CI/remote GUI smoke only) | `0` |
 | `RUST_LOG` | Log level | `info` |
 
+Sign-in credentials are not read from the environment. Sign in from the
+**Sign in** screen (`/login`, reachable from the command palette) or from
+**Settings → General → Account** — both render the same form, and both require a
+build with `--features server`. The server URL is configured under
+**Settings → Advanced → Network & Server**.
+
 ### Config File
 
-`~/.config/maekon/config.json` (Linux) / `~/Library/Application Support/com.maekon.app/config.json` (macOS) / `%APPDATA%\maekon\agent\config.json` (Windows):
+| Platform | Path |
+|---|---|
+| Linux | `~/.config/maekon/config.json` |
+| macOS | `~/Library/Application Support/maekon/config.json` |
+| Windows | `%APPDATA%\maekon\config.json` |
+
+The `maekon` segment is the app directory name. It gains a suffix when
+`MAEKON_APP_FLAVOR` is set — and **debug builds set `MAEKON_APP_FLAVOR=dev`
+themselves** (`src-tauri/src/lib.rs`, `configure_runtime_flavor`) so a locally
+built client never opens the released app's profile. A debug build on macOS
+therefore reads `~/Library/Application Support/maekon-dev/config.json`.
+
+> Earlier revisions of this README named
+> `~/Library/Application Support/com.maekon.app/`. That was never a real path:
+> `com.maekon.app` is the macOS bundle identifier, while the data directory
+> comes from `APP_DIR_NAME = "maekon"`
+> (`crates/maekon-core/src/config_manager/path_resolution.rs`). The Windows
+> entry likewise carried a spurious `\agent` segment.
 
 ```json
 {

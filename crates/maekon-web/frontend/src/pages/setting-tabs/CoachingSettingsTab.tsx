@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { CoachingSettings, ProfileConfig, TimeRange } from '../../api/contracts'
 import { Button, Card, CardContent, CardHeader, CardTitle, Input } from '../../components/ui'
@@ -19,7 +19,9 @@ export default function CoachingSettingsTab() {
   const { data: goals } = useGoalProgress()
   const updateGoalsMutation = useUpdateGoals()
   const [newLabel, setNewLabel] = useState('')
+  const [newLabelError, setNewLabelError] = useState<string | null>(null)
   const [newMinutes, setNewMinutes] = useState(60)
+  const newLabelInputRef = useRef<HTMLInputElement>(null)
   const [newQuietStart, setNewQuietStart] = useState('22:00')
   const [newQuietEnd, setNewQuietEnd] = useState('08:00')
 
@@ -37,16 +39,25 @@ export default function CoachingSettingsTab() {
 
   // ---- Goals section handlers (existing logic) ----------------------------
   const handleAddGoal = useCallback(() => {
-    if (!newLabel.trim()) return
+    const label = newLabel.trim()
+    if (!label) {
+      setNewLabelError(t('coaching.regimeLabelRequired', 'Enter a regime label.'))
+      newLabelInputRef.current?.focus()
+      return
+    }
     const current: Record<string, number> = {}
     for (const g of goals ?? []) {
       current[g.regime_label] = g.target_minutes
     }
-    current[newLabel.trim()] = newMinutes
-    updateGoalsMutation.mutate(current)
-    setNewLabel('')
-    setNewMinutes(60)
-  }, [newLabel, newMinutes, goals, updateGoalsMutation])
+    current[label] = newMinutes
+    setNewLabelError(null)
+    updateGoalsMutation.mutate(current, {
+      onSuccess: () => {
+        setNewLabel('')
+        setNewMinutes(60)
+      },
+    })
+  }, [newLabel, newMinutes, goals, t, updateGoalsMutation])
 
   const handleDeleteGoal = useCallback(
     (label: string) => {
@@ -149,7 +160,7 @@ export default function CoachingSettingsTab() {
                       {g.current_minutes ?? 0}/{g.target_minutes} {t('coaching.min', 'min')}
                     </span>
                     <span className={`w-10 text-right text-xs ${typography.weight.semibold}`}>{percent}%</span>
-                    <Button variant="ghost" size="sm" onClick={() => handleDeleteGoal(g.regime_label)}>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => handleDeleteGoal(g.regime_label)}>
                       {t('coaching.remove', 'Remove')}
                     </Button>
                   </div>
@@ -168,12 +179,23 @@ export default function CoachingSettingsTab() {
                 {t('coaching.regimeLabel', 'Regime Label')}
               </label>
               <Input
+                ref={newLabelInputRef}
                 id="coaching-regime-label"
                 value={newLabel}
-                onChange={(e) => setNewLabel(e.target.value)}
+                onChange={(e) => {
+                  setNewLabel(e.target.value)
+                  setNewLabelError(null)
+                }}
                 placeholder={t('coaching.regimeLabelPlaceholder', 'e.g. Deep Coding')}
+                aria-invalid={newLabelError ? true : undefined}
+                aria-describedby={newLabelError ? 'coaching-regime-label-error' : undefined}
                 className="w-40"
               />
+              {newLabelError && (
+                <p id="coaching-regime-label-error" role="alert" className="mt-1 text-semantic-error text-xs">
+                  {newLabelError}
+                </p>
+              )}
             </div>
             <div>
               <label htmlFor="coaching-target-minutes" className="mb-1 block text-content-secondary text-xs">
@@ -189,7 +211,7 @@ export default function CoachingSettingsTab() {
                 className="w-24"
               />
             </div>
-            <Button variant="primary" size="sm" onClick={handleAddGoal}>
+            <Button type="button" variant="primary" size="sm" onClick={handleAddGoal}>
               {t('coaching.addGoal', 'Add Goal')}
             </Button>
           </div>
@@ -213,7 +235,7 @@ export default function CoachingSettingsTab() {
                   <span className={cn('text-sm tabular-nums', colors.text.primary)}>
                     {range.start} &ndash; {range.end}
                   </span>
-                  <Button variant="ghost" size="sm" onClick={() => handleDeleteQuietHour(rangeIdx)}>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => handleDeleteQuietHour(rangeIdx)}>
                     {t('coaching.remove', 'Remove')}
                   </Button>
                 </div>
@@ -250,7 +272,7 @@ export default function CoachingSettingsTab() {
                 className={cn('border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
               />
             </div>
-            <Button variant="primary" size="sm" onClick={handleAddQuietHour}>
+            <Button type="button" variant="primary" size="sm" onClick={handleAddQuietHour}>
               {t('coaching.addQuietHour', 'Add')}
             </Button>
           </div>

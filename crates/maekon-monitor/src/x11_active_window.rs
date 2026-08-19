@@ -100,6 +100,59 @@ pub(crate) fn query_active_window() -> Option<NativeActiveWindow> {
     Some(NativeActiveWindow { title, pid, bounds })
 }
 
+/// Whether the active X11 window has `_NET_WM_STATE_FULLSCREEN` set (#8849).
+///
+/// Returns `None` when there is no X server, no active window, the active window
+/// is owned by our process (excluded), or the property cannot be obtained.
+/// Synchronous / blocking call, so the caller MUST run it under
+/// `tokio::task::spawn_blocking`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn active_window_is_fullscreen() -> Option<bool> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+
+    let (conn, screen_num) = x11rb::connect(None).ok()?;
+    let root = conn.setup().roots.get(screen_num)?.root;
+
+    let net_active_window = intern_atom(&conn, b"_NET_ACTIVE_WINDOW")?;
+    let net_wm_state = intern_atom(&conn, b"_NET_WM_STATE")?;
+    let net_wm_state_fullscreen = intern_atom(&conn, b"_NET_WM_STATE_FULLSCREEN")?;
+    let net_wm_pid = intern_atom(&conn, b"_NET_WM_PID")?;
+
+    // Active window id from the root window's _NET_ACTIVE_WINDOW property.
+    let active = conn
+        .get_property(false, root, net_active_window, AtomEnum::WINDOW, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?;
+    let window = active.value32().and_then(|mut ids| ids.next())?;
+    if window == 0 {
+        return None;
+    }
+
+    // External windows only: exclude the active window if it is owned by our process (the owned-window path handles it).
+    let pid = conn
+        .get_property(false, window, net_wm_pid, AtomEnum::CARDINAL, 0, 1)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .and_then(|reply| reply.value32().and_then(|mut vals| vals.next()));
+    if pid == Some(std::process::id()) {
+        return Some(false);
+    }
+
+    // _NET_WM_STATE is a list of ATOMs. Check whether it contains _NET_WM_STATE_FULLSCREEN.
+    let state = conn
+        .get_property(false, window, net_wm_state, AtomEnum::ATOM, 0, 64)
+        .ok()?
+        .reply()
+        .ok()?;
+    let is_fullscreen = state
+        .value32()
+        .map(|mut atoms| atoms.any(|atom| atom == net_wm_state_fullscreen))
+        .unwrap_or(false);
+    Some(is_fullscreen)
+}
+
 /// Intern an atom, returning its id (or `None` on connection / protocol error).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn intern_atom(conn: &x11rb::rust_connection::RustConnection, name: &[u8]) -> Option<u32> {

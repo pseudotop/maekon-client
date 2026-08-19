@@ -100,10 +100,13 @@ pub fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Applies an owner-only DACL to a file or directory (the Windows counterpart of
-/// Unix `chmod 0o600`).
+/// Unix `chmod 0o600` for files and `chmod 0o700` for directories).
 ///
 /// Builds an ACL that grants the current user a single `GENERIC_ALL` ACE and
 /// applies it as a **protected DACL** that blocks inheritance from the parent.
+/// Directory ACEs inherit to child files and directories so a missed follow-up
+/// hardening call cannot leave a newly-created child with an empty deny-all DACL
+/// (#9276).
 /// Because the target must already exist (called after the write), this is a
 /// defense-in-depth control that layers owner-only protection on top of the
 /// default user-profile ACL of `%LOCALAPPDATA%`/`%APPDATA%`.
@@ -115,15 +118,33 @@ pub fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// implementations can never diverge again.
 #[cfg(windows)]
 pub fn set_owner_only_dacl(path: &Path) -> Result<(), crate::error::CoreError> {
+    set_owner_only_dacl_inner(path, path.is_dir())
+}
+
+/// Applies an inheritable owner-only DACL to a directory.
+///
+/// Unlike [`set_owner_only_dacl`], this entry point does not need to inspect the
+/// target first. Retention uses it to repair a known directory whose empty DACL
+/// may itself make metadata inspection fail with `PermissionDenied` (#9276).
+#[cfg(windows)]
+pub fn set_owner_only_directory_dacl(path: &Path) -> Result<(), crate::error::CoreError> {
+    set_owner_only_dacl_inner(path, true)
+}
+
+#[cfg(windows)]
+fn set_owner_only_dacl_inner(
+    path: &Path,
+    inherit_to_children: bool,
+) -> Result<(), crate::error::CoreError> {
     // windows-sys 0.61: `OpenProcessToken` lives in `Win32::System::Threading`,
     // while `GENERIC_ALL`/`HANDLE` live in `Win32::Foundation`; since `HANDLE`
     // is `*mut c_void`, initialize it with `null_mut()`.
     use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL, HANDLE};
     use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        AddAccessAllowedAce, GetTokenInformation, InitializeAcl, TokenUser, ACL as WIN_ACL,
-        ACL_REVISION, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY,
-        TOKEN_USER,
+        AddAccessAllowedAceEx, GetTokenInformation, InitializeAcl, TokenUser, ACL as WIN_ACL,
+        ACL_REVISION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
+        PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -194,8 +215,13 @@ pub fn set_owner_only_dacl(path: &Path) -> Result<(), crate::error::CoreError> {
             return Err(err("InitializeAcl failed"));
         }
 
-        if AddAccessAllowedAce(acl_ptr, ACL_REVISION, GENERIC_ALL, user_sid) == 0 {
-            return Err(err("AddAccessAllowedAce failed"));
+        let ace_flags = if inherit_to_children {
+            OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+        } else {
+            0
+        };
+        if AddAccessAllowedAceEx(acl_ptr, ACL_REVISION, ace_flags, GENERIC_ALL, user_sid) == 0 {
+            return Err(err("AddAccessAllowedAceEx failed"));
         }
 
         // 3. Apply as a protected DACL (block parent inheritance)
@@ -218,7 +244,7 @@ pub fn set_owner_only_dacl(path: &Path) -> Result<(), crate::error::CoreError> {
             )));
         }
 
-        tracing::debug!("file DACL set to owner-only: {:?}", path);
+        tracing::debug!(inherit_to_children, "owner-only DACL applied: {:?}", path);
         Ok(())
     }
 }
@@ -273,5 +299,25 @@ mod tests {
         let path = dir.path().join("dacl_target.tmp");
         std::fs::File::create(&path).unwrap();
         set_owner_only_dacl(&path).expect("owner-only DACL must apply to an existing file");
+    }
+
+    /// #9276: a protected directory DACL must propagate owner access to both
+    /// child directories and child files. Without the inheritance flags, the
+    /// newly-created child directory receives an empty deny-all DACL and the
+    /// subsequent frame write fails even for the owning process.
+    #[cfg(windows)]
+    #[test]
+    fn directory_dacl_keeps_new_children_owner_accessible() {
+        let dir = tempfile::tempdir().unwrap();
+        let protected = dir.path().join("frames");
+        std::fs::create_dir(&protected).unwrap();
+        set_owner_only_directory_dacl(&protected)
+            .expect("inheritable owner-only DACL must apply to the frame root");
+
+        let child = protected.join("2026-08-01");
+        std::fs::create_dir(&child).expect("child directory must inherit owner access");
+        let frame = child.join("12-00-00-0000000000.webp");
+        std::fs::write(&frame, b"frame").expect("child file must inherit owner access");
+        assert_eq!(std::fs::read(frame).unwrap(), b"frame");
     }
 }

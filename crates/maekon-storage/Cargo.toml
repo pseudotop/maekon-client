@@ -9,6 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 maekon-core = { workspace = true }
 thiserror = { workspace = true }
@@ -26,11 +29,15 @@ arc-swap = { workspace = true }
 crossbeam = { workspace = true }
 keyring = { workspace = true }
 tempfile = { workspace = true }
+icu_normalizer = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
 aes-gcm = { workspace = true }
 argon2 = { workspace = true }
 zeroize = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

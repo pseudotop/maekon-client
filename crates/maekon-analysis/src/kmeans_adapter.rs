@@ -22,6 +22,10 @@ use crate::regime_detector::RegimeDetector;
 /// converts its output to the unified `ClusteringResult` format.
 pub struct KmeansDetector {
     max_k: usize,
+    // Unlike `max_k` (has `with_max_k`, threaded into `RegimeDetector` below),
+    // no builder currently plumbs this into the k-means loop — the underlying
+    // `RegimeDetector` uses its own fixed iteration cap. Kept as a documented
+    // config knob for whenever that gets wired up.
     #[allow(dead_code)]
     max_iterations: usize,
     min_cluster_samples: u64,
@@ -76,11 +80,17 @@ impl KmeansDetector {
         let regimes = detector.detect(features);
 
         if regimes.is_empty() {
+            if let Ok(mut stored) = self.centroids.lock() {
+                stored.clear();
+            }
+            if let Ok(mut stored_labels) = self.centroid_labels.lock() {
+                stored_labels.clear();
+            }
             return ClusteringResult {
-                labels: vec![0; features.len()],
+                labels: vec![-1; features.len()],
                 centroids: vec![],
                 cluster_count: 0,
-                noise_count: 0,
+                noise_count: features.len(),
                 probabilities: None,
             };
         }
@@ -354,6 +364,8 @@ mod tests {
         let result = detector.detect(&features).unwrap();
 
         assert_eq!(result.cluster_count, 0);
+        assert_eq!(result.labels, vec![-1; features.len()]);
+        assert_eq!(result.noise_count, features.len());
     }
 
     #[test]

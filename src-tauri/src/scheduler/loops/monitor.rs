@@ -1,6 +1,8 @@
 use chrono::Utc;
+use maekon_core::capture_gate;
 use maekon_core::models::event::{Event, InputActivityEvent, KeyboardActivity, MouseActivity};
 use maekon_core::models::frame::OcrRegion;
+use maekon_core::ports::consent_manager::ConsentGate;
 use maekon_monitor::idle::IdleTracker;
 use maekon_monitor::input_activity::InputActivityCollector;
 use maekon_monitor::window_layout::WindowLayoutTracker;
@@ -10,7 +12,7 @@ use std::time::{Duration, Instant};
 use tauri::Manager;
 use tracing::{debug, info, warn};
 
-use super::super::config::PlatformEgressPolicy;
+use super::super::egress_policy::PlatformEgressPolicy;
 use super::super::gui_pipeline::gui_feedback_pii_level;
 use super::super::shared_regime_state::SharedRegimeState;
 use super::super::Scheduler;
@@ -18,7 +20,7 @@ use super::coaching_helper::{CoachingEvalContext, CoachingTickState};
 use super::helpers::{
     audit_consent_and_pii_changes, build_segment_stats_snapshot, emit_heatmap_and_goals,
     emit_pointer_context_highlight, handle_event_analysis, handle_frame_capture, handle_idle_tick,
-    redact_window_title, PointerContextEmitterState,
+    redact_window_title, IdleTickServices, PointerContextEmitterState,
 };
 use super::monitor_phases::{
     capture_ring_thumbnail_if_due, ActiveWindowSnapshot, RingThumbnailCadence,
@@ -52,6 +54,10 @@ impl Scheduler {
         let session1 = session_id;
         let notif1 = self.notification_manager.clone();
         let focus1 = self.focus_analyzer.clone();
+        // #7652: shared runtime slot (Arc<RwLock<Option<Arc<ContextAnalyzer>>>>).
+        // This loop only READS it (single-writer: `spawn_analysis_loop` owns
+        // install/teardown) — re-read once per tick below so a runtime
+        // enable/disable transition is observed without a restart.
         let context_analyzer1 = self.context_analyzer.clone();
         // E20-24 (#4816): live suggestion queue for the event-driven analysis producer.
         #[cfg(feature = "local-suggestions")]
@@ -60,6 +66,10 @@ impl Scheduler {
         let event_suggestion_queue1: Option<
             std::sync::Arc<tokio::sync::Mutex<maekon_suggestion::queue::SuggestionQueue>>,
         > = None;
+        // #7914: shared FeedbackScorer handle for the uniform relevance gate on
+        // every LOCAL producer this loop feeds. `None` => pass-through (cfg fork
+        // lives on the accessor to keep this LOC-capped loop cfg-free).
+        let scorer_for_gates = self.relevance_scorer();
         let input_collector1 = input_collector;
         let accessibility_extractor1 = self.accessibility_extractor.clone();
         let config_manager1 = self.config_manager.clone();
@@ -73,12 +83,16 @@ impl Scheduler {
         let capture_paused = self.capture_paused.clone();
         let overlay_driver_ref = self.overlay_driver.clone();
         let detection_active = self.detection_active.clone();
-        let scene_finder_ref = self.scene_finder.clone();
+        let scene_finder_slot = self.scene_finder_slot.clone();
         let event_tx_mon = self.event_tx.clone();
 
         tokio::spawn(async move {
             let mut prev_app: Option<String> = None;
             let mut prev_window_title: Option<String> = None;
+            // #7909: previous tick's capture-exclusion state — the ledger records
+            // one "capture_blocked" entry per transition INTO an excluded app,
+            // not one per 1s tick.
+            let mut prev_capture_excluded = false;
             let mut prev_idle_secs: u64 = 0;
             let mut interval = super::intervals::coalescing_interval(poll);
             let mut focus_block = super::autostart_helper::FocusBlockState::default();
@@ -110,6 +124,9 @@ impl Scheduler {
                                                                 // Used to decide the idle-backoff + battery-saver throttle phase — idle/TS notification
                                                                 // ticks are unaffected; only the expensive collect_context/AX/analysis blocks are gated.
             let mut power_tick_counter: u64 = 0;
+            // #8686 AC4: OS screen-capture permission edge watch (mid-session
+            // TCC revocation → fail-closed stop + one-shot recovery surface).
+            let mut os_permission_watch = capture_gate::OsPermissionWatch::default();
 
             loop {
                 tokio::select! {
@@ -123,6 +140,24 @@ impl Scheduler {
                         // propagation window are unchanged — only the per-second
                         // deep-clone heap churn on the idle hot path is removed.
                         let config_snapshot = config_manager1.as_ref().map(|cm| cm.snapshot());
+                        // One live fail-closed consent snapshot per tick. Idle,
+                        // switch, capture, and analysis paths consume the same
+                        // point-in-time value so own-field gates cannot disagree.
+                        let consent = ConsentGate::from_ref(consent_manager1.as_ref())
+                            .permissions_snapshot();
+                        if let Some(ref focus) = focus1 {
+                            // Reconcile before any composite capture-gate `continue`.
+                            // Expired/update-required/missing consent must clear
+                            // pattern state even when capture work is skipped.
+                            focus
+                                .reconcile_activity_pattern_consent(&consent)
+                                .await;
+                        }
+                        // #7652: re-read the shared analyzer slot once per tick — the
+                        // guard is cloned and dropped immediately (no `.await` held),
+                        // so a runtime install/teardown by `spawn_analysis_loop`
+                        // (analysis.enabled flip) is picked up without a restart.
+                        let context_analyzer_now = context_analyzer1.read().clone();
                         // A4: Focus mode auto-expiry check
                         if focus_mode.check_expiry() {
                             if let Some(ref overlay) = overlay_ref {
@@ -130,18 +165,103 @@ impl Scheduler {
                             }
                             info!("Focus mode expired — auto-deactivated");
                         }
-                        let new_idle_secs = handle_idle_tick(
+                        let idle_outcome = handle_idle_tick(
                             &mut idle_tracker,
-                            &sqlite1,
-                            &notif1,
-                            &input_collector,
+                            IdleTickServices {
+                                sqlite: &sqlite1,
+                                notif: &notif1,
+                                focus: &focus1,
+                                consent: consent.clone(),
+                                input_collector: &input_collector,
+                                event_tx: &event_tx_mon,
+                            },
                             prev_idle_secs,
                             focus_mode.is_active(),
-                            &event_tx_mon,  // reuse clone added by B3-1
                         ).await;
+                        let new_idle_secs = idle_outcome.idle_secs;
+                        let idle_resume_suggestions = idle_outcome.resume_suggestions;
+                        // #7492: FocusAnalyzer idle-resume can produce rule
+                        // suggestions (notably playbook-pattern flushes). It
+                        // now runs on the real Idle→Active edge, so mirror the
+                        // app-switch/focus-loop bridge: server coexistence,
+                        // regime filter, then live queue + overlay refresh.
+                        #[cfg(feature = "local-suggestions")]
+                        if !idle_resume_suggestions.is_empty() {
+                            let idle_resume_queue_for_push = {
+                                let server_recent = match config_snapshot
+                                    .as_ref()
+                                    .map(|cfg| cfg.analysis.server_coexistence_lookback_secs)
+                                {
+                                    Some(lookback) => {
+                                        let sqlite_coexist = sqlite1.clone();
+                                        tokio::task::spawn_blocking(move || {
+                                            sqlite_coexist
+                                                .has_recent_server_suggestions(lookback)
+                                        })
+                                        .await
+                                        .unwrap_or_else(|join_err| {
+                                            warn!(
+                                                "idle-resume coexistence check task panicked: {join_err}"
+                                            );
+                                            Ok(false)
+                                        })
+                                        .unwrap_or(false)
+                                    }
+                                    None => false,
+                                };
+                                if server_recent {
+                                    None
+                                } else {
+                                    event_suggestion_queue1.as_ref()
+                                }
+                            };
+                            if let Some(q) = idle_resume_queue_for_push {
+                                // #7914: uniform gate seam — regime filter + learned
+                                // per-regime acceptance + FeedbackScorer, applied inside
+                                // enqueue_and_surface like every other LOCAL producer.
+                                let idle_resume_regime = shared_regime.snapshot().regime;
+                                let idle_resume_gates = super::helpers::relevance_gates(
+                                    scorer_for_gates.as_ref(),
+                                    idle_resume_regime.as_ref(),
+                                    adaptive_trigger_state.as_ref(),
+                                );
+                                let idle_resume_on_changed = overlay_ref.as_ref().map(|o| {
+                                    let o = o.clone();
+                                    move |c: usize| o.emit_suggestions_changed(c)
+                                });
+                                let idle_resume_on_changed_ref: Option<
+                                    &(dyn Fn(usize) + Send + Sync),
+                                > = idle_resume_on_changed
+                                    .as_ref()
+                                    .map(|f| f as &(dyn Fn(usize) + Send + Sync));
+                                super::helpers::enqueue_and_surface(
+                                    q,
+                                    idle_resume_suggestions,
+                                    idle_resume_gates,
+                                    idle_resume_on_changed_ref,
+                                    None,
+                                    false,
+                                )
+                                .await;
+                            }
+                        }
+                        #[cfg(not(feature = "local-suggestions"))]
+                        let _ = idle_resume_suggestions;
 
                         // A.18: TS window enter/exit → desktop notify (60s debounce)
-                        super::tracking_schedule_helper::tick_ts_notifications(config_snapshot.as_deref(), notif1.as_deref(), &mut ts_notify_state.0, &mut ts_notify_state.1).await;
+                        // #7735 E-3: `tick_ts_notifications` now takes `Option<&dyn
+                        // capture_gate::TsNotifier>` (core cannot see the concrete
+                        // `NotificationManager` type) — `Option` does not auto-coerce
+                        // an inner reference to a trait object, so the cast is explicit.
+                        capture_gate::tick_ts_notifications(
+                            config_snapshot.as_deref(),
+                            notif1
+                                .as_deref()
+                                .map(|n| n as &dyn capture_gate::TsNotifier),
+                            &mut ts_notify_state.0,
+                            &mut ts_notify_state.1,
+                        )
+                        .await;
 
                         // #6830: release the carried full-res RGBA frame (~33MB at 4K) + its
                         // paired OCR regions once idle backoff engages. MUST run BEFORE the
@@ -150,7 +270,7 @@ impl Scheduler {
                         // either gate would never fire in the idle window this targets. Frame
                         // and regions are dropped together to preserve the frame<->regions
                         // lockstep invariant (mirrors the empty-region reset below).
-                        if super::tracking_schedule_helper::should_release_idle_frame(new_idle_secs)
+                        if capture_gate::should_release_idle_frame(new_idle_secs)
                             && (last_frame_rgba.is_some() || !last_ocr_regions.is_empty())
                         {
                             last_frame_rgba = None;
@@ -159,16 +279,39 @@ impl Scheduler {
 
                         // PR-B1 §5.5: productive-session detection (Idle↔Active transitions, idempotent counter)
                         focus_block.tick(&mut prev_idle_secs, new_idle_secs, idle_threshold, app_handle.as_ref(), config_manager1.as_ref());
-                        // effective_permissions() returns permissions only in the Valid state — Expired/UpdateRequired
-                        // return all-false, so a stale consent record is also handled fail-closed (Task 3).
-                        let consent = consent_manager1.as_ref()
-                            .map(|cm| cm.effective_permissions())
-                            .unwrap_or_default();
                         let paused = capture_paused.load(std::sync::atomic::Ordering::Relaxed);
                         let capture_permitted_for_tick = config_manager1.as_ref()
                             .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
                             .unwrap_or(false);
-                        if !capture_permitted_for_tick {
+                        // #8686 AC4: OS permission axis — probed only while the
+                        // config/consent gate is open (a closed gate already
+                        // stops capture; probing then would emit banner noise).
+                        // Revocation stops capture fail-closed within one tick
+                        // and surfaces a one-shot event + desktop notification.
+                        let os_capture_ok = if capture_permitted_for_tick {
+                            super::os_permission_helper::observe_os_capture_permission(
+                                &mut os_permission_watch,
+                                app_handle.as_ref(),
+                                notif1
+                                    .as_deref()
+                                    .map(|n| n as &dyn capture_gate::TsNotifier),
+                            )
+                            .await
+                        } else {
+                            true
+                        };
+                        if !capture_permitted_for_tick || !os_capture_ok {
+                            // #8045 B3: a closed capture gate (consent withdrawn/
+                            // revoked, capture paused, or capture disabled by
+                            // config) must not retain pre-consent dashcam frames
+                            // in RAM. Drop + zeroize any buffered thumbnails/
+                            // titles/accessibility trees now. On a consent
+                            // withdrawal the fail-closed ConsentGate above closes
+                            // this gate within one tick (<=1s), wiping the in-
+                            // memory buffer that `withdraw_consent`'s on-disk
+                            // erase cannot reach. Cheap no-op once the buffer is
+                            // already empty.
+                            ring_buffer.clear();
                             debug!("monitor loop: capture gate closed - skipping context, accessibility, capture, and analysis tick");
                             continue;
                         }
@@ -181,7 +324,7 @@ impl Scheduler {
                         // drops below the threshold and the 1s cadence is restored immediately.
                         let battery_saver = crate::scheduler::schedule::BATTERY_SAVER_ACTIVE
                             .load(std::sync::atomic::Ordering::Relaxed);
-                        let tick_decision = super::tracking_schedule_helper::decide_monitor_tick(
+                        let tick_decision = capture_gate::decide_monitor_tick(
                             power_tick_counter,
                             new_idle_secs,
                             battery_saver,
@@ -244,6 +387,28 @@ impl Scheduler {
                                 let app_bundle_id = active_window.app_bundle_id;
                                 let mut focus_ocr_hint: Option<String> = None;
 
+                                // ── Capture-time exclusion (#7909, T1.1) ──
+                                // Gate every content-capture surface of this tick
+                                // (AX extraction, ring thumbnail, trigger capture,
+                                // post-event forced capture, detection re-analysis)
+                                // on the exclusion policy. Metadata events still
+                                // flow; see tick_capture_excluded docs.
+                                let capture_excluded = super::monitor_phases::tick_capture_excluded(
+                                    config_snapshot.as_deref(),
+                                    &app_name,
+                                    &window_title,
+                                );
+                                if capture_excluded && !prev_capture_excluded {
+                                    debug!(app = %app_name, "capture excluded by privacy policy (transition) — recording ledger entry");
+                                    let consent_state = egress1.consent_state_snapshot();
+                                    super::super::egress_policy::record_capture_block(
+                                        &sqlite1,
+                                        &consent_state,
+                                    )
+                                    .await;
+                                }
+                                prev_capture_excluded = capture_excluded;
+
                                 input_collector.set_current_app(&app_name);
                                 if let Some(ref cfg) = config_snapshot { super::focus_auto_helper::evaluate_focus_auto(&cfg.focus_auto, &focus_mode, &app_name, overlay_ref.as_ref()); }
 
@@ -252,7 +417,9 @@ impl Scheduler {
                                 // Result is stored for the GUI pipeline to consume.
                                 // #4798: in battery-saver mode, skip AX extraction (the most expensive optional block)
                                 // and clear the highlight (same handling as the collect_context failure branch).
-                                if skip_expensive {
+                                // #7909: same skip when the active app is capture-excluded — the focused
+                                // element's extracted text IS captured content of the excluded app.
+                                if skip_expensive || capture_excluded {
                                     super::detection_helper::clear_focus_highlight(
                                         &mut focus_hl, &overlay_driver_ref,
                                     ).await;
@@ -262,10 +429,9 @@ impl Scheduler {
                                         .as_ref()
                                         .map(|cfg| cfg.analysis.text_intelligence.clone())
                                         .unwrap_or_default();
-                                    let full_text_consent = consent_manager1
-                                        .as_ref()
-                                        .map(|cm| cm.effective_permissions().full_text_extraction)
-                                        .unwrap_or(false);
+                                    let full_text_consent =
+                                        ConsentGate::from_ref(consent_manager1.as_ref())
+                                            .may_extract_full_text();
 
                                     // Audit: log consent / PII level changes
                                     (prev_full_text_consent, prev_pii_level) =
@@ -315,16 +481,24 @@ impl Scheduler {
                                     if let Some(ref sink) = uploader1 {
                                         // #4803: egress audit — compute the type/size before consumption and
                                         // record the uploaded/blocked disposition in the ledger.
-                                        let etype = super::super::config::egress_event_type(&win_event);
-                                        let bytes = super::super::config::egress_byte_count(&win_event);
+                                        let etype = super::super::egress_policy::egress_event_type(&win_event);
+                                        let bytes = super::super::egress_policy::egress_byte_count(&win_event);
                                         let consent_state = egress1.consent_state_snapshot();
+                                        // #7946: pair the upload payload with the PERSISTED id
+                                        // (derived from the original event — egress filtering can
+                                        // change id-relevant fields) so flush marks the right row.
+                                        let upload_storage_id =
+                                            maekon_storage::sqlite::storage_event_id(&win_event);
                                         if let Some(upload_event) = egress1.prepare_event_for_upload(win_event) {
-                                            sink.enqueue(upload_event);
-                                            super::super::config::record_event_egress(
+                                            sink.enqueue(maekon_core::ports::batch_sink::QueuedUpload {
+                                                storage_id: upload_storage_id,
+                                                event: upload_event,
+                                            });
+                                            super::super::egress_policy::record_event_egress(
                                                 &sqlite1, etype, bytes, "uploaded", &consent_state,
                                             ).await;
                                         } else {
-                                            super::super::config::record_event_egress(
+                                            super::super::egress_policy::record_event_egress(
                                                 &sqlite1, etype, bytes, "blocked", &consent_state,
                                             ).await;
                                         }
@@ -344,30 +518,85 @@ impl Scheduler {
                                     .map(|cfg| Duration::from_millis(cfg.vision.capture_throttle_ms))
                                     .unwrap_or(Duration::from_secs(5));
 
-                                capture_ring_thumbnail_if_due(
-                                    &mut thumbnail_cadence,
-                                    processor.as_ref(),
-                                    &ring_buffer,
-                                    &app_name,
-                                    &event.window_title,
-                                    last_focused_element.as_ref(),
-                                    thumbnail_throttle,
-                                ).await;
+                                // #7909: no ring thumbnail while the active app is
+                                // capture-excluded — excluded-app pixels must never
+                                // enter the dashcam pre-event buffer.
+                                if !capture_excluded {
+                                    capture_ring_thumbnail_if_due(
+                                        &mut thumbnail_cadence,
+                                        processor.as_ref(),
+                                        &ring_buffer,
+                                        &app_name,
+                                        &event.window_title,
+                                        last_focused_element.as_ref(),
+                                        window_bounds.as_ref(),
+                                        thumbnail_throttle,
+                                    ).await;
+                                }
                                 {
-                                    let capture_req = trigger.should_capture(&event);
+                                    // #7909: skip the trigger entirely for excluded apps —
+                                    // the frame pipeline (capture → OCR → storage → replay)
+                                    // must not see them. Not calling should_capture also
+                                    // leaves the trigger's throttle state untouched.
+                                    let capture_req = if capture_excluded {
+                                        None
+                                    } else {
+                                        trigger.should_capture(&event)
+                                    };
 
-                                    // Force capture during post-event window (dashcam "after" frames)
-                                    let force_post = ring_buffer.should_force_post_capture();
+                                    // Force capture during post-event window (dashcam "after" frames).
+                                    // #7909: while excluded, don't consume the post-event window —
+                                    // freezing it means the "after" frames resume only once a
+                                    // non-excluded app is frontmost again.
+                                    let force_post =
+                                        !capture_excluded && ring_buffer.should_force_post_capture();
 
                                     // A4: Elevate capture threshold in focus mode —
                                     // only process captures with importance >= 0.7
                                     let focus_threshold: f32 = if focus_mode.is_active() { 0.7 } else { 0.0 };
 
-                                    if let Some(mut capture_req) = capture_req.filter(|r| r.importance >= focus_threshold) {
+                                    // #8054 P3-1 + P2-4: grab-time safety gate. Evaluated only
+                                    // when a content grab would actually run (throttled — kept
+                                    // off the idle hot path). Skips the capture when the
+                                    // frontmost app switched since the tick-start snapshot
+                                    // (stale-metadata / just-excluded-app TOCTOU) or when a
+                                    // background window of an excluded/sensitive app is visible
+                                    // on the same display. `||` short-circuits so the window
+                                    // enumeration only runs when the app did NOT switch.
+                                    let would_capture = capture_req
+                                        .as_ref()
+                                        .map(|r| r.importance >= focus_threshold)
+                                        .unwrap_or(false)
+                                        || force_post;
+                                    let grab_skip = would_capture
+                                        && (super::monitor_phases::frontmost_app_switched_since(
+                                            act_mon.as_ref(),
+                                            &app_name,
+                                        )
+                                        .await
+                                            || super::monitor_phases::any_excluded_app_visible(
+                                                config_snapshot.as_deref(),
+                                                &maekon_monitor::visible_window_app_names(),
+                                            ));
+                                    if grab_skip {
+                                        debug!(app = %app_name, "capture skipped at grab time (window switch or occluded excluded app)");
+                                    }
+
+                                    if let Some(mut capture_req) = capture_req.filter(|r| !grab_skip && r.importance >= focus_threshold) {
                                         // Inject active window bounds so the frame processor
                                         // captures the correct monitor in multi-monitor setups.
                                         capture_req.window_bounds = window_bounds;
                                         capture_req.app_bundle_id = app_bundle_id.clone();
+                                        // #8054 P2-1: inject the HiDPI scale factor of the
+                                        // active window's monitor so OCR regions are scaled
+                                        // back to logical pixels, matching overlay / element
+                                        // finder coordinates (previously always None → 2x
+                                        // mismatch on Retina).
+                                        capture_req.screen_scale_factor =
+                                            crate::capture_scale::active_monitor_scale_factor(
+                                                app_handle.as_ref(),
+                                                window_bounds.as_ref(),
+                                            );
 
                                         // --- Ring buffer: flush pre-event frames on significant capture ---
                                         if let Some(ref fs) = frame_storage1 {
@@ -415,10 +644,11 @@ impl Scheduler {
                                             last_ocr_regions.clear();
                                             last_frame_rgba = None;
                                         }
-                                    } else if force_post {
-                                        // Post-event forced capture (dashcam "after" frames)
+                                    } else if force_post && !grab_skip {
+                                        // Post-event forced capture (dashcam "after" frames).
+                                        // #8054 P2-3: target the active window's monitor.
                                         if let Some(ref fs) = frame_storage1 {
-                                            if let Ok(thumb_data) = processor.capture_thumbnail().await {
+                                            if let Ok(thumb_data) = processor.capture_thumbnail(window_bounds.as_ref()).await {
                                                 debug!("ring buffer: post-event forced capture");
                                                 if let Err(e) = fs.save_frame(Utc::now(), &thumb_data).await {
                                                     warn!("frame write failed (possible disk full): {e}");
@@ -436,16 +666,22 @@ impl Scheduler {
                                 }
                                 if let Some(ref sink) = uploader1 {
                                     // #4803: egress audit (uploaded/blocked).
-                                    let etype = super::super::config::egress_event_type(&ctx_event);
-                                    let bytes = super::super::config::egress_byte_count(&ctx_event);
+                                    let etype = super::super::egress_policy::egress_event_type(&ctx_event);
+                                    let bytes = super::super::egress_policy::egress_byte_count(&ctx_event);
                                     let consent_state = egress1.consent_state_snapshot();
+                                    // #7946: persisted id travels with the filtered payload.
+                                    let upload_storage_id =
+                                        maekon_storage::sqlite::storage_event_id(&ctx_event);
                                     if let Some(upload_event) = egress1.prepare_event_for_upload(ctx_event) {
-                                        sink.enqueue(upload_event);
-                                        super::super::config::record_event_egress(
+                                        sink.enqueue(maekon_core::ports::batch_sink::QueuedUpload {
+                                            storage_id: upload_storage_id,
+                                            event: upload_event,
+                                        });
+                                        super::super::egress_policy::record_event_egress(
                                             &sqlite1, etype, bytes, "uploaded", &consent_state,
                                         ).await;
                                     } else {
-                                        super::super::config::record_event_egress(
+                                        super::super::egress_policy::record_event_egress(
                                             &sqlite1, etype, bytes, "blocked", &consent_state,
                                         ).await;
                                     }
@@ -453,15 +689,16 @@ impl Scheduler {
                                 let app_changed = prev_app.as_ref() != Some(&app_name);
                                 if app_changed {
                                     if let Some(ref focus) = focus1 {
-                                        // Own-field gate: app-usage aggregation requires app_usage_analytics consent.
-                                        // Focus-session tracking is already protected by the composite gate; here only
-                                        // the usage-aggregation path is own-field gated (ConsentPermissions.app_usage_analytics).
+                                        // Independent own-field gates: app-usage aggregation follows
+                                        // app_usage_analytics, while workflow patterns follow
+                                        // activity_pattern_learning. Focus-session tracking remains
+                                        // protected by the composite capture gate.
                                         let rule_suggestions = focus
                                             .on_app_switch_with_context(
                                                 &app_name,
                                                 &focus_window_title,
                                                 focus_ocr_hint.as_deref(),
-                                                consent.app_usage_analytics,
+                                                &consent,
                                             )
                                             .await;
                                         // #5696: bridge rule suggestions (restore-context /
@@ -470,12 +707,15 @@ impl Scheduler {
                                         // their own one-shot OS notification already.
                                         if !rule_suggestions.is_empty() {
                                             if let Some(q) = event_suggestion_queue1.as_ref() {
-                                                let mut to_enqueue = rule_suggestions;
+                                                // #7914: uniform gate seam — the
+                                                // restore-context / playbook rule producer
+                                                // now runs the SAME decision function.
                                                 let rs_regime =
                                                     shared_regime.snapshot().regime;
-                                                maekon_analysis::filter_by_regime(
-                                                    &mut to_enqueue,
+                                                let rs_gates = super::helpers::relevance_gates(
+                                                    scorer_for_gates.as_ref(),
                                                     rs_regime.as_ref(),
+                                                    adaptive_trigger_state.as_ref(),
                                                 );
                                                 let rs_on_changed =
                                                     overlay_ref.as_ref().map(|o| {
@@ -491,7 +731,8 @@ impl Scheduler {
                                                     .map(|f| f as &(dyn Fn(usize) + Send + Sync));
                                                 super::helpers::enqueue_and_surface(
                                                     q,
-                                                    to_enqueue,
+                                                    rule_suggestions,
+                                                    rs_gates,
                                                     rs_on_changed_ref,
                                                     None,
                                                     false,
@@ -547,6 +788,15 @@ impl Scheduler {
                                     // (written at the end of the previous tick); `None` =>
                                     // pass-through. The owned clone keeps the borrow short.
                                     let event_regime = shared_regime.snapshot().regime;
+                                    // #7914: uniform gate seam. The event path is where the
+                                    // learned acceptance rate is reachable (RegimeClassifier
+                                    // lives on adaptive_trigger_state, owned by this loop), so
+                                    // it feeds the FULL gate set (regime + acceptance + scorer).
+                                    let event_gates = super::helpers::relevance_gates(
+                                        scorer_for_gates.as_ref(),
+                                        event_regime.as_ref(),
+                                        adaptive_trigger_state.as_ref(),
+                                    );
                                     // #5694: surface accepted suggestions — overlay
                                     // auto-refresh + High+ toast (focus-gated inside).
                                     let event_on_changed = overlay_ref.as_ref().map(|o| {
@@ -558,13 +808,13 @@ impl Scheduler {
                                             .as_ref()
                                             .map(|f| f as &(dyn Fn(usize) + Send + Sync));
                                     handle_event_analysis(
-                                        &context_analyzer1,
+                                        &context_analyzer_now,
                                         &storage1,
                                         &app_name,
                                         &focus_window_title,
                                         focus_ocr_hint.as_deref(),
                                         event_queue_for_push,
-                                        event_regime.as_ref(),
+                                        event_gates,
                                         event_on_changed_ref,
                                         notif1.as_ref(),
                                         focus_mode.is_active(),
@@ -602,7 +852,7 @@ impl Scheduler {
                                 }
                                 // Update ContextAnalyzer with current segment stats
                                 // so that analyze() includes segment context in LLM prompts.
-                                if let (Some(ref ts), Some(ref analyzer)) = (&adaptive_trigger_state, &context_analyzer1) {
+                                if let (Some(ref ts), Some(ref analyzer)) = (&adaptive_trigger_state, &context_analyzer_now) {
                                     let stats = build_segment_stats_snapshot(ts);
                                     analyzer.set_segment_stats(stats).await;
                                 }
@@ -612,7 +862,7 @@ impl Scheduler {
                                 // extracted text reaches the LLM payload: the PII floor
                                 // masks email/phone but NOT secrets at the Basic level
                                 // where accessibility text is exposed. (review4 F4 sibling)
-                                if let Some(ref analyzer) = context_analyzer1 {
+                                if let Some(ref analyzer) = context_analyzer_now {
                                     let a11y_text = last_focused_element.as_ref()
                                         .and_then(|fe| fe.extracted_text.clone())
                                         .map(|t| maekon_analysis::terminal_detector::scrub_text_secrets(&t));
@@ -686,12 +936,8 @@ impl Scheduler {
                                             tokio::task::spawn_blocking(move || {
                                                 let input = maekon_core::models::storage_records::NewGuiInteraction {
                                                     event_id: &event_id,
-                                                    segment_id: None,
                                                     timestamp: &timestamp_str,
-                                                    element_text: None,
-                                                    element_type: Some("Click"),
                                                     interaction_type: "Click",
-                                                    bbox_json: None,
                                                     app_name: &app_name_owned,
                                                     type_confidence: 1.0,
                                                 };
@@ -747,6 +993,18 @@ impl Scheduler {
                                         adaptive_trigger_state.as_ref().and_then(|ts| {
                                             ts.current_regime_id.as_deref()
                                         });
+                                    // #7480: coaching consumers key on the HUMAN
+                                    // regime label (name > auto_label), not the
+                                    // opaque positional id ("regime-N"). Derive it
+                                    // from the regime already resolved above for
+                                    // SharedRegimeState so profile matching, goal +
+                                    // habit tracking and the LLM personalization
+                                    // prompt see a semantic label. `None` when no
+                                    // regime is classified this tick.
+                                    let regime_label_for_coaching: Option<&str> =
+                                        current_regime_owned.as_ref().map(|r| {
+                                            r.name.as_deref().unwrap_or(r.auto_label.as_str())
+                                        });
                                     let drift_detected = adaptive_trigger_state
                                         .as_ref()
                                         .map(|ts| ts.last_drift_detected.swap(false, std::sync::atomic::Ordering::Relaxed))
@@ -760,6 +1018,7 @@ impl Scheduler {
                                         scheduler_storage: &sqlite1,
                                         analysis_provider: &coaching_analysis_provider,
                                         regime_id: regime_id_for_coaching,
+                                        regime_label: regime_label_for_coaching,
                                         prev_app: prev_app.as_deref(),
                                         drift_detected,
                                         poll_secs: poll.as_secs(),
@@ -771,11 +1030,18 @@ impl Scheduler {
                                 } // end A4: focus_mode coaching guard
 
                                 // ── Detection overlay: re-analyze on window change ──
+                                // #7909: analyze_scene captures the current screen, so it is
+                                // gated like every other capture surface of this tick.
                                 let title_changed = prev_window_title.as_ref() != Some(&focus_window_title);
-                                super::detection_helper::maybe_reanalyze_detection(
-                                    &detection_active, app_changed, title_changed,
-                                    &scene_finder_ref, &overlay_ref,
-                                );
+                                if !capture_excluded {
+                                    let scene_finder_ref = scene_finder_slot
+                                        .as_ref()
+                                        .and_then(|slot| slot.get().cloned());
+                                    super::detection_helper::maybe_reanalyze_detection(
+                                        &detection_active, app_changed, title_changed,
+                                        &scene_finder_ref, &overlay_ref,
+                                    );
+                                }
 
                                 super::vision_helper::log_ring_buffer_evictions(&ring_buffer);
 

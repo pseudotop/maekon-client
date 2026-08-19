@@ -5,6 +5,11 @@ import { describe, expect, it } from 'vitest'
 
 import type { IpcError } from '../../api/desktop'
 
+import enResource from '../locales/en.json'
+import esResource from '../locales/es.json'
+import jaResource from '../locales/ja.json'
+import koResource from '../locales/ko.json'
+import zhCNResource from '../locales/zh-CN.json'
 import { hasTranslation, translatedCodes, translateError } from '../translateError'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -22,16 +27,46 @@ function readWireCodeRegistry(): string[] {
     .filter((line) => line.length > 0)
 }
 
+function collectReplacementCharacterPaths(value: unknown, path = ''): string[] {
+  if (typeof value === 'string') {
+    return value.includes('\uFFFD') ? [path] : []
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) => collectReplacementCharacterPaths(entry, `${path}[${index}]`))
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([key, entry]) =>
+      collectReplacementCharacterPaths(entry, path ? `${path}.${key}` : key),
+    )
+  }
+  return []
+}
+
+describe('locale resource integrity', () => {
+  const resources = {
+    en: enResource,
+    es: esResource,
+    ja: jaResource,
+    ko: koResource,
+    'zh-CN': zhCNResource,
+  }
+
+  it.each(Object.entries(resources))('%s contains no Unicode replacement characters', (_locale, resource) => {
+    expect(collectReplacementCharacterPaths(resource)).toEqual([])
+  })
+})
+
 describe('wire-code i18n coverage', () => {
   const registry = readWireCodeRegistry()
 
-  it('snapshot contains the expected 54 codes', () => {
+  it('snapshot contains the expected 55 codes', () => {
     // 41 → 42 with D7 addition of service.circuit_open (2026-04-20).
     // 42 → 47 with Phase 9 PR-B1 addition of 5 autostart.* codes (2026-04-25).
     // 47 → 49 with TimeWindow primitive addition of 2 time_window.* codes (2026-04-26).
     // 49 → 53 with Phase 9 PR-B2 addition of 4 autostart.* codes (2026-04-27).
     // 53 → 54 with audio integrity check error coverage.
-    expect(registry).toHaveLength(54)
+    // 54 → 55 with config rollback-safety coverage (#10985).
+    expect(registry).toHaveLength(55)
   })
 
   // The same 5 locales as the app runtime locales (`src/i18n/index.ts` supportedLngs).
@@ -139,13 +174,14 @@ describe('hasTranslation', () => {
 })
 
 describe('translatedCodes', () => {
-  it('returns all 54 codes for en', () => {
+  it('returns all 55 codes for en', () => {
     // 41 → 42 with D7 addition of service.circuit_open (2026-04-20).
     // 42 → 47 with Phase 9 PR-B1 addition of 5 autostart.* codes (2026-04-25).
     // 47 → 49 with TimeWindow primitive addition of 2 time_window.* codes (2026-04-26).
     // 49 → 53 with Phase 9 PR-B2 addition of 4 autostart.* codes (2026-04-27).
     // 53 → 54 with audio integrity check error coverage.
-    expect(translatedCodes('en')).toHaveLength(54)
+    // 54 → 55 with config rollback-safety coverage (#10985).
+    expect(translatedCodes('en')).toHaveLength(55)
   })
 
   it('returns a frozen readonly array', () => {

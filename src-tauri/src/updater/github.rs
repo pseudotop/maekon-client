@@ -1,5 +1,4 @@
 //! GitHub API: fetch releases, parse JSON, select asset.
-#![allow(dead_code)] // GitHub API helpers called from updater check/download paths
 
 use super::{ReleaseAsset, ReleaseInfo, UpdateError, Updater};
 
@@ -112,6 +111,12 @@ impl Updater {
         }
     }
 
+    // #7719: no production caller — `find_platform_asset` uses the sibling
+    // `get_platform_asset_names` (exact release-filename matching) instead.
+    // Only called from tests today; kept as the looser substring-pattern
+    // variant (e.g. "macos-arm64" vs "maekon-macos-arm64.tar.gz") for
+    // whenever fuzzy asset matching is needed.
+    #[allow(dead_code)]
     pub(super) fn get_platform_patterns() -> Result<Vec<&'static str>, UpdateError> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {

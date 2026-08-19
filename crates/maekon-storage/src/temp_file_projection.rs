@@ -116,9 +116,36 @@ impl TempFileSecretProjection {
                 ))
             })?;
 
-            std::fs::write(&registry_path, json).map_err(|e| {
+            // MS-SEC-01: write atomically and owner-only. The registry maps
+            // consumer_id -> the on-disk path of a cleartext provider-API-key
+            // temp file. A plain `std::fs::write` is non-atomic (a crash mid-
+            // write can leave a truncated/corrupted file that `load_registry`
+            // fails to parse, breaking `revoke_projection`/cleanup and
+            // orphaning cleartext secret temp files) and lands under the
+            // process umask with no explicit permissions (world-readable by
+            // default on Linux, disclosing the on-disk paths of projected
+            // secrets). Route through the shared "create-empty -> harden ->
+            // write" tmp helper used by config.json/consent.json (#7074 /
+            // #7101), then rename into place on the same directory for an
+            // atomic commit. This mirrors the `.secret` payload files below,
+            // which are already written via `tempfile` + `persist` (atomic
+            // rename) with a 0o600 chmod.
+            let tmp_path = registry_path.with_extension("json.tmp");
+            maekon_core::secure_file::write_owner_only(&tmp_path, json.as_bytes()).map_err(
+                |e| {
+                    StorageError::Internal(format!(
+                        "failed to write temp projection registry tmp file ({}): {}",
+                        tmp_path.display(),
+                        e
+                    ))
+                },
+            )?;
+
+            std::fs::rename(&tmp_path, &registry_path).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
                 StorageError::Internal(format!(
-                    "failed to write temp projection registry ({}): {}",
+                    "failed to commit temp projection registry ({} -> {}): {}",
+                    tmp_path.display(),
                     registry_path.display(),
                     e
                 ))
@@ -160,6 +187,44 @@ impl TempFileSecretProjection {
         })
         .await
         .map_err(|e| StorageError::Internal(format!("spawn_blocking join error: {e}")))?
+    }
+
+    async fn ensure_projection_dir(&self) -> Result<(), CoreError> {
+        tokio::fs::create_dir_all(&self.projection_dir)
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!(
+                    "failed to create temp projection dir ({}): {}",
+                    self.projection_dir.display(),
+                    e
+                ),
+            })?;
+
+        #[cfg(unix)]
+        {
+            let dir = self.projection_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(
+                    |e| CoreError::Internal {
+                        code: maekon_core::error_codes::InternalCode::Generic,
+                        message: format!(
+                            "failed to secure temp projection dir ({}): {}",
+                            dir.display(),
+                            e
+                        ),
+                    },
+                )
+            })
+            .await
+            .map_err(|e| CoreError::Internal {
+                code: maekon_core::error_codes::InternalCode::Generic,
+                message: format!("spawn_blocking join error: {e}"),
+            })??;
+        }
+
+        Ok(())
     }
 }
 
@@ -239,17 +304,7 @@ impl SecretProjectionPort for TempFileSecretProjection {
                 ),
             })?;
 
-        // F-RC-10: use tokio::fs::create_dir_all in async context
-        tokio::fs::create_dir_all(&self.projection_dir)
-            .await
-            .map_err(|e| CoreError::Internal {
-                code: maekon_core::error_codes::InternalCode::Generic,
-                message: format!(
-                    "failed to create temp projection dir ({}): {}",
-                    self.projection_dir.display(),
-                    e
-                ),
-            })?;
+        self.ensure_projection_dir().await?;
 
         let mut registry = self.load_registry().await?;
         if let Some(existing_path) = registry.get(&request.consumer_id).cloned() {
@@ -546,6 +601,127 @@ mod tests {
             0o600,
             "projected secret temp file must be 0o600, got {:o}",
             mode & 0o777
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn projection_directory_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let projection_dir = temp_dir.path().join("proj");
+        let secret_store = Arc::new(TestSecretStore::new());
+        secret_store
+            .store("provider/openai/llm", "api_key", "sk-temp-file")
+            .await
+            .unwrap();
+
+        let adapter = TempFileSecretProjection::new(
+            secret_store,
+            projection_dir.clone(),
+            temp_dir.path().join("registry.json"),
+            vec![ProjectionTemplate::temp_file(
+                "provider/openai/llm/api-key-temp-file",
+                "openai-llm-api-key",
+            )],
+        );
+
+        adapter
+            .project(SecretProjectionRequest {
+                namespace: "provider/openai/llm".to_string(),
+                key: "api_key".to_string(),
+                target: ProjectionTarget::TempFile,
+                purpose: ProjectionPurpose::ProviderCliExecution,
+                consumer_id: "provider/openai/llm/api-key-temp-file".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let mode = std::fs::metadata(&projection_dir)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o700,
+            "projected secret temp dir must be 0o700, got {:o}",
+            mode & 0o777
+        );
+    }
+
+    /// MS-SEC-01 (sibling of #7074's frame-dir hardening): `save_registry`
+    /// must write the projection registry JSON atomically and owner-only.
+    ///
+    /// Before the fix, `save_registry` wrote via plain `std::fs::write`,
+    /// which (a) creates the file under the process umask with no explicit
+    /// permissions — on Linux this is typically 0o644 (world-readable),
+    /// disclosing the on-disk paths of projected cleartext provider-API-key
+    /// temp files to every local user — and (b) is not atomic, so a
+    /// crash/power-loss mid-write can leave a truncated/corrupted registry
+    /// file that `load_registry` fails to parse, which in turn breaks
+    /// `revoke_projection`/cleanup (it only iterates a successfully loaded
+    /// registry) and orphans 0o600 cleartext secret temp files on disk. This
+    /// test would have failed against the pre-fix implementation on the mode
+    /// assertion below (0o644 != 0o600).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn save_registry_writes_atomically_and_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let secret_store = Arc::new(TestSecretStore::new());
+        secret_store
+            .store("provider/openai/llm", "api_key", "sk-temp-file")
+            .await
+            .unwrap();
+
+        let registry_path = temp_dir.path().join("registry.json");
+        let adapter = TempFileSecretProjection::new(
+            secret_store,
+            temp_dir.path().join("proj"),
+            registry_path.clone(),
+            vec![ProjectionTemplate::temp_file(
+                "provider/openai/llm/api-key-temp-file",
+                "openai-llm-api-key",
+            )],
+        );
+
+        adapter
+            .project(SecretProjectionRequest {
+                namespace: "provider/openai/llm".to_string(),
+                key: "api_key".to_string(),
+                target: ProjectionTarget::TempFile,
+                purpose: ProjectionPurpose::ProviderCliExecution,
+                consumer_id: "provider/openai/llm/api-key-temp-file".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Owner-only: only the owner rw bits may be set; group/other clear.
+        let mode = std::fs::metadata(&registry_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "temp projection registry must be 0o600, got {:o}",
+            mode & 0o777
+        );
+
+        // Atomic write: the committed registry parses as complete, valid
+        // JSON (never a truncated/partial write) and no leftover
+        // `.json.tmp` sibling remains after the rename.
+        let raw = std::fs::read_to_string(&registry_path).unwrap();
+        let parsed: HashMap<String, String> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.len(), 1);
+
+        let tmp_path = registry_path.with_extension("json.tmp");
+        assert!(
+            !tmp_path.exists(),
+            "atomic write must not leave a leftover tmp file behind: {}",
+            tmp_path.display()
         );
     }
 

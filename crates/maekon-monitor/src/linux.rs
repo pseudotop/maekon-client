@@ -1,7 +1,7 @@
 use crate::circuit_breaker::CircuitBreaker;
 use crate::error::MonitorError;
 use crate::log_privacy::title_digest;
-use maekon_core::models::context::{MousePosition, WindowInfo};
+use maekon_core::models::context::WindowInfo;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::process::Command;
@@ -10,20 +10,18 @@ use tracing::{debug, warn};
 
 const SUBPROCESS_TIMEOUT_SECS: u64 = 5;
 
+/// Bare tool names resolved via [`crate::trusted_binary::resolve_trusted_binary`]
+/// (SEC-MON-01) at each spawn site instead of being handed to `Command::new`
+/// directly — a bare name is PATH-resolved, so a same-named binary planted
+/// ahead of the trusted system dirs on `$PATH` would hijack the spawn.
+const GDBUS_TOOL: &str = "gdbus";
+const SWAYMSG_TOOL: &str = "swaymsg";
+const DBUS_SEND_TOOL: &str = "dbus-send";
+const XPRINTIDLE_TOOL: &str = "xprintidle";
+
 /// Guards the one-time `Shell.Eval`-disabled diagnostic so the 1s scheduler loop
 /// does not spam the log every tick on a modern GNOME Wayland session.
 static GNOME_EVAL_DISABLED_WARNED: AtomicBool = AtomicBool::new(false);
-
-/// Shared circuit breaker for ALL `xdotool` spawns (#6828): the active-window
-/// path (`get_active_window_x11`, getactivewindow + 3 follow-ups per 1s tick)
-/// and the mouse-position path (`get_mouse_position_x11`, getmouselocation per
-/// activity tick). On a host without `xdotool` (or where it hangs) the breaker
-/// opens after 3 consecutive absent/timeout results and then retries only every
-/// 60th tick, instead of forking `xdotool` on every tick. A single shared gate
-/// is correct because both paths invoke the same binary — one availability
-/// signal governs them all. Mirrors the macOS osascript breaker (threshold 3 /
-/// retry interval 60).
-static XDOTOOL_BREAKER: CircuitBreaker = CircuitBreaker::new(3, 60);
 
 /// #6830: independent breakers for the two idle-time forks. `xprintidle` and
 /// `dbus-send` are different binaries with different availability than `xdotool`,
@@ -57,6 +55,18 @@ pub fn detect_display_server() -> DisplayServer {
     }
 
     DisplayServer::Unknown
+}
+
+/// Whether the foreground **external** window is fullscreen (#8849). X11-only —
+/// checks the active window's `_NET_WM_STATE_FULLSCREEN`. Returns `None` on
+/// Wayland (no EWMH active-window path) or when the X server is unreachable
+/// (graceful degradation — allow the overlay, matching today's behavior).
+/// Synchronous / blocking, so the caller runs it under `spawn_blocking`.
+pub fn foreground_window_is_fullscreen_linux() -> Option<bool> {
+    match detect_display_server() {
+        DisplayServer::Wayland => None,
+        _ => crate::x11_active_window::active_window_is_fullscreen(),
+    }
 }
 
 pub async fn get_active_window_linux() -> Result<Option<WindowInfo>, MonitorError> {
@@ -146,9 +156,16 @@ fn is_gnome_eval_refused(stdout: &str) -> bool {
 
 /// Try to get the active window title on GNOME Shell via gdbus.
 async fn get_active_window_gnome() -> GnomeProbe {
+    // SEC-MON-01: resolve against the trusted-directory allowlist instead of
+    // a bare `gdbus` spawn — fail closed to "not available" (mirrors the
+    // existing "gdbus not installed" outcome) when it is not found.
+    let Some(gdbus_path) = crate::trusted_binary::resolve_trusted_binary(GDBUS_TOOL) else {
+        return GnomeProbe::Unavailable;
+    };
+
     let output = match timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("gdbus")
+        Command::new(gdbus_path)
             .args([
                 "call",
                 "--session",
@@ -242,9 +259,13 @@ fn parse_gnome_eval_result(raw: &str) -> Option<String> {
 
 /// Try to get the focused app name from GNOME Shell.
 async fn get_gnome_focus_app_name() -> Option<String> {
+    // SEC-MON-01: resolve against the trusted-directory allowlist — fail
+    // closed to `None` (same outcome as a spawn failure) when not found.
+    let gdbus_path = crate::trusted_binary::resolve_trusted_binary(GDBUS_TOOL)?;
+
     let output = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("gdbus")
+        Command::new(gdbus_path)
             .args([
                 "call",
                 "--session",
@@ -279,9 +300,13 @@ async fn get_gnome_focus_app_name() -> Option<String> {
 /// Try to get the active window on Sway/i3 via swaymsg.
 /// Returns None if swaymsg is not available or fails.
 async fn get_active_window_sway() -> Option<WindowInfo> {
+    // SEC-MON-01: resolve against the trusted-directory allowlist — fail
+    // closed to `None` (same outcome as "not a Sway/i3 session") when not found.
+    let swaymsg_path = crate::trusted_binary::resolve_trusted_binary(SWAYMSG_TOOL)?;
+
     let output = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("swaymsg")
+        Command::new(swaymsg_path)
             .args(["-t", "get_tree"])
             .kill_on_drop(true)
             .output(),
@@ -398,8 +423,9 @@ async fn get_active_window_x11() -> Result<Option<WindowInfo>, MonitorError> {
     // getwindowpid/getwindowgeometry) entirely. The X11 round-trips are blocking, so
     // they run on a blocking thread to honor the monitor tick's async contract.
     // Returns None when no X server is reachable / no active window / any X error —
-    // the same degradation as the old xdotool path. (XDOTOOL_BREAKER now guards only
-    // the still-CLI mouse-position path.)
+    // the same degradation as the old xdotool path. (The `xdotool`-backed
+    // mouse-position path this once shared a breaker with was removed as
+    // dead/wasteful per-tick collection -- #7652 HIGH-1.)
     //
     // #6882: the native query is timeout + circuit-breaker bounded inside
     // `query_active_window_bounded` so a wedged/remote-forwarded X server cannot block
@@ -477,9 +503,19 @@ async fn get_idle_time_gnome_mutter() -> Option<u64> {
     if !DBUS_SEND_BREAKER.should_proceed() {
         return None;
     }
+
+    // SEC-MON-01: resolve against the trusted-directory allowlist instead of
+    // a bare `dbus-send` spawn. A resolution miss is treated the same as a
+    // spawn failure — record_failure + None, the breaker's existing
+    // fail-closed outcome for an absent/hung binary.
+    let Some(dbus_send_path) = crate::trusted_binary::resolve_trusted_binary(DBUS_SEND_TOOL) else {
+        DBUS_SEND_BREAKER.record_failure();
+        return None;
+    };
+
     let result = timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("dbus-send")
+        Command::new(dbus_send_path)
             .args([
                 "--session",
                 "--dest=org.gnome.Mutter.IdleMonitor",
@@ -530,9 +566,20 @@ async fn get_idle_time_x11() -> Option<u64> {
     if !XPRINTIDLE_BREAKER.should_proceed() {
         return None;
     }
+
+    // SEC-MON-01: resolve against the trusted-directory allowlist instead of
+    // a bare `xprintidle` spawn. A resolution miss is treated the same as a
+    // spawn failure (record_failure + None) — the breaker's existing
+    // fail-closed outcome for an absent/hung binary.
+    let Some(xprintidle_path) = crate::trusted_binary::resolve_trusted_binary(XPRINTIDLE_TOOL)
+    else {
+        XPRINTIDLE_BREAKER.record_failure();
+        return None;
+    };
+
     let output = match timeout(
         Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("xprintidle").kill_on_drop(true).output(),
+        Command::new(xprintidle_path).kill_on_drop(true).output(),
     )
     .await
     {
@@ -566,88 +613,15 @@ async fn get_idle_time_x11() -> Option<u64> {
     Some(ms / 1000)
 }
 
-pub async fn get_mouse_position_linux() -> Option<MousePosition> {
-    let display_server = detect_display_server();
-
-    match display_server {
-        DisplayServer::X11 => get_mouse_position_x11().await,
-        DisplayServer::Wayland => {
-            // No reliable Wayland-native mouse position API via CLI tools.
-            // XWayland fallback works for X11 apps; for pure Wayland apps,
-            // mouse position may not be available without compositor-specific
-            // protocols (e.g., wlr-foreign-toplevel-management).
-            match get_mouse_position_x11().await {
-                Some(pos) => Some(pos),
-                None => {
-                    debug!(
-                        "Wayland mouse position unavailable — xdotool fallback failed. \
-                         Native Wayland compositors restrict cursor position access."
-                    );
-                    None
-                }
-            }
-        }
-        DisplayServer::Unknown => None,
-    }
-}
-
-async fn get_mouse_position_x11() -> Option<MousePosition> {
-    // #6828: share the active-window breaker so an absent/hung xdotool stops
-    // forking this per-activity-tick path too (sibling fork-storm).
-    if !XDOTOOL_BREAKER.should_proceed() {
-        return None;
-    }
-
-    // x:1234 y:567 screen:0 window:12345678
-    let output = match timeout(
-        Duration::from_secs(SUBPROCESS_TIMEOUT_SECS),
-        Command::new("xdotool")
-            .arg("getmouselocation")
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    {
-        Ok(Ok(output)) if output.status.success() => {
-            XDOTOOL_BREAKER.record_success();
-            output
-        }
-        Ok(Ok(_)) => {
-            // xdotool ran (present) — reset rather than open the breaker.
-            XDOTOOL_BREAKER.record_success();
-            return None;
-        }
-        Ok(Err(e)) => {
-            XDOTOOL_BREAKER.record_failure();
-            if e.kind() == std::io::ErrorKind::NotFound {
-                debug!("xdotool - mouse detection not-available");
-            }
-            return None;
-        }
-        Err(_) => {
-            XDOTOOL_BREAKER.record_failure();
-            debug!("xdotool getmouselocation timed out");
-            return None;
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut x: Option<i32> = None;
-    let mut y: Option<i32> = None;
-
-    for part in stdout.split_whitespace() {
-        if let Some(val) = part.strip_prefix("x:") {
-            x = val.parse().ok();
-        } else if let Some(val) = part.strip_prefix("y:") {
-            y = val.parse().ok();
-        }
-    }
-
-    match (x, y) {
-        (Some(x), Some(y)) => Some(MousePosition { x, y }),
-        _ => None,
-    }
-}
+// #7652 (HIGH-1): `get_mouse_position_linux`/`get_mouse_position_x11` (an
+// `xdotool getmouselocation` subprocess FORK, once per activity tick) were
+// removed here -- `UserContext.mouse_position` had zero consumers (verified:
+// only this file's own test read it), so this was pure per-tick waste, worst
+// of all three platforms since it forked a whole process every second
+// forever. `mouse_hook::linux` now supplies real, continuously event-driven
+// mouse position/activity via the same `xinput test-xi2` observer pattern
+// already used for keyboard, which is strictly better than a 1 Hz poll would
+// have been.
 
 #[cfg(test)]
 mod tests {
@@ -685,15 +659,6 @@ mod tests {
         if let Some(secs) = result {
             // sanity bound: less than one year in seconds
             assert!(secs < 86400 * 365);
-        }
-    }
-
-    #[tokio::test]
-    async fn mouse_position_returns_option() {
-        let result = get_mouse_position_linux().await;
-        if let Some(pos) = result {
-            assert!(pos.x >= 0 && pos.x < 32000);
-            assert!(pos.y >= 0 && pos.y < 32000);
         }
     }
 

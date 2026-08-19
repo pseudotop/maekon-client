@@ -314,7 +314,7 @@ fn resolves_local_providers_by_default() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Failed to resolve default configuration");
@@ -377,7 +377,7 @@ fn resolves_remote_providers_when_configured() {
         Some(privacy_guard),
         Some(remote_secret_stores()),
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Failed to resolve remote configuration");
@@ -407,7 +407,7 @@ fn falls_back_to_local_when_remote_config_missing() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Fallback configuration resolution should not fail");
@@ -443,7 +443,7 @@ fn returns_error_when_remote_config_missing_and_fallback_disabled() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     ) {
         Ok(_) => panic!("Expected an error"),
@@ -481,7 +481,7 @@ fn local_mode_forces_local_adapters_even_if_remote_is_requested() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("LocalModel arm must never return Err (ok-degrade invariant)");
@@ -539,7 +539,7 @@ fn cli_subscription_mode_marks_cli_source() {
         Some(privacy_guard),
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Failed to resolve CLI mode");
@@ -636,7 +636,7 @@ fn cli_subscription_mode_keeps_direct_remote_ocr_when_configured() {
         Some(privacy_guard),
         Some(remote_secret_stores()),
         &[],
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     )
     .expect("CLI mode should allow direct remote OCR");
 
@@ -687,7 +687,7 @@ fn cli_subscription_mode_uses_subprocess_ocr_when_supported() {
             auth_status: SubprocessCliAuthStatus::Authenticated,
             auth_detail: Some("cli_authenticated".to_string()),
         }],
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     )
     .expect("expected OCR subprocess runtime to resolve");
 
@@ -728,7 +728,7 @@ fn cli_subscription_subprocess_ocr_requires_privacy_guard() {
             auth_status: SubprocessCliAuthStatus::Authenticated,
             auth_detail: Some("cli_authenticated".to_string()),
         }],
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     ) {
         Ok(_) => panic!("expected CLI OCR resolution to fail without a privacy guard"),
         Err(err) => err,
@@ -935,7 +935,7 @@ fn provider_api_key_config_reuses_direct_remote_sources() {
         Some(privacy_guard),
         Some(remote_secret_stores()),
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Failed to resolve provider API key config");
@@ -949,6 +949,10 @@ fn provider_api_key_config_reuses_direct_remote_sources() {
 
 struct FakeExternalOcrProvider {
     responses: Vec<OcrResult>,
+}
+
+struct TrackingExternalOcrProvider {
+    seen_call: Arc<std::sync::Mutex<bool>>,
 }
 
 struct FakeExternalLlmProvider {
@@ -1038,6 +1042,26 @@ impl OcrProvider for FakeExternalOcrProvider {
 
     fn provider_name(&self) -> &str {
         "fake-external"
+    }
+
+    fn is_external(&self) -> bool {
+        true
+    }
+}
+
+#[async_trait]
+impl OcrProvider for TrackingExternalOcrProvider {
+    async fn extract_elements(
+        &self,
+        _image: &[u8],
+        _image_format: &str,
+    ) -> Result<Vec<OcrResult>, CoreError> {
+        *self.seen_call.lock().unwrap() = true;
+        Ok(vec![])
+    }
+
+    fn provider_name(&self) -> &str {
+        "tracking-external"
     }
 
     fn is_external(&self) -> bool {
@@ -1206,6 +1230,10 @@ async fn guarded_analysis_provider_denies_without_full_text_consent_and_audits_i
 
     let logger = audit_logger.read().await;
     assert_eq!(logger.pending_count(), 1);
+    assert_eq!(
+        logger.recent_entries(1)[0].status,
+        maekon_core::models::audit::AuditStatus::Denied
+    );
     assert!(logger.recent_entries(1)[0]
         .details
         .as_deref()
@@ -1348,6 +1376,10 @@ async fn guarded_llm_provider_denies_without_full_text_consent_and_audits_it() {
 
     let logger = audit_logger.read().await;
     assert_eq!(logger.pending_count(), 1);
+    assert_eq!(
+        logger.recent_entries(1)[0].status,
+        maekon_core::models::audit::AuditStatus::Denied
+    );
     assert!(logger.recent_entries(1)[0]
         .details
         .as_deref()
@@ -1583,7 +1615,7 @@ fn remote_ocr_requires_runtime_privacy_guard() {
         None,
         Some(remote_secret_stores()),
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     );
     let err = result
@@ -1606,7 +1638,7 @@ fn oauth_mode_requires_oauth_port() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     );
     let err = result
@@ -1630,7 +1662,7 @@ fn oauth_mode_allows_local_llm_when_no_managed_llm_surface_is_selected() {
         None,
         None,
         Some(oauth),
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("ProviderOAuth mode should allow local LLM when no managed LLM surface is selected");
@@ -1678,7 +1710,7 @@ fn oauth_mode_defaults_to_openai_model() {
         Some(privacy_guard),
         None,
         Some(oauth),
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("OAuth mode should resolve when a port is provided");
@@ -1713,7 +1745,7 @@ fn remote_ocr_falls_back_when_selected_managed_ocr_surface_lacks_runtime() {
         PiiFilterLevel::Standard,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
     )
     .expect("managed OCR surface should fall back to local when enabled");
 
@@ -1761,7 +1793,7 @@ fn oauth_mode_resolves_google_managed_ocr_surface() {
         Some(privacy_guard),
         None,
         Some(oauth),
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Google OCR managed OAuth should resolve when an OAuth port is available");
@@ -1831,7 +1863,7 @@ fn resolves_remote_providers_from_secret_binding_with_plaintext_empty() {
         Some(privacy_guard),
         Some(secret_stores),
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("Secret-bound API key configuration should resolve");
@@ -2020,10 +2052,47 @@ async fn guarded_ocr_provider_denies_without_ocr_consent_and_audits_it() {
 
     let logger = audit_logger.read().await;
     assert_eq!(logger.pending_count(), 1);
+    assert_eq!(
+        logger.recent_entries(1)[0].status,
+        maekon_core::models::audit::AuditStatus::Denied
+    );
     assert!(logger.recent_entries(1)[0]
         .details
         .as_deref()
         .is_some_and(|details| details.contains("reason=OCR consent is required")));
+}
+
+#[tokio::test]
+async fn guarded_ocr_provider_does_not_call_external_ocr_when_sanitization_unavailable() {
+    let seen_call = Arc::new(std::sync::Mutex::new(false));
+    let inner = Arc::new(TrackingExternalOcrProvider {
+        seen_call: seen_call.clone(),
+    }) as Arc<dyn OcrProvider>;
+    let (privacy_guard, _temp_dir) = make_external_ocr_guard(
+        true,
+        Some(WindowInfo {
+            title: "main.rs".to_string(),
+            app_name: "Code".to_string(),
+            app_bundle_id: None,
+            pid: 16,
+            bounds: None,
+        }),
+        None,
+    );
+    let guarded = guarded_ocr::GuardedOcrProvider::new(
+        inner,
+        privacy_guard,
+        false,
+        OcrValidationConfig::default(),
+    );
+
+    let err = guarded.extract_elements(b"dummy", "png").await.unwrap_err();
+
+    assert!(
+        err.to_string().contains("sanitization")
+            || err.to_string().contains("external image sanitization")
+    );
+    assert!(!*seen_call.lock().unwrap());
 }
 
 #[tokio::test]
@@ -2064,6 +2133,7 @@ async fn guarded_ocr_provider_denies_sensitive_apps() {
 
 fn chat_message(content: &str) -> maekon_core::models::ai_session::SessionMessage {
     maekon_core::models::ai_session::SessionMessage {
+        screen_derived: false,
         role: maekon_core::models::ai_session::MessageRole::User,
         content: content.to_string(),
         attachments: vec![],
@@ -2095,7 +2165,10 @@ async fn sanitize_outbound_masks_pii_in_chat_content() {
     );
 
     let sanitized = guard
-        .sanitize_outbound(&chat_message("please email user@example.com about it"))
+        .sanitize_outbound(
+            &chat_message("please email user@example.com about it"),
+            "session-test",
+        )
         .await
         .expect("benign window + consent should allow sanitized transmission");
 
@@ -2107,10 +2180,13 @@ async fn sanitize_outbound_masks_pii_in_chat_content() {
 }
 
 #[tokio::test]
-async fn sanitize_outbound_fails_closed_without_active_window() {
+async fn sanitize_outbound_strips_context_when_window_unavailable() {
     use super::guarded_conversation::ConversationContentGuard;
 
-    // No active window → the shared external-LLM gate denies (fail-closed).
+    // #9632: chat payloads are USER-TYPED — a FAILED window probe (macOS
+    // accessibility permission absent) must degrade to context-less egress,
+    // not a policy denial. The screen gates protect screen-derived content;
+    // with the context stripped, nothing screen-derived egresses.
     let (guard, _temp_dir) = make_external_privacy_guard_with_permissions(
         Some(ConsentPermissions {
             ocr_processing: true,
@@ -2122,14 +2198,87 @@ async fn sanitize_outbound_fails_closed_without_active_window() {
         None,
     );
 
-    let result = guard.sanitize_outbound(&chat_message("hello")).await;
+    let mut message = chat_message("what was I working on?");
+    message.context = Some(maekon_core::models::ai_session::MessageContext {
+        active_app: Some("Sensitive Editor".to_string()),
+        regime: Some("deep-work".to_string()),
+    });
+
+    let sanitized = guard
+        .sanitize_outbound(&message, "session-test")
+        .await
+        .expect("user-typed chat must proceed context-less when the window probe fails");
+
+    assert!(
+        sanitized.context.is_none(),
+        "screen-derived context must be stripped when the window is unavailable"
+    );
+    assert!(
+        sanitized.content.contains("working"),
+        "typed content itself must survive: {}",
+        sanitized.content
+    );
+}
+
+#[tokio::test]
+async fn sanitize_outbound_screen_derived_still_denies_without_window() {
+    use super::guarded_conversation::ConversationContentGuard;
+
+    // #9643 review I2: a message whose CONTENT was assembled from screen data
+    // (current-context prompt / explain quote) must keep the ORIGINAL strict
+    // gate — the screen-derived text egresses in the content itself and
+    // cannot be stripped like the context field.
+    let (guard, _temp_dir) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions {
+            ocr_processing: true,
+            screen_capture: true,
+            full_text_extraction: true,
+            ..Default::default()
+        }),
+        None,
+        None,
+    );
+
+    let mut message = chat_message("ocr-derived candidate list");
+    message.screen_derived = true;
+
+    let result = guard.sanitize_outbound(&message, "session-test").await;
+    assert!(
+        matches!(
+            result.unwrap_err(),
+            maekon_core::error::CoreError::PolicyDenied { .. }
+        ),
+        "screen-derived payloads must fail closed when the window is unavailable"
+    );
+}
+
+#[tokio::test]
+async fn sanitize_outbound_still_denies_without_consent_when_window_unavailable() {
+    use super::guarded_conversation::ConversationContentGuard;
+
+    // #9632 boundary: the window-probe degrade does NOT bypass consent — with
+    // full_text_extraction missing, chat egress stays denied.
+    let (guard, _temp_dir) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions {
+            ocr_processing: true,
+            screen_capture: true,
+            full_text_extraction: false,
+            ..Default::default()
+        }),
+        None,
+        None,
+    );
+
+    let result = guard
+        .sanitize_outbound(&chat_message("hello"), "session-test")
+        .await;
 
     assert!(
         matches!(
             result.unwrap_err(),
             maekon_core::error::CoreError::PolicyDenied { .. }
         ),
-        "guard must fail closed with PolicyDenied when the active-window/consent gate denies"
+        "missing consent must stay fail-closed even on the user-typed path"
     );
 }
 
@@ -2171,7 +2320,7 @@ async fn sanitize_outbound_masks_pii_in_attachments() {
     ];
 
     let sanitized = guard
-        .sanitize_outbound(&message)
+        .sanitize_outbound(&message, "session-test")
         .await
         .expect("benign window + consent should allow sanitized transmission");
 
@@ -2230,7 +2379,7 @@ async fn sanitize_outbound_strips_inline_attachment_data() {
     ];
 
     let sanitized = guard
-        .sanitize_outbound(&message)
+        .sanitize_outbound(&message, "session-test")
         .await
         .expect("benign window + consent should allow sanitized transmission");
 
@@ -2244,6 +2393,87 @@ async fn sanitize_outbound_strips_inline_attachment_data() {
             }
             other => panic!("unexpected attachment variant: {other:?}"),
         }
+    }
+}
+
+#[tokio::test]
+async fn chat_privacy_audit_uses_session_correlation_for_denied_and_allowed_attempts() {
+    use super::guarded_conversation::ConversationContentGuard;
+    use maekon_core::models::ai_session::{Attachment, MessageContext};
+    use maekon_core::models::audit::AuditStatus;
+
+    let audit = Arc::new(RwLock::new(
+        AuditLogger::new(20, 10)
+            .with_pii_sanitizer(Arc::new(maekon_vision::privacy::VisionPiiSanitizer)),
+    ));
+    let window = WindowInfo {
+        title: "Editor".to_string(),
+        app_name: "Code".to_string(),
+        app_bundle_id: None,
+        pid: 7,
+        bounds: None,
+    };
+    let (denied_guard, _denied_temp) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions::default()),
+        Some(window.clone()),
+        Some(audit.clone()),
+    );
+    let (allowed_guard, _allowed_temp) = make_external_privacy_guard_with_permissions(
+        Some(ConsentPermissions {
+            full_text_extraction: true,
+            ..Default::default()
+        }),
+        Some(window),
+        Some(audit.clone()),
+    );
+    let correlation_id = "session-correlation-9077";
+
+    let denied = denied_guard
+        .sanitize_outbound(&chat_message("raw-secret-denied"), correlation_id)
+        .await;
+    assert!(matches!(denied, Err(CoreError::PolicyDenied { .. })));
+    let mut allowed_message = chat_message("raw-secret-allowed");
+    allowed_message.context = Some(MessageContext {
+        regime: Some("private@example.com".to_string()),
+        active_app: Some("Editor C:\\Users\\Synthetic".to_string()),
+    });
+    allowed_message.attachments = vec![Attachment::File {
+        path: "C:\\Users\\Synthetic\\private.txt".to_string(),
+        mime: Some("text/plain".to_string()),
+        data: Some("raw-secret-attachment".to_string()),
+    }];
+    allowed_guard
+        .sanitize_outbound(&allowed_message, correlation_id)
+        .await
+        .expect("allowed chat should be sanitized");
+
+    let entries = audit.write().await.drain_all();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| {
+        entry.command_id == correlation_id
+            && entry.session_id == correlation_id
+            && !entry
+                .details
+                .as_deref()
+                .unwrap_or_default()
+                .contains("raw-secret")
+    }));
+    assert!(entries.iter().any(|entry| {
+        entry.action_type == "privacy.external_llm.denied" && entry.status == AuditStatus::Denied
+    }));
+    let allowed_details = entries
+        .iter()
+        .find(|entry| {
+            entry.action_type == "privacy.external_llm.allowed"
+                && entry.status == AuditStatus::Completed
+        })
+        .and_then(|entry| entry.details.as_deref())
+        .expect("allowed privacy audit details");
+    for token in ["o=1", "n=1", "ac=1", "cp=1", "cc=1", "ib=1", "ia=0", "ec=1"] {
+        assert!(
+            allowed_details.contains(token),
+            "strict audit sanitization must preserve safe oracle token {token}"
+        );
     }
 }
 
@@ -2298,7 +2528,7 @@ fn local_model_arm_resolves_ollama_source() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("LocalModel arm must not return Err");
@@ -2329,7 +2559,7 @@ fn local_model_arm_never_returns_err_with_guard_present() {
         Some(guard),
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     );
     result.expect("LocalModel arm must not return Err when guard is present");
@@ -2348,7 +2578,7 @@ fn local_model_arm_never_returns_err_without_guard() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     );
     result.expect("LocalModel arm must not return Err (ok-degrade)");
@@ -2368,7 +2598,7 @@ fn local_model_arm_llm_is_not_external_for_catalog_default() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("LocalModel arm must not return Err");
@@ -2400,7 +2630,7 @@ fn local_model_remote_cleartext_ollama_degrades_to_local_without_egress() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None,
     )
     .expect("LocalModel cleartext guard must ok-degrade");
@@ -2436,7 +2666,7 @@ fn resolve_local_model_llm_provider_direct_loopback() {
     let (llm, source, reason) = resolve_local_model_llm_provider(
         &config,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // Decision 2: no health flag in unit tests
     )
     .expect("resolver must not return Err");
@@ -2458,7 +2688,7 @@ fn resolve_local_model_llm_provider_not_analysis_twin() {
     let (_, source, _) = resolve_local_model_llm_provider(
         &config,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // Decision 2: no health flag in unit tests
     )
     .expect("must not err");
@@ -2503,9 +2733,12 @@ async fn behavioral_mock_http_ollama_intent_succeeds() {
         surface_id: Some("provider_surface.ollama.local_http".to_string()),
         credential: None,
     };
-    let provider = RemoteLlmProvider::new(&endpoint, maekon_network::CircuitBreakerRegistry::new())
-        .expect("provider init")
-        .with_token_budget(2048); // Decision 4 seam exercised
+    let provider = RemoteLlmProvider::new(
+        &endpoint,
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+    )
+    .expect("provider init")
+    .with_token_budget(2048); // Decision 4 seam exercised
 
     let ctx = ScreenContext {
         visible_texts: vec!["File".to_string(), "Save".to_string()],
@@ -2554,7 +2787,7 @@ async fn behavioral_connection_refused_falls_back_to_rule_matcher() {
         credential: None,
     };
     // Fresh registry — isolated from any module-global breaker state.
-    let registry = maekon_network::CircuitBreakerRegistry::new();
+    let registry = maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new();
     let remote =
         RemoteLlmProvider::new(&refused_endpoint, registry).expect("provider construction ok");
     // Wrap in LoopbackLlmProvider (is_external=false), matching the resolver path.
@@ -2615,11 +2848,11 @@ async fn behavioral_breaker_open_falls_back_to_rule_matcher() {
         .await;
 
     // Configure a fast breaker: threshold=3, cooldown=100ms.
-    let registry = maekon_network::CircuitBreakerRegistry::new();
-    let key = maekon_network::resilience::endpoint_authority(&server.url()).unwrap();
+    let registry = maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new();
+    let key = maekon_http_core::resilience::endpoint_authority(&server.url()).unwrap();
     let _ = registry.get_with_config(
         &key,
-        maekon_network::circuit_breaker::CircuitBreakerConfig {
+        maekon_http_core::circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 3,
             initial_cooldown: std::time::Duration::from_millis(100),
             max_cooldown: std::time::Duration::from_millis(500),
@@ -2691,7 +2924,7 @@ fn local_model_arm_ocr_source_unchanged_by_c3() {
         None,
         None,
         None,
-        maekon_network::CircuitBreakerRegistry::new(),
+        maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
         None, // #5734: llm_call_health — not exercised in these tests
     )
     .expect("LocalModel arm must not return Err");

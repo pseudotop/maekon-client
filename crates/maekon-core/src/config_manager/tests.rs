@@ -336,7 +336,7 @@ fn load_corrupt_file_falls_back_to_defaults() {
 }
 
 /// Finding #5 — a corrupt config must fall back FAIL-CLOSED for privacy: it must
-/// NOT silently re-enable the fresh-install default-on telemetry/capture intent
+/// NOT silently re-enable any telemetry/capture intent
 /// over an unrecoverable user opt-out, and the reset must be surfaced to the UI.
 #[test]
 fn load_corrupt_file_falls_back_fail_closed_and_signals_reset() {
@@ -350,7 +350,7 @@ fn load_corrupt_file_falls_back_fail_closed_and_signals_reset() {
     let manager = ConfigManager::with_paths(config_path.clone(), None).unwrap();
     let config = manager.get();
 
-    // Telemetry/capture must be OFF, NOT the fresh-install default-on intent.
+    // Telemetry/capture must remain OFF after corrupt-config recovery.
     assert!(
         !config.telemetry.enabled,
         "corrupt config must NOT yield telemetry-enabled (fail-closed)"
@@ -703,24 +703,20 @@ fn deserialises_legacy_config_json_without_new_telemetry_fields() {
     assert_eq!(cfg.telemetry.service_name, "maekon-client");
 }
 
-/// #5056 — fresh install uses the default-on telemetry intent.
-///
-/// Export is still fail-closed by the consent gate and compile-time feature
-/// gate; this flag only means a valid telemetry consent can activate the
-/// exporter unless the user or MDM policy opts out.
+/// #8094 — fresh installs require an explicit telemetry opt-in.
 #[test]
-fn telemetry_enabled_defaults_to_true() {
+fn telemetry_enabled_defaults_to_false() {
     let cfg = crate::config::AppConfig::default_config();
     assert!(
-        cfg.telemetry.enabled,
-        "fresh installs should default to telemetry intent on; consent still gates export"
+        !cfg.telemetry.enabled,
+        "fresh installs must default to telemetry intent off"
     );
 }
 
-/// #5056 — an older sparse config with no telemetry.enabled key should pick up
-/// the new default-on intent when loaded.
+/// #8094 — a sparse legacy config with no telemetry.enabled key must remain
+/// fail-closed when migrated.
 #[test]
-fn legacy_config_without_telemetry_enabled_uses_default_on() {
+fn legacy_config_without_telemetry_enabled_uses_default_off() {
     let tmp = TempDir::new().unwrap();
     let cfg_path = tmp.path().join("config.json");
 
@@ -737,15 +733,15 @@ fn legacy_config_without_telemetry_enabled_uses_default_on() {
         ConfigManager::with_paths(cfg_path.clone(), None).expect("legacy JSON must deserialise");
     let cfg = mgr.get();
     assert!(
-        cfg.telemetry.enabled,
-        "missing telemetry.enabled should use the default-on intent"
+        !cfg.telemetry.enabled,
+        "missing telemetry.enabled must use the fail-closed default"
     );
     assert_eq!(cfg.schema_version, crate::config::AppConfig::SCHEMA_VERSION);
 
     let on_disk = persistence::load_from_file(&cfg_path).expect("migrated config must persist");
     assert!(
-        on_disk.telemetry.enabled,
-        "migrated on-disk config should persist the default-on intent"
+        !on_disk.telemetry.enabled,
+        "migrated on-disk config must persist the fail-closed default"
     );
     assert_eq!(
         on_disk.schema_version,
@@ -754,7 +750,7 @@ fn legacy_config_without_telemetry_enabled_uses_default_on() {
     );
 }
 
-/// #5056 — a persisted explicit false remains an opt-out after the default-on
+/// #8094 — a persisted explicit false remains an opt-out after the v3
 /// migration. This is intentionally conservative for older saved files because
 /// the legacy schema cannot distinguish a user opt-out from the old seed value.
 #[test]
@@ -1042,17 +1038,86 @@ mod managed_policy {
         path
     }
 
+    /// #10985 — the read-only fallback must survive the managed overlay.
+    ///
+    /// `config_from_a_newer_client_is_not_overwritten` proves the SchemaTooNew
+    /// branch itself does not write. It proves it with NO managed policy, so it
+    /// never reaches the two clamp-rewrites that run afterwards on the same
+    /// startup path. With a policy present, `managed.apply` finds the recovery
+    /// default differs from the locked value, reports a clamped field, and
+    /// persists — writing recovery defaults over the intact newer file. Same
+    /// destruction, one branch later.
+    ///
+    /// Byte-identity, not "still parses": a rewrite producing equivalent JSON
+    /// has still thrown the newer client's fields away.
     #[test]
-    fn managed_telemetry_off_beats_fresh_default_on() {
+    fn newer_client_config_survives_a_managed_policy_clamp() {
         let dir = TempDir::new().unwrap();
         let cfg_path = dir.path().join("config.json");
+
+        ConfigManager::with_paths(cfg_path.clone(), None).unwrap();
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        raw["schema_version"] = serde_json::json!(AppConfig::SCHEMA_VERSION + 1);
+        raw["server"]["base_url"] = serde_json::json!("https://kept.example.com");
+        let future_bytes = serde_json::to_string_pretty(&raw).unwrap();
+        fs::write(&cfg_path, &future_bytes).unwrap();
+
+        // `true` is what makes this discriminating: the recovery default this
+        // session runs on has telemetry OFF, so the policy necessarily reports a
+        // clamped field and the rewrite fires. A policy matching the recovery
+        // default would clamp nothing and the test would pass on broken code.
+        let managed_path = write_managed_telemetry_enabled(dir.path(), true);
+
+        ConfigManager::with_paths(cfg_path.clone(), Some(managed_path))
+            .expect("a future-versioned config must not prevent startup");
+
+        assert_eq!(
+            fs::read_to_string(&cfg_path).unwrap(),
+            future_bytes,
+            "a managed clamp must not persist over a config this client cannot read — the \
+             clamp applies to the in-memory session, and the file belongs to the newer build \
+             that wrote it (#10985)"
+        );
+    }
+
+    /// Control for the test above: with a config this client CAN read, the
+    /// managed clamp must still be persisted. Without this, suppressing the
+    /// clamp-rewrite outright would look like a fix while silently dropping the
+    /// fleet policy lock on every normal launch.
+    #[test]
+    fn managed_clamp_still_persists_on_a_readable_config() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("config.json");
+        let mut existing = crate::config::AppConfig::default_config();
+        existing.telemetry.enabled = true;
+        fs::write(&cfg_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+        let managed_path = write_managed_telemetry_enabled(dir.path(), false);
+
+        ConfigManager::with_paths(cfg_path.clone(), Some(managed_path)).unwrap();
+
+        let on_disk = persistence::load_from_file(&cfg_path).unwrap();
+        assert!(
+            !on_disk.telemetry.enabled,
+            "the clamp rewrite must survive for readable configs; only the unreadable-newer \
+             case is exempt"
+        );
+    }
+
+    #[test]
+    fn managed_telemetry_off_clamps_explicit_opt_in() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("config.json");
+        let mut existing = crate::config::AppConfig::default_config();
+        existing.telemetry.enabled = true;
+        fs::write(&cfg_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
         let managed_path = write_managed_telemetry_enabled(dir.path(), false);
 
         let mgr = ConfigManager::with_paths(cfg_path.clone(), Some(managed_path)).unwrap();
 
         assert!(
             !mgr.get().telemetry.enabled,
-            "managed telemetry.enabled=false must override the fresh default-on intent"
+            "managed telemetry.enabled=false must override an explicit opt-in"
         );
         let on_disk = persistence::load_from_file(&cfg_path).unwrap();
         assert!(
@@ -1381,4 +1446,74 @@ mod managed_policy {
             mode & 0o777
         );
     }
+}
+
+/// #10985 — a config written by a NEWER client must survive a rollback.
+///
+/// `load_and_migrate_from_file`'s downgrade guard returned the same
+/// `ConfigCode::Invalid` as a parse failure, so the caller treated a perfectly
+/// well-formed future-versioned file as corrupt and overwrote it with recovery
+/// defaults. Installing rc.8 then rolling back to rc.6 silently destroyed the
+/// user's settings, and rolling forward again found a downgraded file.
+///
+/// Asserts the file is byte-identical afterwards, not merely "still parses": a
+/// rewrite that happened to produce equivalent JSON would still have thrown the
+/// newer client's fields away.
+#[test]
+fn config_from_a_newer_client_is_not_overwritten() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+
+    ConfigManager::with_path(config_path.clone()).unwrap();
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    raw["schema_version"] = serde_json::json!(AppConfig::SCHEMA_VERSION + 1);
+    raw["server"]["base_url"] = serde_json::json!("https://kept.example.com");
+    let future_bytes = serde_json::to_string_pretty(&raw).unwrap();
+    fs::write(&config_path, &future_bytes).unwrap();
+
+    let manager = ConfigManager::with_path(config_path.clone())
+        .expect("a future-versioned config must not prevent startup");
+
+    assert_eq!(
+        fs::read_to_string(&config_path).unwrap(),
+        future_bytes,
+        "the newer client's config must be left byte-identical; overwriting it is what \
+         destroyed user settings on rollback (#10985)"
+    );
+    assert_ne!(
+        manager.snapshot().server.base_url,
+        "https://kept.example.com",
+        "the unreadable newer config must NOT be adopted in memory — this session runs on \
+         recovery defaults while the file is preserved for the newer build"
+    );
+}
+
+/// Control for the test above: a genuinely corrupt config must STILL be
+/// replaced. Without this, disabling the overwrite entirely would look like a
+/// fix while leaving every launch to re-read the same broken file.
+#[test]
+fn corrupt_config_is_still_replaced() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+
+    ConfigManager::with_path(config_path.clone()).unwrap();
+    fs::write(&config_path, r#"{"invalid": }"#).unwrap();
+
+    ConfigManager::with_path(config_path.clone())
+        .expect("a corrupt config must not prevent startup");
+
+    // Assert what the replacement CONTAINS, not merely that it parses: a
+    // value-blind `is_ok()` would pass on any JSON at all, including one this
+    // client still could not load on the next launch.
+    let after = fs::read_to_string(&config_path).unwrap();
+    let replaced: serde_json::Value = serde_json::from_str(&after).expect(
+        "a corrupt config must be replaced with parseable JSON so the next launch is clean",
+    );
+    assert_eq!(
+        replaced["schema_version"],
+        serde_json::json!(AppConfig::SCHEMA_VERSION),
+        "the replacement must carry THIS client's schema version, or the next launch hits the \
+         same failure again; got: {after}"
+    );
 }

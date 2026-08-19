@@ -1,11 +1,11 @@
 use super::fs::FrameFileStorage;
 use super::util::{
-    calculate_dir_size, count_files_in_dir, delete_date_dirs_chunked, list_date_dirs,
+    calculate_dir_size, delete_date_dirs_chunked, list_date_dirs,
+    remove_frame_dir_with_permission_repair,
 };
 use crate::error::StorageError;
 use chrono::Utc;
 use std::sync::atomic::Ordering;
-use tokio::fs;
 use tracing::{info, warn};
 
 const PARALLEL_DELETE_LIMIT: usize = 8;
@@ -41,26 +41,34 @@ impl FrameFileStorage {
         }
 
         let mut deleted_count = 0;
+        let mut first_failure = None;
         for chunk in dirs_to_delete.chunks(PARALLEL_DELETE_LIMIT) {
             let mut handles = Vec::with_capacity(chunk.len());
 
             for path in chunk {
                 let path = path.clone();
                 handles.push(tokio::spawn(async move {
-                    let count = count_files_in_dir(&path).await;
-                    match fs::remove_dir_all(&path).await {
-                        Ok(()) => Some(count),
-                        Err(e) => {
-                            warn!("frame folder delete failure: {e}");
-                            None
-                        }
-                    }
+                    let result = remove_frame_dir_with_permission_repair(&path).await;
+                    (path, result)
                 }));
             }
 
             for handle in handles {
-                if let Ok(Some(count)) = handle.await {
-                    deleted_count += count;
+                match handle.await {
+                    Ok((_path, Ok(count))) => deleted_count += count,
+                    Ok((path, Err(error))) => {
+                        warn!(
+                            path = %path.display(),
+                            error = %error,
+                            "frame folder delete failure"
+                        );
+                        first_failure.get_or_insert_with(|| format!("{}: {error}", path.display()));
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "frame folder delete task failure");
+                        first_failure
+                            .get_or_insert_with(|| format!("delete task join failure: {error}"));
+                    }
                 }
             }
         }
@@ -75,11 +83,30 @@ impl FrameFileStorage {
         // Re-scan to correct any drift from external deletions or TOCTOU races
         let frames_dir = self.base_dir.join("frames");
         let actual_size = if frames_dir.exists() {
-            calculate_dir_size(&frames_dir).await.unwrap_or(0)
+            match calculate_dir_size(&frames_dir).await {
+                Ok(size) => Some(size),
+                Err(error) => {
+                    warn!(
+                        path = %frames_dir.display(),
+                        error = %error,
+                        "frame retention cache reconciliation failure"
+                    );
+                    first_failure.get_or_insert_with(|| error.to_string());
+                    None
+                }
+            }
         } else {
-            0
+            Some(0)
         };
-        self.cached_size_bytes.store(actual_size, Ordering::Relaxed);
+        if let Some(actual_size) = actual_size {
+            self.cached_size_bytes.store(actual_size, Ordering::Relaxed);
+        }
+
+        if let Some(failure) = first_failure {
+            return Err(StorageError::Internal(format!(
+                "Frame retention incomplete: {failure}"
+            )));
+        }
 
         Ok(deleted_count)
     }
@@ -134,6 +161,7 @@ impl FrameFileStorage {
 
         let mut deleted_count = 0;
         let mut total_deleted_bytes: u64 = 0;
+        let mut first_failure = None;
 
         let mut dirs = list_date_dirs(&frames_dir).await?;
         dirs.sort(); // YYYY-MM-DD ascending (oldest first)
@@ -144,15 +172,22 @@ impl FrameFileStorage {
 
             let dir_path = frames_dir.join(&dir_name);
             let dir_size_bytes = calculate_dir_size(&dir_path).await.unwrap_or(0);
-            let count = count_files_in_dir(&dir_path).await;
-            deleted_count += count;
 
-            if let Err(e) = fs::remove_dir_all(&dir_path).await {
-                warn!("frame folder delete failure: {e}");
-            } else {
-                current_bytes = current_bytes.saturating_sub(dir_size_bytes);
-                total_deleted_bytes += dir_size_bytes;
-                info!("frame folder delete: {} ({count} files)", dir_name);
+            match remove_frame_dir_with_permission_repair(&dir_path).await {
+                Ok(count) => {
+                    deleted_count += count;
+                    current_bytes = current_bytes.saturating_sub(dir_size_bytes);
+                    total_deleted_bytes += dir_size_bytes;
+                    info!("frame folder delete: {} ({count} files)", dir_name);
+                }
+                Err(error) => {
+                    warn!(
+                        path = %dir_path.display(),
+                        error = %error,
+                        "frame folder delete failure"
+                    );
+                    first_failure.get_or_insert_with(|| format!("{}: {error}", dir_path.display()));
+                }
             }
         }
 
@@ -166,6 +201,12 @@ impl FrameFileStorage {
                 Ordering::Relaxed,
                 |current| Some(current.saturating_sub(total_deleted_bytes)),
             );
+        }
+
+        if let Some(failure) = first_failure {
+            return Err(StorageError::Internal(format!(
+                "Frame storage-limit enforcement incomplete: {failure}"
+            )));
         }
 
         Ok(deleted_count)

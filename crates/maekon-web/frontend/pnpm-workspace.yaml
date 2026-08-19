@@ -6,10 +6,11 @@ overrides:
   serialize-javascript: 7.0.5
   '@babel/core': 7.29.6
   form-data: 4.0.6
-  js-yaml: 4.2.0
+  js-yaml: 4.3.0
   ws: 8.21.0
   'cheerio>undici': 7.28.0
-  'minimatch@10.2.5>brace-expansion': 5.0.6
+  # brace-expansion 5.0.7 patches GHSA exponential-expansion DoS (dependabot #86).
+  'minimatch@10.2.5>brace-expansion': 5.0.7
   'webdriver>undici': 6.27.0
   # esbuild 0.28.1 patches GHSA-gv7w-rqvm-qjhr (Deno-loader binary-integrity RCE)
   # and GHSA-g7r4-m6w7-qqqr (dev-server file read). Forces every transitive

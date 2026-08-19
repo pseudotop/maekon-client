@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 #[allow(deprecated)]
 use maekon_core::models::work_session::{AppCategory, Interruption, SessionState, WorkSession};
 use maekon_core::types::TimeWindow;
+use rusqlite::OptionalExtension;
 use tracing::debug;
 
 use super::super::{FocusInterruptionRecord, FocusWorkSessionRecord, SqliteStorage};
@@ -337,23 +338,119 @@ impl SqliteStorage {
         .await
     }
 
-    /// Async `record_interruption_resume` over the write funnel.
-    pub(crate) async fn record_interruption_resume_async(
+    /// Resume exactly one still-pending interruption and return the snapshot
+    /// selected inside the same transaction.
+    fn resume_interruption_transaction(
+        conn: &mut rusqlite::Connection,
+        interruption_id: i64,
+        resumed_to_app: &str,
+        resumed_at: DateTime<Utc>,
+    ) -> Result<Option<Interruption>, StorageError> {
+        let tx = conn.transaction().map_err(|e| {
+            StorageError::Internal(format!(
+                "Failed to start interruption resume transaction: {e}"
+            ))
+        })?;
+
+        let snapshot = tx
+            .query_row(
+                "SELECT id, interrupted_at, from_app, from_category, to_app, to_category, snapshot_frame_id
+                 FROM interruptions WHERE id = ?1 AND resumed_at IS NULL",
+                [interruption_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "Failed to select exact pending interruption {interruption_id}: {e}"
+                ))
+            })?;
+
+        let Some((
+            id,
+            interrupted_at_raw,
+            from_app,
+            from_category_raw,
+            to_app,
+            to_category_raw,
+            snapshot_frame_id,
+        )) = snapshot
+        else {
+            return Ok(None);
+        };
+
+        let interrupted_at = DateTime::parse_from_rfc3339(&interrupted_at_raw)
+            .map(|value| value.with_timezone(&Utc))
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "Invalid interrupted_at for interruption {interruption_id}: {e}"
+                ))
+            })?;
+        let duration_secs = (resumed_at - interrupted_at).num_seconds().max(0) as u64;
+        let resumed_at_raw = resumed_at.to_rfc3339();
+        let changed = tx
+            .execute(
+                "UPDATE interruptions SET resumed_at = ?1, resumed_to_app = ?2
+                 WHERE id = ?3 AND resumed_at IS NULL",
+                rusqlite::params![resumed_at_raw, resumed_to_app, interruption_id],
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "Failed to resume exact interruption {interruption_id}: {e}"
+                ))
+            })?;
+
+        if changed != 1 {
+            return Err(StorageError::Internal(format!(
+                "Exact interruption resume changed {changed} rows for id {interruption_id}"
+            )));
+        }
+
+        tx.commit().map_err(|e| {
+            StorageError::Internal(format!(
+                "Failed to commit interruption resume {interruption_id}: {e}"
+            ))
+        })?;
+
+        Ok(Some(Interruption {
+            id,
+            interrupted_at,
+            from_app,
+            from_category: Self::parse_app_category(&from_category_raw),
+            to_app,
+            to_category: Self::parse_app_category(&to_category_raw),
+            snapshot_frame_id,
+            resumed_at: Some(resumed_at),
+            resumed_to_app: Some(resumed_to_app.to_string()),
+            duration_secs: Some(duration_secs),
+        }))
+    }
+
+    /// Async exact-ID interruption resume over the transactional write funnel.
+    pub(crate) async fn resume_interruption_async(
         &self,
         interruption_id: i64,
         resumed_to_app: &str,
-    ) -> Result<(), StorageError> {
-        // owned move into the Send + 'static closure.
+        resumed_at: DateTime<Utc>,
+    ) -> Result<Option<Interruption>, StorageError> {
         let resumed_to_app = resumed_to_app.to_string();
-        self.with_conn(move |conn| {
-            conn.execute(
-                "UPDATE interruptions SET resumed_at = ?1, resumed_to_app = ?2 WHERE id = ?3",
-                rusqlite::params![Utc::now().to_rfc3339(), resumed_to_app, interruption_id],
+        self.with_conn_mut(move |conn| {
+            Self::resume_interruption_transaction(
+                conn,
+                interruption_id,
+                &resumed_to_app,
+                resumed_at,
             )
-            .map_err(|e| {
-                StorageError::Internal(format!("Failed to record interruption resume: {e}"))
-            })?;
-            Ok(())
         })
         .await
     }
@@ -549,22 +646,15 @@ impl SqliteStorage {
         })
     }
 
-    pub fn record_interruption_resume(
+    pub fn resume_interruption(
         &self,
         interruption_id: i64,
         resumed_to_app: &str,
-    ) -> Result<(), StorageError> {
+        resumed_at: DateTime<Utc>,
+    ) -> Result<Option<Interruption>, StorageError> {
         // Write — write_lock (skip when deletion_flag is set).
-        self.conn.write_lock().run((), |conn| {
-            conn.execute(
-                "UPDATE interruptions SET resumed_at = ?1, resumed_to_app = ?2 WHERE id = ?3",
-                rusqlite::params![Utc::now().to_rfc3339(), resumed_to_app, interruption_id],
-            )
-            .map_err(|e| {
-                StorageError::Internal(format!("Failed to record interruption resume: {e}"))
-            })?;
-
-            Ok(())
+        self.conn.write_lock().run_mut(None, |conn| {
+            Self::resume_interruption_transaction(conn, interruption_id, resumed_to_app, resumed_at)
         })
     }
 

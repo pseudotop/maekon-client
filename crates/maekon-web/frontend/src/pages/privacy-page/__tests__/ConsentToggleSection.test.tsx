@@ -20,10 +20,11 @@ import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../.
 // Test i18n resolves to en (fallbackLng='en'). After Task 3 keys resolve to actual copy, so
 // reference the resolved copy from en.json directly instead of the key string (the test stays
 // consistent across wording changes as long as the key path is preserved).
+import * as toastModule from '../../../hooks/useToast'
 import en from '../../../i18n/locales/en.json'
 import ConsentToggleSection from '../ConsentToggleSection'
 
-// Baseline permission set with all 15 permissions false.
+// Baseline permission set with all 17 permissions false.
 const ALL_FALSE: ConsentPermissions = {
   screen_capture: false,
   ocr_processing: false,
@@ -40,6 +41,8 @@ const ALL_FALSE: ConsentPermissions = {
   memory_graph_enrichment: false,
   microphone: false,
   unredacted_external_ocr: false,
+  memory_graph_retrieval_ranking: false,
+  memory_vault_mirror: false,
 }
 
 function snapshot(status: ConsentStatus, overrides: Partial<ConsentPermissions> = {}): ConsentSnapshot {
@@ -86,8 +89,9 @@ describe('ConsentToggleSection', () => {
   it('toggling monitoring ON from a NotGranted snapshot → set_consent with the 6 master fields true (others preserved)', async () => {
     // Assume ocr_processing is already separately enabled → it must be preserved by the spread.
     const { setSpy } = mockConsentIpc(snapshot('NotGranted', { ocr_processing: true }))
+    const onConsentChanged = vi.fn()
 
-    renderWithProviders(<ConsentToggleSection />)
+    renderWithProviders(<ConsentToggleSection onConsentChanged={onConsentChanged} />)
 
     const toggle = await screen.findByTestId('consent-monitoring-toggle')
     await waitFor(() => expect(toggle).not.toBeChecked())
@@ -107,6 +111,7 @@ describe('ConsentToggleSection', () => {
     // High-sensitivity opt-ins are left untouched
     expect(sent.clipboard_monitoring).toBe(false)
     expect(sent.file_access_monitoring).toBe(false)
+    expect(onConsentChanged).toHaveBeenCalledTimes(1)
   })
 
   it('toggling the microphone opt-in → set_consent flips microphone, all other fields preserved (full-spread)', async () => {
@@ -164,6 +169,146 @@ describe('ConsentToggleSection', () => {
     expect(sent.ocr_processing).toBe(true)
     expect(sent.clipboard_monitoring).toBe(true)
     expect(sent.microphone).toBe(true)
+  })
+
+  it('toggling OCR processing → set_consent flips only ocr_processing and preserves every other consent field', async () => {
+    const { setSpy } = mockConsentIpc(
+      snapshot('Valid', {
+        screen_capture: true,
+        clipboard_monitoring: true,
+        file_access_monitoring: true,
+        microphone: true,
+      }),
+    )
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const ocr = await screen.findByTestId('consent-ocr-processing-toggle')
+    await waitFor(() => expect(ocr).not.toBeChecked())
+    fireEvent.click(ocr)
+
+    await waitFor(() => expect(setSpy).toHaveBeenCalledTimes(1))
+    const sent = (setSpy.mock.calls[0][0] as { permissions: ConsentPermissions }).permissions
+    expect(sent.ocr_processing).toBe(true)
+    expect(sent.screen_capture).toBe(true)
+    expect(sent.clipboard_monitoring).toBe(true)
+    expect(sent.file_access_monitoring).toBe(true)
+    expect(sent.microphone).toBe(true)
+    expect(sent.unredacted_external_ocr).toBe(false)
+  })
+
+  it('toggling full-text AI consent flips only full_text_extraction and preserves every other field', async () => {
+    const { setSpy } = mockConsentIpc(
+      snapshot('Valid', {
+        screen_capture: true,
+        ocr_processing: true,
+        clipboard_monitoring: true,
+        microphone: true,
+      }),
+    )
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const fullText = await screen.findByTestId('consent-full-text-toggle')
+    await waitFor(() => expect(fullText).not.toBeChecked())
+    fireEvent.click(fullText)
+
+    await waitFor(() => expect(setSpy).toHaveBeenCalledTimes(1))
+    const sent = (setSpy.mock.calls[0][0] as { permissions: ConsentPermissions }).permissions
+    expect(sent.full_text_extraction).toBe(true)
+    expect(sent.screen_capture).toBe(true)
+    expect(sent.ocr_processing).toBe(true)
+    expect(sent.clipboard_monitoring).toBe(true)
+    expect(sent.microphone).toBe(true)
+    expect(sent.unredacted_external_ocr).toBe(false)
+  })
+
+  // #8686 AC2: the three onboarding-granted opt-ins must be revocable
+  // granularly — previously only the nuclear withdraw path removed them.
+  it('toggling pattern learning OFF → set_consent flips only activity_pattern_learning', async () => {
+    const { setSpy } = mockConsentIpc(
+      snapshot('Valid', {
+        screen_capture: true,
+        activity_pattern_learning: true,
+        cross_device_sync: true,
+      }),
+    )
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const toggle = await screen.findByTestId('consent-pattern-learning-toggle')
+    await waitFor(() => expect(toggle).toBeChecked())
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(setSpy).toHaveBeenCalledTimes(1))
+    const sent = (setSpy.mock.calls[0][0] as { permissions: ConsentPermissions }).permissions
+    expect(sent.activity_pattern_learning).toBe(false)
+    expect(sent.cross_device_sync).toBe(true)
+    expect(sent.screen_capture).toBe(true)
+  })
+
+  it('toggling cross-device sync OFF → set_consent flips only cross_device_sync', async () => {
+    const { setSpy } = mockConsentIpc(
+      snapshot('Valid', {
+        cross_device_sync: true,
+        memory_graph_enrichment: true,
+      }),
+    )
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const toggle = await screen.findByTestId('consent-cross-device-sync-toggle')
+    await waitFor(() => expect(toggle).toBeChecked())
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(setSpy).toHaveBeenCalledTimes(1))
+    const sent = (setSpy.mock.calls[0][0] as { permissions: ConsentPermissions }).permissions
+    expect(sent.cross_device_sync).toBe(false)
+    expect(sent.memory_graph_enrichment).toBe(true)
+  })
+
+  it('toggling memory graph enrichment ON → set_consent flips only memory_graph_enrichment', async () => {
+    const { setSpy } = mockConsentIpc(snapshot('Valid', { screen_capture: true }))
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const toggle = await screen.findByTestId('consent-memory-graph-toggle')
+    await waitFor(() => expect(toggle).not.toBeChecked())
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(setSpy).toHaveBeenCalledTimes(1))
+    const sent = (setSpy.mock.calls[0][0] as { permissions: ConsentPermissions }).permissions
+    expect(sent.memory_graph_enrichment).toBe(true)
+    expect(sent.screen_capture).toBe(true)
+    expect(sent.activity_pattern_learning).toBe(false)
+  })
+
+  it('associates the external-AI disclosure with the full-text toggle via aria-describedby', async () => {
+    mockConsentIpc(snapshot('Valid', { screen_capture: true }))
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const fullText = await screen.findByTestId('consent-full-text-toggle')
+    const describedBy = fullText.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    const described = document.getElementById(describedBy as string)
+    expect(described).not.toBeNull()
+    expect(described).toHaveTextContent(en.privacy.consent.fullText.disclosure)
+    expect(described?.getAttribute('role')).toBe('alert')
+  })
+
+  it('associates the OCR processing boundary disclosure with its toggle via aria-describedby', async () => {
+    mockConsentIpc(snapshot('Valid', { screen_capture: true }))
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const ocr = await screen.findByTestId('consent-ocr-processing-toggle')
+    const describedBy = ocr.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    const described = document.getElementById(describedBy as string)
+    expect(described).not.toBeNull()
+    expect(described).toHaveTextContent(en.privacy.consent.ocrProcessing.disclosure)
+    expect(described?.getAttribute('role')).toBe('status')
   })
 
   it('associates the unredacted external OCR disclosure with its toggle via aria-describedby', async () => {
@@ -270,6 +415,63 @@ describe('ConsentToggleSection', () => {
     await waitFor(() => expect(withdrawSpy).toHaveBeenCalledTimes(1))
   })
 
+  it('#9505: withdraw failure surfaces the mapped error toast and keeps the modal open for retry', async () => {
+    const addToastSpy = vi.spyOn(toastModule, 'addToast')
+    // The real failure shape: `withdraw_consent` rejects with the
+    // `storage.unavailable` IpcError from erase_all_local_data. Previously this
+    // was completely silent — no onError, and the confirm modal covered the
+    // card's inline alert.
+    mockIPC((cmd) => {
+      if (cmd === 'get_consent') return snapshot('Valid', { screen_capture: true })
+      if (cmd === 'withdraw_consent') {
+        return Promise.reject({ code: 'storage.unavailable', message: 'frame purge unverified' })
+      }
+      return undefined
+    })
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    const trigger = await screen.findByTestId('consent-withdraw-trigger')
+    fireEvent.click(trigger)
+    const confirm = await screen.findByRole('button', {
+      name: en.privacy.consent.withdraw.confirmButton,
+    })
+    fireEvent.click(confirm)
+
+    await waitFor(() => {
+      expect(addToastSpy).toHaveBeenCalledWith('error', en.errors.ipc.storageUnavailable)
+    })
+    // Not the raw Rust wire literal.
+    expect(addToastSpy).not.toHaveBeenCalledWith('error', expect.stringContaining('frame purge unverified'))
+    // The modal stays open as the retry affordance (sibling parity with the
+    // PrivacyLayout delete-all path) — closing silently would look like success.
+    expect(screen.getByRole('button', { name: en.privacy.consent.withdraw.confirmButton })).toBeInTheDocument()
+
+    addToastSpy.mockRestore()
+  })
+
+  it('#9524: confirm button is disabled while the withdraw erase is in flight', async () => {
+    // A never-resolving withdraw keeps the mutation pending; the confirm
+    // button must not accept a second click (double-submit would run two
+    // concurrent erase passes, each with its own EraseWindowGuard).
+    mockIPC((cmd) => {
+      if (cmd === 'get_consent') return snapshot('Valid', { screen_capture: true })
+      if (cmd === 'withdraw_consent') return new Promise(() => {})
+      return undefined
+    })
+
+    renderWithProviders(<ConsentToggleSection />)
+
+    fireEvent.click(await screen.findByTestId('consent-withdraw-trigger'))
+    const confirm = await screen.findByRole('button', {
+      name: en.privacy.consent.withdraw.confirmButton,
+    })
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+
+    await waitFor(() => expect(confirm).toBeDisabled())
+  })
+
   it('an Expired snapshot renders a visible warning', async () => {
     mockConsentIpc(snapshot('Expired', { screen_capture: true }))
 
@@ -307,13 +509,28 @@ describe('ConsentToggleSection', () => {
     const microphone = await screen.findByRole('checkbox', {
       name: en.privacy.consent.microphone.label,
     })
+    const ocr = await screen.findByRole('checkbox', {
+      name: en.privacy.consent.ocrProcessing.label,
+    })
+    const fullText = await screen.findByRole('checkbox', {
+      name: en.privacy.consent.fullText.label,
+    })
+    const unredactedExternalOcr = await screen.findByRole('checkbox', {
+      name: en.privacy.consent.unredactedExternalOcr.label,
+    })
     expect(monitoring).toBeInTheDocument()
     expect(clipboard).toBeInTheDocument()
     expect(microphone).toBeInTheDocument()
+    expect(ocr).toBeInTheDocument()
+    expect(fullText).toBeInTheDocument()
+    expect(unredactedExternalOcr).toBeInTheDocument()
     // Confirm the control found by accessible name is the same node found by testId (not a separate input).
     expect(monitoring).toBe(screen.getByTestId('consent-monitoring-toggle'))
     expect(clipboard).toBe(screen.getByTestId('consent-clipboard-toggle'))
     expect(microphone).toBe(screen.getByTestId('consent-microphone-toggle'))
+    expect(ocr).toBe(screen.getByTestId('consent-ocr-processing-toggle'))
+    expect(fullText).toBe(screen.getByTestId('consent-full-text-toggle'))
+    expect(unredactedExternalOcr).toBe(screen.getByTestId('consent-unredacted-external-ocr-toggle'))
   })
 
   // F7 (demo/standalone): when Tauri is absent, get_consent rejects → useQuery enters the error state

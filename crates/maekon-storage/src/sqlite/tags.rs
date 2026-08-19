@@ -239,7 +239,7 @@ impl SqliteStorage {
         tag_id: i64,
     ) -> Result<bool, StorageError> {
         // `frame_tags.tag_id` has an `ON DELETE CASCADE` FK to `tags(id)`, but
-        // that cascade is inert because `PRAGMA foreign_keys` is OFF on this
+        // #9735 CORRECTED: that cascade DOES fire — `PRAGMA foreign_keys` is ON on this
         // shared single connection (toggling it here would leak FK-enforcement
         // semantics into unrelated adapters). So delete the dependent join rows
         // explicitly, and do it in the same transaction as the parent delete so
@@ -460,7 +460,6 @@ impl SqliteStorage {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests {
     //! Inline unit tests for `sqlite::tags`.
     //!
@@ -534,7 +533,7 @@ mod tests {
     // ── #6246 regression: delete_tag removes orphaned join rows ────
 
     /// `frame_tags.tag_id` has an `ON DELETE CASCADE` FK to `tags(id)`, but the
-    /// cascade is inert because `PRAGMA foreign_keys` is OFF on the shared
+    /// cascade DOES fire (#9735 — `PRAGMA foreign_keys` is ON) on the shared
     /// connection. `delete_tag` must therefore remove the dependent
     /// `frame_tags` rows itself (atomically with the parent), leaving none
     /// orphaned (#6246).

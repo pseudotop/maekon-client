@@ -1,12 +1,17 @@
+mod adaptive_scorer_store_impl;
 mod annotation_storage_impl;
 mod calibration_store_impl;
 pub(crate) mod cjk_shadow;
+mod coaching_effectiveness_store_impl;
 mod coaching_storage;
 mod coaching_storage_port_impl;
 mod dashboard_streaming;
 mod device_identity;
 pub(crate) mod edge_intelligence;
 mod events;
+pub use events::storage_event_id;
+mod extension_registry_impl;
+mod feedback_scorer_store_impl;
 mod few_shot_storage_impl;
 mod focus_storage_impl;
 mod frames;
@@ -20,13 +25,23 @@ mod maintenance;
 mod memory_graph_impl;
 mod metrics;
 mod override_store_impl;
+mod pomodoro_store_impl;
 mod preset_storage_impl;
+mod regime_reaction_store_impl;
+mod scheduler_storage_impl;
 mod session_context_store_impl;
 mod session_storage_impl;
+mod skill_pack_registry_impl;
 mod tags;
+mod task_store_impl;
+mod transcript_storage_impl;
+mod vault_mirror_state_impl;
 pub mod vector_index_impl;
 pub mod vector_store_impl;
+mod wbs_xlsx_receipt_store_impl;
 mod web_storage_impl;
+mod work_context_store_impl;
+mod work_context_writers;
 
 #[cfg(test)]
 mod port_contract_tests;
@@ -58,10 +73,7 @@ use crate::migration;
 /// and this global flag being `true` is correct for all concurrent tests.
 pub(super) static FTS_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
-/// Process-global flag indicating whether the `gui_interactions` table exists (V13 migration).
-///
-/// Same rationale and thread-safety guarantees as [`FTS_AVAILABLE`].
-pub(super) static GUI_INTERACTIONS_AVAILABLE: AtomicBool = AtomicBool::new(false);
+mod effective_mapping_cache_impl;
 
 /// Format `instant` as the canonical `system_metrics_hourly.hour` bucket key.
 ///
@@ -117,6 +129,13 @@ pub struct SqliteStorage {
     /// floor lives in the `hlc_clock` table reached through the same `GuardedConnection`
     /// mutex (shared with `SqliteVectorStore`'s clock), so RMW stays serialized + monotonic.
     pub(super) clock: Arc<hlc_clock::HlcClock>,
+    /// #8589 (ADR-030 §7 + Amendment I1): master key for deriving the
+    /// work-context raw-plane per-account AEAD subkey. `Some` whenever the
+    /// database itself was opened encrypted (production); `None` for the
+    /// unencrypted in-memory path, where consented raw writes fail closed rather
+    /// than persist plaintext. Wired independently of SQLCipher — the raw plane
+    /// is an app-level AEAD on the blob columns, not the SQLCipher page cipher.
+    pub(super) work_context_raw_key: Option<EncryptionKey>,
 }
 
 impl SqliteStorage {
@@ -130,6 +149,22 @@ impl SqliteStorage {
         retention_days: u32,
         encryption_key: Option<&EncryptionKey>,
     ) -> Result<Self, StorageError> {
+        Self::open_with_max_schema_version(path, retention_days, encryption_key, None)
+    }
+
+    /// Open a disk-backed database migrating only up to `max_schema_version`
+    /// (`None` = [`migration::CURRENT_VERSION`], i.e. the production path).
+    ///
+    /// The bounded form exists solely for the QC legacy-migration fixture
+    /// (#9083): it produces a REAL older-schema database, replacing the old
+    /// approach of migrating fully and then deleting newer-version artifacts —
+    /// a forgery that silently broke whenever `CURRENT_VERSION` advanced.
+    pub fn open_with_max_schema_version(
+        path: &Path,
+        retention_days: u32,
+        encryption_key: Option<&EncryptionKey>,
+        max_schema_version: Option<u32>,
+    ) -> Result<Self, StorageError> {
         let conn = Connection::open(path)
             .map_err(|e| StorageError::Internal(format!("Failed to open SQLite database: {e}")))?;
 
@@ -137,7 +172,8 @@ impl SqliteStorage {
 
         configure_connection(&conn, true)?;
 
-        migration::run_migrations(&conn)
+        let target = max_schema_version.unwrap_or(migration::CURRENT_VERSION);
+        migration::run_migrations_to(&conn, target)
             .map_err(|e| StorageError::Internal(format!("migration failure: {e}")))?;
 
         post_migration_setup(&conn)?;
@@ -148,6 +184,10 @@ impl SqliteStorage {
             conn: Arc::new(GuardedConnection::new_unflagged(conn)),
             retention_days,
             clock: Arc::new(hlc_clock::HlcClock::new()),
+            // Encrypted-at-rest DB → the same master key seeds the raw-plane
+            // subkey derivation (Amendment I1). Cloned, not borrowed, because the
+            // raw writer runs inside the spawn_blocking connection closure.
+            work_context_raw_key: encryption_key.cloned(),
         })
     }
 
@@ -167,7 +207,21 @@ impl SqliteStorage {
             conn: Arc::new(GuardedConnection::new_unflagged(conn)),
             retention_days,
             clock: Arc::new(hlc_clock::HlcClock::new()),
+            work_context_raw_key: None,
         })
+    }
+
+    /// #8589: inject the work-context raw-plane master key on a storage handle
+    /// opened without SQLCipher (the in-memory / plaintext-file paths).
+    ///
+    /// Production reaches the raw key automatically through `open(..,
+    /// Some(&key))`; this consuming builder lets the composition root and tests
+    /// enable consented raw-plane writes on an otherwise-unencrypted handle
+    /// without dragging in the SQLCipher page cipher. Call before wrapping in
+    /// `Arc`.
+    pub fn with_work_context_raw_key(mut self, key: EncryptionKey) -> Self {
+        self.work_context_raw_key = Some(key);
+        self
     }
 
     /// Expose the shared [`GuardedConnection`] for shared-connection adapters
@@ -258,7 +312,6 @@ impl SqliteStorage {
     /// Like [`Self::with_conn`], it skips when deletion_flag is set, but passes
     /// the closure an exclusive (mutable) reference to the connection to allow
     /// mutable access such as `transaction()`.
-    #[allow(dead_code)]
     pub(super) async fn with_conn_mut<F, T>(&self, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&mut Connection) -> Result<T, StorageError> + Send + 'static,
@@ -276,7 +329,6 @@ impl SqliteStorage {
     /// Because it goes through [`GuardedConnection::read_lock`], it always runs
     /// regardless of deletion_flag (reads are never skipped). Pure SELECT queries
     /// use this funnel or [`Self::read_only_query`].
-    #[allow(dead_code)]
     pub(super) async fn with_conn_read<F, T>(&self, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,
@@ -560,6 +612,46 @@ impl SqliteStorage {
 }
 
 impl SqliteStorage {
+    /// Return terminal-status aggregates from the durable audit log.
+    ///
+    /// `Started` rows are intentionally excluded from `total`, matching
+    /// `AuditLogger::stats`. On a SQLite error, logs a warning and returns the
+    /// fail-safe empty aggregate.
+    pub fn audit_stats(&self) -> maekon_core::models::audit::AuditStats {
+        let read = self.conn.read_lock();
+        let conn = read.conn();
+        let result = conn.query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'Denied' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'Timeout' THEN 1 ELSE 0 END), 0)
+             FROM audit_log",
+            [],
+            |row| {
+                let completed: i64 = row.get(0)?;
+                let failed: i64 = row.get(1)?;
+                let denied: i64 = row.get(2)?;
+                let timeout: i64 = row.get(3)?;
+                Ok(maekon_core::models::audit::AuditStats {
+                    total: (completed + failed + denied + timeout) as usize,
+                    completed: completed as usize,
+                    failed: failed as usize,
+                    denied: denied as usize,
+                    timeout: timeout as usize,
+                })
+            },
+        );
+
+        match result {
+            Ok(stats) => stats,
+            Err(error) => {
+                warn!(err = %error, "audit: audit_stats query failed");
+                maekon_core::models::audit::AuditStats::default()
+            }
+        }
+    }
+
     /// Return audit entries whose `command_id` equals the given value, ordered
     /// newest-first, up to `limit` rows.
     ///
@@ -674,10 +766,42 @@ impl SqliteStorage {
     /// tamper-**proof** — a full-rewrite insider threat requires HMAC/Ed25519
     /// (out of scope, `audit_chain::HASH_VERSION` seam).
     pub fn verify_audit_chain(&self) -> maekon_core::models::audit::AuditChainReport {
+        Self::verify_audit_chain_impl(&self.conn)
+    }
+
+    /// Async, non-blocking variant of [`Self::verify_audit_chain`] (#7600):
+    /// offloads onto `spawn_blocking` via a cheap `Arc<GuardedConnection>`
+    /// clone (mirrors the `with_conn_read` funnel pattern), so callers running
+    /// on the async runtime (the `GET /audit/verify` HTTP handler,
+    /// `AuditChainVerifierPort`) never block the reactor. The sync
+    /// `verify_audit_chain` is kept unchanged for the existing desktop IPC
+    /// command (which already offloads via its own
+    /// `tokio::task::spawn_blocking` at the call site) and direct synchronous
+    /// test callers.
+    pub async fn verify_audit_chain_async(&self) -> maekon_core::models::audit::AuditChainReport {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || Self::verify_audit_chain_impl(&conn))
+            .await
+            .unwrap_or_else(|e| {
+                warn!(err = %e, "audit: verify_audit_chain_async spawn_blocking join failed");
+                maekon_core::models::audit::AuditChainReport {
+                    ok: false,
+                    first_break: Some(maekon_core::models::audit::AuditChainBreak {
+                        seq: -1,
+                        reason: format!("verify task join failed: {e}"),
+                    }),
+                    ..Default::default()
+                }
+            })
+    }
+
+    fn verify_audit_chain_impl(
+        guarded: &GuardedConnection,
+    ) -> maekon_core::models::audit::AuditChainReport {
         use crate::audit_chain::{compute_entry_hash, CanonicalRecord, GENESIS_PREV_HASH};
         use maekon_core::models::audit::{AuditChainBreak, AuditChainReport};
 
-        let read = self.conn.read_lock();
+        let read = guarded.read_lock();
         let conn = read.conn();
 
         // Count of legacy (NULL-chain) rows.
@@ -779,7 +903,19 @@ impl SqliteStorage {
         let last_seq = rows[rows.len() - 1].seq;
         let mut verified_count: u64 = 0;
         let mut expected_seq = first_seq;
-        let mut expected_prev = GENESIS_PREV_HASH.to_string();
+        // #8056 P3: the compliance-window retention prune may have removed the
+        // oldest chain prefix, recording the pruned prefix's final `entry_hash`
+        // as the new chain root anchor. When present, the retained chain's first
+        // row links to that anchor instead of GENESIS. Accept it so a pruned-but-
+        // otherwise-intact chain still verifies (ADR-072 tamper-evidence across
+        // retention). Absent anchor → the chain still starts at GENESIS.
+        let mut expected_prev = conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = ?1",
+                [crate::audit_chain::AUDIT_CHAIN_PRUNED_ROOT_META_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| GENESIS_PREV_HASH.to_string());
 
         for r in &rows {
             // 1) seq contiguity (gap detection).
@@ -801,7 +937,7 @@ impl SqliteStorage {
             //    first row uses genesis).
             if r.prev_hash != expected_prev {
                 let reason = if r.seq == first_seq {
-                    "first chained row prev_hash != genesis".to_string()
+                    "first chained row prev_hash != genesis/pruned-root".to_string()
                 } else {
                     "prev_hash != prior entry_hash (broken link)".to_string()
                 };
@@ -874,6 +1010,18 @@ impl SqliteStorage {
             legacy_unchained_count,
             first_break: None,
         }
+    }
+}
+
+/// #7600: port impl so `AppState.core.audit_chain_verifier` (maekon-web) can
+/// reach the same real hash-chain verification the desktop `verify_audit_log`
+/// IPC command uses, without maekon-web depending on the concrete
+/// `SqliteStorage` type (Hexagonal boundary — maekon-web is an adapter and
+/// must depend on `maekon-core` ports, not sibling adapter crates).
+#[async_trait::async_trait]
+impl maekon_core::ports::audit_chain_verifier::AuditChainVerifierPort for SqliteStorage {
+    async fn verify_audit_chain(&self) -> maekon_core::models::audit::AuditChainReport {
+        self.verify_audit_chain_async().await
     }
 }
 
@@ -1003,6 +1151,29 @@ impl maekon_core::ports::egress_ledger::EgressLedgerSink for SqliteStorage {
     }
 }
 
+/// #7910: object-safe read-only view over the egress audit ledger. Delegates to
+/// the infallible inherent `recent_egress` / `egress_between` readers, letting
+/// the local dashboard render an egress transparency browser through
+/// `Arc<dyn EgressLedgerReaderPort>` without depending on the concrete
+/// `SqliteStorage`. Read-only by construction — the ledger is erase-retained
+/// compliance evidence and exposes no mutation surface.
+impl maekon_core::ports::egress_ledger_reader::EgressLedgerReaderPort for SqliteStorage {
+    fn recent_egress(
+        &self,
+        limit: usize,
+    ) -> Vec<maekon_core::models::storage_records::EgressLedgerRecord> {
+        SqliteStorage::recent_egress(self, limit)
+    }
+
+    fn egress_between(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Vec<maekon_core::models::storage_records::EgressLedgerRecord> {
+        SqliteStorage::egress_between(self, from, to)
+    }
+}
+
 /// `app_meta` key for the last propagated Art. 17 erasure id (#5156).
 const LAST_PUSHED_ERASURE_ID_KEY: &str = "sync.last_pushed_erasure_id";
 
@@ -1084,10 +1255,11 @@ fn map_audit_row(
 
 /// Apply SQLCipher `PRAGMA key` and verify the key works.
 ///
-/// 검증 실패 시 평문 재오픈을 허용하지 않는다.
+/// On verification failure, do not allow reopening as plaintext.
 ///
-/// 암호화가 명시적으로 요청된 상태에서 평문 SQLite를 열어 주면 이후 쓰기가
-/// 평문으로 진행되므로, 레거시 평문 파일도 fail-closed로 처리한다 (#6438).
+/// When encryption was explicitly requested, opening a plaintext SQLite would let
+/// subsequent writes proceed in plaintext, so legacy plaintext files are also
+/// handled fail-closed (#6438).
 fn apply_sqlcipher_key(
     conn: Connection,
     path: &Path,
@@ -1136,8 +1308,9 @@ fn apply_sqlcipher_key(
     }
 }
 
-/// #6438: 16바이트 파일 헤더 매직(`"SQLite format 3\0"`)으로 평문 SQLite를
-/// 양성 판정한다. SQLCipher DB는 헤더가 암호문이므로 이 매직으로 시작하지 않는다.
+/// #6438: Detect a plaintext SQLite via the 16-byte file header magic
+/// (`"SQLite format 3\0"`). A SQLCipher DB has an encrypted header, so it does
+/// not start with this magic.
 fn is_plaintext_sqlite(path: &Path) -> bool {
     use std::io::Read;
     const MAGIC: &[u8; 16] = b"SQLite format 3\0";
@@ -1182,6 +1355,23 @@ fn configure_connection(conn: &Connection, is_disk: bool) -> Result<(), StorageE
         )
         .map_err(|e| StorageError::Internal(format!("Failed to apply PRAGMA settings: {e}")))?;
     }
+
+    // #9735: state FK enforcement explicitly instead of inheriting it.
+    //
+    // It has always been ON here — `libsqlite3-sys` builds the bundled
+    // amalgamation with `-DSQLITE_DEFAULT_FOREIGN_KEYS=1` — but nothing in this
+    // workspace said so, so a dozen comments (and ADR-028 B3) concluded the
+    // opposite from "no connection sets the PRAGMA" and code reasoned from it.
+    // That cost real rows: `activity_segments` inserts carrying a
+    // not-yet-checkpointed `regime_id` were rejected by the very FK a comment
+    // promised could not block them.
+    //
+    // Writing it here makes the semantic this codebase reasons about a property
+    // of this codebase, not of a transitive dependency's `cc` flag — swapping
+    // `rusqlite` can no longer flip it silently.
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(|e| StorageError::Internal(format!("Failed to enable foreign keys: {e}")))?;
+
     Ok(())
 }
 
@@ -1204,15 +1394,6 @@ fn post_migration_setup(conn: &Connection) -> Result<(), StorageError> {
         )
         .unwrap_or(false);
     FTS_AVAILABLE.store(fts_exists, Ordering::Release);
-
-    let gui_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='gui_interactions'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
-    GUI_INTERACTIONS_AVAILABLE.store(gui_exists, Ordering::Release);
 
     // Seed the persistent HLC clock (V39) BEFORE the SqliteStorage handle is returned, so
     // no local write can read an un-seeded clock and stamp below a retained tombstone

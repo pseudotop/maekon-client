@@ -37,7 +37,6 @@ src-tauri/src/  (package: maekon-app)
 ├── updater/                     # Auto-update (directory module)
 │                                # D9 multi-key Ed25519 trust (trusted_keys.rs), D10 defensive
 │                                # rollout handling, D11 self-healthy probe with automatic rollback
-├── focus_analyzer/              # Focus analysis (directory module)
 ├── agent_runtime/, session_manager/, session_adapters/, feedback_sink/
 ├── provider_adapters/, subprocess_provider/
 ├── services/                    # Domain services (log_helpers, etc.)
@@ -52,9 +51,9 @@ src-tauri/src/  (package: maekon-app)
 ├── auditing_session.rs, auth_cli.rs, bridge_cli.rs, secret_cli.rs
 ├── integrity_guard.rs, integration_policy.rs, integration_insight_source.rs,
 │   integration_prompt_delivery.rs
-├── capture_services.rs, storage_runtime.rs, sync_engine.rs,
+├── capture_services.rs, storage_runtime.rs,
 │   fallback_stt.rs, feature_capabilities.rs
-├── suggestion_manager.rs, workflow_intelligence.rs
+├── suggestion_manager.rs
 ├── bootstrap_preflight.rs
 ├── desktop_permissions.rs, desktop_startup.rs
 ├── oauth_provider_registry.rs, provider_secret_backend.rs
@@ -327,10 +326,14 @@ cargo run -p maekon-app
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MAEKON_EMAIL` | Connected mode only ✅ | Login email (optional in standalone mode) |
-| `MAEKON_PASSWORD` | Connected mode only ✅ | Login password (optional in standalone mode) |
 | `RUST_LOG` | ❌ | Log level (default: `info`) |
 | `MAEKON_CONFIG` | ❌ | Config file path |
+
+Sign-in credentials are not read from the environment. Sign in from the
+**Sign in** screen (`/login`, reachable from the command palette) or from
+**Settings → General → Account** — both render the same form, and both require a
+build with `--features server`. The server URL is configured under
+**Settings → Advanced → Network & Server**.
 
 ## Tests
 

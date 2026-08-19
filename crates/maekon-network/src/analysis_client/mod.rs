@@ -1,4 +1,7 @@
 use async_trait::async_trait;
+use maekon_api_contracts::provider_specs::{
+    self, ProviderAuthScheme, ProviderRequestShape, ProviderTransportKind,
+};
 use maekon_core::config::{AiProviderType, ExternalApiEndpoint, PiiFilterLevel};
 use maekon_core::error::CoreError;
 use maekon_core::models::memory_graph::{ClaimStatusChange, RelationEdgeProposal};
@@ -9,10 +12,10 @@ use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
 use crate::error::NetworkError;
-use crate::provider_error_body::provider_error_message;
-use crate::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
+use maekon_http_core::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry, CircuitState};
+use maekon_http_core::provider_error_body::provider_error_message;
+use maekon_http_core::resilience::{classify_for_breaker, endpoint_authority, BreakerSignal};
 
 use self::requests::{apply_auth_headers, build_request_body};
 use self::responses::{
@@ -24,6 +27,8 @@ mod requests;
 mod responses;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_surface_id;
 
 /// MG-PII-02 DNS-rebind hardening: resolve the endpoint host once, assert EVERY
 /// resolved address is loopback, and pin reqwest to those addresses so a
@@ -48,11 +53,15 @@ fn build_loopback_pinned_client(config: &ExternalApiEndpoint) -> Option<reqwest:
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host);
     // #6892: redirect=none — prevents an analysis-provider 30x from leaking the api-key header + body.
-    crate::outbound::hardened_client_builder()
-        .timeout(std::time::Duration::from_secs(config.timeout_secs))
-        .resolve_to_addrs(host_key, &addrs)
-        .build()
-        .ok()
+    // #8045 C3: this constructor already fails closed unless the endpoint is provably
+    // loopback (checked above), so cleartext is intentionally permitted here.
+    maekon_http_core::outbound::hardened_client_builder(
+        maekon_http_core::outbound::TransportPolicy::AllowLoopbackCleartext,
+    )
+    .timeout(std::time::Duration::from_secs(config.timeout_secs))
+    .resolve_to_addrs(host_key, &addrs)
+    .build()
+    .ok()
 }
 
 /// Normalize an Ollama endpoint URL to use `/v1/chat/completions`.
@@ -118,6 +127,14 @@ pub struct AnalysisClient {
     credential: CredentialSource,
     model: String,
     provider_type: AiProviderType,
+    /// #10055: the configured provider surface, threaded so this client resolves
+    /// its auth scheme and servable request shape from the catalog exactly like
+    /// its siblings (`RemoteLlmProvider`, `RemoteOcrProvider`, `HttpApiSession`).
+    /// Before this it was the ONLY HTTP adapter that ignored `surface_id`, so a
+    /// `provider_type`-only `match` decided the auth header — sending
+    /// `Authorization: Bearer` to a `x_goog_api_key` surface, and papering over
+    /// the `Generic` surface's bearer/none split.
+    surface_id: Option<String>,
     timeout_secs: u64,
     breaker: Arc<CircuitBreaker>,
     /// D5 iter-5: sanitize LLM-returned suggestion text before it leaves this
@@ -183,10 +200,16 @@ impl AnalysisClient {
         // #6892: redirect=none — prevents an analysis-provider 30x from leaking the api-key header + body.
         // build() only fails on TLS backend initialization failure (process-fatal); in that case we
         // explicitly panic rather than fall back to a redirect-following reqwest::Client::default().
-        let http_client = crate::outbound::hardened_client_builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .expect("하드닝 analysis HTTP 클라이언트 빌드 (TLS 백엔드 초기화)");
+        // #8045 C3: https_only backstop derived from the resolved endpoint (loopback Ollama keeps
+        // cleartext; a remote analysis provider is HTTPS-only).
+        let http_client = maekon_http_core::outbound::hardened_client_builder(
+            maekon_http_core::outbound::TransportPolicy::for_endpoint(&resolved_endpoint),
+        )
+        .timeout(std::time::Duration::from_secs(config.timeout_secs))
+        .build()
+        .unwrap_or_else(|error| {
+            panic!("hardened analysis HTTP client build failed (TLS backend init): {error}")
+        });
 
         // D7: resolve per-endpoint breaker.
         let breaker_key = endpoint_authority(&resolved_endpoint)
@@ -201,6 +224,7 @@ impl AnalysisClient {
                 crate::default_model_for_provider(&config.provider_type).to_string()
             }),
             provider_type: config.provider_type,
+            surface_id: config.surface_id.clone(),
             timeout_secs: config.timeout_secs,
             breaker,
             pii_sanitizer: None,
@@ -223,7 +247,7 @@ impl AnalysisClient {
         config: &ExternalApiEndpoint,
         breaker_registry: Arc<CircuitBreakerRegistry>,
     ) -> Option<Self> {
-        if !crate::http_client::host_is_loopback(&config.endpoint) {
+        if !maekon_http_core::outbound::host_is_loopback(&config.endpoint) {
             warn!(
                 endpoint = %config.endpoint,
                 "MG-PII-02: refusing to build enrichment client for non-loopback endpoint"
@@ -245,6 +269,63 @@ impl AnalysisClient {
         self.pii_sanitizer = Some(sanitizer);
         self.pii_level = level;
         self
+    }
+
+    /// #10055 AC1: catalog-resolved auth scheme for this client's LLM transport.
+    ///
+    /// Same resolver the sibling adapters use, so a surface that overrides its
+    /// vendor default (notably `Generic`, which splits `bearer` / `none` by
+    /// surface) authenticates identically on the suggestion path and the
+    /// automation path.
+    fn llm_auth_scheme(&self) -> Result<ProviderAuthScheme, NetworkError> {
+        provider_specs::resolved_auth_scheme(
+            self.provider_type,
+            self.surface_id.as_deref(),
+            ProviderTransportKind::Llm,
+        )
+        .map_err(NetworkError::Internal)
+    }
+
+    /// #10055 AC2: reject surfaces this client's FIXED body cannot serve.
+    ///
+    /// Servable shapes, and why:
+    /// - `AnthropicMessages` — `build_request_body`'s Anthropic arm + the
+    ///   `content[0].text` parser.
+    /// - `OpenAiChatCompletions` — the chat-completions arm + `choices[]` parser.
+    /// - `OpenAiResponses` — Ollama's catalog shape. `ollama_chat_completions_url`
+    ///   deliberately rewrites the URL back to `/v1/chat/completions`, so the
+    ///   fixed body IS correct for it. Rejecting it would regress every
+    ///   wizard-configured Ollama user (AC4).
+    ///
+    /// Everything else (Google's `generate_content`, the vision shapes, Bedrock)
+    /// would be a malformed request, so it fails closed here instead of on the
+    /// wire.
+    fn ensure_servable_request_shape(&self) -> Result<(), NetworkError> {
+        let shape = provider_specs::resolved_request_shape(
+            self.provider_type,
+            self.surface_id.as_deref(),
+            ProviderTransportKind::Llm,
+        )
+        .map_err(NetworkError::Internal)?;
+
+        if matches!(
+            shape,
+            ProviderRequestShape::AnthropicMessages
+                | ProviderRequestShape::OpenAiChatCompletions
+                | ProviderRequestShape::OpenAiResponses
+        ) {
+            return Ok(());
+        }
+
+        Err(NetworkError::Core(CoreError::Config {
+            code: maekon_core::error_codes::ConfigCode::Invalid,
+            message: format!(
+                "The suggestion analysis path cannot use provider surface {surface} \
+                 (request shape {shape:?}). It sends a fixed chat-completions body; \
+                 choose a chat-completions-compatible surface for analysis.",
+                surface = self.surface_id.as_deref().unwrap_or("<default>"),
+            ),
+        }))
     }
 
     /// D5 iter-5: helper to sanitize a text fragment via the injected port.
@@ -340,12 +421,25 @@ impl AnalysisClient {
         // of sending an OpenAI-shaped body to a Bedrock endpoint. Wrapped in
         // `NetworkError::Core` so the `?`/`From<NetworkError>` round-trip in the
         // callers preserves the exact `UnsupportedProviderBedrock` code.
+        //
+        // #10055 AC3: kept as its own check, BEFORE the generalized shape guard
+        // below, so Bedrock keeps emitting `UnsupportedProviderBedrock` rather
+        // than the generic unservable-shape code.
         if matches!(self.provider_type, AiProviderType::Bedrock) {
             return Err(NetworkError::Core(CoreError::Config {
                 code: maekon_core::error_codes::ConfigCode::UnsupportedProviderBedrock,
                 message: "AWS Bedrock is intentionally unsupported in this build".into(),
             }));
         }
+
+        // #10055 AC2: generalize the guard the Bedrock check above established.
+        // This client sends a FIXED chat-completions/Anthropic-messages body and
+        // parses a fixed envelope (the deliberate drift documented on
+        // `ollama_chat_completions_url`). Sending that body to a surface whose
+        // catalog `request_shape` is something else — e.g. Google's
+        // `google_generate_content` — produced a malformed request and a
+        // confusing downstream 4xx. Fail closed instead, with the surface named.
+        self.ensure_servable_request_shape()?;
 
         // Resolve the bearer token at request time.  NoAuth yields an empty
         // string, ApiKey yields the inline key, StoredSecret/ManagedOAuth
@@ -366,10 +460,11 @@ impl AnalysisClient {
             .post(&self.endpoint)
             .header("Content-Type", "application/json")
             .json(&body);
-        // apply_auth_headers handles the Anthropic x-api-key header and the
-        // Bearer Authorization header for all other providers; NoAuth leaves the
-        // builder unchanged (empty token, no header added).
-        let builder = apply_auth_headers(builder, self.provider_type, &bearer_token);
+        // #10055 AC1: resolve the auth scheme from the catalog (provider_type +
+        // surface_id), the same call `RemoteLlmProvider` makes, instead of a
+        // provider_type-only match whose catch-all arm sent Bearer to every
+        // non-Anthropic surface.
+        let builder = apply_auth_headers(builder, self.llm_auth_scheme()?, &bearer_token);
 
         let send_result = builder.send().await;
         // D7: record breaker outcome based on initial send result.
@@ -388,24 +483,26 @@ impl AnalysisClient {
         let status = response.status();
         // #6939: cap the response body — a compromised/MITM analysis provider could
         // otherwise stream multi-GB and OOM the agent. Preserve the timeout split.
-        let response_text =
-            crate::outbound::read_text_capped(response, crate::outbound::MAX_AI_RESPONSE_BYTES)
-                .await
-                .map_err(|e| match e {
-                    crate::outbound::BodyReadError::Transport(err) if err.is_timeout() => {
-                        NetworkError::Timeout {
-                            timeout_ms: self.timeout_secs * 1000,
-                        }
-                    }
-                    crate::outbound::BodyReadError::Transport(err) => {
-                        NetworkError::Analysis(format!("Failed to read {label} response: {err}"))
-                    }
-                    crate::outbound::BodyReadError::TooLarge { len, cap } => {
-                        NetworkError::Analysis(format!(
-                            "{label} response exceeded cap {cap} bytes (len {len})"
-                        ))
-                    }
-                })?;
+        let response_text = maekon_http_core::outbound::read_text_capped(
+            response,
+            maekon_http_core::outbound::MAX_AI_RESPONSE_BYTES,
+        )
+        .await
+        .map_err(|e| match e {
+            maekon_http_core::outbound::BodyReadError::Transport(err) if err.is_timeout() => {
+                NetworkError::Timeout {
+                    timeout_ms: self.timeout_secs * 1000,
+                }
+            }
+            maekon_http_core::outbound::BodyReadError::Transport(err) => {
+                NetworkError::Analysis(format!("Failed to read {label} response: {err}"))
+            }
+            maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
+                NetworkError::Analysis(format!(
+                    "{label} response exceeded cap {cap} bytes (len {len})"
+                ))
+            }
+        })?;
 
         if !status.is_success() {
             warn!(status = %status, "{label} error response");
@@ -507,7 +604,7 @@ impl AnalysisProvider for AnalysisClient {
     ) -> Result<Vec<RelationEdgeProposal>, CoreError> {
         // MG-PII-02 call-time gate (defense-in-depth on top of new_local_enrichment):
         // claim text must NEVER reach a non-loopback endpoint. Fail-closed → empty.
-        if !crate::http_client::host_is_loopback(&self.endpoint) {
+        if !maekon_http_core::outbound::host_is_loopback(&self.endpoint) {
             warn!(endpoint = %self.endpoint, "MG-PII-02: extract_relations egress blocked (non-loopback)");
             return Ok(Vec::new());
         }
@@ -533,7 +630,7 @@ impl AnalysisProvider for AnalysisClient {
         claims_json: &str,
         system_prompt: &str,
     ) -> Result<Vec<ClaimStatusChange>, CoreError> {
-        if !crate::http_client::host_is_loopback(&self.endpoint) {
+        if !maekon_http_core::outbound::host_is_loopback(&self.endpoint) {
             warn!(endpoint = %self.endpoint, "MG-PII-02: detect_contradictions egress blocked (non-loopback)");
             return Ok(Vec::new());
         }

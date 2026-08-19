@@ -14,6 +14,7 @@ import { DEFAULT_WEB_PORT } from './src/constants'
 
 const port = Number(process.env.MAEKON_PORT || DEFAULT_WEB_PORT)
 const baseURL = `http://127.0.0.1:${port}`
+const browserChannel = process.env.MAEKON_PLAYWRIGHT_CHANNEL?.trim()
 
 export default defineConfig({
   testDir: './e2e-live',
@@ -30,8 +31,12 @@ export default defineConfig({
 
   outputDir: 'test-results-live',
 
+  globalSetup: './e2e-live/global-setup.ts',
+
   use: {
     baseURL,
+
+    ...(browserChannel ? { channel: browserChannel } : {}),
 
     trace: 'on-first-retry',
 

@@ -67,6 +67,18 @@ pub enum ImagePayload {
         #[serde(skip_serializing_if = "Option::is_none")]
         ocr_text: Option<String>,
     },
+    /// A medium-importance frame emitted only when the previous frame changed
+    /// (change-gated capture).
+    ///
+    /// Naming clarification (#8054 P3-2): `data` is the **full** changed frame
+    /// (base64 WebP), NOT a cropped patch of `region`. `region` (the bounding
+    /// box of the changed tiles) and `changed_ratio` (fraction of tiles that
+    /// changed) are diagnostic change metadata describing *what* changed versus
+    /// the prior frame — they are not required to reconstruct `data`, and there
+    /// is intentionally no delta compositor. Consumers that only need the image
+    /// read `data` alone; the metadata is available for change-aware
+    /// prioritization. Do not crop `data` to `region` — that would corrupt
+    /// replay, since no consumer composites a region patch onto a base frame.
     Delta {
         data: String,
         region: Rect,

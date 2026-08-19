@@ -27,6 +27,8 @@ use crate::session_adapters::claude_session::ClaudeSubprocessSession;
 use crate::session_adapters::subprocess_session::GenericSubprocessSession;
 #[cfg(feature = "analysis")]
 use crate::subprocess_provider::trust;
+#[cfg(feature = "analysis")]
+use crate::subprocess_provider::{append_codex_reasoning_effort, DEFAULT_CODEX_SUBPROCESS_MODEL};
 use crate::subprocess_provider::{
     probe_known_cli_surfaces, runtime_ready_for_surface, DetectedSubprocessCli, ProbedSubprocessCli,
 };
@@ -62,6 +64,16 @@ pub(super) type DefaultTools = Option<Vec<maekon_core::models::ai_session::ToolD
 /// Resolved Ollama base URL + optional default model from config/catalog.
 /// Produced by [`resolve_local_llm_target`] at composition time (session_wiring.rs)
 /// so `create_local_llm_session` never needs raw `AppConfig` access.
+///
+/// Fields are populated unconditionally (`session_wiring.rs` calls
+/// `with_local_llm_target` regardless of feature flags) but read only by
+/// `create_local_llm_session`, which is `#[cfg(feature = "analysis")]` — under
+/// `--no-default-features` nothing reads them (#7743 ctd-W3 A2b follow-up).
+/// Kept unconditional per the module comment above (Decision 1): hard-gating
+/// the struct would also require gating its tests below, several of which
+/// exercise `resolve_local_llm_target` directly and should keep running
+/// regardless of `analysis`.
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub(crate) struct LocalLlmTarget {
     /// Scheme + host + port (no trailing path). E.g. `http://localhost:11434`
@@ -171,6 +183,14 @@ pub(crate) fn resolve_local_llm_target(
 // function consumes their outputs.
 
 /// Outcome of model negotiation reported back to the caller.
+///
+/// Consumed only inside `create_local_llm_session`, `#[cfg(feature =
+/// "analysis")]` — under `--no-default-features` nothing constructs or
+/// matches on this, but it stays unconditional (rather than hard-gated) so
+/// the pure-logic unit tests below — which cover this type directly and are
+/// not otherwise `analysis`-gated — keep running regardless of feature
+/// flags (#7743 ctd-W3 A2b follow-up).
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NegotiationOutcome {
     /// The requested model was found in the installed list (exact or tag-
@@ -212,6 +232,11 @@ pub(crate) enum NegotiationOutcome {
 /// base name.  The first matching family member (sorted by the OS order of
 /// `/api/tags`) is selected — no arbitrary cross-family selection is made to
 /// prevent accidentally using an embedding or code model for chat.
+///
+/// See `NegotiationOutcome`'s doc comment: consumed only from the
+/// `analysis`-gated `create_local_llm_session`, but kept unconditional so
+/// its unit tests below run regardless of feature flags.
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 pub(crate) fn negotiate_local_llm_model(
     requested: &str,
     explicit: bool,
@@ -366,7 +391,10 @@ impl SessionManagerImpl {
         inner: Arc<dyn ConversationSession>,
     ) -> Result<Arc<dyn ConversationSession>, CoreError> {
         let guarded: Arc<dyn ConversationSession> = match self.privacy_guard.clone() {
-            Some(guard) => Arc::new(GuardedConversationSession::new(inner, guard)),
+            Some(guard) => Arc::new(
+                GuardedConversationSession::new(inner, guard)
+                    .with_egress_ledger(self.egress_ledger.clone()),
+            ),
             None if inner.is_external() => {
                 return Err(CoreError::PolicyDenied {
                     code: maekon_core::error_codes::PolicyCode::Denied,
@@ -384,7 +412,13 @@ impl SessionManagerImpl {
                 inner
             }
         };
-        Ok(Arc::new(AuditingSession::new(guarded, self.audit.clone())))
+        // #8050: thread the shared LLM-connectivity flag into the outermost
+        // (audit) decorator so every provider's send outcome updates the tray's
+        // "Local LLM" status through this single chokepoint.
+        Ok(Arc::new(
+            AuditingSession::new(guarded, self.audit.clone())
+                .with_llm_health_flag(self.llm_health_flag.clone()),
+        ))
     }
 
     async fn create_subprocess_session(
@@ -635,6 +669,7 @@ impl SessionManagerImpl {
 
         let mut command = tokio::process::Command::new(&surface.executable_path);
         command.args(&transport.app_server_args);
+        append_codex_reasoning_effort(&mut command, &surface.surface_id);
         let client_info = ClientInfo {
             name: "maekon".to_string(),
             title: "Maekon".to_string(),
@@ -645,7 +680,7 @@ impl SessionManagerImpl {
             model: config
                 .model
                 .clone()
-                .unwrap_or_else(|| "gpt-5.4".to_string()),
+                .unwrap_or_else(|| DEFAULT_CODEX_SUBPROCESS_MODEL.to_string()),
             cwd: config.cwd.clone(),
             sandbox_policy: config.sandbox_policy.clone(),
             approval_policy: config.approval_policy.clone(),

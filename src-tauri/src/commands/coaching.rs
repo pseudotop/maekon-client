@@ -1,8 +1,6 @@
-use serde::Serialize;
 use tauri::command;
 
 use crate::ipc_error::IpcError;
-use crate::magic_overlay::OverlayFullscreenPolicyPayload;
 use crate::runtime_state::{AppState, ConfigRuntimeState};
 // ADR-026: `state.storage` is the concrete `Arc<SqliteStorage>`, so the inherent
 // (synchronous) coaching/habit twins would shadow the async trait methods of the
@@ -11,6 +9,55 @@ use crate::runtime_state::{AppState, ConfigRuntimeState};
 // rather than holding the `parking_lot` guard on the async reactor.
 use maekon_core::ports::web_storage::{CoachingQueryStorage, HabitStorage};
 use maekon_storage::sqlite::SqliteStorage;
+
+#[derive(Debug, serde::Serialize)]
+pub struct DebugOverlayInteractiveResponse {
+    pub ok: bool,
+    pub state: Option<crate::magic_overlay::OverlayFullscreenPolicyPayload>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+}
+
+/// Exercise the real overlay interactive/fullscreen policy path for native
+/// debug harnesses without restoring the broad production IPC removed by
+/// #7686.
+#[command]
+pub async fn debug_set_overlay_interactive(
+    state: tauri::State<'_, AppState>,
+    interactive: bool,
+) -> Result<DebugOverlayInteractiveResponse, IpcError> {
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (state, interactive);
+        return Ok(DebugOverlayInteractiveResponse {
+            ok: false,
+            state: None,
+            error_code: Some("debug_only".to_string()),
+            error_message: Some("debug commands are not available in release builds".to_string()),
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let Some(ref overlay) = state.magic_overlay else {
+            return Ok(DebugOverlayInteractiveResponse {
+                ok: false,
+                state: None,
+                error_code: Some("not_found.resource_missing".to_string()),
+                error_message: Some("magic overlay is not initialized".to_string()),
+            });
+        };
+
+        overlay.set_interactive(interactive);
+        Ok(DebugOverlayInteractiveResponse {
+            ok: true,
+            state: overlay.fullscreen_policy_state(),
+            error_code: None,
+            error_message: None,
+        })
+    }
+}
+
 /// Dismiss a coaching overlay message with the given action.
 /// If "later", snoozes the profile for 15 minutes.
 #[command]
@@ -99,109 +146,6 @@ pub async fn submit_coaching_feedback(
     Ok(())
 }
 
-/// Set the overlay display mode (minimal/rich/adaptive).
-#[command]
-pub async fn set_overlay_mode(
-    state: tauri::State<'_, AppState>,
-    mode: String,
-) -> Result<(), IpcError> {
-    use maekon_core::config::OverlayMode;
-
-    let overlay_mode = match mode.as_str() {
-        "minimal" => OverlayMode::Minimal,
-        "rich" => OverlayMode::Rich,
-        "adaptive" => OverlayMode::Adaptive,
-        _ => {
-            return Err(IpcError::new(
-                "validation.invalid_arguments",
-                format!("Invalid overlay mode: {mode}"),
-            ));
-        }
-    };
-
-    if let Some(ref overlay) = state.magic_overlay {
-        overlay.set_mode(overlay_mode).await;
-    }
-    Ok(())
-}
-
-/// Cycle overlay mode: Minimal → Rich → Adaptive → Minimal.
-#[command]
-pub async fn toggle_overlay_mode(state: tauri::State<'_, AppState>) -> Result<String, IpcError> {
-    if let Some(ref overlay) = state.magic_overlay {
-        overlay.toggle_mode().await;
-        let mode = overlay.get_mode().await;
-        Ok(format!("{:?}", mode))
-    } else {
-        // Precondition: overlay must be initialized. The frontend should
-        // retry after overlay activation or surface this as "feature
-        // temporarily unavailable".
-        Err(IpcError::new(
-            "service.unavailable",
-            "overlay not available",
-        ))
-    }
-}
-
-/// Get current overlay state (mode and visibility).
-#[command]
-pub async fn get_overlay_state(
-    state: tauri::State<'_, AppState>,
-) -> Result<OverlayStateResponse, IpcError> {
-    use maekon_core::config::OverlayMode;
-
-    let (mode, visible) = if let Some(ref overlay) = state.magic_overlay {
-        (overlay.get_mode().await, overlay.is_visible().await)
-    } else {
-        (OverlayMode::Minimal, false)
-    };
-
-    Ok(OverlayStateResponse {
-        mode: format!("{:?}", mode).to_lowercase(),
-        visible,
-    })
-}
-
-/// Overlay state response for IPC.
-#[derive(Serialize)]
-pub struct OverlayStateResponse {
-    pub mode: String,
-    pub visible: bool,
-}
-
-/// Fullscreen policy response for overlay IPC diagnostics.
-#[derive(Serialize)]
-pub struct OverlayFullscreenPolicyResponse {
-    pub ok: bool,
-    pub state: Option<OverlayFullscreenPolicyPayload>,
-}
-
-/// Toggle overlay between click-through and interactive modes.
-#[command]
-pub async fn toggle_overlay_interactive(
-    state: tauri::State<'_, AppState>,
-    interactive: bool,
-) -> Result<(), IpcError> {
-    if let Some(ref overlay) = state.magic_overlay {
-        overlay.set_interactive(interactive);
-    }
-    Ok(())
-}
-
-/// Return the latest fullscreen policy decision for overlay triggering.
-#[command]
-pub async fn get_overlay_fullscreen_policy_state(
-    state: tauri::State<'_, AppState>,
-) -> Result<OverlayFullscreenPolicyResponse, IpcError> {
-    Ok(OverlayFullscreenPolicyResponse {
-        ok: true,
-        state: state
-            .magic_overlay
-            .as_ref()
-            .and_then(|overlay| overlay.fullscreen_policy_state()),
-    })
-}
-
 /// Toggle overlay suggestions panel mode.
 ///
 /// When `open = true`, resizes the overlay to a compact strip on the right
@@ -214,9 +158,25 @@ pub async fn toggle_suggestions_panel(
     open: bool,
 ) -> Result<(), IpcError> {
     if let Some(ref overlay) = state.magic_overlay {
-        overlay.set_panel_mode(open).await;
+        // #8858: set_panel_mode routes an OPEN through the single fullscreen
+        // gate, which may suppress it. Reflect the AUTHORITATIVE resolved state
+        // back to the frontend so its reducer never shows an open panel the
+        // native side suppressed (OVL-005). Idempotent on the non-suppressed path.
+        let effective_open = overlay.set_panel_mode(open).await;
+        overlay.emit_suggestions_panel_state(effective_open);
     }
     Ok(())
+}
+
+/// Return the native suggestions-panel state for cold WebView hydration.
+#[command]
+pub async fn get_suggestions_panel_open(
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, IpcError> {
+    match state.magic_overlay.as_ref() {
+        Some(overlay) => Ok(overlay.suggestions_panel_open().await),
+        None => Ok(false),
+    }
 }
 
 /// Toggle overlay automation confirmation mode.

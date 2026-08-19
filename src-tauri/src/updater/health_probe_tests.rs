@@ -84,6 +84,34 @@ fn check_startup_below_failed_boot_threshold_is_normal() {
 }
 
 #[test]
+fn clean_shutdown_before_healthy_threshold_disarms_boot_marker() {
+    let dir = tempdir().unwrap();
+    let backup = dir.path().join("maekon.rollback.1");
+    std::fs::write(&backup, b"backup-bytes").unwrap();
+    write_pending(
+        dir.path(),
+        "0.5.0",
+        &Utc::now().to_rfc3339(),
+        "0.4.39",
+        &backup,
+    );
+
+    let probe = HealthProbe::new(dir.path().to_path_buf(), "0.5.0".into());
+    assert_eq!(probe.check_startup_state(), StartupAction::Normal);
+    assert_eq!(probe.boot_count().unwrap(), 1);
+
+    probe.mark_clean_shutdown().unwrap();
+
+    assert!(dir.path().join(".self_healthy_0.5.0").exists());
+    assert!(!probe.install_pending_path().exists());
+    assert_eq!(
+        probe.boot_count().unwrap(),
+        0,
+        "a clean sub-threshold exit must not count as a failed boot on next launch"
+    );
+}
+
+#[test]
 fn check_startup_at_failed_boot_threshold_triggers_rollback() {
     let dir = tempdir().unwrap();
     let backup = dir.path().join("maekon.rollback.1");

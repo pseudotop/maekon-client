@@ -37,7 +37,6 @@ src-tauri/src/  (패키지: maekon-app)
 ├── updater/                     # 자동 업데이트 (디렉토리 모듈)
 │                                # D9 다중키 Ed25519 trust (trusted_keys.rs), D10 방어적
 │                                # 롤아웃 처리, D11 self-healthy probe + 자동 rollback
-├── focus_analyzer/              # 포커스 분석 (디렉토리 모듈)
 ├── agent_runtime/, session_manager/, session_adapters/, feedback_sink/
 ├── provider_adapters/, subprocess_provider/
 ├── services/                    # 도메인 서비스 (log_helpers 등)
@@ -52,9 +51,9 @@ src-tauri/src/  (패키지: maekon-app)
 ├── auditing_session.rs, auth_cli.rs, bridge_cli.rs, secret_cli.rs
 ├── integrity_guard.rs, integration_policy.rs, integration_insight_source.rs,
 │   integration_prompt_delivery.rs
-├── capture_services.rs, storage_runtime.rs, sync_engine.rs,
+├── capture_services.rs, storage_runtime.rs,
 │   fallback_stt.rs, feature_capabilities.rs
-├── suggestion_manager.rs, workflow_intelligence.rs
+├── suggestion_manager.rs
 ├── bootstrap_preflight.rs
 ├── desktop_permissions.rs, desktop_startup.rs
 ├── oauth_provider_registry.rs, provider_secret_backend.rs
@@ -334,10 +333,13 @@ cargo run -p maekon-app
 
 | 변수 | 필수 | 설명 |
 |------|------|------|
-| `MAEKON_EMAIL` | 연결 모드에서만 ✅ | 로그인 이메일 (standalone 모드에서는 선택) |
-| `MAEKON_PASSWORD` | 연결 모드에서만 ✅ | 로그인 비밀번호 (standalone 모드에서는 선택) |
 | `RUST_LOG` | ❌ | 로그 레벨 (기본: `info`) |
 | `MAEKON_CONFIG` | ❌ | 설정 파일 경로 |
+
+로그인 자격 증명은 환경 변수에서 읽지 않습니다. **로그인** 화면(`/login`,
+명령 팔레트에서 접근) 또는 **설정 → 일반 → 계정**에서 로그인하세요 — 두
+경로는 같은 폼을 렌더링하며, 모두 `--features server` 빌드가 필요합니다.
+서버 URL은 **설정 → 고급 → Network & Server**에서 설정합니다.
 
 ## 테스트
 

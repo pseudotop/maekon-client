@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-simulate-notification-activation"
+description = "Enables the simulate_notification_activation command without any pre-configured scope."
+commands.allow = ["simulate_notification_activation"]
+
+[[permission]]
+identifier = "deny-simulate-notification-activation"
+description = "Denies the simulate_notification_activation command without any pre-configured scope."
+commands.deny = ["simulate_notification_activation"]

@@ -34,8 +34,8 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -69,8 +69,12 @@ jobs:
           ./scripts/cargo-cache.sh install cargo-cyclonedx --locked --force
 
       - name: RustSec audit
-        # F-SC-04: suppression moved to deny.toml [advisories].ignore
-        # so local and CI behavior are identical.
+        # F-SC-04: cargo-audit does not read deny.toml, so its accepted-advisory
+        # suppression lives in .cargo/audit.toml [advisories].ignore, which mirrors
+        # the vulnerability-class IDs in deny.toml [advisories].ignore. Both tools
+        # therefore accept the same advisories, and local `cargo audit` matches CI.
+        # Unmaintained/unsound advisories stay as non-failing cargo-audit warnings
+        # (the F-SC-C37-03 warning channel) and are NOT suppressed here.
         run: ./scripts/cargo-cache.sh audit
 
       - name: License/advisory/source policy

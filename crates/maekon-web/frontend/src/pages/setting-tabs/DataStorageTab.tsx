@@ -1,5 +1,8 @@
 import { useTranslation } from 'react-i18next'
-import { Card, CardTitle, GuidancePanel, Input, Spinner } from '../../components/ui'
+import { useNavigate } from 'react-router-dom'
+import { CaptureReauthDialog } from '../../components/CaptureReauthGate'
+import { TagManagementCard } from '../../components/TagManagementCard'
+import { Alert, Button, Card, CardTitle, GuidancePanel, Input, Spinner } from '../../components/ui'
 import { colors, form, iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { formatBytes, formatNumber } from '../../utils/formatters'
@@ -62,12 +65,14 @@ function ExportButton({ label, description, onClick, loading }: ExportButtonProp
 
 export default function DataStorageTab() {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const { form: formCtx, data } = useSettingsFormContext()
   const formData = useLoadedFormData()
   const storageStats = data.storageStats
   const storageLoading = data.storageLoading
   const exportFormat = formCtx.exportFormat
   const exportLoading = formCtx.exportLoading
+  const exportRecovery = formCtx.exportRecovery
 
   return (
     <div className="space-y-6">
@@ -122,6 +127,13 @@ export default function DataStorageTab() {
                 />
               </div>
             )}
+            {storageStats && (
+              // #8077-B: clarify these are cumulative all-time totals, distinct
+              // from the Dashboard's today-scoped capture/event counts.
+              <p className="mt-3 text-content-tertiary text-xs">
+                {t('settings.storageScopeNote', 'Cumulative totals across all stored data (all-time).')}
+              </p>
+            )}
             {storageStats?.oldest_data_date && storageStats?.newest_data_date && (
               <div className="mt-4 text-content-secondary text-sm">
                 {t('settings.dataRange')}: {storageStats.oldest_data_date.split('T')[0]} ~{' '}
@@ -135,6 +147,28 @@ export default function DataStorageTab() {
       <Card variant="default" padding="lg">
         <CardTitle sticky>{t('settings.exportTitle')}</CardTitle>
         <p className="mb-4 text-content-secondary text-sm">{t('settings.exportDescription')}</p>
+
+        {exportRecovery && (
+          <Alert variant="error" title={t('settings.exportFailed')} className="mb-4" role="alert">
+            <div className="space-y-3">
+              <p>{exportRecovery.detail}</p>
+              <p>
+                {exportRecovery.storageFailure
+                  ? t('settings.exportStorageRecovery')
+                  : t('settings.exportGenericRecovery')}
+              </p>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                isLoading={exportLoading === exportRecovery.dataType}
+                onClick={() => formCtx.handleExport(exportRecovery.dataType)}
+              >
+                {t('settings.exportRetry')}
+              </Button>
+            </div>
+          </Alert>
+        )}
 
         <div className="mb-4 flex items-center gap-4">
           <span className="text-content-strong text-sm">{t('settings.exportFormatLabel')}:</span>
@@ -184,6 +218,16 @@ export default function DataStorageTab() {
         </div>
       </Card>
 
+      <CaptureReauthDialog
+        status={formCtx.exportReauthStatus}
+        onAuthenticated={formCtx.resumeFrameExport}
+        onClose={formCtx.dismissExportReauth}
+        onGoToSettings={() => {
+          formCtx.dismissExportReauth()
+          navigate('/settings/privacy')
+        }}
+      />
+
       <Card variant="default" padding="lg">
         <CardTitle sticky>{t('settings.retentionTitle')}</CardTitle>
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
@@ -218,6 +262,8 @@ export default function DataStorageTab() {
           </div>
         </div>
       </Card>
+
+      <TagManagementCard />
 
       <Card id="section-telemetry" variant="default" padding="lg">
         <CardTitle sticky>{t('settings.telemetryTitle')}</CardTitle>

@@ -1,11 +1,24 @@
 //! Token refresh logic: exponential backoff retry loop + `Retry-After` header parsing.
 
+use std::sync::atomic::Ordering;
 use std::time::Duration as StdDuration;
 
 use maekon_core::error::CoreError;
 use tracing::warn;
 
 use super::tokens::{TokenManager, TokenState, MAX_TOKEN_TTL_SECS};
+use maekon_http_core::resilience::jittered_backoff_delay;
+
+/// Retry ceiling for [`TokenManager::refresh`]. Hoisted to module scope
+/// (rather than a `fn`-local `const`) so tests can pin the backoff envelope
+/// against the exact tuning `refresh()` uses.
+pub(super) const REFRESH_MAX_RETRIES: u32 = 3;
+
+/// Base backoff delay fed to [`jittered_backoff_delay`] by [`TokenManager::refresh`].
+pub(super) const REFRESH_INITIAL_BACKOFF_MS: u64 = 500;
+
+/// Cap on the refresh backoff delay.
+pub(super) const REFRESH_MAX_BACKOFF_MS: u64 = 8_000;
 
 /// Parse a `Retry-After` header value (integer seconds only).
 ///
@@ -31,13 +44,21 @@ impl TokenManager {
     /// `docs/guides/http-status-error-mapping.md` so that telemetry can
     /// distinguish "auth provider is down" from "credentials rejected".
     pub async fn refresh(&self) -> Result<(), CoreError> {
-        const MAX_RETRIES: u32 = 3;
-        const INITIAL_BACKOFF_MS: u64 = 500;
-        const MAX_BACKOFF_MS: u64 = 8_000;
+        const MAX_RETRIES: u32 = REFRESH_MAX_RETRIES;
+        const INITIAL_BACKOFF_MS: u64 = REFRESH_INITIAL_BACKOFF_MS;
+        const MAX_BACKOFF_MS: u64 = REFRESH_MAX_BACKOFF_MS;
 
-        let current = {
+        // #9491: capture the session generation under the SAME read lock as the
+        // snapshot, so the two always describe one session. Every state
+        // transition bumps the counter under the state write lock, so a
+        // different value at commit time means this rotation belongs to a
+        // session that no longer exists.
+        let (current, entry_generation) = {
             let state = self.state.read().await;
-            state.clone()
+            (
+                state.clone(),
+                self.session_generation.load(Ordering::SeqCst),
+            )
         };
 
         let current = current.ok_or_else(|| CoreError::Auth {
@@ -48,6 +69,10 @@ impl TokenManager {
             code: maekon_core::error_codes::AuthCode::Failed,
             message: "Refresh token is missing".to_string(),
         })?;
+        // The refresh response carries token material only, so who the session
+        // belongs to has to survive the swap from the previous state.
+        let identifier = current.identifier.clone();
+        let organization_id = current.organization_id.clone();
 
         let url = format!("{}/api/v1/auth/tokens/refresh", self.base_url);
 
@@ -69,17 +94,17 @@ impl TokenManager {
 
                     if status.is_success() {
                         // #6949: cap the token-refresh success response body (OOM guard)
-                        let token_bytes = crate::outbound::read_body_capped(
+                        let token_bytes = maekon_http_core::outbound::read_body_capped(
                             resp,
-                            crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+                            maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
                         )
                         .await
                         .map_err(|e| match e {
-                            crate::outbound::BodyReadError::Transport(te) => CoreError::Auth {
+                            maekon_http_core::outbound::BodyReadError::Transport(te) => CoreError::Auth {
                                 code: maekon_core::error_codes::AuthCode::Failed,
                                 message: format!("refresh Token parsing failed: {te}"),
                             },
-                            crate::outbound::BodyReadError::TooLarge { len, cap } => {
+                            maekon_http_core::outbound::BodyReadError::TooLarge { len, cap } => {
                                 CoreError::Auth {
                                     code: maekon_core::error_codes::AuthCode::Failed,
                                     message: format!(
@@ -106,11 +131,52 @@ impl TokenManager {
                         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl);
 
                         let mut state = self.state.write().await;
+                        // A session change can land while this refresh is in
+                        // flight: neither `logout()` / `logout_all_sessions()`
+                        // nor `login_with_org()` holds `refresh_lock`, so the
+                        // state can be cleared (and the persisted namespace
+                        // wiped) — and then re-populated by a fresh login,
+                        // possibly for a *different* account — between the
+                        // request above and this write. Committing the rotation
+                        // now would repopulate memory AND re-persist the
+                        // previous session's tokens, identifier, and
+                        // organization: after a plain logout the next launch
+                        // would greet a signed-out user, and after a re-login
+                        // the live session would silently revert to the account
+                        // the user just left (#9491).
+                        //
+                        // The generation captured at entry is the discriminator,
+                        // and it is re-read HERE, under the write lock that
+                        // every transition also holds — so the comparison
+                        // cannot race a concurrent login/logout. It subsumes the
+                        // old bare `state.is_none()` post-logout check (a logout
+                        // bumps the generation too); `is_none()` is retained
+                        // only as a backstop for a state written directly,
+                        // outside the transition helpers.
+                        let superseded =
+                            self.session_generation.load(Ordering::SeqCst) != entry_generation;
+                        if superseded || state.is_none() {
+                            drop(state);
+                            tracing::debug!(
+                                superseded,
+                                "token refresh completed after the session changed; \
+                                 rotated tokens discarded"
+                            );
+                            return Err(CoreError::Auth {
+                                code: maekon_core::error_codes::AuthCode::Failed,
+                                message: "Not authenticated (session ended during refresh)"
+                                    .to_string(),
+                            });
+                        }
                         *state = Some(TokenState {
                             access_token: token_resp.access_token,
                             refresh_token: token_resp.refresh_token.or(Some(refresh_token.clone())),
                             expires_at,
+                            identifier: identifier.clone(),
+                            organization_id: organization_id.clone(),
                         });
+                        drop(state);
+                        self.persist_current_state().await;
 
                         tracing::debug!("token refresh success, expires_at: {expires_at}");
                         return Ok(());
@@ -133,9 +199,9 @@ impl TokenManager {
                     let is_retryable = status.is_server_error() || status.as_u16() == 429;
 
                     // #6949: cap the token-refresh error response body (OOM guard)
-                    let text = crate::outbound::read_text_capped(
+                    let text = maekon_http_core::outbound::read_text_capped(
                         resp,
-                        crate::outbound::MAX_AUTH_RESPONSE_BYTES,
+                        maekon_http_core::outbound::MAX_AUTH_RESPONSE_BYTES,
                     )
                     .await
                     .unwrap_or_default();
@@ -185,14 +251,23 @@ impl TokenManager {
             }
 
             if attempt < MAX_RETRIES {
-                let backoff_ms = (INITIAL_BACKOFF_MS * 2u64.pow(attempt)).min(MAX_BACKOFF_MS);
+                // #7725: adopted `resilience::jittered_backoff_delay` in place of
+                // the hand-rolled `(INITIAL_BACKOFF_MS * 2u64.pow(attempt)).min(MAX_BACKOFF_MS)`
+                // doubling (found during the #7725 fix-class completeness sweep,
+                // beyond the originally-flagged sites — same crate as the shared
+                // helper, so the adoption is mechanical).
+                let delay = jittered_backoff_delay(
+                    attempt,
+                    StdDuration::from_millis(INITIAL_BACKOFF_MS),
+                    StdDuration::from_millis(MAX_BACKOFF_MS),
+                );
                 warn!(
                     attempt = attempt + 1,
                     max = MAX_RETRIES,
-                    backoff_ms,
+                    backoff_ms = delay.as_millis() as u64,
                     "token refresh failed, retrying"
                 );
-                tokio::time::sleep(StdDuration::from_millis(backoff_ms)).await;
+                tokio::time::sleep(delay).await;
             }
         }
 

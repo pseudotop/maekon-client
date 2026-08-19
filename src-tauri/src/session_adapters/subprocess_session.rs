@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard, RwLock};
 use uuid::Uuid;
 
 use maekon_api_contracts::provider_specs::{default_surface_model, provider_surface_spec};
@@ -28,9 +28,10 @@ use crate::session_adapters::prompt_payload::{
 };
 use crate::session_adapters::task_guard::AbortOnDropJoin;
 use crate::subprocess_provider::{
-    append_model_flag, append_oneshot_flags, classify_subprocess_error_with_redactions,
-    sanitize_subprocess_error_output, write_prompt_and_collect_output, DetectedSubprocessCli,
-    SubprocessKind,
+    append_codex_reasoning_effort, append_model_flag, append_oneshot_flags,
+    classify_subprocess_error_with_redactions, sanitize_subprocess_error_output,
+    write_prompt_and_collect_output, DetectedSubprocessCli, SubprocessKind,
+    DEFAULT_CODEX_SUBPROCESS_MODEL,
 };
 use tracing::debug;
 
@@ -45,6 +46,7 @@ pub struct GenericSubprocessSession {
     system_prompt: Option<String>,
     default_tools: Option<Vec<ToolDefinition>>,
     history: Arc<RwLock<Vec<ChatMessage>>>,
+    send_lock: Arc<AsyncMutex<()>>,
     state: Mutex<SessionState>,
     turn_count: AtomicU32,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -75,7 +77,7 @@ impl GenericSubprocessSession {
                 .ok()
                 .flatten()
             })
-            .unwrap_or_else(|| "gpt-5.4".to_string());
+            .unwrap_or_else(|| DEFAULT_CODEX_SUBPROCESS_MODEL.to_string());
 
         let provider_name = provider_surface_spec(&surface.surface_id)
             .map(|spec| spec.vendor_id.clone())
@@ -100,6 +102,7 @@ impl GenericSubprocessSession {
             system_prompt: config.system_prompt.clone(),
             default_tools,
             history: Arc::new(RwLock::new(Vec::new())),
+            send_lock: Arc::new(AsyncMutex::new(())),
             state: Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),
             created_at: Utc::now(),
@@ -158,6 +161,7 @@ impl GenericSubprocessSession {
             .kill_on_drop(true);
         append_oneshot_flags(&mut child, &self.surface.surface_id);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
+        append_codex_reasoning_effort(&mut child, &self.surface.surface_id);
 
         let child = child.spawn().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
@@ -228,6 +232,7 @@ impl GenericSubprocessSession {
     async fn send_gemini_message_stream(
         &self,
         prompt: String,
+        turn_guard: OwnedMutexGuard<()>,
     ) -> Result<ResponseStream, CoreError> {
         let temp_dir = tempdir().map_err(|err| CoreError::Internal {
             code: maekon_core::error_codes::InternalCode::Generic,
@@ -279,6 +284,7 @@ impl GenericSubprocessSession {
         let prompt_redaction = prompt.clone();
 
         let stream: ResponseStream = Box::pin(try_stream! {
+            let _turn_guard = turn_guard;
             let _temp_dir = temp_dir;
             let _stdin_writer = stdin_writer;
             let stdout_task = AbortOnDropJoin::new(tokio::spawn(async move {
@@ -396,6 +402,7 @@ impl GenericSubprocessSession {
     async fn send_codex_message(
         &self,
         message: &SessionMessage,
+        turn_guard: OwnedMutexGuard<()>,
     ) -> Result<ResponseStream, CoreError> {
         let rendered_user_message = render_message_payload(message, self.default_tools.as_deref());
 
@@ -435,6 +442,7 @@ impl GenericSubprocessSession {
             .kill_on_drop(true);
         append_oneshot_flags(&mut child, &self.surface.surface_id);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
+        append_codex_reasoning_effort(&mut child, &self.surface.surface_id);
 
         if let Some(schema) = response_schema.as_ref() {
             let schema_path = temp_dir.path().join("output-schema.json");
@@ -494,6 +502,7 @@ impl GenericSubprocessSession {
         let prompt_redaction = prompt.clone();
 
         let stream: ResponseStream = Box::pin(try_stream! {
+            let _turn_guard = turn_guard;
             let _temp_dir = temp_dir;
             // #6266: keep the concurrent stdin writer alive for the stream's
             // lifetime (aborted on drop) — it drains the prompt into the child
@@ -633,13 +642,15 @@ impl GenericSubprocessSession {
 #[async_trait]
 impl ConversationSession for GenericSubprocessSession {
     async fn send_message(&self, message: &SessionMessage) -> Result<ResponseStream, CoreError> {
+        let turn_guard = self.send_lock.clone().lock_owned().await;
+
         // B3 SSOT: route by catalog invocation mode, not surface_id string.
         // Codex exec gets the streaming JSON-event path; other modes fall
         // through to the one-shot `invoke_surface` path.
         if self.invocation_mode
             == maekon_api_contracts::provider_specs::SubprocessInvocationMode::CodexExecJson
         {
-            return self.send_codex_message(message).await;
+            return self.send_codex_message(message, turn_guard).await;
         }
 
         let rendered_user_message = render_message_payload(message, self.default_tools.as_deref());
@@ -664,7 +675,7 @@ impl ConversationSession for GenericSubprocessSession {
         if self.invocation_mode
             == maekon_api_contracts::provider_specs::SubprocessInvocationMode::GeminiCliPrompt
         {
-            return self.send_gemini_message_stream(prompt).await;
+            return self.send_gemini_message_stream(prompt, turn_guard).await;
         }
 
         let output = self.invoke_surface(&prompt).await.inspect_err(|_| {
@@ -675,6 +686,7 @@ impl ConversationSession for GenericSubprocessSession {
         let provider_name = self.provider_name.clone();
 
         let stream: ResponseStream = Box::pin(try_stream! {
+            let _turn_guard = turn_guard;
             if output.is_empty() {
                 // Iter-106: subprocess CLI returning empty output is a
                 // provider (Analysis) failure, consistent with iter-93's
@@ -1300,6 +1312,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gemini_send_message_serializes_until_stream_drops() {
+        let temp_dir = tempdir().expect("tempdir");
+        let executable_path = write_fake_sleeping_gemini_cli(temp_dir.path());
+        let session = Arc::new(gemini_session_with_executable(executable_path));
+
+        let first_stream = session
+            .send_message(&basic_session_message("first"))
+            .await
+            .expect("first stream should start");
+
+        let mut second = {
+            let session = session.clone();
+            tokio::spawn(
+                async move { session.send_message(&basic_session_message("second")).await },
+            )
+        };
+
+        // `ResponseStream` (the Ok type) is not `Debug`, so `.expect_err()` cannot be used
+        // here (it would need to format the Ok value); extract the concrete `Elapsed` via
+        // `.err()` instead — this still asserts the timeout actually fired, not merely a
+        // boolean `is_err()`.
+        tokio::time::timeout(Duration::from_millis(100), &mut second)
+            .await
+            .err()
+            .expect("second turn must wait while the first turn stream is still alive");
+
+        drop(first_stream);
+        let second_stream = tokio::time::timeout(Duration::from_millis(500), second)
+            .await
+            .expect("second turn should start once the first stream drops")
+            .expect("second task should not panic")
+            .expect("second send_message should succeed");
+        drop(second_stream);
+    }
+
+    #[tokio::test]
     async fn gemini_session_result_includes_usage_for_budget() {
         let temp_dir = tempdir().expect("tempdir");
         let executable_path = write_fake_gemini_session_cli(temp_dir.path());
@@ -1363,6 +1411,7 @@ mod tests {
                 })),
             }]),
             history: Arc::new(RwLock::new(Vec::new())),
+            send_lock: Arc::new(AsyncMutex::new(())),
             state: Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),
             created_at: Utc::now(),
@@ -1374,6 +1423,7 @@ mod tests {
         };
 
         let message = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "Summarize this".to_string(),
             attachments: vec![],
@@ -1484,6 +1534,7 @@ mod tests {
 
     fn basic_session_message(content: &str) -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: content.to_string(),
             attachments: vec![],
@@ -1507,6 +1558,7 @@ mod tests {
             system_prompt: None,
             default_tools: None,
             history: Arc::new(RwLock::new(Vec::new())),
+            send_lock: Arc::new(AsyncMutex::new(())),
             state: Mutex::new(SessionState::Active),
             turn_count: AtomicU32::new(0),
             created_at: Utc::now(),
@@ -1624,5 +1676,42 @@ fn main() {
             None,
         );
         assert!(session.is_external());
+    }
+
+    fn codex_session_with_model(model: Option<&str>) -> GenericSubprocessSession {
+        GenericSubprocessSession::new(
+            DetectedSubprocessCli {
+                surface_id: "provider_surface.openai.subprocess_cli".to_string(),
+                executable_path: std::path::PathBuf::from("/usr/bin/false"),
+            },
+            &SessionConfig {
+                transport: SessionTransport::Subprocess,
+                surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
+                model: model.map(str::to_string),
+                system_prompt: None,
+                tools_enabled: false,
+                cwd: None,
+                sandbox_policy: None,
+                approval_policy: None,
+            },
+            Arc::new(AiSessionConfig::default()),
+            None,
+        )
+    }
+
+    #[test]
+    fn generic_codex_session_reports_gpt_5_6_sol_by_default() {
+        let session = codex_session_with_model(None);
+
+        assert_eq!(session.info().model, "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn generic_codex_session_preserves_explicit_gpt_5_6_overrides() {
+        for model in ["gpt-5.6-terra", "gpt-5.6-luna"] {
+            let session = codex_session_with_model(Some(model));
+
+            assert_eq!(session.info().model, model);
+        }
     }
 }

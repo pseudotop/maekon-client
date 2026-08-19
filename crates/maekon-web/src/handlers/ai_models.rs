@@ -35,9 +35,7 @@ mod tests {
         ProviderModelCatalogError, ProviderModelCatalogPort, ProviderModelCatalogRequest,
         ProviderModelCatalogResponse,
     };
-    use maekon_storage::sqlite::SqliteStorage;
     use std::sync::Arc;
-    use tokio::sync::broadcast;
 
     #[derive(Clone)]
     struct FixedStatusModelCatalogPort {
@@ -58,10 +56,9 @@ mod tests {
         }
     }
 
+    // #7738 D-4: funnel through the canonical test-state helper.
     fn test_state() -> AppState {
-        let storage = Arc::new(SqliteStorage::open_in_memory(30).unwrap());
-        let (event_tx, _) = broadcast::channel(16);
-        AppState::with_core(storage, event_tx)
+        crate::test_local_auth::test_app_state()
     }
 
     fn test_context() -> AiModelCatalogWebContext {
@@ -104,7 +101,10 @@ mod tests {
         let request = ProviderModelsRequest {
             provider_type: "openai".to_string(),
             api_key: "sk-test".to_string(),
-            endpoint: Some("https://example.test/v1/models".to_string()),
+            // The in-process catalog port is the unit under test. A loopback literal keeps this
+            // fixture independent of DNS while following the local discovery path's documented
+            // loopback exception, so execution reaches the injected fixed-status transport.
+            endpoint: Some("http://127.0.0.1/v1/models".to_string()),
             surface: Some("llm_api".to_string()),
             surface_id: Some("provider_surface.openai.direct_api".to_string()),
             use_saved_secret: false,

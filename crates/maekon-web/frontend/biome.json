@@ -42,7 +42,7 @@
     "enabled": true,
     "indentStyle": "space",
     "indentWidth": 2,
-    "lineEnding": "auto",
+    "lineEnding": "lf",
     "lineWidth": 120
   },
   "javascript": {

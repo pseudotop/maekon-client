@@ -328,48 +328,6 @@ pub struct CategoryUsage {
     pub session_count: u32,
 }
 
-#[deprecated(
-    since = "0.4.0",
-    note = "Use maekon_core::models::suggestion::Suggestion with SuggestionSource::RuleBased instead"
-)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum LocalSuggestion {
-    NeedFocusTime {
-        communication_ratio: f32,
-        suggested_focus_mins: u32,
-    },
-    TakeBreak {
-        continuous_work_mins: u32,
-    },
-    RestoreContext {
-        interrupted_app: String,
-        interrupted_at: DateTime<Utc>,
-        snapshot_frame_id: i64,
-    },
-    PatternDetected {
-        pattern_description: String,
-        confidence: f32,
-    },
-    ExcessiveCommunication {
-        today_communication_mins: u32,
-        avg_communication_mins: u32,
-    },
-}
-
-#[allow(deprecated)]
-impl LocalSuggestion {
-    pub fn priority(&self) -> u8 {
-        match self {
-            Self::RestoreContext { .. } => 100, // immediate recovery needed
-            Self::TakeBreak { .. } => 80,
-            Self::NeedFocusTime { .. } => 60,
-            Self::ExcessiveCommunication { .. } => 40,
-            Self::PatternDetected { .. } => 20,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,19 +407,192 @@ mod tests {
         assert!((metrics.deep_work_ratio() - 0.667).abs() < 0.01);
         assert!((metrics.communication_ratio() - 0.333).abs() < 0.01);
     }
+}
+
+/// #10197 Wave 1: mutation guards for the app classifier and focus metrics.
+///
+/// The full-crate measurement (run 31027028682) left 74 surviving mutants in
+/// this file, 55 of them `||` -> `&&` inside `from_app_name`'s keyword chains:
+/// the existing test checked ONE keyword per category, so every other arm
+/// could flip silently. The classifier feeds deep-work/communication ratios,
+/// so a silently narrowed chain skews focus analytics rather than crashing.
+///
+/// The table below carries one input per keyword arm. Each input is chosen to
+/// match its own arm FIRST (chains are ordered, first category wins), which
+/// makes each `||` independently load-bearing.
+#[cfg(test)]
+mod mutation_guard_tests {
+    use super::*;
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    /// One entry per keyword arm, in chain order. Two known shadowed arms are
+    /// deliberately still listed with their own keyword ("gmail" contains
+    /// "mail", "neovim" contains "vim" — the earlier arm always matches first,
+    /// so those rows guard chain-restructuring mutants rather than the arm
+    /// itself; a survivor pinned to exactly those operators is equivalent).
+    const KEYWORD_TABLE: &[(&str, AppCategory)] = &[
+        // Communication
+        ("slack", AppCategory::Communication),
+        ("teams", AppCategory::Communication),
+        ("discord", AppCategory::Communication),
+        ("zoom", AppCategory::Communication),
+        ("meet", AppCategory::Communication),
+        ("mail", AppCategory::Communication),
+        ("outlook", AppCategory::Communication),
+        ("gmail", AppCategory::Communication),
+        ("messages", AppCategory::Communication),
+        ("kakaotalk", AppCategory::Communication),
+        ("telegram", AppCategory::Communication),
+        ("thunderbird", AppCategory::Communication),
+        ("whatsapp", AppCategory::Communication),
+        // Development
+        ("code", AppCategory::Development),
+        ("visual studio", AppCategory::Development),
+        ("intellij", AppCategory::Development),
+        ("pycharm", AppCategory::Development),
+        ("webstorm", AppCategory::Development),
+        ("android studio", AppCategory::Development),
+        ("xcode", AppCategory::Development),
+        ("terminal", AppCategory::Development),
+        ("iterm", AppCategory::Development),
+        ("warp", AppCategory::Development),
+        ("alacritty", AppCategory::Development),
+        ("cursor", AppCategory::Development),
+        ("vim", AppCategory::Development),
+        ("neovim", AppCategory::Development),
+        ("emacs", AppCategory::Development),
+        ("git", AppCategory::Development),
+        ("sourcetree", AppCategory::Development),
+        ("postman", AppCategory::Development),
+        ("insomnia", AppCategory::Development),
+        // Documentation
+        ("notion", AppCategory::Documentation),
+        ("confluence", AppCategory::Documentation),
+        ("word", AppCategory::Documentation),
+        ("excel", AppCategory::Documentation),
+        ("powerpoint", AppCategory::Documentation),
+        ("pages", AppCategory::Documentation),
+        ("numbers", AppCategory::Documentation),
+        ("keynote", AppCategory::Documentation),
+        ("google docs", AppCategory::Documentation),
+        ("obsidian", AppCategory::Documentation),
+        ("typora", AppCategory::Documentation),
+        // Browser
+        ("chrome", AppCategory::Browser),
+        ("safari", AppCategory::Browser),
+        ("firefox", AppCategory::Browser),
+        ("edge", AppCategory::Browser),
+        ("arc", AppCategory::Browser),
+        ("brave", AppCategory::Browser),
+        ("opera", AppCategory::Browser),
+        // Design
+        ("figma", AppCategory::Design),
+        ("sketch", AppCategory::Design),
+        ("photoshop", AppCategory::Design),
+        ("illustrator", AppCategory::Design),
+        ("canva", AppCategory::Design),
+        // Media
+        ("spotify", AppCategory::Media),
+        ("music", AppCategory::Media),
+        ("youtube", AppCategory::Media),
+        ("netflix", AppCategory::Media),
+        ("vlc", AppCategory::Media),
+        // System
+        ("finder", AppCategory::System),
+        ("explorer", AppCategory::System),
+        ("settings", AppCategory::System),
+        ("system preferences", AppCategory::System),
+        ("activity monitor", AppCategory::System),
+        ("task manager", AppCategory::System),
+    ];
 
     #[test]
-    #[allow(deprecated)]
-    fn local_suggestion_priority() {
-        let restore = LocalSuggestion::RestoreContext {
-            interrupted_app: "Code".to_string(),
-            interrupted_at: Utc::now(),
-            snapshot_frame_id: 1,
-        };
-        let break_suggestion = LocalSuggestion::TakeBreak {
-            continuous_work_mins: 120,
-        };
+    fn every_keyword_arm_classifies_on_its_own() {
+        for (input, expected) in KEYWORD_TABLE {
+            assert_eq!(
+                AppCategory::from_app_name(input),
+                *expected,
+                "keyword {input:?} must reach {expected:?} through its own arm"
+            );
+        }
+    }
 
-        assert!(restore.priority() > break_suggestion.priority());
+    #[test]
+    fn classification_is_case_insensitive_and_substring_based() {
+        // Real app names embed the keyword; the classifier lowercases first.
+        assert_eq!(
+            AppCategory::from_app_name("KakaoTalk Desktop"),
+            AppCategory::Communication
+        );
+        assert_eq!(
+            AppCategory::from_app_name("Activity Monitor"),
+            AppCategory::System
+        );
+    }
+
+    #[test]
+    fn every_category_string_round_trips() {
+        // from_category_str's match arms are delete-arm mutant targets: a
+        // deleted arm falls through to Other and only an exact assertion per
+        // arm catches it. The strings mirror serde's snake_case names.
+        let cases = [
+            ("communication", AppCategory::Communication),
+            ("development", AppCategory::Development),
+            ("documentation", AppCategory::Documentation),
+            ("browser", AppCategory::Browser),
+            ("design", AppCategory::Design),
+            ("media", AppCategory::Media),
+            ("system", AppCategory::System),
+            ("other", AppCategory::Other),
+        ];
+        for (s, expected) in cases {
+            assert_eq!(AppCategory::from_category_str(s), expected, "arm {s:?}");
+            // Case-insensitivity is part of the contract.
+            assert_eq!(
+                AppCategory::from_category_str(&s.to_uppercase()),
+                expected,
+                "uppercase arm {s:?}"
+            );
+        }
+        assert_eq!(
+            AppCategory::from_category_str("no-such-category"),
+            AppCategory::Other
+        );
+    }
+
+    #[test]
+    fn is_active_reflects_the_session_state() {
+        let mut session = WorkSession::new(1, "slack".to_string());
+        assert!(session.is_active(), "a new session starts Active");
+        session.state = SessionState::EndedByIdle;
+        assert!(!session.is_active(), "an ended session is not active");
+    }
+
+    #[test]
+    fn interruptions_per_hour_divides_count_by_window_hours() {
+        // A 2-hour window with 6 interruptions is 3.0/h — a value that
+        // distinguishes the real quotient from the constant-replacement
+        // mutants (0.0 / 1.0 / -1.0) AND from count-only or hours-only forms.
+        let start = Utc::now();
+        let end = start + ChronoDuration::hours(2);
+        let mut metrics = FocusMetrics::new(start, end).expect("valid window");
+        metrics.interruption_count = 6;
+        let per_hour = metrics.interruptions_per_hour();
+        assert!(
+            (per_hour - 3.0).abs() < f32::EPSILON,
+            "6 interruptions over 2h must be 3.0/h, got {per_hour}"
+        );
+    }
+
+    #[test]
+    fn interruptions_per_hour_is_zero_for_an_empty_window() {
+        let start = Utc::now();
+        let mut metrics = FocusMetrics::new(start, start).expect("degenerate window is valid");
+        metrics.interruption_count = 5;
+        assert_eq!(
+            metrics.interruptions_per_hour(),
+            0.0,
+            "zero-length window must not divide by zero"
+        );
     }
 }

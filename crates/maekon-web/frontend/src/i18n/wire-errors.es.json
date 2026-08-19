@@ -15,6 +15,7 @@
   "config.invalid": "Configuración no válida: {message}",
   "config.missing": "Falta una configuración obligatoria: {message}",
   "config.out_of_range": "Valor de configuración fuera de rango: {message}",
+  "config.schema_too_new": "Esta configuración requiere una versión más reciente de Maekon: {message}",
   "consent.expired": "Tu consentimiento ha caducado — renuévalo en los ajustes",
   "consent.required": "Esta función requiere tu consentimiento explícito: {message}",
   "gui.bad_request": "La solicitud de la GUI no era válida: {message}",

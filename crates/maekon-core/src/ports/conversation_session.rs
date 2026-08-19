@@ -45,6 +45,23 @@ pub trait ConversationSession: Send + Sync {
     /// Default implementation is a no-op for backwards compatibility.
     async fn terminate(&self) {}
 
+    /// Whether a retry after a stream failure can re-establish this session's
+    /// backend IN PLACE (reusing the same session handle) — #8057 (P3, #4872).
+    ///
+    /// Per-turn re-spawn backends (the Claude CLI re-runs with `--continue` on
+    /// every turn) self-heal transparently: a transient process death is gone by
+    /// the next `send_message`, so the default is `true`.
+    ///
+    /// A backend that owns ONE long-lived process (the Codex `app-server`) does
+    /// NOT: once that process dies the held handle is permanently dead and every
+    /// subsequent `send_message` re-fails. Such backends override this to `false`
+    /// so the manager surfaces an honest "re-create the session" error instead of
+    /// a misleading "recovered" transition (`recover_session`). Rebuilding the
+    /// thread via `resume` is tracked separately (#4872).
+    fn can_self_heal_on_retry(&self) -> bool {
+        true
+    }
+
     /// Whether this session transmits conversation content to an external
     /// provider — a cloud HTTP API or a provider-owned CLI subprocess.
     ///
@@ -165,6 +182,9 @@ pub trait SessionManager: Send + Sync {
     /// Reset idle timer for a session (keeps it alive during active use).
     async fn touch_session(&self, session_id: &str);
 
+    /// Record a successful completed turn and reset transient retry budget.
+    async fn record_success(&self, session_id: &str);
+
     /// Report an adapter-level failure. Returns the resulting session state.
     async fn report_failure(&self, session_id: &str, error: &CoreError) -> SessionState;
 
@@ -257,6 +277,7 @@ mod tests {
 
     fn user_msg() -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: crate::models::ai_session::MessageRole::User,
             content: "steer me".to_string(),
             attachments: vec![],

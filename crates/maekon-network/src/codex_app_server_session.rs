@@ -33,6 +33,15 @@ use crate::codex_app_server::{
 };
 use crate::mutex_ext::lock_or_recover;
 
+/// #8057 (P2-3, #4865): default max idle gap between a turn's app-server
+/// notifications before the drain loop force-terminates the turn. The JSON-RPC
+/// request timeout bounds request/response correlation only, NOT the
+/// notification stream — a live provider that never emits `turn/completed`
+/// would otherwise pin the owned notifications lock forever, deadlocking the
+/// next `send_message`. Codex streams continuously, so a multi-minute gap
+/// between ANY notification means the turn is wedged.
+const DEFAULT_TURN_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Map a transport-level failure onto the shared `CoreError` wire taxonomy.
 fn map_transport_error(err: TransportError) -> CoreError {
     match err {
@@ -204,6 +213,9 @@ pub struct CodexAppServerSession {
     /// per-turn drain writes it.
     current_turn_id: Arc<StdMutex<Option<String>>>,
     notifications: Arc<AsyncMutex<UnboundedReceiver<Notification>>>,
+    /// #8057 (P2-3): per-turn idle timeout for the notification drain loop.
+    /// Defaults to [`DEFAULT_TURN_IDLE_TIMEOUT`]; tests inject a short value.
+    turn_idle_timeout: std::time::Duration,
     /// The spawned approval-loop task, aborted on session drop (#4870). `None`
     /// when no decider was supplied (plain #4866 sessions / tests).
     approval_task: StdMutex<Option<tokio::task::JoinHandle<()>>>,
@@ -385,8 +397,19 @@ impl CodexAppServerSession {
             state: StdMutex::new(SessionState::Active),
             current_turn_id: Arc::new(StdMutex::new(None)),
             notifications: Arc::new(AsyncMutex::new(notifications)),
+            turn_idle_timeout: DEFAULT_TURN_IDLE_TIMEOUT,
             approval_task: StdMutex::new(approval_task),
         }
+    }
+
+    /// #8057 (P2-3): override the per-turn notification idle timeout (default
+    /// [`DEFAULT_TURN_IDLE_TIMEOUT`]). Exposed so a factory can tune it and so
+    /// integration tests can inject a short value to exercise the wedged-turn
+    /// termination path without waiting the production default.
+    #[must_use]
+    pub fn with_turn_idle_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.turn_idle_timeout = timeout;
+        self
     }
 
     /// The parsed `initialize` response from the underlying app-server process
@@ -562,6 +585,7 @@ impl ConversationSession for CodexAppServerSession {
         //     answer stream.
         //   - anything else              → graceful debug log, never panic.
         let current_turn_id = self.current_turn_id.clone();
+        let turn_idle_timeout = self.turn_idle_timeout;
         // `guard` (the pre-drained, still-held owned notifications lock) is moved
         // into the stream so this turn keeps exclusive access from the drain
         // point through the recv loop — no other turn can interleave on the
@@ -573,7 +597,36 @@ impl ConversationSession for CodexAppServerSession {
             // (`tokenUsage.last`) DURING the turn, not on `turn/completed`. Capture
             // the latest and attach it to the terminal Result.
             let mut latest_usage: Option<TokenUsage> = None;
-            while let Some(note) = guard.recv().await {
+            loop {
+                // #8057 (P2-3, #4865): bound the wait for EACH notification so a
+                // wedged provider (alive, but no `turn/completed`) cannot block
+                // this `recv` forever holding the owned lock. On idle-elapse,
+                // yield a terminal error and break so the guard drops.
+                let note = match tokio::time::timeout(turn_idle_timeout, guard.recv()).await {
+                    Ok(Some(note)) => note,
+                    // Channel closed (process died mid-turn): end the drain; the
+                    // command layer's P2-2 guard emits a synthetic terminal.
+                    Ok(None) => break,
+                    Err(_elapsed) => {
+                        *lock_or_recover(
+                            &current_turn_id,
+                            "codex_app_server_session.current_turn_id",
+                        ) = None;
+                        tracing::warn!(
+                            idle_timeout_secs = turn_idle_timeout.as_secs(),
+                            "codex turn idle timeout — terminating turn (#4865)"
+                        );
+                        yield OutboundMessage::Error {
+                            code: "turn_timeout".to_string(),
+                            message: format!(
+                                "codex turn produced no notification for {}s",
+                                turn_idle_timeout.as_secs()
+                            ),
+                            retryable: true,
+                        };
+                        break;
+                    }
+                };
                 match note.method.as_str() {
                     // E21 #5017: a `turn/started` notification is a fallback
                     // source for the turn id when turn/start's result omitted it.
@@ -692,6 +745,16 @@ impl ConversationSession for CodexAppServerSession {
     fn is_external(&self) -> bool {
         // app-server egresses chat content off-device → must be guarded (#4869).
         true
+    }
+
+    fn can_self_heal_on_retry(&self) -> bool {
+        // #8057 (P3, #4872): this backend owns ONE long-lived app-server process.
+        // Once it dies the held handle is permanently dead — a retry that merely
+        // flips state back to Active would re-fail on the next send. Report false
+        // so `recover_session` surfaces an honest "re-create the session" error
+        // instead of a misleading "recovered" transition. In-place thread rebuild
+        // via `resume` is tracked in #4872.
+        false
     }
 
     /// Interrupt (cancel) the in-flight turn via the app-server `turn/interrupt`
@@ -912,6 +975,7 @@ done"#,
                 .unwrap();
 
         let msg = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],
@@ -990,6 +1054,7 @@ done"#,
     /// Build a `SessionMessage` carrying `content` as a user turn.
     fn user_msg(content: &str) -> SessionMessage {
         SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: content.to_string(),
             attachments: vec![],
@@ -1378,6 +1443,7 @@ done"#,
                 .unwrap();
 
         let msg = SessionMessage {
+            screen_derived: false,
             role: MessageRole::User,
             content: "hi".to_string(),
             attachments: vec![],

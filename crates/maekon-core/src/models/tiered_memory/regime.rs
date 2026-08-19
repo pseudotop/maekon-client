@@ -104,6 +104,104 @@ pub struct Regime {
     pub status: RegimeStatus,
 }
 
+/// Resolve the human-readable label for a regime id against a regime list.
+///
+/// Prefers the `Active` entry for the id (defense-in-depth against a stale
+/// duplicate-id `Inactive` entry, mirroring the monitor loop's regime
+/// resolution), then falls back to any entry with the id. Returns the `name`
+/// when set, otherwise the auto-generated `auto_label`. `None` when the id is
+/// absent — callers should pass the absence through to another signal (e.g.
+/// `dominant_category`) rather than leaking the opaque positional id
+/// ("regime-N") downstream (#7480, #7678 D2).
+pub fn resolve_regime_label(regimes: &[Regime], regime_id: &str) -> Option<String> {
+    regimes
+        .iter()
+        .find(|r| r.regime_id == regime_id && r.status == RegimeStatus::Active)
+        .or_else(|| regimes.iter().find(|r| r.regime_id == regime_id))
+        .map(|r| r.name.clone().unwrap_or_else(|| r.auto_label.clone()))
+}
+
+#[cfg(test)]
+mod resolve_regime_label_tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn make_regime(id: &str, name: Option<&str>, auto_label: &str, status: RegimeStatus) -> Regime {
+        Regime {
+            regime_id: id.to_string(),
+            name: name.map(String::from),
+            auto_label: auto_label.to_string(),
+            centroid: RegimeFeatures::default(),
+            optimal_params: TriggerParams::default(),
+            sample_count: 1,
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            status,
+        }
+    }
+
+    #[test]
+    fn prefers_name_over_auto_label() {
+        let regimes = vec![make_regime(
+            "regime-0",
+            Some("Deep Focus"),
+            "auto-label-0",
+            RegimeStatus::Active,
+        )];
+        assert_eq!(
+            resolve_regime_label(&regimes, "regime-0").as_deref(),
+            Some("Deep Focus")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_auto_label_when_name_absent() {
+        let regimes = vec![make_regime(
+            "regime-0",
+            None,
+            "auto-label-0",
+            RegimeStatus::Active,
+        )];
+        assert_eq!(
+            resolve_regime_label(&regimes, "regime-0").as_deref(),
+            Some("auto-label-0")
+        );
+    }
+
+    #[test]
+    fn prefers_active_entry_over_stale_duplicate_id_inactive_entry() {
+        let regimes = vec![
+            make_regime(
+                "regime-0",
+                Some("Stale Name"),
+                "stale",
+                RegimeStatus::Inactive,
+            ),
+            make_regime(
+                "regime-0",
+                Some("Fresh Name"),
+                "fresh",
+                RegimeStatus::Active,
+            ),
+        ];
+        assert_eq!(
+            resolve_regime_label(&regimes, "regime-0").as_deref(),
+            Some("Fresh Name")
+        );
+    }
+
+    #[test]
+    fn unknown_id_returns_none_rather_than_leaking_opaque_id() {
+        let regimes = vec![make_regime(
+            "regime-0",
+            Some("Deep Focus"),
+            "auto-label-0",
+            RegimeStatus::Active,
+        )];
+        assert_eq!(resolve_regime_label(&regimes, "regime-9"), None);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RegimeNotification — regime transition events
 // ---------------------------------------------------------------------------
@@ -115,4 +213,28 @@ pub enum RegimeNotification {
     RegimeChanged { from: Option<String>, to: String },
     /// A new regime was discovered during detection.
     RegimeDiscovered { label: String },
+}
+
+/// Persisted per-regime user-reaction counts — the restart-surviving form of
+/// `RegimeClassifier`'s in-RAM `per_regime_stats` / aggregate `reaction_stats`
+/// (#7913 T2.1c). Learned via `record_user_reaction` (#7600) and read back by
+/// `acceptance_rate` to progressively quiet regimes the user rejects suggestions
+/// in. Before #7913 it was RAM-only and reset on every restart.
+///
+/// The global aggregate (feedback with no regime context) is persisted under the
+/// reserved `regime_id == ""` sentinel: real regime ids are always non-empty
+/// (`"regime-N"`), so the empty string cannot collide with a per-regime bucket.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegimeReactionRecord {
+    /// Opaque regime id, or `""` for the global aggregate bucket.
+    pub regime_id: String,
+    pub total: u64,
+    pub accepted: u64,
+    pub rejected: u64,
+    pub deferred: u64,
+}
+
+impl RegimeReactionRecord {
+    /// The reserved `regime_id` under which the global aggregate is persisted.
+    pub const AGGREGATE_KEY: &'static str = "";
 }

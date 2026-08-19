@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-toggle-suggestions-panel"
+description = "Enables the toggle_suggestions_panel command without any pre-configured scope."
+commands.allow = ["toggle_suggestions_panel"]
+
+[[permission]]
+identifier = "deny-toggle-suggestions-panel"
+description = "Denies the toggle_suggestions_panel command without any pre-configured scope."
+commands.deny = ["toggle_suggestions_panel"]

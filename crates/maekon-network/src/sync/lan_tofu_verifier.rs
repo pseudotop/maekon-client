@@ -16,7 +16,6 @@ use sha2::{Digest, Sha256};
 
 /// SHA-256 hex of the DER bytes (the fingerprint stored as the pin).
 // Consumed via the verifier by Task 5 (per-peer reqwest client). Allow dead_code until then.
-#[allow(dead_code)]
 pub(super) fn fingerprint_hex(der: &[u8]) -> String {
     hex::encode(Sha256::digest(der))
 }

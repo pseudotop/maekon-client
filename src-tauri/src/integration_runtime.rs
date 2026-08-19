@@ -8,7 +8,7 @@ use maekon_core::error::CoreError;
 use maekon_core::models::integration::{
     default_integration_runtime_scopes, IntegrationAuthProfileKind, IntegrationAuthScheme,
 };
-use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
 use maekon_core::ports::integration::{
     IntegrationAuditPort, IntegrationAuthPort, IntegrationCheckpointStorePort,
     IntegrationEgressPort, IntegrationEgressSignalPort, IntegrationInboxPort,
@@ -18,7 +18,7 @@ use maekon_core::ports::integration::{
 };
 use maekon_core::ports::secret_store::SecretStore;
 use maekon_core::{error_codes::ConsentCode, models::integration::IntegrationAckCursor};
-use maekon_network::integration::{
+use maekon_integration::{
     assemble_https_transport, EnvIntegrationAuthPort, IntegrationEgressCoordinator,
     IntegrationInboxCoordinator, IntegrationInsightProducerCoordinator,
     IntegrationProducerRuntimeLoop, IntegrationProducerRuntimeLoopProfile, IntegrationRuntimeLoop,
@@ -186,11 +186,10 @@ impl IntegrationConsentGate {
     }
 
     fn telemetry_permitted(&self) -> bool {
-        self.consent_manager
-            .read()
-            .as_ref()
-            .map(|consent| consent.effective_permissions().telemetry)
-            .unwrap_or(false)
+        // #7728: routed through the shared ConsentGate so this site can never
+        // diverge from the other telemetry-family gates (it was already
+        // fail-closed here — `scheduler/config.rs` was the outlier).
+        ConsentGate::from_ref(self.consent_manager.read().as_ref()).may_upload_telemetry()
     }
 }
 
@@ -320,7 +319,7 @@ impl<'a> IntegrationRuntimeBuilder<'a> {
             IntegrationAuthProfileKind::OidcDeviceFlow => false,
         };
 
-        let dpop_proof_factory = maekon_network::integration::build_proof_factory(
+        let dpop_proof_factory = maekon_integration::build_proof_factory(
             &supported_auth_schemes,
             self.secret_store.clone(),
         );

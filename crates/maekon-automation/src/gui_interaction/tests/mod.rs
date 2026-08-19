@@ -278,6 +278,7 @@ fn make_service_with_finder(
     ))
 }
 
+// Test fixture factory; no current test exercises a drift scenario with it.
 #[allow(dead_code)]
 fn make_drifted_focus() -> FocusSnapshot {
     FocusSnapshot {

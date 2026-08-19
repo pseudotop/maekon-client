@@ -1,9 +1,19 @@
+mod analysis_provider;
 mod auth_probe;
 mod llm_provider;
 mod ocr_provider;
 mod parsing;
 pub(crate) mod runtime;
 mod surface_selection;
+// `trust` (BinaryTrust / install_path_trust / default_allowed_roots) is
+// consumed only by `session_manager::factory::connect_codex_app_server`,
+// which is `#[cfg(feature = "analysis")]` — gating the whole module (its
+// unit tests included) keeps `--no-default-features` from tripping
+// `dead_code` on it (#7743 ctd-W3 A2b follow-up). The consumer side was
+// already gated (`#[cfg(feature = "analysis")] use
+// crate::subprocess_provider::trust;` in factory.rs); this makes the
+// producer side match.
+#[cfg(feature = "analysis")]
 pub(crate) mod trust;
 
 use maekon_core::error::CoreError;
@@ -19,6 +29,7 @@ use maekon_api_contracts::provider_specs::{
 
 // ── Re-exports ────────────────────────────────────────────────
 
+pub use analysis_provider::SubprocessAnalysisProvider;
 pub use llm_provider::SubprocessLlmProvider;
 pub use ocr_provider::SubprocessOcrProvider;
 pub(crate) use runtime::cli_id_for_surface_id;
@@ -43,6 +54,10 @@ const CLI_AUTH_PROBE_TIMEOUT_SECS: u64 = 2;
 /// it gets a more generous budget. The whole connect+request is wrapped in a
 /// timeout; on expiry the probe degrades to `Unknown` and the dropped
 /// `AppServerProcess` reaps the spawned process group.
+// Only imported by `auth_probe.rs`'s already-`#[cfg(feature = "analysis")]`
+// `use super::CLI_APP_SERVER_AUTH_PROBE_TIMEOUT_SECS;` — gate the
+// definition to match (#7743 ctd-W3 A2b follow-up).
+#[cfg(feature = "analysis")]
 const CLI_APP_SERVER_AUTH_PROBE_TIMEOUT_SECS: u64 = 8;
 const ACTION_SCHEMA_JSON: &str = r#"{
   "type": "object",
@@ -55,6 +70,35 @@ const ACTION_SCHEMA_JSON: &str = r#"{
   "required": ["target_text", "target_role", "action_type", "confidence"],
   "additionalProperties": false
 }"#;
+/// #10050: structured-output schema for the CLI-backed `AnalysisProvider`.
+///
+/// The object wrapper (`{"suggestions": [...]}`) is deliberate — Claude Code's
+/// `--json-schema` and Codex's `--output-schema` both take a JSON **object**
+/// schema, so a bare top-level array is not expressible. `parse_suggestions_output`
+/// unwraps it and also tolerates a bare array, matching the remote path's
+/// tolerant `parse_candidates`.
+const SUGGESTION_SCHEMA_JSON: &str = r#"{
+  "type": "object",
+  "properties": {
+    "suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["ProductivityTip", "WorkflowOptimization", "ContextBased", "WorkGuidance"] },
+          "content": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+          "reasoning": { "type": ["string", "null"] }
+        },
+        "required": ["type", "content", "confidence", "reasoning"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["suggestions"],
+  "additionalProperties": false
+}"#;
+
 const OCR_SCHEMA_JSON: &str = r#"{
   "type": "object",
   "properties": {
@@ -153,9 +197,10 @@ struct SubprocessOcrEnvelope {
 // ── Internal helper re-exports for submodules ─────────────────
 
 pub(crate) use parsing::{
-    append_model_flag, append_oneshot_flags, append_session_tool_restriction_flags,
-    classify_subprocess_error_with_redactions, sanitize_subprocess_error_output,
-    write_prompt_and_collect_output, SubprocessKind,
+    append_codex_reasoning_effort, append_model_flag, append_oneshot_flags,
+    append_session_tool_restriction_flags, classify_subprocess_error_with_redactions,
+    sanitize_subprocess_error_output, write_prompt_and_collect_output, SubprocessKind,
+    DEFAULT_CODEX_SUBPROCESS_MODEL,
 };
 #[allow(unused_imports)]
 use parsing::{

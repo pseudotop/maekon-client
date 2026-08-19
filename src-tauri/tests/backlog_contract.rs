@@ -1,6 +1,6 @@
 //! Backlog category contract tests — surface checks for source files declared
-//! in tc-catalog.jsonl entries under the auth-flow / integration-adapters /
-//! ai-providers / automation-control / coaching-engine / vector-rag /
+//! in tc-catalog.jsonl entries under the integration-adapters / ai-providers /
+//! automation-control / coaching-engine / vector-rag /
 //! auto-update / sandbox-worker / audio-stt / grpc-dashboard /
 //! network-resilience / bug-telemetry suites.
 //!
@@ -32,72 +32,48 @@ fn assert_exists(rel_path: &str) {
     );
 }
 
-// ───────────────── auth-flow ─────────────────
-// CRT-PRV-AUTH-001..005: auth_cli.rs is the entry point
-
-#[test]
-fn crt_prv_auth_001_login() {
-    assert_exists("src-tauri/src/auth_cli.rs");
-}
-#[test]
-fn crt_prv_auth_002_oauth_round_trip() {
-    assert_exists("src-tauri/src/auth_cli.rs");
-}
-#[test]
-fn crt_prv_auth_003_token_refresh() {
-    assert_exists("src-tauri/src/auth_cli.rs");
-}
-#[test]
-fn crt_prv_auth_004_logout_keychain_cleanup() {
-    assert_exists("src-tauri/src/auth_cli.rs");
-}
-#[test]
-fn crt_prv_auth_005_forgot_reset() {
-    assert_exists("src-tauri/src/auth_cli.rs");
-}
-
 // ───────────────── integration-adapters ─────────────────
-// CRT-PRV-INT-001..010: crates/maekon-network/src/integration/
+// CRT-PRV-INT-001..010: crates/maekon-integration/src/ (ADR-034 P3 move)
 
 #[test]
 fn crt_prv_int_001_oidc_device_flow() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_002_http_transport() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_003_cloudevents() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_004_egress_coordinator() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_005_inbox_coordinator() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_006_live_channel() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_007_policy_egress() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_008_producer_loop() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_009_static_auth() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 #[test]
 fn crt_prv_int_010_permission_audit() {
-    assert_exists("crates/maekon-network/src/integration");
+    assert_exists("crates/maekon-integration/src");
 }
 
 // ───────────────── ai-providers ─────────────────
@@ -169,7 +145,8 @@ fn crt_prv_auto_005_audit_logger() {
 }
 #[test]
 fn crt_prv_auto_006_input_driver() {
-    assert_exists("crates/maekon-automation/src/input_driver.rs");
+    // Split into an ADR-003 directory module (#8691) — assert the directory, same as audit (AUTO-005)
+    assert_exists("crates/maekon-automation/src/input_driver");
 }
 #[test]
 fn crt_prv_auto_007_overlay_driver() {
@@ -430,11 +407,11 @@ fn crt_prv_grpc_005_policy_loading() {
 
 #[test]
 fn crt_prv_net_001_circuit_breaker() {
-    assert_exists("crates/maekon-network/src/circuit_breaker.rs");
+    assert_exists("crates/maekon-http-core/src/circuit_breaker.rs");
 }
 #[test]
 fn crt_prv_net_002_jittered_backoff() {
-    assert_exists("crates/maekon-network/src/resilience.rs");
+    assert_exists("crates/maekon-http-core/src/resilience.rs");
 }
 #[test]
 fn crt_prv_net_003_sse_reconnect() {

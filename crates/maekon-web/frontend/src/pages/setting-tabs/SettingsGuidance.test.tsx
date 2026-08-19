@@ -245,7 +245,7 @@ describe('Settings guidance copy', () => {
     expect(screen.getByText('Keep high-usage alerts rare')).toBeInTheDocument()
   })
 
-  it('orients audio setup around provider choice, model footprint, and input mode', () => {
+  it('orients audio setup around provider choice, input mode, and bystander consent', () => {
     mockSettingsContext()
 
     renderWithProviders(<AudioTab />)
@@ -253,6 +253,45 @@ describe('Settings guidance copy', () => {
     expect(screen.getByRole('region', { name: 'Audio setup guide' })).toBeInTheDocument()
     expect(screen.getByText('Choose local or cloud STT')).toBeInTheDocument()
     expect(screen.getByText('Pick an input mode')).toBeInTheDocument()
+    expect(screen.getByText('Inform people before recording')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Tell nearby participants what will be captured and obtain consent where required before enabling audio.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  // #7600: COMPILE-capability gate — audio is compiled OUT of the shipped
+  // `grpc,windows-sandbox` release build, so the UI must disable the enable
+  // toggle + downloads instead of offering a doomed download.
+  it('#7600 disables audio controls and shows a not-available notice when audio_compiled=false', () => {
+    const formData = makeDefaultFormData()
+    mockUseLoadedFormData.mockReturnValue(formData)
+    mockUseSettingsFormContext.mockReturnValue({
+      form: { formData, setFormData: vi.fn() },
+      data: { featureCapabilities: { features: [], audio_compiled: false } },
+    })
+
+    renderWithProviders(<AudioTab />)
+
+    expect(screen.getByText('Not available in this build')).toBeInTheDocument()
+    expect(screen.getByLabelText('Enable audio capture and STT')).toBeDisabled()
+  })
+
+  // Positive control (anti-vacuous): when audio_compiled=true the enable toggle
+  // stays interactive and the not-available notice does not render.
+  it('#7600 keeps audio controls enabled when audio_compiled=true', () => {
+    const formData = makeDefaultFormData()
+    mockUseLoadedFormData.mockReturnValue(formData)
+    mockUseSettingsFormContext.mockReturnValue({
+      form: { formData, setFormData: vi.fn() },
+      data: { featureCapabilities: { features: [], audio_compiled: true } },
+    })
+
+    renderWithProviders(<AudioTab />)
+
+    expect(screen.queryByText('Not available in this build')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Enable audio capture and STT')).not.toBeDisabled()
   })
 
   it('orients advanced settings around runtime, network, and sync impact', () => {
@@ -263,6 +302,20 @@ describe('Settings guidance copy', () => {
     expect(screen.getByRole('region', { name: 'Advanced settings guide' })).toBeInTheDocument()
     expect(screen.getByText('Change runtime limits carefully')).toBeInTheDocument()
     expect(screen.getByText('Pair sync settings with the sync page')).toBeInTheDocument()
+  })
+
+  it('keeps the default fractional advanced settings valid for form submission', () => {
+    mockSettingsContext()
+
+    renderWithProviders(<AdvancedTab />)
+
+    const borderOpacity = screen.getByLabelText('Border opacity (0.0 - 1.0)')
+    const minConfidence = screen.getByLabelText('Min confidence (0.0 - 1.0)')
+
+    expect(borderOpacity).toHaveAttribute('step', '0.1')
+    expect(minConfidence).toHaveAttribute('step', '0.1')
+    expect(borderOpacity).toBeValid()
+    expect(minConfidence).toBeValid()
   })
 
   it('orients sync setup when sync is disabled', async () => {
@@ -419,5 +472,31 @@ describe('Settings guidance copy', () => {
         expect(screen.getAllByText(label).length).toBeGreaterThan(0)
       }
     }
+  })
+
+  // #7678: PLATFORM-capability gate — local OCR silently returns zero regions
+  // forever on a platform/build with no compiled OCR engine (e.g. every
+  // shipped Linux build today), so the "Local" OCR provider selection must
+  // warn instead of staying silent.
+  it('#7678 warns when Local OCR is selected but no local OCR engine is available', () => {
+    mockAiAutomationContext({
+      featureCapabilities: { features: [], ocr_available: false },
+    })
+
+    renderWithProviders(<AiAutomationTab />)
+
+    expect(screen.getByText('Not available in this build')).toBeInTheDocument()
+  })
+
+  // Positive control (anti-vacuous): when ocr_available=true (and OCR provider
+  // stays Local, the default in mockAiAutomationContext) the warning must not render.
+  it('#7678 shows no OCR warning when ocr_available=true', () => {
+    mockAiAutomationContext({
+      featureCapabilities: { features: [], ocr_available: true },
+    })
+
+    renderWithProviders(<AiAutomationTab />)
+
+    expect(screen.queryByText('Not available in this build')).not.toBeInTheDocument()
   })
 })

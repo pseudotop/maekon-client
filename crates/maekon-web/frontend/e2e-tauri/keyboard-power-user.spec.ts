@@ -1,10 +1,26 @@
 // e2e-tauri/keyboard-power-user.spec.ts
 
+import { invokeIpc, navigateMain } from './helpers.js'
+
+const primaryModifier = process.platform === 'darwin' ? 'Meta' : 'Control'
+
 describe('J3: Keyboard Power User', () => {
   beforeEach(async () => {
     // Navigate to the Dashboard before each test
-    await browser.url('tauri://localhost/')
-    await $('nav[role="navigation"]').waitForExist({ timeout: 10000 })
+    await navigateMain('/')
+    // A semantic <nav> has an implicit navigation role; no explicit role
+    // attribute is required or emitted by the production component.
+    await $('nav[aria-label]').waitForExist({ timeout: 10000 })
+  })
+
+  afterEach(async () => {
+    const palette = await $('[data-testid="command-palette"]')
+    if (await palette.isExisting()) {
+      await browser.keys('Escape')
+    }
+    // T120 intentionally hides the real window; restore it for the remaining
+    // tests while keeping the same process and WebDriver session alive.
+    await invokeIpc('show_main_window')
   })
 
   /**
@@ -12,13 +28,13 @@ describe('J3: Keyboard Power User', () => {
    * @risk_id UX-001
    * @tauri_only_reason Cmd+W = close-to-tray (Tauri api.prevent_close()), not browser close
    */
-  it('T120: Cmd+W hides window (close-to-tray)', async () => {
+  it('T120: CmdOrCtrl+W hides window (close-to-tray)', async () => {
     // Check the window state before Cmd+W
     const titleBefore = await browser.getTitle()
     expect(titleBefore).toContain('Maekon')
 
-    // Send Cmd+W
-    await browser.keys(['Meta', 'w'])
+    // Send the platform primary modifier + W.
+    await browser.keys([primaryModifier, 'w'])
     await browser.pause(1000)
 
     // Verify the process is still running (WebDriver connection alive = app alive)
@@ -32,8 +48,8 @@ describe('J3: Keyboard Power User', () => {
    * @risk_id UX-002
    * @tauri_only_reason Real Tauri WebView keyboard event routing
    */
-  it('T121: Cmd+K opens Command Palette with focus', async () => {
-    await browser.keys(['Meta', 'k'])
+  it('T121: CmdOrCtrl+K opens Command Palette with focus', async () => {
+    await browser.keys([primaryModifier, 'k'])
 
     const dialog = await $('div[role="dialog"]')
     await dialog.waitForExist({ timeout: 3000 })
@@ -53,21 +69,31 @@ describe('J3: Keyboard Power User', () => {
    * @tauri_only_reason Command Palette navigates via Tauri router
    */
   it('T122: Command Palette Enter navigates to selected page', async () => {
-    await browser.keys(['Meta', 'k'])
+    await browser.keys([primaryModifier, 'k'])
     await $('input[role="combobox"]').waitForExist({ timeout: 3000 })
 
-    // Type "time" → matches Timeline
-    await browser.keys('time')
-    await browser.pause(500)
+    const input = await $('input[role="combobox"]')
+    await input.click()
 
-    // Select the first option
-    await browser.keys('ArrowDown')
+    // Select the Timeline parent entry by its route-derived DOM id. This stays
+    // stable across localized labels and still exercises keyboard selection.
+    const options = await $$('[role="option"]')
+    const optionIds = await options.map((option) => option.getAttribute('id'))
+    const timelineIndex = optionIds.indexOf('palette-option-route-/timeline')
+    expect(timelineIndex).toBeGreaterThanOrEqual(0)
+    for (let index = 0; index < timelineIndex; index += 1) {
+      await browser.keys('ArrowDown')
+    }
+
+    const timelineOption = await $('[id="palette-option-route-/timeline"]')
+    expect(await timelineOption.getAttribute('aria-selected')).toBe('true')
     await browser.keys('Enter')
-    await browser.pause(1000)
 
     // Verify the URL contains /timeline
-    const url = await browser.getUrl()
-    expect(url).toContain('/timeline')
+    await browser.waitUntil(async () => (await browser.getUrl()).includes('/timeline'), {
+      timeout: 5000,
+      timeoutMsg: 'Command Palette did not navigate to the Timeline route',
+    })
   })
 
   /**
@@ -76,7 +102,7 @@ describe('J3: Keyboard Power User', () => {
    * @tauri_only_reason Dialog lifecycle in real WebView
    */
   it('T123: Escape closes Command Palette', async () => {
-    await browser.keys(['Meta', 'k'])
+    await browser.keys([primaryModifier, 'k'])
     const dialog = await $('div[role="dialog"]')
     await dialog.waitForExist({ timeout: 3000 })
 

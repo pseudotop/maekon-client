@@ -147,6 +147,41 @@ pub struct MemoryClaim {
     pub updated_at: i64,
 }
 
+/// ADR-032 §2.6 Mode A edge projection tuple.
+///
+/// The FULL field set a Mode A consumer may see: (`src_id`, `dst_id`,
+/// `edge_type`, `confidence`). The endpoints are in-process join keys for
+/// ranking (for `Evidence` edges `dst_id` may reference a `segment_id`) and
+/// MUST NOT be disclosed beyond the ranking computation. Deliberately absent
+/// by contract: claim `text`/`kind`/`source`, `evidence_ref`, timestamps —
+/// adding any of them is an ADR-032 §2.5/§2.6 violation, not an enhancement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectedEdge {
+    pub src_id: String,
+    pub dst_id: String,
+    pub edge_type: EdgeType,
+    pub confidence: f32,
+}
+
+/// Bounded Mode A projection result (ADR-032 §2).
+///
+/// Produced only by the shared projection helper behind
+/// `MemoryGraphProjectionPort`; consumers never assemble one from raw
+/// `MemoryGraphPort` reads. An empty projection is the fail-closed outcome
+/// for every unevaluable bound (disabled config, missing consent, invalid
+/// window/floor/cap) and MUST rank identically to "no memory graph at all".
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct EdgeProjection {
+    /// Bounded, deterministically ordered edge tuples (`created_at DESC`,
+    /// `edge_id` tie-break at selection time; the tuple itself carries no
+    /// timestamp).
+    pub edges: Vec<ProjectedEdge>,
+    /// How many `Active` claims survived the window/floor/cap bounds — a
+    /// derived count for join-coverage observability (ADR-032 Known
+    /// Follow-up 2), never an identifier.
+    pub claims_selected: usize,
+}
+
 /// A typed edge between two memory units (claims and/or `segment_id`-keyed units).
 ///
 /// IDs use `generate_id("edg")` (ADR-022). `src_id`/`dst_id` may reference a

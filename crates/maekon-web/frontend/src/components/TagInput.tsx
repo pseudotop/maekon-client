@@ -5,7 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { createTag, fetchTags, type Tag } from '../api/client'
+import { createTag, fetchTags, TAGS_QUERY_KEY, type Tag } from '../api/client'
 import { elevation, iconSize, motion } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import { getRandomTagColor, TAG_COLORS, TagBadge } from './TagBadge'
@@ -16,9 +16,22 @@ interface TagInputProps {
   onAddTag: (tag: Tag) => void
   onRemoveTag: (tag: Tag) => void
   placeholder?: string
+  /**
+   * Render the selected tags as non-removable context chips (no remove `x`).
+   * Used by the batch-tag bar, where `selectedTags` are the tags already common
+   * to every selected frame: they still dedup the suggestion dropdown, but there
+   * is no single-frame remove semantics to expose.
+   */
+  readonlySelected?: boolean
 }
 
-export function TagInput({ selectedTags, onAddTag, onRemoveTag, placeholder }: TagInputProps) {
+export function TagInput({
+  selectedTags,
+  onAddTag,
+  onRemoveTag,
+  placeholder,
+  readonlySelected = false,
+}: TagInputProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [inputValue, setInputValue] = useState('')
@@ -29,7 +42,7 @@ export function TagInput({ selectedTags, onAddTag, onRemoveTag, placeholder }: T
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   const { data: allTags = [] } = useQuery({
-    queryKey: ['tags'],
+    queryKey: TAGS_QUERY_KEY,
     queryFn: fetchTags,
   })
 
@@ -49,7 +62,13 @@ export function TagInput({ selectedTags, onAddTag, onRemoveTag, placeholder }: T
     return notSelected && matchesSearch
   })
 
-  const exactMatch = allTags.find((tag) => tag.name.toLowerCase() === inputValue.toLowerCase())
+  // Exact comparison, matching the database: `tags.name` is UNIQUE and SQLite
+  // compares TEXT as BINARY, so "Work" and "work" are distinct rows. A
+  // case-insensitive check here suppressed "create new" for names the server
+  // accepts — and contradicted the rename guard in TagManagementCard, which
+  // allows exactly those. The filter above stays case-insensitive: that is a
+  // search affordance, not a uniqueness decision.
+  const exactMatch = allTags.find((tag) => tag.name === inputValue.trim())
   const canCreateNew = inputValue.trim() && !exactMatch
 
   useEffect(() => {
@@ -123,7 +142,13 @@ export function TagInput({ selectedTags, onAddTag, onRemoveTag, placeholder }: T
       {selectedTags.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1">
           {selectedTags.map((tag) => (
-            <TagBadge key={tag.id} name={tag.name} color={tag.color} size="sm" onRemove={() => onRemoveTag(tag)} />
+            <TagBadge
+              key={tag.id}
+              name={tag.name}
+              color={tag.color}
+              size="sm"
+              onRemove={readonlySelected ? undefined : () => onRemoveTag(tag)}
+            />
           ))}
         </div>
       )}

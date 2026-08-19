@@ -9,6 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 maekon-core = { workspace = true }
 thiserror.workspace = true
@@ -18,21 +21,37 @@ hdbscan = { version = "0.12", optional = true }
 serde = { workspace = true, features = ["derive"] }
 usearch = { version = "2", optional = true }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["sync", "fs", "rt"] }
 tracing.workspace = true
 lru.workspace = true
-uuid = { workspace = true, features = ["v4"] }
 
 [features]
 default = ["hdbscan"]
 hdbscan = ["dep:hdbscan"]
 hnsw = ["dep:usearch"]
+# #7735 E-2: `FocusAnalyzer::on_app_switch` is a test-only convenience
+# wrapper (`#[cfg(any(test, feature = "test-support"))]`) consumed by
+# `maekon-app`'s own `#[cfg(test)]` tests across the crate boundary. Plain
+# `#[cfg(test)]` only activates when THIS crate compiles under `--test`, not
+# when it is a normal dependency of another crate's test build (#7729 house
+# pattern). Carries no extra deps — enable ONLY via `[dev-dependencies]` in
+# consumers, never `[dependencies]`, so it never reaches the shipped binary.
+test-support = []
 
 [dev-dependencies]
 criterion = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+# Cross-layer regression tests (#7478/#7479) exercise the real SqliteStorage
+# read path against the analysis selector/coordinator. maekon-storage depends
+# only on maekon-core, so this dev-only edge introduces no dependency cycle.
+maekon-storage = { workspace = true }
+# #7729 ctd-W2 G2: canonical `FakePiiSanitizer` test double lives in maekon-core
+# next to the `PiiSanitizer` port, gated `test-support`. Enabled ONLY here (dev
+# builds), never via `[dependencies]`, so it never reaches the shipped binary.
+maekon-core = { workspace = true, features = ["test-support"] }
 
 [[bench]]
 name = "hnsw_bench"

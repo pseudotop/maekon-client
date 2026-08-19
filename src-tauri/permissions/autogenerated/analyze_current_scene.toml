@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-analyze-current-scene"
+description = "Enables the analyze_current_scene command without any pre-configured scope."
+commands.allow = ["analyze_current_scene"]
+
+[[permission]]
+identifier = "deny-analyze-current-scene"
+description = "Denies the analyze_current_scene command without any pre-configured scope."
+commands.deny = ["analyze_current_scene"]

@@ -8,12 +8,16 @@ mod adapter;
 mod detection;
 mod redaction;
 
+#[cfg(test)]
+#[path = "exact_app_tests.rs"]
+mod exact_app_tests;
+
 // Public surface — all callers use `maekon_vision::privacy::{...}`
 pub use adapter::VisionPiiSanitizer;
 pub use detection::{
     detect_pii_markers_with_level, is_sensitive_app, is_sensitive_segment_with_level,
     matches_exclusion_pattern, sanitize_title, sanitize_title_with_level, should_exclude,
-    PiiMarker, SENSITIVE_APP_KEYWORDS, SENSITIVE_TITLE_SUBSTRINGS,
+    should_exclude_by_policy, PiiMarker, SENSITIVE_APP_KEYWORDS, SENSITIVE_TITLE_SUBSTRINGS,
 };
 // Redaction functions are internal; only the detection layer exposes the public API.
 // Individual mask_* functions used within detection.rs are pub within the crate.
@@ -175,6 +179,51 @@ mod tests {
             &["*password*".to_string()],
             false,
         ));
+    }
+
+    /// #7909: the `PrivacyConfig` wrapper must wire every policy field into
+    /// [`should_exclude`] — list, patterns, and the auto-sensitive flag.
+    #[test]
+    fn should_exclude_by_policy_wires_all_config_fields() {
+        use maekon_core::config::PrivacyConfig;
+
+        let listed = PrivacyConfig {
+            excluded_apps: vec!["Slack".to_string()],
+            ..Default::default()
+        };
+        assert!(should_exclude_by_policy(&listed, "Slack", "General"));
+        assert!(!should_exclude_by_policy(&listed, "Chrome", "Google"));
+
+        // auto_exclude_sensitive defaults on and flows through the wrapper…
+        assert!(should_exclude_by_policy(
+            &PrivacyConfig::default(),
+            "1Password",
+            "Unlock"
+        ));
+        // …and opting out disables the auto-detection.
+        let opted_out = PrivacyConfig {
+            auto_exclude_sensitive: false,
+            ..Default::default()
+        };
+        assert!(!should_exclude_by_policy(&opted_out, "1Password", "Unlock"));
+
+        let title_patterns = PrivacyConfig {
+            excluded_title_patterns: vec!["*password*".to_string()],
+            auto_exclude_sensitive: false,
+            ..Default::default()
+        };
+        assert!(should_exclude_by_policy(
+            &title_patterns,
+            "Chrome",
+            "My Password Manager"
+        ));
+
+        let app_patterns = PrivacyConfig {
+            excluded_app_patterns: vec!["*bank*".to_string()],
+            auto_exclude_sensitive: false,
+            ..Default::default()
+        };
+        assert!(should_exclude_by_policy(&app_patterns, "KB Banking", ""));
     }
 
     #[test]

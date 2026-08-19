@@ -21,10 +21,37 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
   # `-W warnings`, NOT `-D`: the vendored `patches/` crates (muda/tao/wry) are
-  # uncapped local path deps, so a global `-D` gates third-party code we don't
-  # lint-own (their macOS impls carry deprecated objc2 statics today). The
-  # first-party deny lives in the `check` job's explicit
-  # `clippy --workspace --all-targets -- -D warnings` steps.
+  # uncapped local path deps — verified via `cargo build -v` that cargo emits
+  # no `--cap-lints allow` for their rustc invocations (unlike plain
+  # registry/git deps) — so a global `-D` via RUSTFLAGS gates third-party code
+  # we don't lint-own (confirmed by forcing `RUSTFLAGS=-D warnings`: `tao` and
+  # `wry` hard-fail on their macOS unnecessary-`unsafe`-block warnings). This
+  # env var is intentionally left at `-W` (#7743, ctd-W3 A2).
+  #
+  # First-party deny now has TWO independent layers, neither of which touches
+  # `patches/`:
+  #   1. `Cargo.toml`'s `[workspace.lints.rust]` (`unused`, `dead_code` =
+  #      "deny") — every first-party crate opts in via `lints.workspace =
+  #      true` (#7719), so this is baked into the MANIFEST and applies on
+  #      every platform's plain `cargo build`/`check`/`test`, not just this
+  #      job. Verified empirically: a manifest-configured deny on a
+  #      specific/named lint or lint GROUP survives a later, broader
+  #      `RUSTFLAGS: -W warnings` (rustc keeps the more specific level) — only
+  #      a manifest-level `warnings = "deny"` naming the IDENTICAL group would
+  #      be overridden by this env var, which is why the table below denies
+  #      `unused`/`dead_code` specifically rather than the `warnings` group.
+  #   2. This job's `check` sub-job's explicit
+  #      `clippy --workspace --all-targets -- -D warnings` steps (ubuntu-only)
+  #      — clippy's trailing `-- <flags>` apply only to the directly-selected
+  #      workspace packages, never to `patches/` path dependencies (verified:
+  #      the identical invocation only WARNS, never errors, on the vendored
+  #      `tray-icon`/`tauri-runtime-wry` crates).
+  # A weekly macOS/Windows leg of the SAME clippy invocation now also runs in
+  # the PARENT monorepo's internal weekly CI (not part of this public export —
+  # see `patches/README.md`'s "Weekly audit lane" section, which documents it
+  # from the parent-repo side), so platform-`#[cfg(...)]` first-party code
+  # gets real deny-linting too, not just execution (see the `test-platform`
+  # job below).
   RUSTFLAGS: -W warnings
 
 jobs:
@@ -185,8 +212,8 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -242,6 +269,9 @@ jobs:
       - name: Verify HTTP interface manifest
         run: ./scripts/verify-http-interface-manifest.sh
 
+      - name: Verify Tauri IPC command manifests
+        run: node ./scripts/validate-ipc-command-manifests.mjs
+
       - name: Verify HTTP OpenAPI snapshot sync
         run: ./scripts/verify-http-openapi-sync.sh
 
@@ -279,7 +309,7 @@ jobs:
           touch "src-tauri/maekon-sandbox-worker-${TRIPLE}"
 
       - name: Run clippy (standalone)
-        run: ./scripts/cargo-cache.sh clippy --workspace --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+        run: ./scripts/cargo-cache.sh clippy --workspace --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity -A clippy::unwrap_used -A clippy::expect_used
 
       # #5734 / C3 adversarial finding: no CI cell built maekon-app with
       # --no-default-features, so breakage of that cell landed silently
@@ -290,13 +320,13 @@ jobs:
         run: ./scripts/cargo-cache.sh check -p maekon-app --no-default-features
 
       - name: Run clippy (server features)
-        run: ./scripts/cargo-cache.sh clippy --workspace --all-targets --features server -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+        run: ./scripts/cargo-cache.sh clippy --workspace --all-targets --features server -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity -A clippy::unwrap_used -A clippy::expect_used
 
       - name: Run clippy (grpc features)
-        run: ./scripts/cargo-cache.sh clippy --workspace --all-targets --features grpc -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+        run: ./scripts/cargo-cache.sh clippy --workspace --all-targets --features grpc -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity -A clippy::unwrap_used -A clippy::expect_used
 
       - name: Run clippy (grpc-dashboard + test-support)
-        run: ./scripts/cargo-cache.sh clippy -p maekon-web --no-default-features --features grpc-dashboard,test-support --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+        run: ./scripts/cargo-cache.sh clippy -p maekon-web --no-default-features --features grpc-dashboard,test-support --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity -A clippy::unwrap_used -A clippy::expect_used
 
       # D13-v2c follow-up (PR #491): the external gRPC code path
       # (`#[cfg(feature = "grpc-dashboard-external")]` modules under
@@ -305,16 +335,16 @@ jobs:
       # only surfaced when `grpc-dashboard-external` was locally enabled.
       # This step closes the coverage gap.
       - name: Run clippy (grpc-dashboard-external + external-grpc-tools + test-support)
-        run: ./scripts/cargo-cache.sh clippy -p maekon-web --no-default-features --features grpc-dashboard-external,external-grpc-tools,test-support --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+        run: ./scripts/cargo-cache.sh clippy -p maekon-web --no-default-features --features grpc-dashboard-external,external-grpc-tools,test-support --all-targets -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity -A clippy::unwrap_used -A clippy::expect_used
 
       - name: Run clippy (lan-sync features)
-        run: ./scripts/cargo-cache.sh clippy -p maekon-network --all-targets --features lan-sync -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+        run: ./scripts/cargo-cache.sh clippy -p maekon-network --all-targets --features lan-sync -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity -A clippy::unwrap_used -A clippy::expect_used
 
       - name: Run clippy (linux-sandbox features)
-        run: ./scripts/cargo-cache.sh clippy -p maekon-automation --all-targets --features linux-sandbox -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+        run: ./scripts/cargo-cache.sh clippy -p maekon-automation --all-targets --features linux-sandbox -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity -A clippy::unwrap_used -A clippy::expect_used
 
       - name: Run clippy (telemetry feature)
-        run: ./scripts/cargo-cache.sh clippy -p maekon-app --all-targets --features telemetry -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+        run: ./scripts/cargo-cache.sh clippy -p maekon-app --all-targets --features telemetry -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity -A clippy::unwrap_used -A clippy::expect_used
 
       # F2 (P2): Feature-matrix dead-spot coverage.
       #
@@ -342,7 +372,7 @@ jobs:
       #   windows-sandbox` run further below.
       #   Estimated CI cost: ~3–5 s (incremental, no new native deps).
       - name: Clippy maekon-automation (--features windows-sandbox)
-        run: ./scripts/cargo-cache.sh clippy -p maekon-automation --all-targets --features windows-sandbox -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity
+        run: ./scripts/cargo-cache.sh clippy -p maekon-automation --all-targets --features windows-sandbox -- -D warnings -A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity -A clippy::unwrap_used -A clippy::expect_used
 
       # F2 (P2): whisper — promoted from excluded to a live CI cell (#5812).
       #   whisper-rs builds whisper.cpp via cmake (cmake is now installed in the
@@ -380,8 +410,8 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -444,8 +474,8 @@ jobs:
       - name: Install Linux dependencies
         if: env.RUN_HEAVY_TESTS == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -568,16 +598,29 @@ jobs:
   #     -p maekon-automation` to still capture the OS-gated tests.)
   #   - Direct `cargo` (not scripts/cargo-cache.sh, which is bash + `du`) for shell
   #     portability on Windows; the rust-cache action handles caching.
-  #   - RUSTFLAGS stays `-W warnings` for these legs (the workflow-global env is
-  #     now also `-W`; the first-party deny gate is the `check` job's explicit
-  #     `clippy -- -D warnings`): the goal
-  #     here is to EXECUTE platform tests, not to lint them. This is REQUIRED, not
-  #     cosmetic — verified locally that even the macOS `--workspace` *test* build
-  #     fails under `-Dwarnings` on PRE-EXISTING unused imports (e.g.
-  #     `DigestStorage` in maekon-storage tests), which the dispatch-only CI never
-  #     caught. Holding these legs to `-Dwarnings` would red them on lint debt
-  #     unrelated to platform behaviour (and Windows warnings can't be previewed
-  #     from a macOS host). Per-OS lint is a separate concern (extend `check`).
+  #   - RUSTFLAGS stays `-W warnings` for these legs: the goal here is to
+  #     EXECUTE platform tests, not to hard-fail the whole leg on every
+  #     default-warn rustc lint. This remains deliberate for the lint classes
+  #     RUSTFLAGS still governs (`deprecated`, `unreachable_patterns`, etc.) —
+  #     flipping this job's RUSTFLAGS to `-D` would also gate the vendored
+  #     `patches/` fork (see the top-of-file `RUSTFLAGS` comment; verified by
+  #     forcing `-D warnings` there).
+  #   - #7743 (ctd-W3 A2) closed the specific gap this comment used to
+  #     describe (a PRE-EXISTING unused-import case in maekon-storage tests
+  #     that a `-Dwarnings` macOS `--workspace` test build caught locally but
+  #     no CI job ever ran): `Cargo.toml`'s `[workspace.lints.rust]` now
+  #     denies `unused`/`dead_code` at the MANIFEST level. That deny survives
+  #     this job's `RUSTFLAGS: -W warnings` (a manifest-configured deny on a
+  #     specific/named lint group is not overridden by a later, broader `-W
+  #     warnings` flag — verified empirically), so this leg's own `cargo test
+  #     --workspace` build step now DOES hard-fail on those two classes in
+  #     `#[cfg(target_os = "macos"/"windows")]` first-party code, even though
+  #     the job's overall RUSTFLAGS stays relaxed for every other lint.
+  #   - Full per-OS `clippy -D warnings` coverage (every lint the ubuntu
+  #     `check` job's clippy steps enforce, not just the two above) now runs
+  #     WEEKLY (not per-PR, per the repo's CI-cost policy) in the repo-root
+  #     `Maekon Client Weekly Checks` workflow's `first-party-lint-per-os`
+  #     job — see `patches/README.md`'s "Weekly audit lane" section.
   test-platform:
     name: Test (${{ matrix.os }})
     needs: [changes, check]
@@ -642,6 +685,16 @@ jobs:
             touch "src-tauri/maekon-sandbox-worker-${TARGET}"
             chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
           fi
+
+      # #11061: compile the exact Windows default/no-sandbox-feature surface
+      # before executing tests. `--keep-going` lets Cargo report failures in
+      # independent crates during the same export PR, instead of discovering
+      # one blocked layer per #164 -> #165 -> #166 round-trip. The workspace
+      # manifest's `unused`/`dead_code` deny policy makes the two known
+      # maekon-automation regressions hard failures even under `RUSTFLAGS=-W`.
+      - name: Check Windows default workspace without sandbox features (keep-going)
+        if: env.RUN_HEAVY_TESTS == 'true' && matrix.os == 'windows-latest'
+        run: cargo check --locked --workspace --all-targets --exclude maekon-lint --exclude maekon-embedding --keep-going
 
       - name: Run tests (default workspace)
         if: env.RUN_HEAVY_TESTS == 'true'
@@ -719,8 +772,8 @@ jobs:
 
       - name: Install Linux dependencies (Tauri GTK/WebKit + libsystemd-dev for sd-notify)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -767,16 +820,16 @@ jobs:
         run: cargo test --locked -p maekon-app --features systemd-notify --test linux_autostart_unit
 
       - name: Run autostart inline linux_tests
-        run: cargo test --locked -p maekon-app --features systemd-notify --bin maekon autostart::tests::linux_tests
+        run: cargo test --locked -p maekon-app --features systemd-notify --lib autostart::tests::linux_tests
 
       - name: Run autostart inline linux_capability_tests
-        run: cargo test --locked -p maekon-app --features systemd-notify --bin maekon autostart::tests::linux_capability_tests
+        run: cargo test --locked -p maekon-app --features systemd-notify --lib autostart::tests::linux_capability_tests
 
       - name: Run migration_hashes tests
-        run: cargo test --locked -p maekon-app --features systemd-notify --bin maekon lifecycle::migration_hashes::tests
+        run: cargo test --locked -p maekon-app --features systemd-notify --lib lifecycle::migration_hashes::tests
 
       - name: Run sd_notify tests
-        run: cargo test --locked -p maekon-app --features systemd-notify --bin maekon lifecycle::sd_notify::tests
+        run: cargo test --locked -p maekon-app --features systemd-notify --lib lifecycle::sd_notify::tests
 
   build:
     name: Build (${{ matrix.target }})
@@ -846,8 +899,8 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
             libwebkitgtk-6.0-dev \
             libjavascriptcoregtk-6.0-dev \
             libsoup-3.0-dev \
@@ -907,11 +960,78 @@ jobs:
 
       - name: Build release
         shell: bash
-        # Match release.yml/release-smoke.yml. A workspace-wide release build
-        # pulls optional maekon-embedding dependencies, including ort-sys,
-        # which has no x86_64-apple-darwin prebuilt ONNX Runtime artifact for
-        # this feature set. The shipped app build is maekon-app + grpc.
-        run: ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features grpc
+        # Builds the SHIPPED feature set per OS, identical to release.yml and
+        # pinned against it by scripts/test-release-workflow-governance.sh.
+        #
+        # This parity is not cosmetic. The Windows PE closure check below only
+        # means something if it inspects the binary that actually ships. Until
+        # #10698 this step built `--features grpc` alone, so `stt` — and with
+        # it cpal's WASAPI import of `mmdevapi.dll` — was never linked here.
+        # The closure gate therefore passed on every export PR and failed for
+        # the first time on the v0.0.1-rc.7 tag build, when the tag was already
+        # irreversible and the release had no artifacts.
+        #
+        # `-p maekon-app` (rather than `--workspace`) stays: a workspace-wide
+        # release build pulls optional maekon-embedding dependencies including
+        # ort-sys, which has no x86_64-apple-darwin prebuilt ONNX Runtime
+        # artifact. That is the reason for the package scope, and it never
+        # required narrowing features — release.yml builds all four targets at
+        # full parity, and did so successfully for rc.7.
+        #
+        # RUSTFLAGS is the SECOND parity axis, and matching features alone was
+        # not enough. Cargo's extra-flag sources are mutually exclusive and
+        # `RUSTFLAGS` outranks `target.<triple>.rustflags`, so this workflow's
+        # top-level `RUSTFLAGS: -W warnings` silently discarded the
+        # `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C
+        # target-feature=+crt-static` that setup-windows-openssl exports — the
+        # release contract's static MSVC CRT. release.yml sets no workflow-level
+        # RUSTFLAGS, so there the flag applies. CI therefore linked the CRT
+        # dynamically and imported `MSVCP140.dll`, which the shipped binary does
+        # not; the closure gate failed on a binary that still was not the one
+        # that ships (#10698, rc.8 export PR maekon-client#160).
+        #
+        # So reproduce release.yml's EFFECTIVE flags per OS rather than
+        # inheriting this job's linting flags: Windows gets exactly the
+        # static-CRT flag, the other targets get none (release.yml has no
+        # RUSTFLAGS and `.cargo/config.toml` sets no `rustflags`). Dropping
+        # `-W warnings` here changes nothing that matters — `warnings` is at
+        # warn by default, and the first-party deny lives in `Cargo.toml`'s
+        # `[workspace.lints.rust]`, not in this env var.
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            FEATURES="grpc,systemd-notify,linux-sandbox,lan-sync,stt,download"
+            export RUSTFLAGS=""
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            FEATURES="grpc,windows-sandbox,lan-sync,stt,download"
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          else
+            FEATURES="grpc,lan-sync,stt,download"
+            export RUSTFLAGS=""
+          fi
+          echo "effective RUSTFLAGS: '${RUSTFLAGS}'"
+          ./scripts/cargo-cache.sh build --locked --release --target ${{ matrix.target }} -p maekon-app --features "$FEATURES"
+
+      - name: Stage and verify signed Microsoft VC runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/stage-windows-vc-runtime.ps1 `
+            -PayloadRoot "target/${{ matrix.target }}/release"
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
+          $dumpbin = Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse |
+            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$dumpbin) { throw "x64 dumpbin.exe was not found under $installation" }
+          node scripts/verify-windows-runtime-closure.mjs `
+            --payload-root "target/${{ matrix.target }}/release" `
+            --dependency-tool $dumpbin.FullName `
+            --binary maekon.exe
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -923,7 +1043,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe -DestinationPath ${{ matrix.artifact_name }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe,target/${{ matrix.target }}/release/vcruntime140.dll,target/${{ matrix.target }}/release/vcruntime140_1.dll -DestinationPath ${{ matrix.artifact_name }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

@@ -9,6 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 # 내부 크레이트
 maekon-core = { workspace = true }
@@ -22,6 +25,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 
+# OS keychain — stores the cross-device sync passphrase written by the
+# Settings → Sync setup route (#8056 P2-2), read back at startup by
+# src-tauri/agent_runtime::sync_setup. Same workspace pin as src-tauri.
+keyring = { workspace = true }
+
 # 로깅
 tracing = { workspace = true }
 
@@ -31,9 +39,6 @@ chrono-tz = { workspace = true }
 
 # 에러 처리
 thiserror = { workspace = true }
-
-# UUID
-uuid = { workspace = true }
 
 # Bug report
 sha2 = { workspace = true }
@@ -144,6 +149,12 @@ stress-test = ["external-grpc-tools", "test-support"]
 [dev-dependencies]
 maekon-automation = { workspace = true }
 maekon-storage = { workspace = true }
+# #7729 ctd-W2 G2: canonical `FakePiiSanitizer` test double lives in maekon-core
+# next to the `PiiSanitizer` port, gated `test-support` (maekon-core's OWN
+# `test-support` feature — distinct from this crate's `test-support` feature
+# above, just conventionally named the same). Enabled ONLY here (dev builds),
+# never via `[dependencies]`, so it never reaches the shipped binary.
+maekon-core = { workspace = true, features = ["test-support"] }
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
 async-trait = { workspace = true }

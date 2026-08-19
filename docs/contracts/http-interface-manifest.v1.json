@@ -1,7 +1,7 @@
 {
   "schema_version": "http.interface.manifest.v1",
-  "document_version": 6,
-  "updated_at": "2026-06-04",
+  "document_version": 10,
+  "updated_at": "2026-07-23",
   "source": {
     "routes_file": "crates/maekon-web/src/routes.rs",
     "contracts_crate": "crates/maekon-api-contracts"
@@ -343,6 +343,26 @@
         {
           "method": "GET",
           "path": "/api/export/toggl"
+        },
+        {
+          "method": "GET",
+          "path": "/api/export/full"
+        }
+      ]
+    },
+    {
+      "module": "sync_setup",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/sync/setup",
+          "response_type": "SyncSetupStatus"
+        },
+        {
+          "method": "POST",
+          "path": "/api/sync/setup",
+          "request_type": "SyncSetupRequest",
+          "response_type": "SyncSetupStatus"
         }
       ]
     },
@@ -667,6 +687,11 @@
           "path": "/api/semantic-search",
           "response_type": "SemanticSearchResult",
           "response_is_array": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/semantic-search/capabilities",
+          "response_type": "SemanticSearchCapabilities"
         }
       ]
     },
@@ -833,6 +858,40 @@
         {
           "method": "GET",
           "path": "/api/audit/export"
+        }
+      ]
+    },
+    {
+      "module": "audit_verify",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/audit/verify"
+        }
+      ]
+    },
+    {
+      "module": "egress_ledger",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/privacy/egress-ledger",
+          "response_type": "EgressLedgerResponse"
+        }
+      ]
+    },
+    {
+      "module": "memory_claims",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/memory/claims",
+          "response_type": "ClaimListResponse"
+        },
+        {
+          "method": "POST",
+          "path": "/api/memory/claims/{id}/retract",
+          "response_type": "RetractClaimResponse"
         }
       ]
     }

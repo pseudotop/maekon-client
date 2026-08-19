@@ -13,14 +13,15 @@ type RenderBridgeHarnessOptions = {
   webviewListenImpl?: (eventName: string, callback: EventCallback) => Promise<() => void>
 }
 
-// 6 global listen calls (navigate, tray-approve-update, tray-defer-update,
-// oauth-reauth-required, navigate:chat, integration-proactive-prompt) + 1
-// webview-scoped listen for frontend-recovery. The previous
+// 7 global listen calls (navigate, tray-approve-update, tray-defer-update,
+// oauth-reauth-required, navigate:chat, capture-os-permission (#8686 AC4),
+// integration-proactive-prompt) + 1 webview-scoped listen for
+// frontend-recovery. The previous
 // `tray-toggle-automation` and `automation:quick-access` events were folded
 // into the single `navigate` event after the tray IPC unification — tray.rs
 // now emits plain `navigate` with a deep-link path for those menu items.
 async function renderBridgeHarness({
-  expectedListenCalls = 6,
+  expectedListenCalls = 7,
   listenImpl,
   webviewListenImpl,
 }: RenderBridgeHarnessOptions = {}) {
@@ -104,7 +105,7 @@ describe('useTauriEventBridge', () => {
 
     unmount()
 
-    expect(unlistenCallbacks).toHaveLength(7)
+    expect(unlistenCallbacks).toHaveLength(8)
     unlistenCallbacks.forEach((unlisten) => {
       expect(unlisten).toHaveBeenCalledTimes(1)
     })
@@ -277,8 +278,8 @@ describe('useTauriEventBridge', () => {
 
     render(<Probe />, { wrapper })
 
-    // All 7 listeners (6 normal + 1 fallback frontend-recovery) registered via global listen
-    await waitFor(() => expect(listen).toHaveBeenCalledTimes(7))
+    // All 8 listeners (7 normal + 1 fallback frontend-recovery) registered via global listen
+    await waitFor(() => expect(listen).toHaveBeenCalledTimes(8))
     expect(listeners.has('frontend-recovery')).toBe(true)
     // Fallback warning was logged
     expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('webview API unavailable'), expect.any(Error))
@@ -303,16 +304,16 @@ describe('useTauriEventBridge', () => {
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const webviewFailure = new TypeError("Cannot read properties of undefined (reading '_handleTauriEvent')")
     const { listeners, listen, webviewListen, unlistenCallbacks } = await renderBridgeHarness({
-      expectedListenCalls: 7,
+      expectedListenCalls: 8,
       webviewListenImpl: async () => {
         throw webviewFailure
       },
     })
 
     expect(webviewListen).toHaveBeenCalledTimes(1)
-    expect(listen).toHaveBeenCalledTimes(7)
+    expect(listen).toHaveBeenCalledTimes(8)
     expect(listeners.has('frontend-recovery')).toBe(true)
-    expect(unlistenCallbacks).toHaveLength(7)
+    expect(unlistenCallbacks).toHaveLength(8)
     expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('webview-scoped listen failed'), webviewFailure)
 
     consoleWarn.mockRestore()

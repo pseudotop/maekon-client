@@ -24,7 +24,7 @@ pub(super) struct AnalysisResult {
 /// activity_pattern_learning, and calibration reader/writer stores.
 /// `injected_regime_manager` and `injected_regime_classifier` are the
 /// composition-root-supplied handles; when `None`, fresh ones are
-/// constructed here. See `agent_runtime::AgentRuntimeBuilder::with_regime_handles`.
+/// constructed here. See `agent_runtime::AgentRuntimeBundle::with_regime_handles`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_analysis_pipeline(
     config: &AppConfig,
@@ -37,6 +37,11 @@ pub(super) fn build_analysis_pipeline(
     external_llm_privacy_guard: Option<ExternalOcrPrivacyGuard>,
     injected_regime_manager: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeManager>>>,
     injected_regime_classifier: Option<Arc<parking_lot::Mutex<maekon_analysis::RegimeClassifier>>>,
+    // #8051: FTS content indexer (the shared SqliteStorage cast to the
+    // text-search port). Threaded from the composition root so `handle_segment_close`
+    // can index each closed segment into `search_fts`, making the dashboard
+    // keyword/hybrid search modes return data.
+    text_search: Option<Arc<dyn maekon_core::ports::text_search::TextSearchProvider>>,
     // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
     // registry threaded from the composition root, used by the LLM WorkType
     // refiner's analysis provider built below.
@@ -125,7 +130,12 @@ pub(super) fn build_analysis_pipeline(
             let state = AdaptiveTriggerState {
                 trigger: maekon_analysis::AdaptiveTrigger::new(),
                 segment_buffer: maekon_analysis::SegmentBuffer::new(buf_cap),
-                calibration_buffer: maekon_analysis::CalibrationBuffer::new(buf_cap, 60),
+                // #7678 D4: was hardcoded to 60s, silently ignoring the configured
+                // `buffer_flush_interval_secs` (default 30s) — now wired through.
+                calibration_buffer: maekon_analysis::CalibrationBuffer::new(
+                    buf_cap,
+                    tm_config.buffer_flush_interval_secs,
+                ),
                 title_bar_parser: maekon_analysis::TitleBarParser::new(),
                 work_type_classifier: maekon_analysis::WorkTypeClassifier::new(),
                 content_tracker: maekon_analysis::ContentTracker::new(),
@@ -164,6 +174,7 @@ pub(super) fn build_analysis_pipeline(
                 last_drift_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 llm_summarizer: embedding.llm_summarizer.take(),
                 embedding_pipeline: embedding.embedding_pipeline.take(),
+                text_search,
                 gui_pipeline_state: None,
                 gui_work_type_refiner: maekon_analysis::GuiWorkTypeRefiner,
                 llm_work_type_refiner,

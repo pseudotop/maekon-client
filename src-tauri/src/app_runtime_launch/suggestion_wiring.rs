@@ -15,8 +15,24 @@ pub(super) fn build_suggestion_wiring(
     handle: &tokio::runtime::Handle,
     config: &maekon_core::config::AppConfig,
     sqlite_storage: Arc<maekon_storage::sqlite::SqliteStorage>,
-    feedback_sink: Arc<dyn maekon_core::ports::feedback_signal_sink::FeedbackSignalSink>,
+    regime_classifier: Arc<parking_lot::Mutex<maekon_analysis::RegimeClassifier>>,
+    // #9459: the ONE session built by the composition root (auth_wiring.rs).
+    // Threaded through rather than reconstructed so the network `ApiClient`
+    // built below shares the manager the login IPC writes to.
+    #[cfg(feature = "server")] shared_token_manager: Option<
+        Arc<maekon_network::auth::TokenManager>,
+    >,
 ) -> SuggestionWiring {
+    // Composite feedback sink over the shared regime classifier (this wiring is
+    // its sole consumer). #7913 T2.1c: persist the per-regime reaction stats the
+    // classifier learns from accept/reject/defer so they survive restart.
+    let feedback_sink: Arc<dyn maekon_core::ports::feedback_signal_sink::FeedbackSignalSink> =
+        Arc::new(
+            crate::feedback_sink::CompositeFeedbackSink::new(Some(regime_classifier))
+                .with_reaction_store(sqlite_storage.clone()
+                    as Arc<dyn maekon_core::ports::regime_reaction_store::RegimeReactionStore>),
+        );
+
     let shared_queue = Arc::new(tokio::sync::Mutex::new(
         maekon_suggestion::queue::SuggestionQueue::new(config.analysis.max_suggestions),
     ));
@@ -25,6 +41,10 @@ pub(super) fn build_suggestion_wiring(
     let shared_scorer = Arc::new(tokio::sync::Mutex::new(
         maekon_suggestion::scorer::FeedbackScorer::new(),
     ));
+    // #7913 T2.1c: hydrate the FeedbackScorer's learned (type, source) tallies so
+    // relevance learning survives restart (the write-through lives in the
+    // submit_suggestion_feedback command). Wall-clock decay is preserved on load.
+    restore_feedback_scorer_tallies(handle, sqlite_storage.clone(), shared_scorer.clone());
     let manager = build_suggestion_manager(
         app_handle,
         config,
@@ -32,6 +52,8 @@ pub(super) fn build_suggestion_wiring(
         shared_queue.clone(),
         shared_scorer.clone(),
         feedback_sink,
+        #[cfg(feature = "server")]
+        shared_token_manager,
     );
     restore_deferred_suggestions_and_feedbacks(
         handle,
@@ -45,6 +67,32 @@ pub(super) fn build_suggestion_wiring(
         shared_scorer,
         manager,
     }
+}
+
+/// #7913 T2.1c: load persisted `FeedbackScorer` tallies into the shared scorer
+/// on startup. Fail-safe: a load failure logs and starts empty (today's
+/// behavior); a tally aged past its 12h window reads as decayed via the scorer's
+/// preserved `last_updated` (see `FeedbackScorer::hydrate`).
+#[cfg(feature = "local-suggestions")]
+fn restore_feedback_scorer_tallies(
+    handle: &tokio::runtime::Handle,
+    sqlite_storage: Arc<maekon_storage::sqlite::SqliteStorage>,
+    shared_scorer: Arc<tokio::sync::Mutex<maekon_suggestion::scorer::FeedbackScorer>>,
+) {
+    use maekon_core::ports::feedback_scorer_store::FeedbackScorerStore;
+    let records = match sqlite_storage.load_feedback_tallies() {
+        Ok(records) => records,
+        Err(e) => {
+            tracing::warn!("failed to restore feedback scorer tallies: {e}");
+            Vec::new()
+        }
+    };
+    if records.is_empty() {
+        return;
+    }
+    let count = records.len();
+    handle.block_on(shared_scorer.lock()).hydrate(records);
+    tracing::info!(count, "restored feedback scorer tallies from storage");
 }
 
 #[cfg(feature = "local-suggestions")]
@@ -140,35 +188,31 @@ fn build_suggestion_manager(
     shared_queue: Arc<tokio::sync::Mutex<maekon_suggestion::queue::SuggestionQueue>>,
     shared_scorer: Arc<tokio::sync::Mutex<maekon_suggestion::scorer::FeedbackScorer>>,
     feedback_sink: Arc<dyn maekon_core::ports::feedback_signal_sink::FeedbackSignalSink>,
+    shared_token_manager: Option<Arc<maekon_network::auth::TokenManager>>,
 ) -> Option<Arc<crate::suggestion_manager::SuggestionManager>> {
-    use maekon_network::auth::TokenManager;
     use maekon_network::http_client::HttpApiClient;
     use tauri::Manager;
 
-    // deep-review Net-4: prefer the TLS-policy-aware constructor. On a `[tls]`
-    // *configuration* error (e.g. `allow_self_signed` rejected by
-    // `build_reqwest_client_for_url`) do NOT silently swallow it and downgrade to a
-    // client without `[tls]` policy enforcement — surface it LOUDLY so a
-    // misconfigured `[tls]` block is observable instead of failing open in silence.
-    let token_manager = Arc::new(
-        match TokenManager::new_with_tls(
-            &config.server.base_url,
-            &config.tls,
-            Some(config.request_timeout()),
-        ) {
-            Ok(manager) => manager,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    base_url = %config.server.base_url,
-                    "TLS-aware TokenManager construction failed; falling back to a default \
-                     client WITHOUT [tls] policy enforcement — verify the [tls] config"
-                );
-                #[allow(deprecated)]
-                TokenManager::new(&config.server.base_url)
-            }
-        },
-    );
+    // #7733: fail loud on an invalid `[tls]` config, unifying with the sibling
+    // `build_server_transports` wiring site (agent_runtime_support.rs), which has
+    // propagated the identical TokenManager construction error via `?` since this
+    // client's initial migration commit — it has never had a fallback. This site
+    // used to warn-log then silently fall back to the deprecated no-TLS-policy
+    // `TokenManager::new` constructor (deep-review Net-4, #4530/#4531): that made
+    // the failure *observable* but the client still ran with a weakened TLS
+    // policy. On a privacy product, silently downgrading TLS enforcement is a
+    // security regression, not an acceptable degrade — treat a `[tls]`
+    // *configuration* error (e.g. `allow_self_signed`, rejected by
+    // `build_reqwest_client_for_url`) as a wiring failure and skip the
+    // SuggestionManager entirely (same convention as the `api_result` failure
+    // handling below — this subsystem is non-critical, so the rest of the app
+    // keeps running; `logout_all_sessions` also becomes unavailable, which
+    // `TokenManagerState`'s own doc already treats as an expected `None` state).
+    // #9459: prefer the composition root's shared manager; only the locally-built
+    // fallback still owns the slot write below (the shared one was registered by
+    // `app_runtime_launch::mod`, which is where that responsibility now lives).
+    let shared_manager_provided = shared_token_manager.is_some();
+    let token_manager = resolve_suggestion_token_manager(config, shared_token_manager)?;
 
     // Populate the build-time slot registered once in `main.rs`. We MUST write
     // through the slot (via the already-imported `tauri::Manager::state`) rather
@@ -176,9 +220,11 @@ fn build_suggestion_manager(
     // overwrite an already-managed type (it returns `false` and discards the
     // value), which previously left `logout_all_sessions` permanently reading
     // `None` (2nd-pass #22).
-    app_handle
-        .state::<crate::commands::auth::TokenManagerState>()
-        .set(token_manager.clone());
+    if !shared_manager_provided {
+        app_handle
+            .state::<crate::commands::auth::TokenManagerState>()
+            .set(token_manager.clone());
+    }
 
     #[cfg(feature = "grpc")]
     let api_result: anyhow::Result<Arc<dyn maekon_core::ports::api_client::ApiClient>> = {
@@ -247,6 +293,61 @@ fn build_suggestion_manager(
         }
         Err(e) => {
             tracing::warn!("SuggestionManager init skipped: {e}");
+            None
+        }
+    }
+}
+
+/// #9459: adopt the composition root's single shared `TokenManager` when one was
+/// handed down, else fall back to building this pipeline's own.
+///
+/// Sharing is what makes the login IPC effective: `TokenManagerState` holds the
+/// composition root's manager, so a manager built locally here would be a second,
+/// never-signed-in session backing every suggestion-pipeline request. The
+/// fallback exists only for the case where the composition root's own
+/// construction failed (a `[tls]` config error) — preserving pre-#9459 behavior
+/// rather than additionally disabling the suggestion pipeline.
+#[cfg(feature = "server")]
+fn resolve_suggestion_token_manager(
+    config: &maekon_core::config::AppConfig,
+    shared: Option<Arc<maekon_network::auth::TokenManager>>,
+) -> Option<Arc<maekon_network::auth::TokenManager>> {
+    match shared {
+        Some(manager) => Some(manager),
+        None => build_suggestion_token_manager(config),
+    }
+}
+
+/// Builds the TLS-aware `TokenManager` used by the suggestion pipeline's
+/// network client. Returns `None` (logged at `error!`) on a `[tls]`
+/// *configuration* error instead of falling back to the deprecated
+/// no-TLS-policy `TokenManager::new` constructor — see the fail-loud
+/// rationale documented on `build_suggestion_manager` above (#7733).
+///
+/// Split out as a pure `&AppConfig -> Option<Arc<TokenManager>>` function
+/// (no `tauri::AppHandle` dependency) specifically so the fail-loud branch is
+/// unit-testable without standing up a Tauri app.
+///
+/// #9459: now the FALLBACK path only — the shared manager built by
+/// `auth_wiring` is preferred (see `resolve_suggestion_token_manager`).
+#[cfg(feature = "server")]
+fn build_suggestion_token_manager(
+    config: &maekon_core::config::AppConfig,
+) -> Option<Arc<maekon_network::auth::TokenManager>> {
+    match maekon_network::auth::TokenManager::new_with_tls(
+        &config.server.base_url,
+        &config.tls,
+        Some(config.request_timeout()),
+    ) {
+        Ok(manager) => Some(Arc::new(manager)),
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                base_url = %config.server.base_url,
+                "TLS-aware TokenManager construction failed; SuggestionManager init \
+                 skipped (fail-loud — verify the [tls] config; refusing to fall back \
+                 to a client without TLS policy enforcement)"
+            );
             None
         }
     }
@@ -351,6 +452,91 @@ fn restore_deferred_suggestions_and_feedbacks(
         tracing::info!(
             count = feedback_count,
             "restored pending feedbacks for retry"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "server"))]
+mod tests {
+    use std::sync::Arc;
+
+    use maekon_core::config::AppConfig;
+
+    use super::{build_suggestion_token_manager, resolve_suggestion_token_manager};
+
+    /// #7733 fails-before: an invalid `[tls]` config (`allow_self_signed = true`,
+    /// rejected by `build_reqwest_client_for_url`) must produce a hard failure
+    /// (`None`), NOT a silently-degraded `TokenManager` without TLS policy
+    /// enforcement. Before this fix, the caller (`build_suggestion_manager`)
+    /// caught this same error and fell back to the deprecated
+    /// `TokenManager::new` constructor — this test targets the extracted pure
+    /// helper directly so the fail-loud branch is provable without a
+    /// `tauri::AppHandle`.
+    #[test]
+    fn invalid_tls_config_fails_loud_instead_of_falling_back() {
+        let mut config = AppConfig::default_config();
+        config.tls.allow_self_signed = true;
+
+        let result = build_suggestion_token_manager(&config);
+
+        assert!(
+            result.is_none(),
+            "an invalid [tls] config must fail loud (None), not silently build a \
+             TokenManager without TLS policy enforcement"
+        );
+    }
+
+    /// Sanity counterpart: a valid `[tls]` config must still build normally.
+    #[test]
+    fn valid_tls_config_builds_token_manager() {
+        let config = AppConfig::default_config();
+
+        let result = build_suggestion_token_manager(&config);
+
+        assert!(
+            result.is_some(),
+            "a valid [tls] config must build a TokenManager"
+        );
+    }
+
+    /// #9459 fails-before: when the composition root hands down the ONE shared
+    /// `TokenManager`, this wiring must adopt that exact `Arc` instead of
+    /// constructing a second, independent session. Two managers means the login
+    /// IPC writes a bearer token into one of them while the upload/SSE
+    /// transports keep reading the other — a logged-in client that uploads
+    /// unauthenticated.
+    #[test]
+    // `TokenManager::new` is deprecated for production wiring (no TLS policy);
+    // used here only as a cheap identity fixture — no request is ever issued.
+    #[allow(deprecated)]
+    fn shared_token_manager_is_reused_verbatim() {
+        let shared = Arc::new(maekon_network::auth::TokenManager::new(
+            "http://127.0.0.1:19999",
+        ));
+        let config = AppConfig::default_config();
+
+        let resolved = resolve_suggestion_token_manager(&config, Some(shared.clone()))
+            .expect("a shared manager must resolve");
+
+        assert!(
+            Arc::ptr_eq(&resolved, &shared),
+            "the shared TokenManager must be reused verbatim; a different Arc means \
+             the suggestion pipeline built its own second session"
+        );
+    }
+
+    /// The `None` path keeps the pre-#9459 behavior: no shared manager (e.g. the
+    /// composition root's construction failed on a `[tls]` config error) still
+    /// builds this wiring's own manager rather than disabling the pipeline.
+    #[test]
+    fn absent_shared_token_manager_falls_back_to_own() {
+        let config = AppConfig::default_config();
+
+        let resolved = resolve_suggestion_token_manager(&config, None);
+
+        assert!(
+            resolved.is_some(),
+            "without a shared manager the wiring must fall back to building its own"
         );
     }
 }

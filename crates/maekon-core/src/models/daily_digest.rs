@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::memory_graph::MemoryClaim;
+use super::memory_graph::{ClaimStatus, MemoryClaim};
 use super::tiered_memory::WorkType;
 
 /// Aggregated daily summary containing timeline, statistics, and LLM insight.
@@ -138,20 +138,62 @@ impl DigestExporter {
     }
 
     /// Render a daily digest as Markdown with an appended "Accumulated Claims"
-    /// section (ADR-023 local symbolic-memory second-brain view). When `claims`
-    /// is empty this is byte-identical to [`Self::to_markdown`].
+    /// section (ADR-023 local symbolic-memory second-brain view).
+    ///
+    /// Retracted claims never render in exports, regardless of caller: the
+    /// exporter filters out [`ClaimStatus::Retracted`] internally as a
+    /// defense-in-depth guarantee. A retraction is an explicit "forget this
+    /// belief" request the user made, so a retracted claim must never leak into
+    /// an export even if a future caller passes an all-status slice. When the
+    /// resulting visible slice is empty (no claims, or every claim retracted)
+    /// this is byte-identical to [`Self::to_markdown`].
     pub fn to_markdown_with_claims(digest: &DailyDigest, claims: &[MemoryClaim]) -> String {
         let mut md = String::with_capacity(2048);
         Self::render_body(&mut md, digest);
-        if !claims.is_empty() {
+        // Retracted claims are dropped here so the "regardless of caller"
+        // invariant lives in the exporter, not in each call site.
+        let mut visible = claims
+            .iter()
+            .filter(|claim| claim.status != ClaimStatus::Retracted)
+            .peekable();
+        if visible.peek().is_some() {
             md.push_str("## Accumulated Claims\n\n");
-            for claim in claims {
-                md.push_str(&format!("- *({})* {}\n", claim.kind.as_str(), claim.text));
-            }
+            Self::push_claim_bullets(&mut md, visible);
             md.push('\n');
         }
         Self::push_footer(&mut md, digest);
         md
+    }
+
+    /// Render the accumulated claims as a standalone Markdown document
+    /// (ADR-033 §1.1 — the vault's `claims.md` file class).
+    ///
+    /// Extraction of the claims-section rendering `to_markdown_with_claims`
+    /// uses: same per-claim line format, same defense-in-depth
+    /// [`ClaimStatus::Retracted`] filter (a retraction must never leak into
+    /// any export surface even if a caller passes an all-status slice). The
+    /// `Active`-only *selection* remains the vault writer's own contract
+    /// obligation (ADR-033 §5.1); this renderer only guarantees the floor.
+    pub fn claims_to_markdown(claims: &[MemoryClaim]) -> String {
+        let mut md = String::with_capacity(1024);
+        md.push_str("# Accumulated Claims\n\n");
+        let mut visible = claims
+            .iter()
+            .filter(|claim| claim.status != ClaimStatus::Retracted)
+            .peekable();
+        if visible.peek().is_none() {
+            md.push_str("_No active claims._\n");
+            return md;
+        }
+        Self::push_claim_bullets(&mut md, visible);
+        md
+    }
+
+    /// Shared per-claim bullet renderer for the claims section/file.
+    fn push_claim_bullets<'a>(md: &mut String, claims: impl Iterator<Item = &'a MemoryClaim>) {
+        for claim in claims {
+            md.push_str(&format!("- *({})* {}\n", claim.kind.as_str(), claim.text));
+        }
     }
 
     /// Shared body renderer: title → insights → timeline → statistics → comparison.
@@ -431,6 +473,60 @@ mod tests {
         let digest = sample_digest_for_export();
         assert_eq!(
             DigestExporter::to_markdown_with_claims(&digest, &[]),
+            DigestExporter::to_markdown(&digest),
+        );
+    }
+
+    #[test]
+    fn export_markdown_filters_retracted_claims() {
+        use crate::models::memory_graph::{ClaimKind, ClaimStatus};
+        let digest = sample_digest_for_export();
+        let claims = vec![
+            MemoryClaim {
+                claim_id: "clm_keep".to_string(),
+                kind: ClaimKind::Reflective,
+                text: "morning deep-work cluster".to_string(),
+                source: "digest_highlight".to_string(),
+                confidence: 0.9,
+                status: ClaimStatus::Active,
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_000,
+            },
+            MemoryClaim {
+                claim_id: "clm_drop".to_string(),
+                kind: ClaimKind::Semantic,
+                text: "user forgot this belief".to_string(),
+                source: "digest_highlight".to_string(),
+                confidence: 0.5,
+                status: ClaimStatus::Retracted,
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_100,
+            },
+        ];
+        let md = DigestExporter::to_markdown_with_claims(&digest, &claims);
+        // The active claim renders; the retracted one never leaks into the export.
+        assert!(md.contains("morning deep-work cluster"));
+        assert!(!md.contains("user forgot this belief"));
+    }
+
+    #[test]
+    fn export_markdown_all_retracted_claims_equals_plain() {
+        use crate::models::memory_graph::{ClaimKind, ClaimStatus};
+        let digest = sample_digest_for_export();
+        // A slice of only retracted claims must leave NO "Accumulated Claims"
+        // section — byte-identical to the plain export, same as the empty case.
+        let claims = vec![MemoryClaim {
+            claim_id: "clm_only_retracted".to_string(),
+            kind: ClaimKind::Semantic,
+            text: "retracted belief".to_string(),
+            source: "digest_highlight".to_string(),
+            confidence: 0.5,
+            status: ClaimStatus::Retracted,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_100,
+        }];
+        assert_eq!(
+            DigestExporter::to_markdown_with_claims(&digest, &claims),
             DigestExporter::to_markdown(&digest),
         );
     }

@@ -10,9 +10,18 @@ import ToggleRow from './ToggleRow'
 interface ScheduleSettingsProps {
   schedule: ScheduleSettingsType
   onChange: (field: keyof ScheduleSettingsType, value: boolean | number | string[]) => void
+  /**
+   * #7678: whether `SystemMonitor::current_power_status()` returns REAL battery/power data on
+   * this platform (macOS only today — Windows/Linux always report an empty default, so the
+   * "Pause on Battery Saver" toggle can never actually fire there). Defaults to `true` so
+   * existing callers/stories that predate this prop keep their prior (enabled) behavior; the
+   * real caller (GeneralTab) passes the actual `FeatureCapabilitySnapshot.power_status_available`
+   * value.
+   */
+  powerStatusAvailable?: boolean
 }
 
-export default function ScheduleSettings({ schedule, onChange }: ScheduleSettingsProps) {
+export default function ScheduleSettings({ schedule, onChange, powerStatusAvailable = true }: ScheduleSettingsProps) {
   const { t } = useTranslation()
 
   return (
@@ -106,7 +115,11 @@ export default function ScheduleSettings({ schedule, onChange }: ScheduleSetting
             description={t('settings.pauseOnBatteryDesc')}
             checked={schedule.pause_on_battery_saver}
             onChange={(v) => onChange('pause_on_battery_saver', v)}
+            disabled={!powerStatusAvailable}
           />
+          {!powerStatusAvailable && (
+            <p className="text-semantic-warning text-xs">{t('settings.pauseOnBatteryUnavailable')}</p>
+          )}
         </div>
       </div>
     </Card>

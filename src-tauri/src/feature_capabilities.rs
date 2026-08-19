@@ -1,6 +1,6 @@
 // OOS-TBD: ADR-013 file split (cycle 35+) — LOC: 869
 use serde::Serialize;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use crate::runtime_state::SecretBackendCapabilities;
@@ -10,7 +10,6 @@ use crate::subprocess_provider::{
     SubprocessCliAuthStatus, SubprocessCliDependencyStatus, SubprocessCliDiscoveryReport,
 };
 use maekon_api_contracts::provider_specs::{
-    parse_surface_execution_kind, parse_surface_placement_kind, parse_surface_stability,
     provider_surface_catalog, ProviderAuthScheme, ProviderSurfaceSpec, SurfaceExecutionKind,
     SurfacePlacementKind, SurfaceStability,
 };
@@ -71,6 +70,55 @@ pub struct FeatureCapability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FeatureCapabilitySnapshot {
     pub features: Vec<FeatureCapability>,
+    /// COMPILE-capability flag (#7600): whether this binary was built with the
+    /// `audio` cargo feature. `maekon-audio` (cpal capture + Whisper STT) is
+    /// compiled OUT of the shipped `grpc,windows-sandbox` release build, so
+    /// `config.audio.enabled` alone is not a truthful signal — a user can flip
+    /// it on and start a model download that dead-ends in `service.unavailable`.
+    /// The frontend AudioTab and chat voice-input entry point read this field
+    /// to disable audio controls instead of offering a doomed download.
+    pub audio_compiled: bool,
+    /// PLATFORM-capability flag (#7678): whether ANY local OCR engine
+    /// (platform-native Vision.framework/WinRT, or leptess/Tesseract) is
+    /// actually compiled + usable on this platform. See
+    /// `maekon_vision::local_ocr_engine_available()`. `false` on Linux in
+    /// every shipped build today — native OCR is macOS/Windows-only and
+    /// leptess is never enabled — so selecting `ai_provider.ocr_provider =
+    /// Local` there silently produces zero OCR regions forever. The
+    /// AI-automation settings tab reads this to warn instead of staying
+    /// silent.
+    pub ocr_available: bool,
+    /// PLATFORM-capability flag (#7678): whether `SystemMonitor::current_power_status()`
+    /// returns REAL battery/power data (only macOS today — see
+    /// `maekon_monitor::system::power_status_platform_supported()`). Windows
+    /// and Linux always get an empty `PowerStatus::default()`, so
+    /// `schedule.pause_on_battery_saver` is a toggle that can never actually
+    /// fire there. The schedule settings tab reads this to disable the
+    /// toggle instead of offering a dead one.
+    pub power_status_available: bool,
+    /// PLATFORM-capability flag (#7678): whether active-window detection is
+    /// expected to work reliably on this platform/session. `true` on
+    /// macOS/Windows always; on Linux, `false` when a Wayland session is
+    /// detected (no single dependable native path — see
+    /// `maekon_monitor::active_window_reliable()` and
+    /// `maekon_monitor::linux::get_active_window_linux()`'s GNOME/Sway/XWayland
+    /// fallback chain). No dedicated settings UI reads this today; it exists
+    /// so telemetry/consumers can observe the gap explicitly instead of a
+    /// silently-empty active-window signal.
+    pub active_window_available: bool,
+    /// PLATFORM/BUILD-capability flag (#8686 AC3): whether the out-of-process
+    /// automation sandbox can actually enforce isolation on this host + build
+    /// (`maekon_automation::sandbox::native_sandbox_available()` — the same
+    /// probes the fail-closed factory uses). The Monitoring settings tab reads
+    /// this so per-OS surfaces state containment honestly instead of implying
+    /// it everywhere.
+    pub automation_sandbox_available: bool,
+    /// PLATFORM flag (#8686 AC3): the Linux graphical session type —
+    /// `Some("wayland")` / `Some("x11")` / `Some("unknown")` on Linux, `None`
+    /// elsewhere. Lets the permission matrix distinguish the Wayland
+    /// degradation (no dependable active-window path, tracking panel
+    /// unsupported) from a healthy X11 session.
+    pub linux_session_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -116,6 +164,40 @@ enum ProviderEndpointProbePolicyError {
     ExternalEgressConsentRequired,
 }
 
+/// Computes the three PLATFORM-capability descriptor fields shared by both
+/// `FeatureCapabilitySnapshot` construction sites below, so the early-return
+/// (catalog load failure) and success paths can never drift out of sync with
+/// each other (#7678 — mirrors the `audio_compiled: cfg!(feature = "audio")`
+/// duplication this same pattern already had at both sites).
+fn platform_capability_flags() -> (bool, bool, bool) {
+    (
+        maekon_vision::local_ocr_engine_available(),
+        maekon_monitor::system::power_status_platform_supported(),
+        maekon_monitor::active_window_reliable(),
+    )
+}
+
+/// Linux graphical session type for the permission matrix (#8686 AC3).
+/// Env-sniff mirrors `magic_overlay::window`'s Wayland gate: `WAYLAND_DISPLAY`
+/// wins over `DISPLAY` (XWayland sets both).
+fn linux_session_type() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let kind = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            "wayland"
+        } else if std::env::var_os("DISPLAY").is_some() {
+            "x11"
+        } else {
+            "unknown"
+        };
+        Some(kind.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 pub async fn build_feature_capability_snapshot(
     secret_backend: &SecretBackendCapabilities,
 ) -> FeatureCapabilitySnapshot {
@@ -136,33 +218,52 @@ async fn build_feature_capability_snapshot_with_probes(
                 error = %error,
                 "Failed to load provider surface catalog for feature capability snapshot."
             );
+            let (ocr_available, power_status_available, active_window_available) =
+                platform_capability_flags();
             return FeatureCapabilitySnapshot {
                 features: Vec::new(),
+                audio_compiled: cfg!(feature = "audio"),
+                ocr_available,
+                power_status_available,
+                active_window_available,
+                automation_sandbox_available: maekon_automation::sandbox::native_sandbox_available(
+                ),
+                linux_session_type: linux_session_type(),
             };
         }
     };
 
     let mut features = Vec::new();
     for surface in &catalog.surfaces {
-        match parse_surface_execution_kind(&surface.execution_kind) {
-            Ok(SurfaceExecutionKind::ManagedHttp)
+        match surface.execution_kind {
+            SurfaceExecutionKind::ManagedHttp
                 if surface
                     .credential_kind
                     .eq_ignore_ascii_case("managed_oauth") =>
             {
                 features.push(managed_oauth_feature(surface, secret_backend));
             }
-            Ok(SurfaceExecutionKind::SubprocessCli) => {
+            SurfaceExecutionKind::SubprocessCli => {
                 features.push(subprocess_cli_feature(surface, detected_surfaces));
             }
-            Ok(SurfaceExecutionKind::DirectHttp) if surface.availability_probe.is_some() => {
+            SurfaceExecutionKind::DirectHttp if surface.availability_probe.is_some() => {
                 features.push(probed_http_surface_feature(surface).await);
             }
             _ => {}
         }
     }
 
-    FeatureCapabilitySnapshot { features }
+    let (ocr_available, power_status_available, active_window_available) =
+        platform_capability_flags();
+    FeatureCapabilitySnapshot {
+        features,
+        audio_compiled: cfg!(feature = "audio"),
+        ocr_available,
+        power_status_available,
+        active_window_available,
+        automation_sandbox_available: maekon_automation::sandbox::native_sandbox_available(),
+        linux_session_type: linux_session_type(),
+    }
 }
 
 fn managed_oauth_feature(
@@ -390,9 +491,7 @@ async fn probed_http_surface_feature(surface: &ProviderSurfaceSpec) -> FeatureCa
         }
     };
 
-    let placement = parse_surface_placement_kind(&surface.placement_kind)
-        .unwrap_or(SurfacePlacementKind::CustomHosted);
-    let requires = match placement {
+    let requires = match surface.placement_kind {
         SurfacePlacementKind::SelfHosted => vec![format!("local_server:{}", surface.vendor_id)],
         SurfacePlacementKind::CustomHosted => vec![format!("endpoint:{}", surface.vendor_id)],
         _ => Vec::new(),
@@ -494,8 +593,44 @@ async fn probe_surface_http_reachability_at_url(
         ));
     }
 
-    let client = reqwest::Client::builder()
+    // #7698 S2: SSRF hardening. `probe_url` traces back to the WebView-supplied
+    // `endpoint` IPC argument (see `probe_provider_surface_endpoint`), so a
+    // compromised/malicious renderer could point this backend GET/HEAD at an
+    // internal service (loopback, LAN, or the cloud metadata endpoint
+    // 169.254.169.254) and use the boolean reachability result as an SSRF
+    // oracle. `SelfHosted`/`CustomHosted` surfaces are exempt — their whole
+    // purpose is a user-run server that is legitimately on localhost/LAN
+    // (e.g. Ollama) — every other placement kind must resolve to a
+    // non-internal address.
+    let is_explicitly_provisioned_self_hosted = matches!(
+        surface.placement_kind,
+        SurfacePlacementKind::SelfHosted | SurfacePlacementKind::CustomHosted
+    );
+
+    let mut client_builder = reqwest::Client::builder()
         .timeout(Duration::from_millis(1500))
+        .redirect(reqwest::redirect::Policy::none());
+
+    if !is_explicitly_provisioned_self_hosted {
+        let parsed_probe_url = reqwest::Url::parse(probe_url)
+            .map_err(|error| format!("Probe URL is invalid: {error}"))?;
+        let host = parsed_probe_url
+            .host_str()
+            .ok_or_else(|| "Probe URL has no host".to_string())?
+            .to_string();
+        let port = parsed_probe_url
+            .port_or_known_default()
+            .ok_or_else(|| "Probe URL has no resolvable port".to_string())?;
+
+        let validated_addrs = resolve_and_validate_probe_host(&host, port).await?;
+        // Pin the actual request to the exact addresses just validated, so a
+        // second, independent DNS answer at connect time (DNS rebinding)
+        // cannot swap in a blocked address after this check passes — closes
+        // the resolve-vs-connect TOCTOU gap instead of only narrowing it.
+        client_builder = client_builder.resolve_to_addrs(&host, &validated_addrs);
+    }
+
+    let client = client_builder
         .build()
         .map_err(|error| format!("Failed to build availability probe client: {error}"))?;
     let method = probe.method.trim().to_ascii_uppercase();
@@ -519,14 +654,34 @@ pub async fn probe_provider_surface_endpoint(
     endpoint_kind: &str,
     endpoint: &str,
     allow_external_egress: bool,
+    consent: &maekon_core::consent::ConsentPermissions,
 ) -> ProviderEndpointProbeResult {
     let normalized_endpoint = endpoint.trim().to_string();
     let sanitized_endpoint = sanitize_endpoint_for_probe_result(&normalized_endpoint);
     let copy_key = |suffix: &str| Some(surface_status_copy_key(surface_id, suffix));
 
-    if let Err(error) =
-        evaluate_provider_endpoint_probe_policy(&normalized_endpoint, allow_external_egress)
-    {
+    // Parsed once, up front: both the consent-authority selection below (LLM
+    // vs. OCR dual-consent field) and the later probe-URL resolution need it.
+    let parsed_kind = match parse_endpoint_probe_kind(endpoint_kind) {
+        Ok(kind) => kind,
+        Err(error) => {
+            return ProviderEndpointProbeResult {
+                surface_id: surface_id.to_string(),
+                endpoint_kind: endpoint_kind.to_string(),
+                endpoint: sanitized_endpoint,
+                availability: FeatureAvailability::PartiallyAvailable,
+                status_reason: Some(format!("endpoint_kind_invalid:{error}")),
+                status_copy_key: copy_key("partially_available"),
+            };
+        }
+    };
+
+    if let Err(error) = evaluate_provider_endpoint_probe_policy(
+        &normalized_endpoint,
+        parsed_kind,
+        allow_external_egress,
+        consent,
+    ) {
         let status_reason = match error {
             ProviderEndpointProbePolicyError::ExternalEgressConsentRequired => {
                 "external_probe_blocked:consent_required"
@@ -554,7 +709,7 @@ pub async fn probe_provider_surface_endpoint(
         &sanitized_endpoint,
         "allowed",
         if allow_external_egress {
-            "explicit_external_egress_gate"
+            "opt_in_and_server_side_consent_granted"
         } else {
             "loopback_endpoint"
         },
@@ -569,20 +724,6 @@ pub async fn probe_provider_surface_endpoint(
                 endpoint: sanitized_endpoint,
                 availability: FeatureAvailability::PartiallyAvailable,
                 status_reason: Some(format!("surface_missing:{error}")),
-                status_copy_key: copy_key("partially_available"),
-            };
-        }
-    };
-
-    let parsed_kind = match parse_endpoint_probe_kind(endpoint_kind) {
-        Ok(kind) => kind,
-        Err(error) => {
-            return ProviderEndpointProbeResult {
-                surface_id: surface.surface_id.clone(),
-                endpoint_kind: endpoint_kind.to_string(),
-                endpoint: sanitized_endpoint,
-                availability: FeatureAvailability::PartiallyAvailable,
-                status_reason: Some(format!("endpoint_kind_invalid:{error}")),
                 status_copy_key: copy_key("partially_available"),
             };
         }
@@ -686,17 +827,46 @@ fn probe_url_for_endpoint(
     Ok(resolved.to_string())
 }
 
+/// #7698 S2: decide whether the backend may issue the outbound probe request.
+///
+/// `allow_external_egress` is a WebView/renderer-supplied UI toggle and MUST
+/// NOT be the sole authority for an outbound network call — before this fix
+/// it was: `allow_external_egress: true` alone bypassed every check. It is
+/// now, at most, an ADDITIONAL opt-in on top of the durable, server-side
+/// `consent` snapshot (`ConsentManager::effective_permissions()`), which is
+/// the actual security decision.
+///
+/// The consent field consulted is the exact same "dual consent" authority
+/// that already gates real external OCR/LLM egress elsewhere in this crate —
+/// `full_text_extraction` for `llm_api` (see
+/// `provider_adapters::ensure_external_llm_allowed`) and `ocr_processing` for
+/// `ocr_api` (see `PrivacyGateway::prepare_image_for_external_with_override`)
+/// — so this probe cannot grant broader network access than the app's actual
+/// external-AI egress paths already require.
+///
+/// Fail-closed: a loopback/localhost endpoint is the only case that needs no
+/// consent; an endpoint whose external/internal status cannot even be
+/// determined (unparseable URL, missing host) is treated as external rather
+/// than silently allowed.
 fn evaluate_provider_endpoint_probe_policy(
     endpoint: &str,
+    endpoint_kind: EndpointProbeKind,
     allow_external_egress: bool,
+    consent: &maekon_core::consent::ConsentPermissions,
 ) -> Result<(), ProviderEndpointProbePolicyError> {
-    if allow_external_egress {
+    if endpoint_requires_external_egress(endpoint) == Some(false) {
         return Ok(());
     }
 
-    match endpoint_requires_external_egress(endpoint) {
-        Some(true) => Err(ProviderEndpointProbePolicyError::ExternalEgressConsentRequired),
-        Some(false) | None => Ok(()),
+    let server_side_permitted = match endpoint_kind {
+        EndpointProbeKind::LlmApi => consent.full_text_extraction,
+        EndpointProbeKind::OcrApi => consent.ocr_processing,
+    };
+
+    if allow_external_egress && server_side_permitted {
+        Ok(())
+    } else {
+        Err(ProviderEndpointProbePolicyError::ExternalEgressConsentRequired)
     }
 }
 
@@ -712,6 +882,60 @@ fn endpoint_requires_external_egress(endpoint: &str) -> Option<bool> {
     }
 
     Some(true)
+}
+
+/// #7698 S2: SSRF address blocklist for the provider-endpoint probe.
+///
+/// Rejects loopback (127.0.0.0/8, ::1), RFC 1918 private ranges (10.0.0.0/8,
+/// 172.16.0.0/12, 192.168.0.0/16), link-local (169.254.0.0/16 — this
+/// includes the cloud metadata endpoint 169.254.169.254), the unspecified
+/// addresses (0.0.0.0, ::), and IPv6 unique-local (fc00::/7). IPv4-mapped
+/// IPv6 addresses (`::ffff:a.b.c.d`) are unwrapped and re-checked against the
+/// same IPv4 rules so that representation cannot be used to smuggle a
+/// blocked address past the filter.
+///
+/// Implemented against explicit bit ranges / stable `std::net` predicates
+/// rather than nightly-only helpers like `is_global()`, so this compiles on
+/// the stable toolchain this workspace targets.
+///
+/// #7723: this is `maekon_core::net_policy::InternalRangePolicy::ssrf_blocklist()`
+/// — the minimal baseline (no CGNAT/NAT64/multicast extras; see
+/// `maekon-web`'s `ai_model_catalog_endpoint::is_internal_ip` for the stricter
+/// sibling policy and why the two intentionally differ).
+fn is_blocked_probe_address(ip: IpAddr) -> bool {
+    maekon_core::net_policy::InternalRangePolicy::ssrf_blocklist().is_internal(ip)
+}
+
+/// Resolve `host:port` and verify EVERY resolved address against
+/// `is_blocked_probe_address`. Returns the validated address list (which the
+/// caller pins the actual HTTP client to via `resolve_to_addrs`, so a later
+/// independent DNS answer at connect time cannot substitute a blocked
+/// address — closing the resolve-vs-connect TOCTOU/DNS-rebind gap rather
+/// than merely narrowing it).
+///
+/// Fail-closed: both a resolution error and an empty answer set are treated
+/// as a block (`Err`), matching the rest of this probe's fail-closed posture.
+async fn resolve_and_validate_probe_host(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| format!("DNS resolution failed for '{host}': {error}"))?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(format!("DNS resolution for '{host}' returned no addresses"));
+    }
+
+    if let Some(blocked) = addrs
+        .iter()
+        .find(|addr| is_blocked_probe_address(addr.ip()))
+    {
+        return Err(format!(
+            "resolved address {} for '{host}' is in a blocked (loopback/private/link-local) range",
+            blocked.ip()
+        ));
+    }
+
+    Ok(addrs)
 }
 
 fn sanitize_endpoint_for_probe_result(endpoint: &str) -> String {
@@ -781,7 +1005,7 @@ fn default_surface_transport_url(
 }
 
 fn feature_maturity(surface: &ProviderSurfaceSpec) -> FeatureMaturity {
-    match parse_surface_stability(&surface.stability).unwrap_or(SurfaceStability::Experimental) {
+    match surface.stability {
         SurfaceStability::Ga => FeatureMaturity::Stable,
         SurfaceStability::Preview => FeatureMaturity::Beta,
         SurfaceStability::Experimental => FeatureMaturity::Experimental,
@@ -875,6 +1099,7 @@ fn dependency_status_wire(value: SubprocessCliDependencyStatus) -> &'static str 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn backend_caps(
         oauth_available: bool,
@@ -1195,6 +1420,12 @@ mod tests {
                 setup_docs_url: None,
                 configuration_env_vars: vec![],
             }],
+            audio_compiled: false,
+            ocr_available: false,
+            power_status_available: false,
+            active_window_available: false,
+            automation_sandbox_available: false,
+            linux_session_type: None,
         };
 
         let diagnostics = provider_cli_diagnostics_from_snapshot(&snapshot);
@@ -1224,6 +1455,53 @@ mod tests {
         assert!(ids.contains(&"provider_surface.anthropic.subprocess_cli"));
         assert!(ids.contains(&"provider_surface.google.subprocess_cli"));
         assert!(ids.contains(&"provider_surface.ollama.local_http"));
+    }
+
+    /// #7600: `audio_compiled` must reflect the real `audio` cargo feature at
+    /// build time — not a runtime/config-derived guess. The shipped release
+    /// build (`grpc,windows-sandbox`) never enables `audio`, so this is the
+    /// signal the frontend AudioTab uses to disable controls instead of
+    /// offering a download that dead-ends in `service.unavailable`.
+    #[tokio::test]
+    async fn snapshot_audio_compiled_matches_cargo_feature() {
+        let snapshot = build_feature_capability_snapshot(&backend_caps(true, &["openai"])).await;
+        assert_eq!(snapshot.audio_compiled, cfg!(feature = "audio"));
+    }
+
+    /// #7678: the three PLATFORM-capability descriptors must carry the exact
+    /// per-platform cfg values computed by `platform_capability_flags()` — this
+    /// is the regression guard that a future edit which forgets to thread one
+    /// of them through a builder site (there are two: the catalog-load-failure
+    /// early return and the success path) is caught immediately instead of
+    /// silently reverting to a stale/default value.
+    #[tokio::test]
+    async fn snapshot_platform_capability_flags_match_builder_helper() {
+        let snapshot = build_feature_capability_snapshot(&backend_caps(true, &["openai"])).await;
+        let (expected_ocr, expected_power, expected_active_window) = platform_capability_flags();
+        assert_eq!(snapshot.ocr_available, expected_ocr);
+        assert_eq!(snapshot.power_status_available, expected_power);
+        assert_eq!(snapshot.active_window_available, expected_active_window);
+    }
+
+    /// #7678: `power_status_available` is macOS-only — pin the documented
+    /// allow-list directly (not merely re-deriving the same `cfg!` expression)
+    /// so this test fails loudly if a future platform gains real power-status
+    /// support without updating the doc comment / this assertion together.
+    #[tokio::test]
+    async fn snapshot_power_status_available_is_macos_only() {
+        let snapshot = build_feature_capability_snapshot(&backend_caps(true, &["openai"])).await;
+        assert_eq!(snapshot.power_status_available, cfg!(target_os = "macos"));
+    }
+
+    /// #7678: `platform_capability_flags()` is a pure cfg-derived computation
+    /// (no I/O, no hidden state) — repeated calls must be stable. This is the
+    /// property the catalog-load-failure early-return path in
+    /// `build_feature_capability_snapshot_with_probes` relies on to stay
+    /// honest without a dedicated integration test for that unreachable-in-CI
+    /// branch (the bundled provider surface catalog does not fail to load).
+    #[test]
+    fn platform_capability_flags_is_pure_and_stable() {
+        assert_eq!(platform_capability_flags(), platform_capability_flags());
     }
 
     #[tokio::test]
@@ -1309,11 +1587,46 @@ mod tests {
         assert_eq!(url, "http://127.0.0.1:11434/api/version");
     }
 
+    #[tokio::test]
+    async fn availability_probe_does_not_follow_redirects() {
+        let mut server = mockito::Server::new_async().await;
+        let redirect = server
+            .mock("GET", "/redirect")
+            .with_status(302)
+            .with_header("location", "/ok")
+            .create_async()
+            .await;
+        let ok = server
+            .mock("GET", "/ok")
+            .with_status(200)
+            .expect(0)
+            .create_async()
+            .await;
+        let surface = provider_surface_catalog()
+            .expect("catalog should load")
+            .surfaces
+            .iter()
+            .find(|surface| surface.surface_id == "provider_surface.ollama.local_http")
+            .expect("ollama surface should exist")
+            .clone();
+
+        let reachable =
+            probe_surface_http_reachability_at_url(&surface, &format!("{}/redirect", server.url()))
+                .await
+                .expect("probe should complete");
+
+        assert!(!reachable);
+        redirect.assert_async().await;
+        ok.assert_async().await;
+    }
+
     #[test]
     fn provider_endpoint_probe_policy_requires_gate_for_non_loopback_endpoint() {
         let decision = evaluate_provider_endpoint_probe_policy(
             "https://api.example.com/v1/responses?key=secret#fragment",
+            EndpointProbeKind::LlmApi,
             false,
+            &maekon_core::consent::ConsentPermissions::default(),
         );
 
         assert_eq!(
@@ -1324,10 +1637,108 @@ mod tests {
 
     #[test]
     fn provider_endpoint_probe_policy_allows_loopback_without_external_gate() {
-        let decision =
-            evaluate_provider_endpoint_probe_policy("http://127.0.0.1:11434/v1/responses", false);
+        // Loopback needs no consent at all — even with both the caller opt-in
+        // AND the server-side consent absent, the endpoint itself never
+        // requires external-egress authority.
+        let decision = evaluate_provider_endpoint_probe_policy(
+            "http://127.0.0.1:11434/v1/responses",
+            EndpointProbeKind::LlmApi,
+            false,
+            &maekon_core::consent::ConsentPermissions::default(),
+        );
 
         assert_eq!(decision, Ok(()));
+    }
+
+    /// #7698 S2 regression: prior to this fix, `allow_external_egress: true`
+    /// (a WebView-supplied boolean) was the SOLE authority —
+    /// `evaluate_provider_endpoint_probe_policy` returned `Ok(())`
+    /// immediately whenever the caller flag was true, with no server-side
+    /// check at all. This proves the fix: the caller flag alone, with the
+    /// durable consent snapshot showing NO grant, must still be denied.
+    #[test]
+    fn provider_endpoint_probe_policy_denies_when_caller_true_but_server_side_consent_absent() {
+        let decision = evaluate_provider_endpoint_probe_policy(
+            "https://api.example.com/v1/responses",
+            EndpointProbeKind::LlmApi,
+            true, // caller-supplied opt-in — must NOT be sufficient alone
+            &maekon_core::consent::ConsentPermissions::default(), // full_text_extraction: false
+        );
+
+        assert_eq!(
+            decision,
+            Err(ProviderEndpointProbePolicyError::ExternalEgressConsentRequired),
+            "caller boolean alone must never authorize external egress"
+        );
+    }
+
+    /// The inverse of the above: server-side consent granted but the caller
+    /// opt-in withheld must ALSO be denied — consent is necessary but not
+    /// sufficient either; both signals are required.
+    #[test]
+    fn provider_endpoint_probe_policy_denies_when_consent_granted_but_caller_opt_in_missing() {
+        let consent = maekon_core::consent::ConsentPermissions {
+            full_text_extraction: true,
+            ..Default::default()
+        };
+        let decision = evaluate_provider_endpoint_probe_policy(
+            "https://api.example.com/v1/responses",
+            EndpointProbeKind::LlmApi,
+            false,
+            &consent,
+        );
+
+        assert_eq!(
+            decision,
+            Err(ProviderEndpointProbePolicyError::ExternalEgressConsentRequired)
+        );
+    }
+
+    /// Both the caller opt-in AND the matching dual-consent field granted:
+    /// the probe is allowed. Covers both `llm_api` (`full_text_extraction`)
+    /// and `ocr_api` (`ocr_processing`) — the two existing consent
+    /// authorities this policy reuses rather than inventing a new one.
+    #[test]
+    fn provider_endpoint_probe_policy_allows_when_both_caller_and_consent_granted() {
+        let llm_consent = maekon_core::consent::ConsentPermissions {
+            full_text_extraction: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            evaluate_provider_endpoint_probe_policy(
+                "https://api.example.com/v1/responses",
+                EndpointProbeKind::LlmApi,
+                true,
+                &llm_consent,
+            ),
+            Ok(())
+        );
+
+        let ocr_consent = maekon_core::consent::ConsentPermissions {
+            ocr_processing: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            evaluate_provider_endpoint_probe_policy(
+                "https://api.example.com/v1/ocr",
+                EndpointProbeKind::OcrApi,
+                true,
+                &ocr_consent,
+            ),
+            Ok(())
+        );
+
+        // Cross-check: `ocr_processing` alone must NOT authorize `llm_api`
+        // (each endpoint kind requires its OWN matching consent field).
+        assert_eq!(
+            evaluate_provider_endpoint_probe_policy(
+                "https://api.example.com/v1/responses",
+                EndpointProbeKind::LlmApi,
+                true,
+                &ocr_consent,
+            ),
+            Err(ProviderEndpointProbePolicyError::ExternalEgressConsentRequired)
+        );
     }
 
     #[test]
@@ -1346,6 +1757,7 @@ mod tests {
             "llm_api",
             "https://api.example.com/v1/responses?api_key=secret",
             false,
+            &maekon_core::consent::ConsentPermissions::default(),
         )
         .await;
 
@@ -1355,5 +1767,97 @@ mod tests {
             Some("external_probe_blocked:consent_required")
         );
         assert_eq!(result.endpoint, "https://api.example.com/v1/responses");
+    }
+
+    /// #7698 S2 regression at the full `probe_provider_surface_endpoint` entry
+    /// point (not just the inner policy function): a caller passing
+    /// `allow_external_egress: true` for a `full_text_extraction`-less
+    /// consent snapshot must still be denied — proves the fix end-to-end,
+    /// including the audit-decision branch.
+    #[tokio::test]
+    async fn provider_endpoint_probe_denies_when_caller_opts_in_without_consent() {
+        let result = probe_provider_surface_endpoint(
+            "provider_surface.ollama.local_http",
+            "llm_api",
+            "https://api.example.com/v1/responses",
+            true,                                                 // caller opt-in present
+            &maekon_core::consent::ConsentPermissions::default(), // no consent
+        )
+        .await;
+
+        assert_eq!(result.availability, FeatureAvailability::Unavailable);
+        assert_eq!(
+            result.status_reason.as_deref(),
+            Some("external_probe_blocked:consent_required")
+        );
+    }
+
+    // ── #7698 S2: SSRF address blocklist ────────────────────────────────
+
+    #[test]
+    fn ssrf_blocklist_rejects_ipv4_loopback() {
+        assert!(is_blocked_probe_address(IpAddr::V4(Ipv4Addr::new(
+            127, 0, 0, 1
+        ))));
+    }
+
+    #[test]
+    fn ssrf_blocklist_rejects_cloud_metadata_link_local() {
+        // 169.254.169.254 — AWS/GCP/Azure instance metadata endpoint, the
+        // canonical SSRF target this filter must never let through.
+        assert!(is_blocked_probe_address(IpAddr::V4(Ipv4Addr::new(
+            169, 254, 169, 254
+        ))));
+    }
+
+    #[test]
+    fn ssrf_blocklist_rejects_rfc1918_private_ranges() {
+        assert!(is_blocked_probe_address(IpAddr::V4(Ipv4Addr::new(
+            10, 0, 0, 5
+        ))));
+        assert!(is_blocked_probe_address(IpAddr::V4(Ipv4Addr::new(
+            172, 16, 0, 1
+        ))));
+        assert!(is_blocked_probe_address(IpAddr::V4(Ipv4Addr::new(
+            192, 168, 1, 1
+        ))));
+    }
+
+    #[test]
+    fn ssrf_blocklist_rejects_unspecified_v4() {
+        assert!(is_blocked_probe_address(IpAddr::V4(Ipv4Addr::new(
+            0, 0, 0, 0
+        ))));
+    }
+
+    #[test]
+    fn ssrf_blocklist_rejects_ipv6_loopback_and_unique_local() {
+        assert!(is_blocked_probe_address(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        // fc00::/7
+        assert!(is_blocked_probe_address(IpAddr::V6(Ipv6Addr::new(
+            0xfd00, 0, 0, 0, 0, 0, 0, 1
+        ))));
+    }
+
+    #[test]
+    fn ssrf_blocklist_rejects_ipv4_mapped_ipv6_of_a_blocked_address() {
+        // ::ffff:169.254.169.254 — representation smuggling attempt.
+        let mapped = Ipv4Addr::new(169, 254, 169, 254).to_ipv6_mapped();
+        assert!(is_blocked_probe_address(IpAddr::V6(mapped)));
+    }
+
+    /// Argues the "allows a permitted public host" half of the S2 SSRF
+    /// requirement without depending on live DNS/network access in CI —
+    /// the blocklist predicate is the actual security boundary; a live
+    /// `resolve_and_validate_probe_host` call against a real public host is
+    /// an environment-dependent integration concern, not a unit-test one.
+    #[test]
+    fn ssrf_blocklist_allows_public_addresses() {
+        assert!(!is_blocked_probe_address(IpAddr::V4(Ipv4Addr::new(
+            8, 8, 8, 8
+        ))));
+        assert!(!is_blocked_probe_address(IpAddr::V4(Ipv4Addr::new(
+            1, 1, 1, 1
+        ))));
     }
 }

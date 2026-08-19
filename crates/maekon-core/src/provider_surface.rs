@@ -2,7 +2,11 @@ use crate::config::{AiAccessMode, AiProviderType};
 use serde::Deserialize;
 use std::sync::OnceLock;
 
-const PROVIDER_SURFACE_CATALOG_JSON: &str =
+// Single compile-time embed of the provider surface catalog JSON.
+// `maekon-api-contracts::provider_specs` references this constant instead of
+// re-embedding the same file with its own `include_str!` (issue #7741). Do not
+// add another `include_str!` of this file elsewhere — reuse this constant.
+pub const PROVIDER_SURFACE_CATALOG_JSON: &str =
     include_str!("../../../specs/providers/provider-surface-catalog.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,9 +17,10 @@ pub enum ProviderSurfaceTransport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderSurfaceSpec {
+pub struct ProviderSurfaceProjection {
     pub id: String,
     pub vendor_id: String,
+    pub display_name: String,
     pub provider_type: AiProviderType,
     pub transport: ProviderSurfaceTransport,
     pub supports_llm: bool,
@@ -71,6 +76,7 @@ struct ProviderSurfaceCatalogSurface {
     surface_id: String,
     vendor_id: String,
     provider_type: String,
+    display_name: String,
     execution_kind: String,
     #[serde(default)]
     preferred_for_product_auth: bool,
@@ -92,7 +98,7 @@ struct ProviderSurfaceCatalogTransport {
     auth_scheme: String,
 }
 
-static KNOWN_PROVIDER_SURFACES: OnceLock<Result<Vec<ProviderSurfaceSpec>, String>> =
+static KNOWN_PROVIDER_SURFACES: OnceLock<Result<Vec<ProviderSurfaceProjection>, String>> =
     OnceLock::new();
 static KNOWN_PROVIDER_VENDOR_PROJECTIONS: OnceLock<Result<Vec<ProviderVendorProjection>, String>> =
     OnceLock::new();
@@ -102,7 +108,7 @@ pub fn canonical_provider_surface_id(raw: &str) -> Option<&'static str> {
     provider_surface_spec(raw).map(|spec| spec.id.as_str())
 }
 
-pub fn provider_surface_spec(raw: &str) -> Option<&'static ProviderSurfaceSpec> {
+pub fn provider_surface_spec(raw: &str) -> Option<&'static ProviderSurfaceProjection> {
     let normalized = raw.trim().to_ascii_lowercase();
     provider_surface_specs()?
         .iter()
@@ -202,7 +208,7 @@ pub fn default_provider_surface_id(
         .map(|spec| spec.id.as_str())
 }
 
-fn provider_surface_specs() -> Option<&'static [ProviderSurfaceSpec]> {
+fn provider_surface_specs() -> Option<&'static [ProviderSurfaceProjection]> {
     match KNOWN_PROVIDER_SURFACES.get_or_init(load_provider_surface_specs) {
         Ok(specs) => Some(specs.as_slice()),
         Err(error) => {
@@ -215,7 +221,7 @@ fn provider_surface_specs() -> Option<&'static [ProviderSurfaceSpec]> {
     }
 }
 
-fn load_provider_surface_specs() -> Result<Vec<ProviderSurfaceSpec>, String> {
+fn load_provider_surface_specs() -> Result<Vec<ProviderSurfaceProjection>, String> {
     let catalog =
         serde_json::from_str::<ProviderSurfaceCatalogDocument>(PROVIDER_SURFACE_CATALOG_JSON)
             .map_err(|error| format!("Failed to parse provider surface catalog JSON: {error}"))?;
@@ -224,9 +230,10 @@ fn load_provider_surface_specs() -> Result<Vec<ProviderSurfaceSpec>, String> {
         .surfaces
         .into_iter()
         .map(|surface| {
-            Ok(ProviderSurfaceSpec {
+            Ok(ProviderSurfaceProjection {
                 id: surface.surface_id,
                 vendor_id: surface.vendor_id,
+                display_name: surface.display_name,
                 provider_type: parse_provider_type(&surface.provider_type)?,
                 transport: parse_transport(&surface.execution_kind)?,
                 supports_llm: surface.supports.llm,
@@ -419,6 +426,15 @@ mod tests {
         assert!(!provider_surface_uses_no_auth(
             "provider_surface.openai.direct_api"
         ));
+    }
+
+    #[test]
+    fn exposes_runtime_surface_labels_from_catalog() {
+        let surface = provider_surface_spec("provider_surface.openai.subprocess_cli")
+            .expect("surface should exist");
+
+        assert_eq!(surface.vendor_id, "openai");
+        assert_eq!(surface.display_name, "Codex CLI");
     }
 
     #[test]

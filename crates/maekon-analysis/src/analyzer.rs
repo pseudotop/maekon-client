@@ -642,16 +642,12 @@ impl ContextAnalyzer {
             // direct (last - first) difference is then negative and `num_minutes() as u32` two's-
             // complement wraps to ~4.29e9 minutes (.max(1) is useless since it runs after the cast).
             // Derive the span from earliest/latest and clamp with .max(0) before the cast.
-            let earliest = ctx_events
-                .iter()
-                .map(|ctx| ctx.timestamp)
-                .min()
-                .expect("len >= 2");
-            let latest = ctx_events
-                .iter()
-                .map(|ctx| ctx.timestamp)
-                .max()
-                .expect("len >= 2");
+            let Some(earliest) = ctx_events.iter().map(|ctx| ctx.timestamp).min() else {
+                panic!("len >= 2");
+            };
+            let Some(latest) = ctx_events.iter().map(|ctx| ctx.timestamp).max() else {
+                panic!("len >= 2");
+            };
             ((latest - earliest).num_minutes().max(0) as u32).max(1)
         } else {
             0
@@ -766,13 +762,6 @@ mod tests {
 
         async fn mark_as_sent(&self, _event_ids: &[String]) -> Result<(), CoreError> {
             Ok(())
-        }
-
-        async fn mark_unsent_as_sent_before(
-            &self,
-            _before: DateTime<Utc>,
-        ) -> Result<usize, CoreError> {
-            Ok(0)
         }
 
         async fn enforce_retention(&self) -> Result<usize, CoreError> {

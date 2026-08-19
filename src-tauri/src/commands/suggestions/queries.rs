@@ -1,32 +1,47 @@
+use maekon_core::config::AutomationConfig;
 use maekon_storage::sqlite::SqliteStorage;
 use tauri::command;
 
 use crate::ipc_error::IpcError;
 use crate::runtime_state::{AppState, SuggestionRuntimeState};
 
-use super::helpers::suggestions_not_available;
 use super::mapping::{
     source_label, storage_feedback_label, storage_record_to_view, storage_source_label_pub,
-    storage_type_key, suggestion_context_scope_dto_from_domain,
+    storage_type_key, suggestion_action_dto, suggestion_action_dto_from_storage,
+    suggestion_context_scope_dto_from_domain,
 };
 use super::types::{
-    DailyStatDto, DeferredSuggestionDto, SourceStatsDto, SuggestionHistoryDto, SuggestionStatsDto,
-    SuggestionViewDto, TypeCountDto,
+    DailyStatDto, SourceStatsDto, SuggestionHistoryDto, SuggestionStatsDto, SuggestionViewDto,
+    TypeCountDto,
 };
 
 // ---------------------------------------------------------------------------
 // Pending suggestions
 // ---------------------------------------------------------------------------
 
+const PENDING_SUGGESTION_FALLBACK_LIMIT: usize = 50;
+
 pub(super) async fn pending_suggestions_snapshot(
     state: &SuggestionRuntimeState,
     storage: &SqliteStorage,
+    automation: &AutomationConfig,
 ) -> Result<Vec<SuggestionViewDto>, IpcError> {
     let Some(mgr) = state.manager() else {
+        // Storage fallback (no manager). Enrich each PENDING row with its derived
+        // action BEFORE `storage_record_to_view` consumes it (T4.1 #7917).
         return storage
-            .list_suggestions(50)
+            .list_suggestions(PENDING_SUGGESTION_FALLBACK_LIMIT)
             .map_err(IpcError::from)
-            .map(|rows| rows.into_iter().map(storage_record_to_view).collect());
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|row| {
+                        let action = suggestion_action_dto_from_storage(&row, automation);
+                        let mut view = storage_record_to_view(row);
+                        view.action = action;
+                        view
+                    })
+                    .collect()
+            });
     };
 
     let snapshot: Vec<_> = {
@@ -44,6 +59,9 @@ pub(super) async fn pending_suggestions_snapshot(
                     s.created_at.to_rfc3339(),
                     s.reasoning.clone(),
                     s.context_scope.clone(),
+                    // Derive the action while the full domain struct is still in
+                    // hand — one pure, non-blocking predicate, no lock held over it.
+                    suggestion_action_dto(&s.suggestion_type, &s.source, automation),
                 )
             })
             .collect()
@@ -60,9 +78,9 @@ pub(super) async fn pending_suggestions_snapshot(
         created_at,
         reasoning,
         context_scope,
+        action,
     ) in snapshot
     {
-        let is_read = mgr.is_read(&id).await;
         results.push(SuggestionViewDto {
             id,
             title,
@@ -72,12 +90,30 @@ pub(super) async fn pending_suggestions_snapshot(
             source,
             confidence_score,
             created_at,
-            is_read,
             reasoning,
             context_scope: suggestion_context_scope_dto_from_domain(context_scope),
+            action,
         });
     }
     Ok(results)
+}
+
+/// Return only the authoritative pending count without constructing or
+/// exposing suggestion content to the caller.
+pub(super) async fn pending_suggestion_count_snapshot(
+    state: &SuggestionRuntimeState,
+    storage: &SqliteStorage,
+) -> Result<u32, IpcError> {
+    let count = if let Some(mgr) = state.manager() {
+        mgr.queue().lock().await.len()
+    } else {
+        storage
+            .list_suggestions(PENDING_SUGGESTION_FALLBACK_LIMIT)
+            .map_err(IpcError::from)?
+            .len()
+    };
+
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 #[command]
@@ -85,7 +121,15 @@ pub async fn get_pending_suggestions(
     state: tauri::State<'_, SuggestionRuntimeState>,
     app_state: tauri::State<'_, AppState>,
 ) -> Result<Vec<SuggestionViewDto>, IpcError> {
-    pending_suggestions_snapshot(&state, &app_state.storage).await
+    pending_suggestions_snapshot(&state, &app_state.storage, &app_state.config.automation).await
+}
+
+#[command]
+pub async fn get_pending_suggestion_count(
+    state: tauri::State<'_, SuggestionRuntimeState>,
+    app_state: tauri::State<'_, AppState>,
+) -> Result<u32, IpcError> {
+    pending_suggestion_count_snapshot(&state, &app_state.storage).await
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +157,6 @@ pub(super) async fn suggestion_history_snapshot(
 
         let mut results = Vec::with_capacity(snapshot.len());
         for entry in snapshot {
-            let is_read = mgr.is_read(&entry.suggestion.suggestion_id).await;
             let feedback = entry.feedback.as_ref().map(|f| match f {
                 maekon_core::models::suggestion::FeedbackType::Accepted => "accepted".to_string(),
                 maekon_core::models::suggestion::FeedbackType::Rejected => "rejected".to_string(),
@@ -131,11 +174,14 @@ pub(super) async fn suggestion_history_snapshot(
                     source: source_label(&entry.suggestion.source).to_string(),
                     confidence_score: entry.suggestion.confidence_score,
                     created_at: entry.suggestion.created_at.to_rfc3339(),
-                    is_read,
                     reasoning: entry.suggestion.reasoning.clone(),
                     context_scope: suggestion_context_scope_dto_from_domain(
                         entry.suggestion.context_scope.clone(),
                     ),
+                    // History is deliberately UNBOUND: a suggestion the user
+                    // already reacted to (or that has aged out of the live queue)
+                    // must never offer a one-click run (ADR-027). (T4.1 #7917)
+                    action: None,
                 },
                 feedback,
             });
@@ -170,46 +216,6 @@ pub async fn get_suggestion_history(
     limit: Option<u32>,
 ) -> Result<Vec<SuggestionHistoryDto>, IpcError> {
     suggestion_history_snapshot(&state, &app_state.storage, limit).await
-}
-
-// ---------------------------------------------------------------------------
-// save_suggestion_state (manager required — no fallback)
-// ---------------------------------------------------------------------------
-
-#[command]
-pub async fn save_suggestion_state(
-    suggestion_state: tauri::State<'_, SuggestionRuntimeState>,
-    app_state: tauri::State<'_, AppState>,
-) -> Result<u32, IpcError> {
-    let mgr = suggestion_state
-        .manager()
-        .ok_or_else(suggestions_not_available)?;
-    let storage = &app_state.storage;
-
-    let mut saved = 0u32;
-    let queue = mgr.queue().lock().await;
-    for suggestion in queue.iter() {
-        if let Err(e) = storage.save_suggestion_with_state(suggestion, "pending", None) {
-            tracing::warn!(id = %suggestion.suggestion_id, "failed to persist suggestion: {e}");
-        } else {
-            saved += 1;
-        }
-    }
-    drop(queue);
-
-    let deferred = mgr.deferred().lock().await;
-    for entry in deferred.list_deferred() {
-        let resurface = entry.resurface_at.to_rfc3339();
-        if let Err(e) =
-            storage.save_suggestion_with_state(&entry.suggestion, "deferred", Some(&resurface))
-        {
-            tracing::warn!(id = %entry.suggestion.suggestion_id, "failed to persist deferred: {e}");
-        } else {
-            saved += 1;
-        }
-    }
-
-    Ok(saved)
 }
 
 // ---------------------------------------------------------------------------
@@ -426,93 +432,4 @@ pub async fn get_suggestion_daily_stats(
     let mut result: Vec<DailyStatDto> = by_date.into_values().collect();
     result.sort_by(|a, b| a.date.cmp(&b.date));
     Ok(result)
-}
-
-// ---------------------------------------------------------------------------
-// Deferred suggestions — manager-first, SQLite fallback (#5699)
-// ---------------------------------------------------------------------------
-
-#[command]
-pub async fn get_deferred_suggestions(
-    state: tauri::State<'_, SuggestionRuntimeState>,
-    app_state: tauri::State<'_, AppState>,
-) -> Result<Vec<DeferredSuggestionDto>, IpcError> {
-    if let Some(mgr) = state.manager() {
-        let deferred = mgr.deferred().lock().await;
-        let now = chrono::Utc::now();
-
-        let items: Vec<DeferredSuggestionDto> = deferred
-            .list_deferred()
-            .into_iter()
-            .map(|entry| {
-                let remaining = (entry.resurface_at - now).num_minutes().max(0);
-                DeferredSuggestionDto {
-                    id: entry.suggestion.suggestion_id.clone(),
-                    title: maekon_suggestion::presenter::type_to_title(
-                        &entry.suggestion.suggestion_type,
-                    ),
-                    body: entry.suggestion.content.clone(),
-                    priority: format!("{:?}", entry.suggestion.priority).to_lowercase(),
-                    source: source_label(&entry.suggestion.source).to_string(),
-                    deferred_at: entry.deferred_at.to_rfc3339(),
-                    resurface_at: entry.resurface_at.to_rfc3339(),
-                    remaining_minutes: remaining,
-                }
-            })
-            .collect();
-
-        return Ok(items);
-    }
-
-    // Fallback — query SQLite for state="deferred" rows (same contract as the
-    // restore path in suggestion_wiring.rs:246).  Parse resurface_at as RFC3339;
-    // on failure warn and skip the row (suggestion_wiring.rs:257-275 precedent).
-    // Priority is stored as "MEDIUM" etc. in SQLite — normalise to lowercase to
-    // match the manager path. (#5699)
-    // #6938: order by SOONEST resurface_at (not created_at DESC) — same sibling as
-    // the launch restore (suggestion_wiring.rs). With created_at DESC + LIMIT, a
-    // deferred backlog over 50 dropped the snoozes about to resurface; this snooze
-    // list must surface those first.
-    let rows = app_state
-        .storage
-        .list_deferred_suggestions_by_resurface(50)
-        .map_err(IpcError::from)?;
-
-    let now = chrono::Utc::now();
-    let mut items = Vec::with_capacity(rows.len());
-
-    for r in rows {
-        let resurface_at = match r
-            .resurface_at
-            .as_ref()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-        {
-            Some(t) => t,
-            None => {
-                tracing::warn!(
-                    id = %r.suggestion_id,
-                    "skipping deferred row: missing or malformed resurface_at"
-                );
-                continue;
-            }
-        };
-
-        let remaining = (resurface_at - now).num_minutes().max(0);
-        items.push(DeferredSuggestionDto {
-            id: r.suggestion_id.clone(),
-            title: super::mapping::storage_suggestion_title_pub(&r.suggestion_type),
-            body: r.content.clone(),
-            // Storage stores 'MEDIUM' / 'HIGH' etc.; normalise to lowercase to
-            // match the manager path (#5699).
-            priority: r.priority.to_lowercase(),
-            source: storage_source_label_pub(&r.source),
-            // No dedicated defer-time column — use created_at as an approximation.
-            deferred_at: r.created_at.clone(),
-            resurface_at: resurface_at.to_rfc3339(),
-            remaining_minutes: remaining,
-        });
-    }
-
-    Ok(items)
 }

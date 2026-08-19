@@ -4,6 +4,8 @@ members = [
     "crates/maekon-audio",
     "crates/maekon-lint",
     "crates/maekon-core",
+    "crates/maekon-http-core",
+    "crates/maekon-integration",
     "crates/maekon-monitor",
     "crates/maekon-vision",
     "crates/maekon-network",
@@ -20,11 +22,98 @@ members = [
 ]
 resolver = "2"
 
+# H1 (#7719): workspace-wide lint policy, replacing the per-crate `#![deny(...)]`
+# headers that had drifted (some crates declared a lint, others didn't, with no
+# single source of truth). This table is the UNION of every crate-root
+# `#![deny(...)]` found in the pre-#7719 survey:
+#   - `derive_partial_eq_without_eq`: 6/14 crates denied it explicitly.
+#   - `significant_drop_tightening`: 6/14 crates denied it (with
+#     `#[cfg_attr(test, allow(...))]`); 4/14 crates instead carried a
+#     crate-wide `#![allow(...)]` with a documented false-positive rationale
+#     (analysis, automation, network, storage) — those source-level allows
+#     are kept as-is and still override this workspace `deny` for that one
+#     crate (source attributes take precedence over Cargo.toml-configured
+#     levels), so behavior for those 4 crates is unchanged.
+# `unwrap_used`/`expect_used` are new additions (were not declared by any
+# crate before #7719): measured at 58 non-test/non-bench production call
+# sites workspace-wide (3 `unwrap_used` + 55 `expect_used`, out of ~8,100
+# total occurrences that are overwhelmingly `#[cfg(test)]`-scoped) — above
+# the ~30-site fix-in-place threshold, so landed at `warn` (not `deny`) per
+# #7719 scope decision; see the PR body for the full count breakdown. Tests
+# are exempted via `clippy.toml`'s `allow-unwrap-in-tests`/
+# `allow-expect-in-tests`; benches carry a per-file `#![allow(...)]` (bench
+# harnesses are dev tooling, not shipped code). NOTE: CI's `-D warnings`
+# invocation promotes ANY configured-`warn` lint to a hard error (verified
+# empirically), so `ci.yml`'s clippy steps additionally pass
+# `-A clippy::unwrap_used -A clippy::expect_used` alongside the existing
+# `-A clippy::empty_docs -A clippy::derivable_impls -A clippy::type_complexity`
+# — the same bridge pattern already used for those three lints.
+# A2 (#7743, Wave-3 of #7744): restore a real deny gate for first-party rustc
+# warnings (unused_imports/dead_code/unused_variables/etc.) on EVERY platform,
+# without touching the vendored `patches/` fork stack.
+#
+# Mechanism (verified empirically against this workspace's toolchain, not
+# assumed): `patches/*` crates are `[patch.crates-io]` PATH dependencies, not
+# `[workspace]` members (see the `members = [...]` list above — none of the 8
+# `patches/<crate>` dirs are listed). Cargo does NOT apply `--cap-lints allow`
+# to path dependencies the way it does for plain registry/git deps, so a
+# workspace-wide `-D warnings` also lints their vendored GTK4/WebKitGTK6 source
+# (macOS objc2 deprecated-static warnings etc.) — that is the actual reason
+# `ci.yml`/`build-smoke.yml` carry a global `RUSTFLAGS: -W warnings` instead of
+# `-D`.
+#
+# `RUSTFLAGS: -W warnings` is a single flag naming the `warnings` GROUP. Cargo
+# appends RUSTFLAGS-derived flags AFTER the `[lints]`-derived flags on the
+# final rustc invocation (confirmed via `cargo build -v`), so when `[lints]`
+# ALSO configures the `warnings` group (e.g. a hypothetical
+# `warnings = "deny"` — a real, valid rustc lint group name, contrary to the
+# initial review assumption that it wasn't expressible), the later
+# RUSTFLAGS `-W warnings` wins and silently downgrades it back to warn. BUT:
+# when `[lints]` instead names a lint/group MORE SPECIFIC than the bare
+# `warnings` super-group (a named sub-group like `unused`, or an individual
+# lint like `dead_code`), that specific `--deny=...` flag is NOT overridden by
+# a later, less-specific `-W warnings` — rustc keeps the more specific level.
+# This was confirmed with a throwaway crate: `[lints.rust] unused = "deny"`
+# plus `dead_code = "deny"` still hard-errored on an unused import/variable and
+# a dead function even under `RUSTFLAGS="-W warnings"`, while a
+# `warnings = "deny"` control case was neutralized under the same RUSTFLAGS.
+#
+# Design: deny the SPECIFIC lint groups that regressed silently before (the
+# `check` job's pre-existing-bug comment cites an `unused_imports` case that
+# only a macOS-only compile path exposed) via `[workspace.lints.rust]`
+# instead of trying to flip the blanket `warnings` group or remove the
+# workspace-global RUSTFLAGS outright. This is intentionally conservative:
+# - `unused` (covers `unused_imports`, `unused_variables`, `unused_mut`,
+#   `unused_assignments`, etc.) and `dead_code` are the two classes the CTD
+#   review + prior ci.yml comments explicitly named.
+# - Every OTHER default-warn rustc lint (`deprecated`, `unreachable_patterns`,
+#   etc.) remains governed by the workflow's `RUSTFLAGS: -W warnings` as
+#   before — not silently promoted to deny by this change.
+# - `[lints]` only applies to packages that opt in via `lints.workspace = true`
+#   (every first-party crate does, per #7719); the 8 `patches/*` manifests
+#   have no such table and are untouched, so this cannot newly break the
+#   vendored fork.
+# - Because `[lints]`-derived flags are baked into the rustc invocation
+#   itself (not a CI-only flag), this closes the actual gap A2 identified:
+#   macOS/Windows `#[cfg(target_os = "...")]` first-party code that is only
+#   ever COMPILED on those runners (`test-platform`/`build` jobs, which never
+#   run a Linux-only `clippy -D warnings` step) is now deny-linted for these
+#   two classes on every platform, every job, not just the ubuntu `check` job.
+[workspace.lints.rust]
+unused = "deny"
+dead_code = "deny"
+
+[workspace.lints.clippy]
+derive_partial_eq_without_eq = "deny"
+significant_drop_tightening = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+
 [workspace.package]
 edition = "2021"
-version = "0.0.1-rc.6"
+version = "0.0.1-rc.9"
 license = "Apache-2.0"
-rust-version = "1.88.0"  # jsonwebtoken 10.4.0 MSRV (cycle 32 F-SC-C33-02)
+rust-version = "1.88.0"  # jsonwebtoken 11.0.0 MSRV (#9375; 10.4.0 과 동일한 1.88.0)
 repository = "https://github.com/pseudotop/maekon-client"
 homepage = "https://github.com/pseudotop/maekon-client"
 authors = ["Maekon Contributors"]
@@ -46,7 +135,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "gzi
 eventsource-stream = "0.2"
 
 # WebSocket (native-tls로 ring 의존성 회피)
-tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 
 # 시스템 모니터링
 # Pinned to 0.38 (MSRV 1.88): sysinfo 0.39.x bumps the required rustc to 1.95,
@@ -56,12 +145,38 @@ tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 sysinfo = "0.38"
 
 # 로컬 DB
-rusqlite = { version = "0.40", features = ["bundled-sqlcipher", "fallible_uint"] }
+#
+# #9884: `bundled-sqlcipher-vendored-openssl`, NOT plain `bundled-sqlcipher`.
+# SQLCipher needs libcrypto. Under plain `bundled-sqlcipher`,
+# `libsqlite3-sys/build.rs` takes this branch on Windows:
+#
+#     if is_windows && !cfg!(feature = "bundled-sqlcipher-vendored-openssl") {
+#
+# i.e. it locates a SYSTEM OpenSSL on the build host and links it DYNAMICALLY.
+# The CI runner has OpenSSL, so the build succeeds — and the shipped
+# `maekon.exe` then imports `libcrypto-3-x64.dll`, which is absent on a clean
+# user machine. A real user hit exactly that launch failure on v0.0.1-rc.6.
+#
+# The vendored variant compiles OpenSSL from source and links it STATICALLY, so
+# the binary is self-contained: nothing to bundle into MSI/NSIS/ZIP, nothing to
+# sign, and no "which OpenSSL did the runner happen to have" supply-chain
+# question. This is the first (preferred) option in #9884's acceptance criteria
+# — "make the Windows release binary self-contained" — rather than the fallback
+# "or bundle the reviewed OpenSSL runtime DLL".
+#
+# Cost: OpenSSL is compiled during the build (needs perl + a C toolchain, both
+# present on GitHub-hosted runners). Do NOT revert to `bundled-sqlcipher`
+# without re-solving the clean-host DLL closure; `scripts/verify-windows-runtime-closure.mjs`
+# is the gate that catches a regression here.
+rusqlite = { version = "0.40", features = [
+    "bundled-sqlcipher-vendored-openssl",
+    "fallible_uint",
+] }
 
 # 압축
 flate2 = "1"
 zstd = "0.13"
-lz4_flex = "0.13"
+lz4_flex = "0.14"
 
 # ML inference (ONNX Runtime — aligned with fastembed's transitive version)
 ort = "2.0.0-rc.12"
@@ -75,7 +190,7 @@ fast_image_resize = "6"
 webp = "0.3"
 xcap = "0.9"
 leptess = "0.14"
-base64 = "0.22"
+base64 = "0.23"
 
 # Tauri v2 (iced → Tauri 마이그레이션)
 tauri = { version = "2", features = ["image-png", "macos-private-api"] }
@@ -83,7 +198,9 @@ tauri-build = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-notification = "2"
-tauri-plugin-webdriver = "0.2"
+tauri-winrt-notification = "0.7.2"
+tauri-plugin-wdio = "1.2.0"
+tauri-plugin-wdio-webdriver = "1.2.0"
 
 # 공간 인덱스
 rstar = "0.13"
@@ -127,7 +244,7 @@ sha2 = "0.11"
 hmac = "0.13"
 rand = "0.10"
 url = "2"
-ed25519-dalek = "2.1"
+ed25519-dalek = "3.0"
 zeroize = { version = "1", features = ["derive"] }
 gethostname = "1.1"
 
@@ -145,13 +262,13 @@ rustls-pki-types = "1"
 # External gRPC binding (D13-v2c)
 arc-swap = "1"
 aws-lc-rs = "1.16.2"
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
 rustls = "0.23"
 time = "0.3"
 tokio-rustls = "0.26"
-ulid = "1"
+ulid = "3"
 x509-parser = "0.18"
 
 # OS 키체인 (시크릿 저장)
@@ -184,13 +301,14 @@ enigo = { version = "0.6", features = ["serde"] }
 # Pure-Rust + already in the lockfile transitively (enigo / global-hotkey), so it is
 # declared all-target: the native module then compiles + is unit-testable on the
 # macOS/Windows hosts too, even though it is only CALLED on Linux.
-x11rb = "0.13"
+x11rb = "0.14"
 
 # 자동 업데이트 (self-replace only — reqwest 0.12 중복 제거)
 bsdiff = "0.2"
 self-replace = "1.5"
 tar = "0.4.46"
 zip = "8"
+quick-xml = "=0.39.2"
 
 # 웹 프레임워크 (Axum)
 axum = { version = "0.8", features = ["macros"] }
@@ -229,11 +347,18 @@ objc2-quartz-core = { version = "0.3", features = [
 objc2-user-notifications = "0.3"
 
 # Windows 플랫폼 API
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_Debug", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_Security_Authentication_Identity"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_Debug", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_Security_Authentication_Identity"] }
 windows = { version = "0.62", features = ["Win32_UI_Accessibility", "Win32_System_Com", "Win32_System_Ole", "Win32_Foundation", "Win32_System_Variant", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation"] }
 
 # 내부 크레이트
 maekon-core = { path = "crates/maekon-core" }
+# ADR-034: shared outbound-HTTP substrate. Sits below the adapters so a future
+# maekon-integration can reuse the hardened client/breaker without depending on
+# maekon-network (adapter→adapter is forbidden).
+maekon-http-core = { path = "crates/maekon-http-core" }
+# ADR-034 P3: third-party connector adapter (read-only Context Sources). Depends
+# only on maekon-core + maekon-http-core — never on maekon-network.
+maekon-integration = { path = "crates/maekon-integration" }
 maekon-audio = { path = "crates/maekon-audio" }
 maekon-api-contracts = { path = "crates/maekon-api-contracts" }
 maekon-monitor = { path = "crates/maekon-monitor" }
@@ -255,6 +380,7 @@ libc = "0.2"
 mockito = "1"
 tokio-test = "0.4"
 tempfile = "3"
+icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 assert_matches = "1"
 criterion = { version = "0.8", features = ["html_reports"] }
 
@@ -266,4 +392,4 @@ wry = { path = "patches/wry-0.55.1" }
 tauri-runtime-wry = { path = "patches/tauri-runtime-wry-2.11.2" }
 tray-icon = { path = "patches/tray-icon-0.23.1" }
 muda = { path = "patches/muda-0.19.1" }
-tauri-plugin-webdriver = { path = "patches/tauri-plugin-webdriver-0.2.1" }
+tauri-plugin-wdio-webdriver = { path = "patches/tauri-plugin-wdio-webdriver-1.2.0" }

@@ -4,6 +4,7 @@ use tracing::{info, warn};
 use crate::provider_adapters::ExternalOcrPrivacyGuard;
 use maekon_core::config::AppConfig;
 use maekon_core::config::PiiFilterLevel;
+use maekon_core::error::CoreError;
 #[cfg(feature = "analysis")]
 use maekon_core::ports::secret_store::SecretStoreSet;
 
@@ -34,6 +35,8 @@ const EXTERNAL_DEFAULT_MODEL: &str = "text-embedding-3-small";
 /// Default output dimensionality for `text-embedding-3-small`.
 #[cfg(feature = "analysis")]
 const EXTERNAL_DEFAULT_DIMS: usize = 384;
+
+const QUANTIZED_BACKFILL_BATCH_SIZE: usize = 512;
 
 // ---------------------------------------------------------------------------
 // Target resolution helper
@@ -82,7 +85,7 @@ pub(super) struct RemoteEmbeddingTarget {
 /// This is a pure function — no I/O, no side effects — so it is unit-testable
 /// without network access.
 ///
-/// Requires the `analysis` feature because it calls `maekon_network::http_client::host_is_loopback`.
+/// Requires the `analysis` feature because it calls `maekon_http_core::outbound::host_is_loopback`.
 #[cfg(feature = "analysis")]
 pub(super) fn resolve_remote_embedding_target(
     embedding_cfg: &maekon_core::config::EmbeddingConfig,
@@ -94,7 +97,7 @@ pub(super) fn resolve_remote_embedding_target(
         .clone()
         .unwrap_or_else(|| OLLAMA_LOOPBACK_ENDPOINT.to_string());
 
-    let is_loopback = maekon_network::http_client::host_is_loopback(&endpoint);
+    let is_loopback = maekon_http_core::outbound::host_is_loopback(&endpoint);
 
     let (default_model, default_dims, credential) = if is_loopback {
         // Loopback invariant: remote_credential is intentionally ignored here.
@@ -138,6 +141,15 @@ pub(super) fn resolve_remote_embedding_target(
 /// Using the raw `privacy.pii_filter_level` directly would leak verbatim under the `AllowFiltered + Off`
 /// combination. Local on-device embedding masking is not egress, so this floor is not applied there
 /// (avoiding over-masking).
+///
+/// Only called (in production) from the `feature = "analysis"`-gated
+/// `egress_pii_level` binding above, but this pure function is also exercised
+/// directly by unit tests below that are gated on `not(feature = "embedding")`
+/// (independent of `analysis`) — kept unconditional with a matching allow
+/// rather than hard-gated, so `cargo test --no-default-features` (a
+/// hypothetical future cell) would not lose that coverage (#7743 ctd-W3 A2b
+/// follow-up).
+#[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 fn embedding_egress_pii_level(config: &AppConfig) -> PiiFilterLevel {
     config
         .ai_provider
@@ -282,6 +294,10 @@ pub(super) fn build_embedding_components(
         // #6914: off-device (remote) embedding egress passes through the egress PII floor SSOT
         // (RemoteEmbeddingProvider sanitizer = final gate just before POST). Local pipeline masking
         // is not egress, so it keeps the raw pii_level. See embedding_egress_pii_level for details.
+        // Only the two `feature = "analysis"`-gated match arms below (Local-demoted-to-loopback
+        // and Remote) read this — under `--no-default-features` neither arm compiles, so the
+        // binding itself is gated to match its sole consumers.
+        #[cfg(feature = "analysis")]
         let egress_pii_level = embedding_egress_pii_level(config);
 
         // Create EmbeddingProvider based on config
@@ -487,6 +503,10 @@ pub(super) fn build_embedding_components(
                 skip_float32,
             ));
             embedding_pipeline_arc = Some(pipeline);
+            schedule_quantized_backfill(
+                vector_store.clone(),
+                embedding_config.quantization_enabled,
+            );
 
             // Build LlmSegmentSummarizer if LLM summary is enabled.
             //
@@ -604,6 +624,140 @@ pub(super) fn build_embedding_components(
     }
 }
 
+/// Build the adaptive `SearchConfig` from the embedding config section.
+///
+/// Shared by the scheduler ingestion wiring (`agent_runtime::run`) and the web
+/// semantic-search wiring ([`build_web_search_components`]) so both coordinators
+/// apply the SAME strategy thresholds / forced-strategy / quantization gate.
+pub(crate) fn search_config_from(
+    embedding_config: &maekon_core::config::EmbeddingConfig,
+) -> maekon_analysis::SearchConfig {
+    maekon_analysis::SearchConfig {
+        brute_force_threshold: 10_000,
+        ivf_threshold: 100_000,
+        hnsw_threshold: 5_000,
+        oversample_factor: embedding_config.binary_oversample_factor,
+        default_nprobe: embedding_config.ivf_nprobe,
+        forced_strategy: match embedding_config.index_strategy.as_str() {
+            "auto" => None,
+            s @ ("brute_force" | "ivf" | "ivf_binary") => Some(s.to_string()),
+            // "hnsw" is meaningful only when compiled with the feature AND an
+            // AnnIndex is wired (not the case in production).
+            #[cfg(feature = "hnsw")]
+            "hnsw" => Some("hnsw".to_string()),
+            other => {
+                // review4 F9: an unrecognized index_strategy previously degraded
+                // silently to a full brute-force scan. Warn once and fall back to
+                // auto strategy selection.
+                warn!(
+                    index_strategy = %other,
+                    "unrecognized embedding.index_strategy; using auto strategy selection"
+                );
+                None
+            }
+        },
+        // #7479: when quantization is disabled the coordinator routes to the f32
+        // search path — the INT8 tiers read `vector_int8`, NULL for every row.
+        quantization_enabled: embedding_config.quantization_enabled,
+    }
+}
+
+/// Query-side semantic-search components for the web dashboard (#8059).
+///
+/// All `None` = honest degrade (embedding disabled, or no real provider could
+/// be built), so `/api/semantic-search/capabilities` reports unavailable rather
+/// than letting `mode=semantic` 501 or `mode=hybrid` silently keyword-degrade.
+#[derive(Default)]
+pub(crate) struct WebSearchComponents {
+    pub(crate) embedding_provider:
+        Option<Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>>,
+    pub(crate) vector_store: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
+    pub(crate) adaptive_search:
+        Option<Arc<dyn maekon_core::ports::adaptive_search::AdaptiveSearchPort>>,
+}
+
+/// Build the web dashboard's semantic-search query-side components, tapping the
+/// SAME [`build_embedding_components`] source the scheduler ingestion pipeline
+/// uses. This guarantees query embeddings match document embeddings (identical
+/// model/dims + credential resolution + egress PII floor) and that search reads
+/// the SAME `embedding_vectors` table the scheduler writes into (both build a
+/// `SqliteVectorStore` over the same SQLite connection).
+///
+/// Returns all-`None` unless `analysis.embedding.enabled` AND a real embedding
+/// provider was constructed. The honest-availability signal is
+/// [`EmbeddingComponents::vector_store`]`.is_some()`, which is `Some` only in
+/// that case; the always-present NoOp fallback provider is deliberately NOT
+/// surfaced here (it would falsely flip `semantic_available` to `true` while
+/// returning zero vectors).
+///
+/// Built once at web-server startup — a later `analysis.embedding.enabled` flip
+/// requires an app restart to appear (see the PR's restart-requirement note).
+///
+/// The freshly-built `AdaptiveSearchCoordinator` starts with a cold
+/// `cached_vector_count` (0), so it selects the brute-force/f32 tier. With
+/// quantization disabled (the default) the coordinator routes to the f32
+/// `search_filtered` path regardless of count, so results are correct — the
+/// cold count affects only strategy SELECTION (performance at very large
+/// collections), never correctness. The web search path intentionally does not
+/// run the scheduler's periodic `refresh_count` maintenance.
+///
+/// `external_llm_privacy_guard` is deliberately `None`: the web path never runs
+/// the LLM segment summarizer (it consumes only the embedding provider + vector
+/// store), so the summarizer built inside `build_embedding_components` is
+/// discarded and makes no network calls.
+pub(crate) fn build_web_search_components(
+    config: &AppConfig,
+    sqlite_storage: &Arc<maekon_storage::sqlite::SqliteStorage>,
+    #[cfg(feature = "analysis")] secret_stores: Option<&SecretStoreSet>,
+    #[cfg(feature = "analysis")] egress_ledger: Option<
+        Arc<dyn maekon_core::ports::egress_ledger::EgressLedgerSink>,
+    >,
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+) -> WebSearchComponents {
+    let vector_store: Arc<dyn maekon_core::ports::vector_store::VectorStore> = Arc::new(
+        maekon_storage::sqlite::vector_store_impl::SqliteVectorStore::new(
+            sqlite_storage.connection_arc(),
+        ),
+    );
+
+    let components = build_embedding_components(
+        config,
+        Some(vector_store.clone()),
+        None, // external_llm_privacy_guard: the web path discards the summarizer.
+        #[cfg(feature = "analysis")]
+        secret_stores,
+        #[cfg(feature = "analysis")]
+        egress_ledger,
+        breaker_registry,
+    );
+
+    // `vector_store` is `Some` only when embedding is enabled AND a real provider
+    // was wired; in that case `embedding_provider` is that real (fallback-wrapped)
+    // provider — the NoOp fallback is applied only when `vector_store` stays
+    // `None`. Gating on both keeps `semantic_available` honest.
+    match (components.vector_store, components.embedding_provider) {
+        (Some(vs), Some(ep)) => {
+            let vector_index: Arc<dyn maekon_core::ports::vector_index::VectorIndex> = Arc::new(
+                maekon_storage::sqlite::vector_index_impl::SqliteVectorIndex::new(
+                    sqlite_storage.connection_arc(),
+                ),
+            );
+            let coordinator: Arc<dyn maekon_core::ports::adaptive_search::AdaptiveSearchPort> =
+                Arc::new(maekon_analysis::AdaptiveSearchCoordinator::new(
+                    vs.clone(),
+                    vector_index,
+                    search_config_from(&config.analysis.embedding),
+                ));
+            WebSearchComponents {
+                embedding_provider: Some(ep),
+                vector_store: Some(vs),
+                adaptive_search: Some(coordinator),
+            }
+        }
+        _ => WebSearchComponents::default(),
+    }
+}
+
 /// Lightweight fallback wrapper for the default/OSS build (`embedding` feature
 /// off) (#4813).
 ///
@@ -670,6 +824,37 @@ impl maekon_core::ports::embedding_provider::EmbeddingProvider for RemoteFallbac
         let fallback = self.fallback.evict_if_idle(idle_after);
         primary || fallback
     }
+}
+
+fn schedule_quantized_backfill(
+    vector_store: Arc<dyn maekon_core::ports::vector_store::VectorStore>,
+    quantization_enabled: bool,
+) {
+    if !quantization_enabled {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        match backfill_quantized_vectors_once(vector_store, QUANTIZED_BACKFILL_BATCH_SIZE).await {
+            Ok(0) => {}
+            Ok(rows) => info!(
+                rows = rows,
+                "Backfilled INT8 quantization for existing embedding vectors"
+            ),
+            Err(error) => warn!("Failed to backfill INT8 quantization: {error}"),
+        }
+    });
+}
+
+async fn backfill_quantized_vectors_once(
+    vector_store: Arc<dyn maekon_core::ports::vector_store::VectorStore>,
+    batch_size: usize,
+) -> Result<u64, CoreError> {
+    let pending = vector_store.count_unquantized().await?;
+    if pending == 0 {
+        return Ok(0);
+    }
+    vector_store.backfill_quantized(batch_size).await
 }
 
 /// Pure-function tests for `resolve_remote_embedding_target`.
@@ -874,10 +1059,105 @@ mod target_resolver_tests {
 mod tests {
     use super::*;
     use maekon_core::error::CoreError;
+    use maekon_core::models::embedding::{EmbeddingMetadata, SearchFilters, SearchResult};
     use maekon_core::ports::embedding_provider::{EmbeddingProvider, NoOpEmbeddingProvider};
+    use maekon_core::ports::vector_store::VectorStore;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     /// A primary provider that always fails — used to verify the fallback path.
     struct FailingProvider;
+
+    struct BackfillVectorStore {
+        pending: AtomicU64,
+        count_calls: AtomicUsize,
+        backfill_calls: AtomicUsize,
+        last_batch_size: AtomicUsize,
+    }
+
+    impl BackfillVectorStore {
+        fn new(pending: u64) -> Self {
+            Self {
+                pending: AtomicU64::new(pending),
+                count_calls: AtomicUsize::new(0),
+                backfill_calls: AtomicUsize::new(0),
+                last_batch_size: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl VectorStore for BackfillVectorStore {
+        async fn store(
+            &self,
+            _vector: Vec<f32>,
+            _metadata: EmbeddingMetadata,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            _query_vector: &[f32],
+            _limit: usize,
+            _time_decay_hours: f32,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            Ok(vec![])
+        }
+
+        async fn search_filtered(
+            &self,
+            _query_vector: &[f32],
+            _limit: usize,
+            _time_decay_hours: f32,
+            _filters: &SearchFilters,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            Ok(vec![])
+        }
+
+        async fn enforce_retention(&self, _max_days: u32) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn mark_stale(&self, _old_model_id: &str) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn update_vector(
+            &self,
+            _id: i64,
+            _vector: Vec<f32>,
+            _model_id: &str,
+        ) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+
+        async fn count_unquantized(&self) -> Result<u64, CoreError> {
+            self.count_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.pending.load(Ordering::SeqCst))
+        }
+
+        async fn backfill_quantized(&self, batch_size: usize) -> Result<u64, CoreError> {
+            self.backfill_calls.fetch_add(1, Ordering::SeqCst);
+            self.last_batch_size.store(batch_size, Ordering::SeqCst);
+            Ok(self.pending.swap(0, Ordering::SeqCst))
+        }
+
+        async fn get_current_model_id(&self) -> Result<Option<String>, CoreError> {
+            Ok(None)
+        }
+
+        async fn get_stale_vectors(&self, _limit: usize) -> Result<Vec<(i64, String)>, CoreError> {
+            Ok(vec![])
+        }
+
+        async fn get_metadata_by_ids(
+            &self,
+            _ids: &[u64],
+        ) -> Result<HashMap<u64, EmbeddingMetadata>, CoreError> {
+            Ok(HashMap::new())
+        }
+    }
 
     #[async_trait::async_trait]
     impl EmbeddingProvider for FailingProvider {
@@ -918,6 +1198,31 @@ mod tests {
             .expect("batch fallback should succeed");
         assert_eq!(batch.len(), 2);
         assert!(batch.iter().all(|v| v.len() == 384));
+    }
+
+    #[tokio::test]
+    async fn quantized_backfill_runs_when_pending_rows_exist() {
+        let store = Arc::new(BackfillVectorStore::new(3));
+        let rows = backfill_quantized_vectors_once(store.clone(), 17)
+            .await
+            .unwrap();
+
+        assert_eq!(rows, 3);
+        assert_eq!(store.count_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(store.backfill_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(store.last_batch_size.load(Ordering::SeqCst), 17);
+    }
+
+    #[tokio::test]
+    async fn quantized_backfill_skips_when_no_pending_rows() {
+        let store = Arc::new(BackfillVectorStore::new(0));
+        let rows = backfill_quantized_vectors_once(store.clone(), 17)
+            .await
+            .unwrap();
+
+        assert_eq!(rows, 0);
+        assert_eq!(store.count_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(store.backfill_calls.load(Ordering::SeqCst), 0);
     }
 
     /// Privacy regression (D′ lead review): the Local-arm demotion target must

@@ -51,51 +51,64 @@ impl SqliteStorage {
     }
 
     pub(super) fn extract_event_id(event: &Event) -> String {
-        match event {
-            Event::User(user_event) => user_event.event_id.to_string(),
-            Event::System(system_event) => system_event.event_id.to_string(),
-            Event::Context(context_event) => {
-                format!(
-                    "ctx_{}_{}_{}",
-                    context_event.timestamp.timestamp_millis(),
-                    context_event.app_name,
-                    context_event
-                        .window_title
-                        .chars()
-                        .take(20)
-                        .collect::<String>()
-                )
-            }
-            Event::Input(input_event) => {
-                format!(
-                    "input_{}_{}",
-                    input_event.timestamp.timestamp_millis(),
-                    input_event.app_name
-                )
-            }
-            Event::Process(process_event) => {
-                format!("proc_{}", process_event.timestamp.timestamp_millis())
-            }
-            Event::Window(window_event) => {
-                format!(
-                    "win_{}_{:?}",
-                    window_event.timestamp.timestamp_millis(),
-                    window_event.event_type
-                )
-            }
-            Event::Clipboard(cb) => {
-                format!("clip_{}", cb.timestamp.timestamp_millis())
-            }
-            Event::FileAccess(fa) => {
-                format!(
-                    "fa_{}_{}",
-                    fa.timestamp.timestamp_millis(),
-                    fa.relative_path.display()
-                )
-            }
+        storage_event_id(event)
+    }
+}
+
+/// Storage primary key for an [`Event`] — the SAME derivation `save_event` /
+/// `save_events_batch` use for the `events.event_id` column.
+///
+/// Public so upload producers can pair the persisted id with the (possibly
+/// egress-filtered) upload payload (#7946): the id must be derived from the
+/// ORIGINAL event, because egress filtering can change id-relevant fields
+/// (e.g. a Context event's window title feeds the id).
+pub fn storage_event_id(event: &Event) -> String {
+    match event {
+        Event::User(user_event) => user_event.event_id.to_string(),
+        Event::System(system_event) => system_event.event_id.to_string(),
+        Event::Context(context_event) => {
+            format!(
+                "ctx_{}_{}_{}",
+                context_event.timestamp.timestamp_millis(),
+                context_event.app_name,
+                context_event
+                    .window_title
+                    .chars()
+                    .take(20)
+                    .collect::<String>()
+            )
+        }
+        Event::Input(input_event) => {
+            format!(
+                "input_{}_{}",
+                input_event.timestamp.timestamp_millis(),
+                input_event.app_name
+            )
+        }
+        Event::Process(process_event) => {
+            format!("proc_{}", process_event.timestamp.timestamp_millis())
+        }
+        Event::Window(window_event) => {
+            format!(
+                "win_{}_{:?}",
+                window_event.timestamp.timestamp_millis(),
+                window_event.event_type
+            )
+        }
+        Event::Clipboard(cb) => {
+            format!("clip_{}", cb.timestamp.timestamp_millis())
+        }
+        Event::FileAccess(fa) => {
+            format!(
+                "fa_{}_{}",
+                fa.timestamp.timestamp_millis(),
+                fa.relative_path.display()
+            )
         }
     }
+}
 
+impl SqliteStorage {
     pub(super) fn extract_event_type(event: &Event) -> String {
         match event {
             Event::User(user_event) => format!("{:?}", user_event.event_type),
@@ -309,28 +322,6 @@ impl StorageService for SqliteStorage {
         .map_err(Into::into)
     }
 
-    async fn mark_unsent_as_sent_before(&self, before: DateTime<Utc>) -> Result<usize, CoreError> {
-        let cutoff = before.to_rfc3339();
-
-        self.with_conn(move |conn| {
-            let updated: usize = conn
-                .execute(
-                    "UPDATE events SET is_sent = 1 WHERE is_sent = 0 AND timestamp < ?1",
-                    rusqlite::params![cutoff],
-                )
-                .map_err(|e| {
-                    StorageError::Internal(format!("Failed to mark unsent as sent: {e}"))
-                })?;
-
-            if updated > 0 {
-                debug!("{updated} unsent events marked as sent");
-            }
-            Ok(updated)
-        })
-        .await
-        .map_err(Into::into)
-    }
-
     async fn enforce_retention(&self) -> Result<usize, CoreError> {
         let cutoff = (Utc::now() - Duration::days(self.retention_days as i64)).to_rfc3339();
         let retention_days = self.retention_days;
@@ -394,11 +385,36 @@ impl StorageService for SqliteStorage {
             // update_segment_llm_summary, which preserves a peer's origin) so the
             // row propagates correctly once cross-device sync is enabled.
             //
-            // FK note: activity_segments has `FOREIGN KEY (regime_id) REFERENCES
-            // regimes(id)`, but PRAGMA foreign_keys is OFF on the main connection
-            // and the regime registry has no local INSERT producer either, so a
-            // not-yet-persisted regime_id must NOT block the insert — do not add
-            // an existence check here.
+            // FK note (#9735): `activity_segments.regime_id` REFERENCES
+            // `regimes(id)`, and that FK **is enforced** — `libsqlite3-sys`
+            // builds the bundled amalgamation with
+            // `-DSQLITE_DEFAULT_FOREIGN_KEYS=1` and nothing here turns it off.
+            // (A comment that used to sit here claimed the opposite. Measured:
+            // `PRAGMA foreign_keys = 1`.)
+            //
+            // Its INTENT was right: a not-yet-persisted regime must not block
+            // the segment. But the mechanism it relied on does not exist, so
+            // the insert was rejected outright with
+            // `FOREIGN KEY constraint failed` — losing the whole segment.
+            //
+            // The window is ordinary, not exotic: regimes reach `regimes` via
+            // `save_all`, which runs on a 30-minute checkpoint and at shutdown,
+            // while segments close far more often. Any segment closed under a
+            // freshly-detected regime hits it.
+            //
+            // So honour the intent explicitly: keep the reference when the
+            // regime is already known, and degrade to NULL when it is not. The
+            // segment — the row every digest/timeline/dashboard surface is
+            // built from — survives either way, and the column is nullable by
+            // design (v09_v18.rs: `regime_id TEXT`, no NOT NULL).
+            let regime_id = summary.regime_id.as_deref().filter(|id| {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM regimes WHERE id = ?1)",
+                    rusqlite::params![id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap_or(false)
+            });
             let h = clock
                 .next(conn)
                 .map_err(|e| StorageError::Internal(format!("hlc stamp: {e}")))?;
@@ -428,7 +444,7 @@ impl StorageService for SqliteStorage {
                     summary.start_time.to_rfc3339(),
                     summary.end_time.to_rfc3339(),
                     summary.duration_secs as i64,
-                    summary.regime_id,
+                    regime_id,
                     enum_to_sql_str(&summary.trigger_reason),
                     summary.event_count as i64,
                     app_breakdown,
@@ -666,6 +682,93 @@ mod tests {
         assert_eq!(oldest_remaining, "unsent-00002");
     }
 
+    /// #9735: a segment closed under a regime that has not been checkpointed
+    /// yet must still be saved.
+    ///
+    /// `regimes` rows are written by `save_all`, which runs on a 30-minute
+    /// checkpoint and at shutdown; segments close far more often. Before this,
+    /// the enforced FK rejected the whole insert with
+    /// `FOREIGN KEY constraint failed` and the segment was lost — taking every
+    /// surface built on it (digests, timeline, dashboard timetable, regime
+    /// distribution, recalibration) with it for that window.
+    #[tokio::test]
+    async fn save_activity_segment_degrades_an_unpersisted_regime_instead_of_failing() {
+        use maekon_core::models::tiered_memory::{SegmentSummary, TriggerReason};
+        use std::collections::HashMap;
+
+        let storage = SqliteStorage::open_in_memory(30).expect("open_in_memory failed");
+        let now = Utc::now();
+        let make = |id: &str, regime: Option<&str>| SegmentSummary {
+            segment_id: id.to_string(),
+            start_time: now - Duration::minutes(10),
+            end_time: now,
+            duration_secs: 600,
+            regime_id: regime.map(String::from),
+            trigger_reason: TriggerReason::ScoreLow,
+            event_count: 1,
+            app_breakdown: HashMap::new(),
+            category_breakdown: HashMap::new(),
+            context_switch_count: 0,
+            dominant_category: "coding".to_string(),
+            avg_importance: 0.5,
+            patterns_detected: vec![],
+            content_activities: vec![],
+            container: None,
+            llm_summary: None,
+        };
+
+        // The regime has been DETECTED but not yet checkpointed to `regimes`.
+        storage
+            .save_activity_segment(&make("seg-unpersisted", Some("regime-not-yet-saved")))
+            .await
+            .expect("an unpersisted regime must not cost us the segment");
+
+        let stored: Option<String> = {
+            let conn = storage.conn.test_lock();
+            conn.query_row(
+                "SELECT regime_id FROM activity_segments WHERE id = 'seg-unpersisted'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the segment row must exist")
+        };
+        assert_eq!(
+            stored, None,
+            "the dangling reference is dropped, the segment is kept"
+        );
+
+        // Once the regime IS persisted, the reference is preserved.
+        {
+            let conn = storage.conn.test_lock();
+            conn.execute(
+                "INSERT INTO regimes (id, label, detected_at, last_seen_at, occurrence_count, \
+                 avg_density, avg_importance, dominant_category, is_active) \
+                 VALUES ('regime-saved', 'Focus', ?1, ?1, 1, 0.5, 0.5, 'coding', 1)",
+                rusqlite::params![now.to_rfc3339()],
+            )
+            .expect("seed regime");
+        }
+        storage
+            .save_activity_segment(&make("seg-persisted", Some("regime-saved")))
+            .await
+            .expect("a known regime must save normally");
+
+        let kept: Option<String> = {
+            let conn = storage.conn.test_lock();
+            conn.query_row(
+                "SELECT regime_id FROM activity_segments WHERE id = 'seg-persisted'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the segment row must exist")
+        };
+        assert_eq!(
+            kept,
+            Some("regime-saved".to_string()),
+            "a valid reference must be preserved, not blanked"
+        );
+    }
+
     #[tokio::test]
     async fn save_activity_segment_round_trips_enriches_and_is_idempotent() {
         use maekon_core::models::tiered_memory::{SegmentSummary, TriggerReason};
@@ -678,9 +781,10 @@ mod tests {
             start_time: now - Duration::minutes(30),
             end_time: now,
             duration_secs: 1800,
-            // FK (regime_id -> regimes.id) exists but PRAGMA foreign_keys is OFF
-            // and the regime registry has no local producer — a None/dangling
-            // regime_id must NOT block the insert (#5662).
+            // #9735: the FK (regime_id -> regimes.id) IS enforced, so a NULL
+            // regime_id is the only value that is unconditionally safe. A
+            // dangling one is degraded to NULL by the writer — see the
+            // dedicated test below.
             regime_id: None,
             trigger_reason: TriggerReason::ScoreLow,
             event_count: 42,
@@ -698,7 +802,7 @@ mod tests {
         storage
             .save_activity_segment(&summary)
             .await
-            .expect("save_activity_segment must succeed with a None regime_id (FK off)");
+            .expect("save_activity_segment must succeed with a None regime_id");
 
         // Round-trip via the SAME query the digest/timeline surfaces use.
         let from = now - Duration::hours(1);

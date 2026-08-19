@@ -15,8 +15,14 @@ struct OwnedHabitStreak {
 }
 
 impl SqliteStorage {
-    /// Upsert a daily habit record for a regime (INSERT OR REPLACE by unique
-    /// `(regime_label, date)` constraint).
+    /// Upsert a daily habit record for a regime, keyed by the unique
+    /// `(regime_label, date)` constraint.
+    ///
+    /// The conflict path is MONOTONIC, not a blind overwrite (#8052):
+    /// `minutes_logged = MAX(existing, new)` and `met = MAX(existing, new)` so a
+    /// stale/lower write (e.g. the first tick after a restart before the in-RAM
+    /// counter re-hydrates, or a concurrent double-write) can never regress the
+    /// day's persisted total or flip `met` back from true to false.
     ///
     /// Synchronous inherent twin — retained for the in-crate `#[cfg(test)]`
     /// suite and the web handler `#[cfg(test)]` seed path. The async
@@ -71,11 +77,20 @@ impl SqliteStorage {
         conn: &Connection,
         params: &OwnedHabitStreak,
     ) -> Result<(), StorageError> {
+        // #8052: MAX-guard the conflict path so a lower/stale write cannot
+        // regress the day's minutes or flip `met` true->false. `minutes_logged`
+        // and `met` on the RHS refer to the EXISTING row value; `?3`/`?5` are the
+        // incoming write. `target_minutes` is authoritative-latest (config can
+        // change intra-day). Both guarded columns are `NOT NULL`, so `MAX(..)`
+        // never sees a NULL argument.
         conn.execute(
             "INSERT INTO habit_streaks (regime_label, date, minutes_logged, target_minutes, met)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(regime_label, date)
-             DO UPDATE SET minutes_logged = ?3, target_minutes = ?4, met = ?5",
+             DO UPDATE SET
+                 minutes_logged = MAX(minutes_logged, ?3),
+                 target_minutes = ?4,
+                 met = MAX(met, ?5)",
             rusqlite::params![
                 params.regime_label,
                 params.date,
@@ -170,13 +185,14 @@ mod tests {
     }
 
     #[test]
-    fn upsert_overwrites_existing() {
+    fn upsert_advances_minutes_and_met_on_higher_write() {
         let storage = test_storage();
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         storage
             .upsert_habit_streak("deep_work", &today, 60, 120, false)
             .unwrap();
+        // A higher write (target reached) advances both minutes and met.
         storage
             .upsert_habit_streak("deep_work", &today, 130, 120, true)
             .unwrap();
@@ -184,6 +200,41 @@ mod tests {
         let rows = storage.query_habit_streaks(7).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].minutes_logged, 130);
+        assert!(rows[0].met);
+    }
+
+    /// #8052: the conflict path is MAX-guarded — a lower/stale write (the shape
+    /// produced by the first post-restart tick before the in-RAM counter
+    /// re-hydrates, or a concurrent double-write) must NOT regress the day's
+    /// persisted minutes and must NOT flip `met` back from true to false.
+    #[test]
+    fn upsert_does_not_regress_minutes_or_met_on_lower_write() {
+        let storage = test_storage();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+        // Established: 80 min, target met earlier today.
+        storage
+            .upsert_habit_streak("deep_work", &today, 80, 100, true)
+            .unwrap();
+        // Stale/lower write: fewer minutes, met=false. Must be absorbed by MAX.
+        storage
+            .upsert_habit_streak("deep_work", &today, 30, 100, false)
+            .unwrap();
+
+        let rows = storage.query_habit_streaks(7).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].minutes_logged, 80,
+            "a lower write must not regress the day's minutes"
+        );
+        assert!(rows[0].met, "met must not regress from true to false");
+
+        // A subsequent genuinely-higher write still advances the total.
+        storage
+            .upsert_habit_streak("deep_work", &today, 95, 100, true)
+            .unwrap();
+        let rows = storage.query_habit_streaks(7).unwrap();
+        assert_eq!(rows[0].minutes_logged, 95);
         assert!(rows[0].met);
     }
 

@@ -2,6 +2,8 @@
 //!
 //! ADR-013 split from `suggestions/helpers.rs`.
 
+use maekon_core::models::suggestion::FeedbackTallyRecord;
+use maekon_core::ports::feedback_scorer_store::FeedbackScorerStore;
 use maekon_storage::sqlite::SqliteStorage;
 use tauri::command;
 
@@ -9,6 +11,18 @@ use crate::ipc_error::IpcError;
 use crate::runtime_state::{AppState, SuggestionRuntimeState};
 
 use super::helpers::{enqueue_feedback_retry, feedback_type_for_action, suggestion_not_found};
+
+/// #7913 T2.1c: write-through a FeedbackScorer tally so the learned relevance
+/// signal survives restart. Best-effort — the tally has already been applied to
+/// the in-RAM scorer, and this state is advisory (it only nudges local
+/// relevance), so a persist failure is logged, never surfaced to the user.
+fn persist_feedback_tally(storage: &SqliteStorage, record: Option<FeedbackTallyRecord>) {
+    if let Some(record) = record {
+        if let Err(e) = storage.upsert_feedback_tally(&record) {
+            tracing::warn!(error = %e, "feedback scorer tally persist failed (advisory)");
+        }
+    }
+}
 
 pub(crate) async fn submit_suggestion_feedback_to_runtime(
     state: &SuggestionRuntimeState,
@@ -23,21 +37,46 @@ pub(crate) async fn submit_suggestion_feedback_to_runtime(
         return submit_storage_suggestion_feedback(storage, suggestion_id, action, snooze_minutes);
     };
 
+    // #7600: attach the live regime_id (from the shared cross-loop snapshot)
+    // so RegimeClassifier can attribute this reaction to the regime the user
+    // was actually in when they acted, not just an aggregate counter.
+    let regime_id = state.current_regime_id();
+
+    // Write the local lifecycle transition before updating the in-memory queue.
+    // The live manager is rebuilt from SQLite on restart, so removing an item
+    // from RAM alone would resurrect accepted/rejected suggestions. A missing
+    // row is allowed for ephemeral manager-only suggestions, while an actual
+    // storage error fails closed and leaves the queue untouched.
+    match action {
+        "accept" => {
+            storage
+                .mark_unified_suggestion_acted(suggestion_id)
+                .map_err(IpcError::from)?;
+        }
+        "reject" => {
+            storage
+                .dismiss_unified_suggestion(suggestion_id)
+                .map_err(IpcError::from)?;
+        }
+        "defer" => {}
+        _ => unreachable!("action was validated by feedback_type_for_action"),
+    }
+
     // Send feedback to server (best-effort — enqueue for retry on failure)
     match action {
         "accept" => {
-            if let Err(_e) = mgr.feedback().accept(suggestion_id, None).await {
+            if let Err(_e) = mgr.feedback().accept(suggestion_id, None, regime_id).await {
                 enqueue_feedback_retry(&mgr, suggestion_id, feedback_type.clone(), None).await;
             }
         }
         "reject" => {
-            if let Err(_e) = mgr.feedback().reject(suggestion_id, None).await {
+            if let Err(_e) = mgr.feedback().reject(suggestion_id, None, regime_id).await {
                 enqueue_feedback_retry(&mgr, suggestion_id, feedback_type.clone(), None).await;
             }
         }
         "defer" => {
             // Server notification is best-effort; local state changes always proceed.
-            if let Err(_e) = mgr.feedback().defer(suggestion_id, None).await {
+            if let Err(_e) = mgr.feedback().defer(suggestion_id, None, regime_id).await {
                 enqueue_feedback_retry(&mgr, suggestion_id, feedback_type.clone(), None).await;
             }
 
@@ -51,10 +90,13 @@ pub(crate) async fn submit_suggestion_feedback_to_runtime(
                 (removed, scorer_data)
             }; // queue lock dropped
             if let Some((stype, source)) = scorer_data {
-                mgr.scorer()
-                    .lock()
-                    .await
-                    .record(stype, source, &feedback_type);
+                let tally = {
+                    let mut scorer = mgr.scorer().lock().await;
+                    scorer.record(stype.clone(), source.clone(), &feedback_type);
+                    scorer.tally_record(&stype, &source)
+                };
+                // #7913 T2.1c: persist the updated tally (write-through).
+                persist_feedback_tally(storage, tally);
             }
 
             if let Some(suggestion) = removed {
@@ -104,11 +146,17 @@ pub(crate) async fn submit_suggestion_feedback_to_runtime(
     }; // queue lock dropped here
 
     if let Some(suggestion) = removed {
-        mgr.scorer().lock().await.record(
-            suggestion.suggestion_type.clone(),
-            suggestion.source.clone(),
-            &feedback_type,
-        );
+        let tally = {
+            let mut scorer = mgr.scorer().lock().await;
+            scorer.record(
+                suggestion.suggestion_type.clone(),
+                suggestion.source.clone(),
+                &feedback_type,
+            );
+            scorer.tally_record(&suggestion.suggestion_type, &suggestion.source)
+        };
+        // #7913 T2.1c: persist the updated tally (write-through).
+        persist_feedback_tally(storage, tally);
         {
             let mut history = mgr.history().lock().await;
             history.add(suggestion);

@@ -9,8 +9,8 @@ use crate::error::ApiError;
 use crate::services::ai_model_catalog_assembler::{build_model_details, parse_models};
 use crate::services::ai_model_catalog_auth::resolve_model_discovery_api_key;
 use crate::services::ai_model_catalog_endpoint::{
-    normalize_optional_surface_id, reject_internal_discovery_endpoint, resolve_models_endpoint,
-    resolve_requested_provider_type,
+    is_loopback_discovery_endpoint, normalize_optional_surface_id,
+    reject_internal_discovery_endpoint, resolve_models_endpoint, resolve_requested_provider_type,
 };
 use crate::services::ai_model_catalog_service::truncate_error;
 use crate::services::ai_provider_spec_service::{self, ProviderAuthScheme};
@@ -33,10 +33,35 @@ impl AiModelCatalogQueryService {
         &self,
         request: &ProviderModelsRequest,
     ) -> Result<ProviderModelsResponse, ApiError> {
-        // The local (loopback) path proceeds without a host pin (empty vector) — it must allow
-        // legitimate internal endpoints such as localhost Ollama, so it is not subject to the
-        // SSRF guard/pinning (#6894/#6902).
-        self.discover_with_pinned_addrs(request, Vec::new()).await
+        // #8047 E4: the local path may skip the SSRF/internal-range guard ONLY for loopback
+        // endpoints (the intended case: a localhost Ollama at 127.0.0.1:11434). Resolve the
+        // endpoint the same way the delegate re-resolves it (idempotent) so it can be
+        // classified. A non-loopback endpoint on this path (e.g. an RFC1918 192.168.x.x host)
+        // must clear the exact same internal-range guard as the external integration path,
+        // which also yields the validated address pins that close the DNS-rebinding (TOCTOU)
+        // window (#6902). A permitted public endpoint stays allowed, now with pinning.
+        let requested_surface_id = normalize_optional_surface_id(request.surface_id.as_deref());
+        let provider_type = resolve_requested_provider_type(
+            request.provider_type.as_str(),
+            requested_surface_id.as_deref(),
+        )?;
+        let endpoint = resolve_models_endpoint(
+            provider_type,
+            requested_surface_id.as_deref(),
+            request.endpoint.as_deref(),
+        )?;
+
+        if is_loopback_discovery_endpoint(&endpoint) {
+            // Loopback (localhost Ollama etc.): guard-skip is safe and no pinning is needed —
+            // preserves the existing local behavior (empty pins).
+            self.discover_with_pinned_addrs(request, Vec::new()).await
+        } else {
+            // Non-loopback local endpoint: apply the same guard as the external path. It blocks
+            // RFC1918 / link-local / metadata / etc. (fail-closed) and returns validated pins
+            // for a permitted public host.
+            let pinned_addrs = reject_internal_discovery_endpoint(&endpoint).await?;
+            self.discover_with_pinned_addrs(request, pinned_addrs).await
+        }
     }
 
     /// Shared discovery implementation. When `pinned_addrs` is non-empty, the transport pins the

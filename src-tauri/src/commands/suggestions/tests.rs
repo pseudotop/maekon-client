@@ -1,8 +1,11 @@
 use super::feedback::{find_suggestion_explain_payload, submit_suggestion_feedback_to_runtime};
-use super::queries::{pending_suggestions_snapshot, suggestion_history_snapshot};
+use super::queries::{
+    pending_suggestion_count_snapshot, pending_suggestions_snapshot, suggestion_history_snapshot,
+};
 use super::replay::{suggestion_replay_log_context, validate_suggestion_replay_payload};
 use super::types::SuggestionReplayEventPayload;
 use chrono::Utc;
+use maekon_core::config::AutomationConfig;
 use maekon_core::models::suggestion::{
     Priority, Suggestion, SuggestionContextScope, SuggestionSource, SuggestionType,
 };
@@ -40,9 +43,10 @@ async fn pending_suggestions_fall_back_to_storage_without_manager() {
         .expect("save suggestion");
     let suggestion_state = SuggestionRuntimeState::default();
 
-    let suggestions = pending_suggestions_snapshot(&suggestion_state, &storage)
-        .await
-        .expect("fallback suggestions");
+    let suggestions =
+        pending_suggestions_snapshot(&suggestion_state, &storage, &AutomationConfig::default())
+            .await
+            .expect("fallback suggestions");
 
     assert_eq!(suggestions.len(), 1);
     assert_eq!(suggestions[0].id, "storage-suggestion-1");
@@ -60,6 +64,12 @@ async fn pending_suggestions_fall_back_to_storage_without_manager() {
             .as_ref()
             .and_then(|scope| scope.target_id.as_deref()),
         Some("calculator-display-result")
+    );
+    assert_eq!(
+        pending_suggestion_count_snapshot(&suggestion_state, &storage)
+            .await
+            .expect("fallback suggestion count"),
+        1
     );
 }
 
@@ -110,7 +120,7 @@ async fn pending_suggestions_surface_locally_generated_via_live_queue() {
     );
 
     let state = SuggestionRuntimeState::new(Some(manager), None);
-    let suggestions = pending_suggestions_snapshot(&state, &storage)
+    let suggestions = pending_suggestions_snapshot(&state, &storage, &AutomationConfig::default())
         .await
         .expect("pending suggestions");
 
@@ -120,6 +130,155 @@ async fn pending_suggestions_surface_locally_generated_via_live_queue() {
         "the locally-generated suggestion must surface from the live queue (no server, no SQLite fallback)"
     );
     assert_eq!(suggestions[0].id, "local-gen-1");
+    assert_eq!(
+        pending_suggestion_count_snapshot(&state, &storage)
+            .await
+            .expect("live queue count"),
+        1
+    );
+}
+
+#[cfg(feature = "local-suggestions")]
+#[tokio::test]
+async fn live_manager_feedback_persists_accept_and_reject_lifecycle() {
+    use maekon_suggestion::deferred::DeferredManager;
+    use maekon_suggestion::feedback::FeedbackSender;
+    use maekon_suggestion::feedback_retry::FeedbackRetryQueue;
+    use maekon_suggestion::history::SuggestionHistory;
+    use maekon_suggestion::queue::SuggestionQueue;
+    use maekon_suggestion::scorer::FeedbackScorer;
+    use tokio::sync::Mutex;
+
+    let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+    let accepted = sample_suggestion("persist-accept-1");
+    let rejected = sample_suggestion("persist-reject-1");
+    storage
+        .save_rule_suggestion_sync(&accepted)
+        .expect("save accepted suggestion");
+    storage
+        .save_rule_suggestion_sync(&rejected)
+        .expect("save rejected suggestion");
+
+    let queue = Arc::new(Mutex::new(SuggestionQueue::new(50)));
+    assert!(queue.lock().await.push(accepted));
+    assert!(queue.lock().await.push(rejected));
+    let api: Arc<dyn maekon_core::ports::api_client::ApiClient> =
+        Arc::new(crate::local_api_client::LocalApiClient);
+    let manager = Arc::new(crate::suggestion_manager::SuggestionManager::new(
+        queue,
+        Arc::new(Mutex::new(SuggestionHistory::new(100))),
+        Arc::new(FeedbackSender::new_with_sink(api, None)),
+        Arc::new(Mutex::new(FeedbackScorer::new())),
+        Arc::new(Mutex::new(DeferredManager::new(50))),
+        Arc::new(Mutex::new(FeedbackRetryQueue::new(100, 5))),
+        storage.clone(),
+    ));
+    let state = SuggestionRuntimeState::new(Some(manager), None);
+
+    submit_suggestion_feedback_to_runtime(&state, &storage, "persist-accept-1", "accept", None)
+        .await
+        .expect("accept feedback");
+    submit_suggestion_feedback_to_runtime(&state, &storage, "persist-reject-1", "reject", None)
+        .await
+        .expect("reject feedback");
+
+    assert!(
+        storage
+            .list_suggestions(10)
+            .expect("active suggestions")
+            .is_empty(),
+        "accepted and rejected suggestions must not be restored as pending after restart"
+    );
+    let recent = storage
+        .list_recent_suggestions(10)
+        .expect("suggestion history");
+    assert!(recent.iter().any(|row| row.acted_at.is_some()));
+    assert!(recent.iter().any(|row| row.dismissed_at.is_some()));
+}
+
+/// #7600 fails-before: before this change `SuggestionRuntimeState` had no
+/// `shared_regime` field and `submit_suggestion_feedback_to_runtime` never
+/// read a regime_id at all — `FeedbackSender::accept` did not even accept
+/// one. This is the end-to-end regression guard for the emission site: the
+/// live regime snapshot -> `SuggestionRuntimeState::current_regime_id` ->
+/// `submit_suggestion_feedback_to_runtime` -> `FeedbackSender::accept` ->
+/// `SuggestionFeedback.regime_id` -> the `FeedbackSignalSink`.
+#[cfg(feature = "local-suggestions")]
+#[tokio::test]
+async fn accept_feedback_attaches_live_regime_id_from_shared_state() {
+    use crate::scheduler::shared_regime_state::SharedRegimeState;
+    use async_trait::async_trait;
+    use maekon_core::error::CoreError;
+    use maekon_core::models::suggestion::SuggestionFeedback;
+    use maekon_core::models::tiered_memory::{Regime, RegimeFeatures, RegimeStatus, TriggerParams};
+    use maekon_core::ports::feedback_signal_sink::FeedbackSignalSink;
+    use maekon_suggestion::deferred::DeferredManager;
+    use maekon_suggestion::feedback::FeedbackSender;
+    use maekon_suggestion::feedback_retry::FeedbackRetryQueue;
+    use maekon_suggestion::history::SuggestionHistory;
+    use maekon_suggestion::queue::SuggestionQueue;
+    use maekon_suggestion::scorer::FeedbackScorer;
+    use std::sync::Mutex as StdMutex;
+    use tokio::sync::Mutex;
+
+    struct CapturingSink(Arc<StdMutex<Option<Option<String>>>>);
+    #[async_trait]
+    impl FeedbackSignalSink for CapturingSink {
+        async fn record_user_reaction(
+            &self,
+            feedback: &SuggestionFeedback,
+        ) -> Result<(), CoreError> {
+            *self.0.lock().unwrap() = Some(feedback.regime_id.clone());
+            Ok(())
+        }
+    }
+
+    let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+    storage
+        .save_rule_suggestion_sync(&sample_suggestion("regime-feedback-1"))
+        .expect("save suggestion");
+
+    let captured = Arc::new(StdMutex::new(None));
+    let sink: Arc<dyn FeedbackSignalSink> = Arc::new(CapturingSink(captured.clone()));
+    let api: Arc<dyn maekon_core::ports::api_client::ApiClient> =
+        Arc::new(crate::local_api_client::LocalApiClient);
+    let feedback = Arc::new(FeedbackSender::new_with_sink(api, Some(sink)));
+    let manager = Arc::new(crate::suggestion_manager::SuggestionManager::new(
+        Arc::new(Mutex::new(SuggestionQueue::new(50))),
+        Arc::new(Mutex::new(SuggestionHistory::new(100))),
+        feedback,
+        Arc::new(Mutex::new(FeedbackScorer::new())),
+        Arc::new(Mutex::new(DeferredManager::new(50))),
+        Arc::new(Mutex::new(FeedbackRetryQueue::new(100, 5))),
+        storage.clone(),
+    ));
+
+    // Live regime snapshot, mirroring what the monitor loop writes each tick.
+    let shared_regime = Arc::new(SharedRegimeState::new());
+    let regime = Regime {
+        regime_id: "regime-under-test".to_string(),
+        name: None,
+        auto_label: "Deep Focus (VSCode)".to_string(),
+        centroid: RegimeFeatures::default(),
+        optimal_params: TriggerParams::default(),
+        sample_count: 10,
+        first_seen: Utc::now(),
+        last_seen: Utc::now(),
+        status: RegimeStatus::Active,
+    };
+    shared_regime.update(Some(&regime), "VSCode");
+
+    let state = SuggestionRuntimeState::new(Some(manager), None).with_shared_regime(shared_regime);
+
+    submit_suggestion_feedback_to_runtime(&state, &storage, "regime-feedback-1", "accept", None)
+        .await
+        .expect("accept succeeds");
+
+    assert_eq!(
+        captured.lock().unwrap().clone(),
+        Some(Some("regime-under-test".to_string())),
+        "the sink must observe the live regime_id read from SharedRegimeState"
+    );
 }
 
 #[tokio::test]
@@ -140,9 +299,10 @@ async fn feedback_falls_back_to_storage_without_manager() {
     .await
     .expect("storage feedback fallback");
 
-    let suggestions = pending_suggestions_snapshot(&suggestion_state, &storage)
-        .await
-        .expect("fallback suggestions");
+    let suggestions =
+        pending_suggestions_snapshot(&suggestion_state, &storage, &AutomationConfig::default())
+            .await
+            .expect("fallback suggestions");
     assert!(suggestions
         .iter()
         .all(|suggestion| suggestion.id != "storage-feedback-1"));
@@ -178,9 +338,10 @@ async fn reject_and_defer_feedback_fall_back_to_storage_without_manager() {
     .await
     .expect("defer storage fallback");
 
-    let suggestions = pending_suggestions_snapshot(&suggestion_state, &storage)
-        .await
-        .expect("fallback suggestions");
+    let suggestions =
+        pending_suggestions_snapshot(&suggestion_state, &storage, &AutomationConfig::default())
+            .await
+            .expect("fallback suggestions");
     assert!(suggestions
         .iter()
         .all(|suggestion| suggestion.id != "storage-reject-1"));
@@ -567,9 +728,9 @@ fn suggestion_history_dto_flatten_emits_top_level_fields() {
             source: "local".to_string(),
             confidence_score: 0.9,
             created_at: "2026-01-01T00:00:00Z".to_string(),
-            is_read: false,
             reasoning: None,
             context_scope: None,
+            action: None,
         },
         feedback: Some("accepted".to_string()),
     };
@@ -592,4 +753,567 @@ fn suggestion_history_dto_flatten_emits_top_level_fields() {
     );
     // id also top-level.
     assert!(obj.contains_key("id"), "id must be at top level");
+}
+
+// ---------------------------------------------------------------------------
+// #7917 T4.1 — run_suggestion_action (suggestion → automation bridge)
+// ---------------------------------------------------------------------------
+
+mod run_action_tests {
+    use super::*;
+    use crate::commands::suggestions::action::run_suggestion_action_inner;
+    use async_trait::async_trait;
+    use maekon_core::error::{CoreError, GuiInteractionError};
+    use maekon_core::error_codes::PolicyCode;
+    use maekon_core::models::automation::{
+        AutomationCommand, CommandResult, ExecutionPolicyDto, GuiExecutionResult,
+        PendingConfirmation, PlannedIntentResult, WorkflowResult,
+    };
+    use maekon_core::models::gui::{
+        GuiConfirmRequest, GuiCreateSessionRequest, GuiCreateSessionResponse, GuiExecutionRequest,
+        GuiExecutionTicket, GuiHighlightRequest, GuiInteractionSession, GuiSessionEvent,
+    };
+    use maekon_core::models::intent::{IntentCommand, IntentResult, WorkflowPreset};
+    use maekon_core::models::ui_scene::UiScene;
+    use maekon_core::ports::automation::AutomationPort;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::broadcast;
+
+    /// A locally-minted, rule-based `NeedFocusTime` nudge — the one (type, source)
+    /// pair the MVP binds to `deep-work-start`.
+    fn bound_suggestion(id: &str) -> Suggestion {
+        Suggestion {
+            suggestion_id: id.to_string(),
+            suggestion_type: SuggestionType::NeedFocusTime,
+            content: "You've been context-switching — a focus block might help.".to_string(),
+            priority: Priority::High,
+            confidence_score: 0.9,
+            relevance_score: 0.9,
+            is_actionable: true,
+            created_at: Utc::now(),
+            expires_at: None,
+            source: SuggestionSource::RuleBased,
+            reasoning: None,
+            context_scope: None,
+        }
+    }
+
+    fn enabled_automation() -> AutomationConfig {
+        AutomationConfig {
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum RunOutcome {
+        Success,
+        // #7947: `Denied` is constructed ONLY by the `local-suggestions`-gated
+        // `manager_path` tests (`denied_run_emits_nothing`). In the
+        // `--no-default-features` cell that module is compiled out, so allow the
+        // variant to be unused there — otherwise the workspace `dead_code = "deny"`
+        // lint fails the no-default test build. The default/server/grpc cells keep
+        // constructing it, so coverage there is unchanged.
+        #[cfg_attr(not(feature = "local-suggestions"), allow(dead_code))]
+        Denied,
+    }
+
+    /// Coordination handles so a test can hold `run_workflow` open across a second
+    /// concurrent call (the in-flight-guard test).
+    struct RunGate {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    /// Minimal `AutomationPort` test double: only `run_workflow` is exercised;
+    /// every other method is unreachable in these tests.
+    struct FakeAutomation {
+        outcome: RunOutcome,
+        calls: Arc<AtomicUsize>,
+        gate: Option<Arc<RunGate>>,
+    }
+
+    #[async_trait]
+    impl AutomationPort for FakeAutomation {
+        async fn run_workflow(&self, preset: &WorkflowPreset) -> Result<WorkflowResult, CoreError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(gate) = &self.gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+            match self.outcome {
+                RunOutcome::Success => Ok(WorkflowResult {
+                    preset_id: preset.id.clone(),
+                    success: true,
+                    steps_executed: preset.steps.len(),
+                    total_steps: preset.steps.len(),
+                    total_elapsed_ms: 0,
+                    step_results: Vec::new(),
+                    message: "ok".to_string(),
+                }),
+                // Models the Block-policy / UserDenied arm: run_workflow returns a
+                // CoreError, never Ok — so the caller emits nothing.
+                RunOutcome::Denied => Err(CoreError::PolicyDenied {
+                    code: PolicyCode::Denied,
+                    message: "automation blocked by policy".to_string(),
+                }),
+            }
+        }
+
+        async fn execute_command(
+            &self,
+            _cmd: &AutomationCommand,
+        ) -> Result<CommandResult, CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn execute_intent(&self, _cmd: &IntentCommand) -> Result<IntentResult, CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn execute_intent_hint(
+            &self,
+            _command_id: &str,
+            _session_id: &str,
+            _intent_hint: &str,
+        ) -> Result<PlannedIntentResult, CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn analyze_scene(
+            &self,
+            _app_name: Option<&str>,
+            _screen_id: Option<&str>,
+        ) -> Result<UiScene, CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn analyze_scene_from_image(
+            &self,
+            _image_data: Vec<u8>,
+            _image_format: String,
+            _app_name: Option<&str>,
+            _screen_id: Option<&str>,
+        ) -> Result<UiScene, CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn gui_create_session(
+            &self,
+            _req: GuiCreateSessionRequest,
+        ) -> Result<GuiCreateSessionResponse, GuiInteractionError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn gui_get_session(
+            &self,
+            _session_id: &str,
+            _capability_token: &str,
+        ) -> Result<GuiInteractionSession, GuiInteractionError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn gui_highlight_session(
+            &self,
+            _session_id: &str,
+            _capability_token: &str,
+            _req: GuiHighlightRequest,
+        ) -> Result<GuiInteractionSession, GuiInteractionError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn gui_confirm_candidate(
+            &self,
+            _session_id: &str,
+            _capability_token: &str,
+            _req: GuiConfirmRequest,
+        ) -> Result<GuiExecutionTicket, GuiInteractionError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn gui_execute(
+            &self,
+            _session_id: &str,
+            _capability_token: &str,
+            _req: GuiExecutionRequest,
+        ) -> Result<GuiExecutionResult, GuiInteractionError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn gui_cancel_session(
+            &self,
+            _session_id: &str,
+            _capability_token: &str,
+        ) -> Result<GuiInteractionSession, GuiInteractionError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn gui_subscribe_events(
+            &self,
+            _session_id: &str,
+            _capability_token: &str,
+        ) -> Result<broadcast::Receiver<GuiSessionEvent>, GuiInteractionError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn list_pending_confirmations(&self) -> Result<Vec<PendingConfirmation>, CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn submit_confirmation(
+            &self,
+            _command_id: &str,
+            _nonce: &str,
+            _approved: bool,
+        ) -> Result<(), CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn list_execution_policies(&self) -> Result<Vec<ExecutionPolicyDto>, CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn add_execution_policy(
+            &self,
+            _policy: ExecutionPolicyDto,
+        ) -> Result<ExecutionPolicyDto, CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+        async fn remove_execution_policy(&self, _policy_id: &str) -> Result<bool, CoreError> {
+            unimplemented!("unused in run_suggestion_action tests")
+        }
+    }
+
+    fn fake(outcome: RunOutcome, calls: Arc<AtomicUsize>) -> Arc<dyn AutomationPort> {
+        Arc::new(FakeAutomation {
+            outcome,
+            calls,
+            gate: None,
+        })
+    }
+
+    fn acted_in_storage(storage: &SqliteStorage, id: &str) -> bool {
+        storage
+            .list_recent_suggestions(50)
+            .expect("list")
+            .iter()
+            .find(|r| r.suggestion_id == id)
+            .and_then(super::super::mapping::storage_feedback_label)
+            == Some("accepted".to_string())
+    }
+
+    // ── Storage-fallback (manager-less) path ────────────────────────────────
+
+    /// DA B: with NO manager the command still resolves the binding from storage
+    /// and runs — and on success marks acted.
+    #[tokio::test]
+    async fn managerless_run_resolves_and_executes_then_marks_acted() {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+        storage
+            .save_rule_suggestion_sync(&bound_suggestion("run-1"))
+            .expect("save");
+        let state = SuggestionRuntimeState::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let controller = fake(RunOutcome::Success, calls.clone());
+
+        run_suggestion_action_inner(
+            &state,
+            &storage,
+            &enabled_automation(),
+            &controller,
+            "run-1",
+        )
+        .await
+        .expect("run succeeds");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "run_workflow called once");
+        assert!(acted_in_storage(&storage, "run-1"), "acted_at must be set");
+    }
+
+    /// A network-sourced suggestion of the bound type is REFUSED before any run
+    /// (frozen invariant). Nothing executes, nothing is marked.
+    #[tokio::test]
+    async fn non_rule_based_suggestion_is_refused() {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+        let mut network = bound_suggestion("net-1");
+        network.source = SuggestionSource::LlmServer;
+        storage.save_rule_suggestion_sync(&network).expect("save");
+        let state = SuggestionRuntimeState::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let controller = fake(RunOutcome::Success, calls.clone());
+
+        let err = run_suggestion_action_inner(
+            &state,
+            &storage,
+            &enabled_automation(),
+            &controller,
+            "net-1",
+        )
+        .await
+        .expect_err("network-sourced suggestion must be refused");
+        assert_eq!(err.code, "validation.invalid_arguments");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "run_workflow must not run");
+        assert!(!acted_in_storage(&storage, "net-1"), "must not be acted");
+    }
+
+    /// Automation disabled ⇒ clean error, no run, no acted_at.
+    #[tokio::test]
+    async fn disabled_automation_is_a_clean_error_with_no_side_effects() {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+        storage
+            .save_rule_suggestion_sync(&bound_suggestion("dis-1"))
+            .expect("save");
+        let state = SuggestionRuntimeState::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let controller = fake(RunOutcome::Success, calls.clone());
+
+        let err = run_suggestion_action_inner(
+            &state,
+            &storage,
+            &AutomationConfig::default(), // enabled = false
+            &controller,
+            "dis-1",
+        )
+        .await
+        .expect_err("disabled automation must error");
+        assert_eq!(err.code, "validation.invalid_arguments");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "run_workflow must not run");
+        assert!(!acted_in_storage(&storage, "dis-1"), "must not be acted");
+    }
+
+    /// DA D: a second concurrent run for the same id is refused while the first is
+    /// in flight — the preset executes exactly once.
+    #[tokio::test]
+    async fn concurrent_double_call_executes_once() {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+        storage
+            .save_rule_suggestion_sync(&bound_suggestion("cc-1"))
+            .expect("save");
+        let state = Arc::new(SuggestionRuntimeState::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(RunGate {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let controller: Arc<dyn AutomationPort> = Arc::new(FakeAutomation {
+            outcome: RunOutcome::Success,
+            calls: calls.clone(),
+            gate: Some(gate.clone()),
+        });
+
+        // Call A: reserves, enters run_workflow, then parks on the release gate.
+        let state_a = state.clone();
+        let storage_a = storage.clone();
+        let controller_a = controller.clone();
+        let handle = tokio::spawn(async move {
+            run_suggestion_action_inner(
+                &state_a,
+                &storage_a,
+                &enabled_automation(),
+                &controller_a,
+                "cc-1",
+            )
+            .await
+        });
+
+        // Wait until A holds the reservation (it is inside run_workflow).
+        gate.entered.notified().await;
+
+        // Call B for the same id: must be refused immediately (reservation held).
+        let b = run_suggestion_action_inner(
+            &state,
+            &storage,
+            &enabled_automation(),
+            &controller,
+            "cc-1",
+        )
+        .await
+        .expect_err("second concurrent call must be refused");
+        assert_eq!(b.code, "validation.invalid_arguments");
+
+        // Let A finish.
+        gate.release.notify_one();
+        handle.await.expect("join A").expect("A succeeds");
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the preset must execute exactly once despite the double-fire"
+        );
+    }
+
+    /// History views stay unbound even for a bound-type suggestion (ADR-027): a
+    /// suggestion the user already acted on must never re-offer a one-click run.
+    #[tokio::test]
+    async fn history_snapshot_stays_unbound_for_bound_type() {
+        let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+        storage
+            .save_rule_suggestion_sync(&bound_suggestion("hist-bound-1"))
+            .expect("save");
+        storage
+            .mark_unified_suggestion_acted("hist-bound-1")
+            .expect("act");
+        let state = SuggestionRuntimeState::default();
+
+        let history = suggestion_history_snapshot(&state, &storage, Some(50))
+            .await
+            .expect("history");
+        let entry = history
+            .iter()
+            .find(|h| h.suggestion.id == "hist-bound-1")
+            .expect("row present");
+        assert!(
+            entry.suggestion.action.is_none(),
+            "history must never carry an action, even for a bound type"
+        );
+    }
+
+    // ── Manager (live-queue) path ───────────────────────────────────────────
+
+    #[cfg(feature = "local-suggestions")]
+    mod manager_path {
+        use super::*;
+        use maekon_core::models::suggestion::{FeedbackType, SuggestionFeedback};
+        use maekon_core::ports::feedback_signal_sink::FeedbackSignalSink;
+        use maekon_suggestion::deferred::DeferredManager;
+        use maekon_suggestion::feedback::FeedbackSender;
+        use maekon_suggestion::feedback_retry::FeedbackRetryQueue;
+        use maekon_suggestion::history::SuggestionHistory;
+        use maekon_suggestion::queue::SuggestionQueue;
+        use maekon_suggestion::scorer::FeedbackScorer;
+        use std::sync::Mutex as StdMutex;
+        use tokio::sync::Mutex;
+
+        /// Records every feedback signal the sink observes (proves "emitted once").
+        struct CountingSink(Arc<StdMutex<Vec<FeedbackType>>>);
+        #[async_trait]
+        impl FeedbackSignalSink for CountingSink {
+            async fn record_user_reaction(
+                &self,
+                feedback: &SuggestionFeedback,
+            ) -> Result<(), CoreError> {
+                self.0.lock().unwrap().push(feedback.feedback_type.clone());
+                Ok(())
+            }
+        }
+
+        fn build_manager(
+            storage: Arc<SqliteStorage>,
+            sink: Option<Arc<dyn FeedbackSignalSink>>,
+        ) -> (
+            Arc<crate::suggestion_manager::SuggestionManager>,
+            Arc<Mutex<SuggestionQueue>>,
+        ) {
+            let queue = Arc::new(Mutex::new(SuggestionQueue::new(50)));
+            let api: Arc<dyn maekon_core::ports::api_client::ApiClient> =
+                Arc::new(crate::local_api_client::LocalApiClient);
+            let feedback = Arc::new(FeedbackSender::new_with_sink(api, sink));
+            let manager = Arc::new(crate::suggestion_manager::SuggestionManager::new(
+                queue.clone(),
+                Arc::new(Mutex::new(SuggestionHistory::new(100))),
+                feedback,
+                Arc::new(Mutex::new(FeedbackScorer::new())),
+                Arc::new(Mutex::new(DeferredManager::new(50))),
+                Arc::new(Mutex::new(FeedbackRetryQueue::new(100, 5))),
+                storage,
+            ));
+            (manager, queue)
+        }
+
+        /// TL C-2: the MANAGER-path DTO snapshot enriches a bound suggestion and
+        /// leaves a network-sourced one of the SAME type unbound.
+        #[tokio::test]
+        async fn manager_snapshot_enriches_only_the_bound_rule_based_item() {
+            let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+            let (manager, queue) = build_manager(storage.clone(), None);
+            {
+                let mut q = queue.lock().await;
+                assert!(q.push(bound_suggestion("bound-1")));
+                let mut network = bound_suggestion("network-1");
+                network.source = SuggestionSource::LlmServer;
+                assert!(q.push(network));
+            }
+            let state = SuggestionRuntimeState::new(Some(manager), None);
+
+            let views = pending_suggestions_snapshot(&state, &storage, &enabled_automation())
+                .await
+                .expect("snapshot");
+
+            let bound = views.iter().find(|v| v.id == "bound-1").expect("bound");
+            assert_eq!(
+                bound.action.as_ref().map(|a| a.label.as_str()),
+                Some("Clear Distractions"),
+                "bound rule-based item must carry the derived action"
+            );
+            let network = views.iter().find(|v| v.id == "network-1").expect("network");
+            assert!(
+                network.action.is_none(),
+                "network-sourced item of the same type must stay unbound"
+            );
+        }
+
+        /// A successful run emits exactly one Accepted signal, moves the item
+        /// queue→history, and marks acted_at.
+        #[tokio::test]
+        async fn successful_run_emits_accepted_once_and_moves_to_history() {
+            let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+            storage
+                .save_rule_suggestion_sync(&bound_suggestion("ok-1"))
+                .expect("save");
+            let signals = Arc::new(StdMutex::new(Vec::new()));
+            let sink: Arc<dyn FeedbackSignalSink> = Arc::new(CountingSink(signals.clone()));
+            let (manager, queue) = build_manager(storage.clone(), Some(sink));
+            assert!(queue.lock().await.push(bound_suggestion("ok-1")));
+            let state = SuggestionRuntimeState::new(Some(manager), None);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let controller = fake(RunOutcome::Success, calls.clone());
+
+            run_suggestion_action_inner(
+                &state,
+                &storage,
+                &enabled_automation(),
+                &controller,
+                "ok-1",
+            )
+            .await
+            .expect("run succeeds");
+
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                signals.lock().unwrap().clone(),
+                vec![FeedbackType::Accepted],
+                "exactly one Accepted signal must be emitted"
+            );
+            assert_eq!(queue.lock().await.len(), 0, "item moved out of the queue");
+            assert!(acted_in_storage(&storage, "ok-1"), "acted_at must be set");
+        }
+
+        /// A denied (Block-policy) run emits NOTHING — the learning signal and
+        /// acted_at are untouched, and the item stays in the queue.
+        #[tokio::test]
+        async fn denied_run_emits_nothing() {
+            let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("storage"));
+            storage
+                .save_rule_suggestion_sync(&bound_suggestion("blocked-1"))
+                .expect("save");
+            let signals = Arc::new(StdMutex::new(Vec::new()));
+            let sink: Arc<dyn FeedbackSignalSink> = Arc::new(CountingSink(signals.clone()));
+            let (manager, queue) = build_manager(storage.clone(), Some(sink));
+            assert!(queue.lock().await.push(bound_suggestion("blocked-1")));
+            let state = SuggestionRuntimeState::new(Some(manager), None);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let controller = fake(RunOutcome::Denied, calls.clone());
+
+            let err = run_suggestion_action_inner(
+                &state,
+                &storage,
+                &enabled_automation(),
+                &controller,
+                "blocked-1",
+            )
+            .await
+            .expect_err("denied run must error");
+            assert_eq!(err.code, "policy.denied");
+
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "run_workflow was attempted"
+            );
+            assert!(
+                signals.lock().unwrap().is_empty(),
+                "a denied run must emit no feedback signal"
+            );
+            assert_eq!(queue.lock().await.len(), 1, "item stays in the queue");
+            assert!(
+                !acted_in_storage(&storage, "blocked-1"),
+                "acted_at must not be set on a denied run"
+            );
+        }
+    }
 }

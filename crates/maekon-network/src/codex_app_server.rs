@@ -77,7 +77,8 @@ pub fn encode_request(id: u64, method: &str, params: &serde_json::Value) -> Stri
         "params": params,
     });
     // serde_json on an in-memory Value cannot fail to serialize.
-    let mut line = serde_json::to_string(&value).expect("serialize request");
+    let mut line =
+        serde_json::to_string(&value).unwrap_or_else(|error| panic!("serialize request: {error}"));
     line.push('\n');
     line
 }
@@ -454,7 +455,8 @@ pub fn reap_process_group(child: &tokio::process::Child) {
 /// Encode an outbound JSON-RPC notification (no `id`, no response expected).
 pub fn encode_notification(method: &str, params: &serde_json::Value) -> String {
     let value = serde_json::json!({ "method": method, "params": params });
-    let mut line = serde_json::to_string(&value).expect("serialize notification");
+    let mut line = serde_json::to_string(&value)
+        .unwrap_or_else(|error| panic!("serialize notification: {error}"));
     line.push('\n');
     line
 }
@@ -473,7 +475,8 @@ pub fn encode_response(id: u64, outcome: Result<serde_json::Value, RpcError>) ->
             "error": { "code": err.code, "message": err.message },
         }),
     };
-    let mut line = serde_json::to_string(&value).expect("serialize response");
+    let mut line =
+        serde_json::to_string(&value).unwrap_or_else(|error| panic!("serialize response: {error}"));
     line.push('\n');
     line
 }

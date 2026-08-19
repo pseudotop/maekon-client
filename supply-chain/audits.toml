@@ -7000,6 +7000,13 @@ start = "2019-10-28"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): David Henningsson — canonical Rust ALSA / D-Bus bindings. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.async-trait]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-07-23"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): async-trait 정본 관리자 dtolnay, 93/93 판을 단독 발행. #11091 dependabot bump 를 막던 항목이다."
+
 [[trusted.atk]]
 criteria = "safe-to-deploy"
 user-id = 3623 # Sebastian Dröge (sdroege)
@@ -7028,9 +7035,16 @@ start = "2022-11-09"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): AWS — aws-lc-rs/aws-lc-sys (AWS-LC cryptography). Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.base64]]
+criteria = "safe-to-deploy"
+user-id = 5563 # Marshall Pierce (marshallpierce)
+start = "2019-10-25"
+end = "2027-08-18"
+notes = "#9374 publisher-trust: Marshall Pierce (marshallpierce), base64 의 원 저자이자 유일 발행자(2019-10-25~). 0.22.1 은 상위 import 레지스트리로 덮여 있었고 0.23.1 은 아직 어느 상위 감사에도 없다. 범프 동작은 직접 쟀다 — 이 크레이트를 쓰는 상위 두 크레이트(maekon-core · maekon-network)를 --all-features 로 돌려 2143건이 전부 통과한다. MSRV 영향 없음(0.23.1 은 rust-version 1.71.0, 워크스페이스는 1.88.0). exemption 은 다음 범프에서 다시 무효화되므로 발행자 신뢰로 덮는다."
+
 [[trusted.blake2]]
 criteria = "safe-to-deploy"
-user-id = 267 # Tony Arcieri (tarcieri)
+user-id = 267
 start = "2020-06-10"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Tony Arcieri). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
@@ -7077,9 +7091,23 @@ start = "2023-07-23"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Bilal Elmoussaoui, gtk-rs/GNOME — soup3 bindings. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.clap]]
+criteria = "safe-to-deploy"
+user-id = 6743 # Ed Page (epage)
+start = "2021-12-08"
+end = "2027-05-29"
+notes = "#11082 publisher-trust (owner-approved identity): clap CLI parser 정본 관리자 epage. 버전 고정 exemption(4.6.4)이 패치 bump마다 무효화돼 게이트를 반복 차단했다 — 발행자 단위 신뢰로 옮겨 O(버전) 재작업을 없앤다. 창 안의 이 발행자 릴리스만 신뢰한다."
+
+[[trusted.clap_builder]]
+criteria = "safe-to-deploy"
+user-id = 6743 # Ed Page (epage)
+start = "2023-03-28"
+end = "2027-05-29"
+notes = "#11082 publisher-trust (owner-approved identity): clap 의 분리된 builder crate, 같은 발행자(epage)가 전 108판을 발행했다. clap 과 함께 이관한다."
+
 [[trusted.cmov]]
 criteria = "safe-to-deploy"
-user-id = 267 # Tony Arcieri (tarcieri)
+user-id = 267
 start = "2022-02-27"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Tony Arcieri). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
@@ -7195,6 +7223,13 @@ user-id = 79201 # Nicolas Patry (Narsil)
 start = "2020-06-06"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Nicolas Patry, Hugging Face — tokenizers/hf-hub. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.futures-core]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2020-10-05"
+end = "2027-05-29"
+notes = "#11082 publisher-trust (owner-approved identity): futures-rs 유지보수자 taiki-e. 버전 고정 exemption(0.3.33)이 패치 bump마다 무효화됐다. 2020-10-05 이전 cramertj 발행분은 신뢰 범위 밖으로 남긴다."
 
 [[trusted.gbm]]
 criteria = "safe-to-deploy"
@@ -7364,6 +7399,13 @@ start = "2021-04-04"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): gtk-rs / GNOME FFI bindings glib/gio/gobject (Sebastian Droege, gtk-rs/gstreamer-rs core maintainer). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
 
+[[trusted.h2]]
+criteria = "safe-to-deploy"
+user-id = 359 # Sean McArthur (seanmonstar)
+start = "2019-03-13"
+end = "2027-08-18"
+notes = "#11091 RUSTSEC-2026-0258 publisher-trust: Sean McArthur (seanmonstar), hyper/h2/tokio-rs HTTP stack 의 원 저자이자 유일 발행자. h2 0.4.13 은 상위 import 레지스트리로 덮여 있었으나 보안 패치 0.4.16 은 당일 릴리스라 어느 상위 감사에도 아직 없다 — refresh_vet_imports.sh 로 확인했다(lock 갱신으로 풀리지 않음). exemption 은 다음 범프에서 다시 무효화되므로 발행자 신뢰로 덮는다. 이 발행자의 창 안 릴리스만 신뢰하며, HTTP/2 프레이밍 상태기계는 triage 수준의 line-by-line 감사가 의미 있는 코드가 아니다."
+
 [[trusted.hf-hub]]
 criteria = "safe-to-deploy"
 user-id = 79201 # Nicolas Patry (Narsil)
@@ -7371,12 +7413,75 @@ start = "2023-07-19"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Nicolas Patry, Hugging Face — tokenizers/hf-hub. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.http]]
+criteria = "safe-to-deploy"
+user-id = 359 # Sean McArthur (seanmonstar)
+start = "2019-04-05"
+end = "2027-05-29"
+notes = "#11082 publisher-trust (owner-approved identity): hyper/http 정본 관리자 seanmonstar. 버전 고정 exemption(1.4.2)이 패치 bump마다 무효화됐다."
+
+[[trusted.http-body-util]]
+criteria = "safe-to-deploy"
+user-id = 359 # Sean McArthur (seanmonstar)
+start = "2022-10-25"
+end = "2027-05-29"
+notes = "#11082 publisher-trust (owner-approved identity): http-body-util, 같은 발행자(seanmonstar)가 전 9판을 발행했다. http 와 함께 이관한다."
+
 [[trusted.hybrid-array]]
 criteria = "safe-to-deploy"
-user-id = 267 # Tony Arcieri (tarcieri)
+user-id = 267
 start = "2022-05-07"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Tony Arcieri). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
+
+[[trusted.icu_collections]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2022-08-05"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
+[[trusted.icu_locale_core]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2024-11-23"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
+[[trusted.icu_normalizer]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2022-08-05"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
+[[trusted.icu_normalizer_data]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2023-09-23"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
+[[trusted.icu_properties]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2021-11-02"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
+[[trusted.icu_properties_data]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2023-09-23"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
+[[trusted.icu_provider]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2021-07-29"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
 
 [[trusted.image]]
 criteria = "safe-to-deploy"
@@ -7413,6 +7518,13 @@ start = "2023-09-25"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): jni-sys bindings maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.jsonwebtoken]]
+criteria = "safe-to-deploy"
+user-id = 2876 # Vincent Prouillet (Keats)
+start = "2019-04-21"
+end = "2027-08-18"
+notes = "#9375 publisher-trust: Vincent Prouillet (Keats), jsonwebtoken 의 원 저자이자 유일 발행자(2019-04-21~). 10.4.0 은 상위 import 레지스트리로 덮여 있었고 11.0.0 은 아직 어느 상위 감사에도 없다. major 범프의 실제 위험은 컴파일이 아니라 검증 의미론이라 그 축을 직접 쟀다 — jwt_verifier 단위 10건(alg:none 거부 · HS256/RS256 혼동 거부 · issuer/audience/만료/iat 시계오차)과 external gRPC 인증 매트릭스 통합 36건이 11.0.0 에서 전부 통과한다. 또한 이 코드는 Validation 의 기본값에 의존하지 않고 algorithms·audience·leeway·validate_exp/nbf·required_spec_claims 를 모두 명시로 고정한다. exemption 은 다음 범프에서 다시 무효화되므로 발행자 신뢰로 덮는다."
+
 [[trusted.keyboard-types]]
 criteria = "safe-to-deploy"
 user-id = 36629 # Mads Marquart (madsmtm)
@@ -7433,6 +7545,13 @@ user-id = 1640 # William Orr (worr)
 start = "2019-03-26"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): kqueue bindings maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.landlock]]
+criteria = "safe-to-deploy"
+user-id = 1609 # Mickaël Salaün (l0kod)
+start = "2021-04-14"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): Landlock LSM 의 Rust 바인딩 관리자 l0kod(Mickaël Salaün, Landlock 커널 기능 저자), 12/12 판 단독 발행."
 
 [[trusted.libappindicator]]
 criteria = "safe-to-deploy"
@@ -7475,6 +7594,13 @@ user-id = 114665 # Tom Wagner (tom-a-wagner)
 start = "2021-03-24"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): pipewire-rs bindings maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.libsqlite3-sys]]
+criteria = "safe-to-deploy"
+user-id = 5062 # gwenn (gwenn)
+start = "2019-03-10"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): rusqlite 의 sys crate, 같은 발행자 gwenn 29/65 판. rusqlite 와 함께 이관한다."
 
 [[trusted.linux-raw-sys]]
 criteria = "safe-to-deploy"
@@ -7674,14 +7800,14 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved, specific identity): objc
 
 [[trusted.ort]]
 criteria = "safe-to-deploy"
-user-id = 152041 # decahedron1
+user-id = 152041 # Carson M. (decahedron1)
 start = "2022-11-26"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): ort (ONNX Runtime Rust) maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
 [[trusted.ort-sys]]
 criteria = "safe-to-deploy"
-user-id = 152041 # decahedron1
+user-id = 152041 # Carson M. (decahedron1)
 start = "2023-11-12"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): ort (ONNX Runtime Rust) maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -7723,7 +7849,7 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): pipewire-rs b
 
 [[trusted.polyval]]
 criteria = "safe-to-deploy"
-user-id = 267 # Tony Arcieri (tarcieri)
+user-id = 267
 start = "2019-08-13"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Tony Arcieri). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
@@ -7741,6 +7867,13 @@ user-id = 3618 # David Tolnay (dtolnay)
 start = "2022-01-04"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): David Tolnay — prolific Rust core ecosystem maintainer (cxx family). Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.rcgen]]
+criteria = "safe-to-deploy"
+user-id = 209038 # Daniel McCarney (cpu)
+start = "2024-01-26"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): rcgen 현 관리자 cpu(Daniel McCarney, rustls·Let's Encrypt 계열). 52판 중 2판으로 점유가 낮은 것은 최근 인수했기 때문이며, 창을 2024-01-26 이후로 한정해 이전 관리자(est31·djc) 발행분은 신뢰 범위 밖에 남긴다. 인증서 생성 crate 이므로 창 확대 시 재검토가 필요하다."
 
 [[trusted.redox_syscall]]
 criteria = "safe-to-deploy"
@@ -7763,6 +7896,13 @@ start = "2019-02-26"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Kornel Lesinski, image-rs — rgb/security-framework. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.rusqlite]]
+criteria = "safe-to-deploy"
+user-id = 5062 # gwenn (gwenn)
+start = "2019-03-10"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): rusqlite 관리자 gwenn, 26/85 판. 나머지 다수는 발행자 기록 이전 구판이고 thomcc 는 공동 관리자다. 창은 2019-03-10 이후."
+
 [[trusted.rustfft]]
 criteria = "safe-to-deploy"
 user-id = 6727 # Elliott Mahler (ejmahler)
@@ -7770,12 +7910,33 @@ start = "2019-12-28"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): RustFFT/transpose DSP maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.rustls]]
+criteria = "safe-to-deploy"
+user-id = 2751 # Joe Birr-Pixton (ctz)
+start = "2019-04-02"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): rustls 저자 ctz(Joe Birr-Pixton), 54/114 판. 나머지는 cpu·djc 등 같은 프로젝트 관리자다. 창은 2019-04-02 이후로 한정해 그 이전 판은 범위 밖에 둔다."
+
 [[trusted.scc]]
 criteria = "safe-to-deploy"
 user-id = 19682
 start = "2020-11-20"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): scc/sdd concurrent data-structure maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.schemars]]
+criteria = "safe-to-deploy"
+user-id = 55662 # Graham Esau (GREsau)
+start = "2019-08-08"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): schemars 저자 GREsau, 97/97 판을 단독 발행."
+
+[[trusted.schemars_derive]]
+criteria = "safe-to-deploy"
+user-id = 55662 # Graham Esau (GREsau)
+start = "2019-08-08"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): schemars 의 derive crate, 같은 발행자 GREsau 가 93/93 판 발행."
 
 [[trusted.sdd]]
 criteria = "safe-to-deploy"
@@ -7797,6 +7958,13 @@ user-id = 988 # Kornel (kornelski)
 start = "2019-02-27"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Kornel Lesinski, image-rs — rgb/security-framework. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.serde_derive_internals]]
+criteria = "safe-to-deploy"
+user-id = 3618 # David Tolnay (dtolnay)
+start = "2019-09-08"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): dtolnay, 7/24 판(나머지 17판은 발행자 기록 이전의 구판). 창은 2019-09-08 이후로 한정된다."
 
 [[trusted.servo_arc]]
 criteria = "safe-to-deploy"
@@ -7994,6 +8162,13 @@ start = "2019-04-25"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.tinystr]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2022-08-04"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
 [[trusted.tokenizers]]
 criteria = "safe-to-deploy"
 user-id = 79201 # Nicolas Patry (Narsil)
@@ -8099,6 +8274,13 @@ start = "2022-03-05"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved, specific identity): Tauri (tauri-apps org) official release automation — tauri/wry/tao and plugins; the desktop framework this client is built on. Line-by-line audit of generated FFI bindings is neither feasible nor meaningful; trusting the publisher per cargo-vet's trust mechanism."
 
+[[trusted.writeable]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2022-08-04"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
 [[trusted.wry]]
 criteria = "safe-to-deploy"
 user-id = 95389 # tauri (tauri-bot)
@@ -8113,6 +8295,20 @@ start = "2020-07-23"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.yoke]]
+criteria = "safe-to-deploy"
+user-id = 1139 # Manish Goregaokar (Manishearth)
+start = "2021-05-01"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 관리자 Manishearth, 18/24 판. 나머지는 robertbastian·sffc 로 같은 팀이다."
+
+[[trusted.yoke-derive]]
+criteria = "safe-to-deploy"
+user-id = 1139 # Manish Goregaokar (Manishearth)
+start = "2021-07-02"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): yoke 의 derive crate, 같은 발행자 Manishearth 15/19 판."
+
 [[trusted.zbus]]
 criteria = "safe-to-deploy"
 user-id = 6423 # Zeeshan Ali Khan (zeenix)
@@ -8126,6 +8322,27 @@ user-id = 6423 # Zeeshan Ali Khan (zeenix)
 start = "2021-07-30"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Zeeshan Ali — zbus/zvariant lead maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.zerotrie]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2023-09-23"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
+[[trusted.zerovec]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2021-08-26"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+
+[[trusted.zerovec-derive]]
+criteria = "safe-to-deploy"
+user-id = 128408 # Shane F. Carr (sffc)
+start = "2022-08-05"
+end = "2027-05-29"
+notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
 
 [[trusted.zmij]]
 criteria = "safe-to-deploy"

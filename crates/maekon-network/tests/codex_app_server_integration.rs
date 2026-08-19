@@ -24,6 +24,10 @@
 //! Unix-only (the spawn/reap path + every existing codex test are unix-gated).
 
 #![cfg(unix)]
+// Integration test binary (`tests/*.rs` is its own crate root, entirely
+// test-only) — not covered by the library's crate-wide allow (#7719
+// `significant_drop_tightening` workspace enforcement).
+#![allow(clippy::significant_drop_tightening)]
 
 mod fake_codex_app_server;
 
@@ -64,6 +68,7 @@ fn thread_config() -> ThreadConfig {
 
 fn user_msg(content: &str) -> SessionMessage {
     SessionMessage {
+        screen_derived: false,
         role: MessageRole::User,
         content: content.to_string(),
         attachments: vec![],
@@ -815,6 +820,73 @@ wait"#,
         "transport close must reap the whole child group, not orphan the grandchild (#24347)"
     );
     let _ = std::fs::remove_file(&pid_file);
+}
+
+// ── #8057 (P2-3, #4865): per-turn idle timeout terminates a wedged turn ───────
+
+#[tokio::test]
+async fn turn_idle_timeout_terminates_wedged_turn_and_frees_lock() {
+    // A provider that answers turn/start but never emits turn/completed (and
+    // stays alive reading stdin) would pin the owned notifications lock forever,
+    // deadlocking the next send_message. With a short injected idle timeout the
+    // drain loop must surface a retryable `turn_timeout` error, break, and drop
+    // the guard so a SECOND send_message can start (turn/start responds).
+    //
+    // Hand-built mock (the harness builder always terminates a turn): it answers
+    // initialize + thread/start + turn/start but sends NO turn/completed, looping
+    // back to read the next line so the process — and thus the notification
+    // channel — stays alive (recv blocks rather than returning None).
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg(
+        r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{"id":%s,"result":{"userAgent":"fake/1"}}\n' "$id" ;;
+    *'"thread/start"'*) printf '{"id":%s,"result":{"threadId":"thr_42"}}\n' "$id" ;;
+    *'"turn/start"'*) printf '{"id":%s,"result":{}}\n' "$id" ;;
+  esac
+done"#,
+    );
+
+    let session = CodexAppServerSession::connect(cmd, &client_info(), thread_config())
+        .await
+        .expect("connect")
+        .with_turn_idle_timeout(Duration::from_millis(200));
+
+    let outputs = collect_turn(&session, "hi").await;
+    assert!(
+        outputs.iter().any(|m| matches!(
+            m,
+            OutboundMessage::Error { code, retryable, .. } if code == "turn_timeout" && *retryable
+        )),
+        "a wedged turn must surface a retryable turn_timeout error; got {outputs:?}"
+    );
+
+    // The owned lock was released on break → a second turn starts promptly
+    // rather than blocking forever on lock_owned().await.
+    let second_stream = tokio::time::timeout(
+        Duration::from_secs(3),
+        session.send_message(&user_msg("hi")),
+    )
+    .await
+    .expect("second send_message must not deadlock on the owned notifications lock")
+    .expect("second turn/start must be accepted by the still-live mock");
+
+    // Concrete value assertion (#5594): don't just prove SOME stream came
+    // back — drive it and confirm it observes the SAME retryable turn_timeout
+    // on the still-wedged mock, proving the session fully recovered (not
+    // merely handed back an inert handle) after the first turn's timeout.
+    let second_outputs: Vec<_> = second_stream
+        .map(|r| r.expect("stream item"))
+        .collect()
+        .await;
+    assert!(
+        second_outputs.iter().any(|m| matches!(
+            m,
+            OutboundMessage::Error { code, retryable, .. } if code == "turn_timeout" && *retryable
+        )),
+        "second turn must also observe the idle timeout on the still-wedged mock; got {second_outputs:?}"
+    );
 }
 
 // ── R4 (AC3): initialize request CONTRACT SNAPSHOT (outbound drift detector) ──

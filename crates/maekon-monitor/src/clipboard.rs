@@ -205,11 +205,20 @@ impl ClipboardMonitor {
 
 /// Read clipboard text from the system clipboard using platform commands.
 ///
-/// Returns `None` if the command fails or produces no output.
+/// Every helper below is spawned via [`crate::trusted_binary::resolve_trusted_binary`]
+/// (SEC-MON-01) rather than by bare name — a bare `Command::new("pbpaste")`
+/// is PATH-resolved, so a same-named binary planted ahead of the trusted
+/// system dirs on `$PATH` would hijack the spawn under this agent's
+/// privilege. A resolution miss fails closed to `None`, the same outcome as
+/// a command execution failure.
+///
+/// Returns `None` if the command fails, is not found under the trusted
+/// allowlist, or produces no output.
 fn read_system_clipboard() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        let mut command = std::process::Command::new("pbpaste");
+        let pbpaste_path = crate::trusted_binary::resolve_trusted_binary("pbpaste")?;
+        let mut command = std::process::Command::new(pbpaste_path);
         let output = command_output_with_timeout(&mut command, CLIPBOARD_COMMAND_TIMEOUT)
             .ok()
             .flatten()?;
@@ -223,20 +232,24 @@ fn read_system_clipboard() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         // Try xclip first, fall back to xsel
-        let mut xclip = std::process::Command::new("xclip");
-        xclip.args(["-selection", "clipboard", "-o"]);
-        let output = command_output_with_timeout(&mut xclip, CLIPBOARD_COMMAND_TIMEOUT)
-            .ok()
-            .flatten()
-            .filter(|output| output.status.success())
-            .or_else(|| {
-                let mut xsel = std::process::Command::new("xsel");
-                xsel.args(["--clipboard", "--output"]);
-                command_output_with_timeout(&mut xsel, CLIPBOARD_COMMAND_TIMEOUT)
+        let xclip_output =
+            crate::trusted_binary::resolve_trusted_binary("xclip").and_then(|xclip_path| {
+                let mut xclip = std::process::Command::new(xclip_path);
+                xclip.args(["-selection", "clipboard", "-o"]);
+                command_output_with_timeout(&mut xclip, CLIPBOARD_COMMAND_TIMEOUT)
                     .ok()
                     .flatten()
                     .filter(|output| output.status.success())
-            })?;
+            });
+        let output = xclip_output.or_else(|| {
+            let xsel_path = crate::trusted_binary::resolve_trusted_binary("xsel")?;
+            let mut xsel = std::process::Command::new(xsel_path);
+            xsel.args(["--clipboard", "--output"]);
+            command_output_with_timeout(&mut xsel, CLIPBOARD_COMMAND_TIMEOUT)
+                .ok()
+                .flatten()
+                .filter(|output| output.status.success())
+        })?;
         if output.status.success() {
             Some(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
@@ -246,7 +259,8 @@ fn read_system_clipboard() -> Option<String> {
 
     #[cfg(target_os = "windows")]
     {
-        let mut command = std::process::Command::new("powershell");
+        let powershell_path = crate::trusted_binary::resolve_trusted_binary("powershell")?;
+        let mut command = std::process::Command::new(powershell_path);
         command.args(["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"]);
         let output = command_output_with_timeout(&mut command, CLIPBOARD_COMMAND_TIMEOUT)
             .ok()
@@ -325,7 +339,7 @@ fn hash_string(s: &str) -> u64 {
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
         let mut result: String = s.chars().take(max_len).collect();
@@ -337,135 +351,21 @@ fn truncate(s: &str, max_len: usize) -> String {
 /// Redaction marker substituted for detected secret tokens in the preview.
 const SECRET_MARKER: &str = "[REDACTED_SECRET]";
 
-/// Known credential token prefixes. A whitespace-delimited token starting with
-/// one of these (and long enough) is treated as a secret. The cased entries
-/// (`AKIA`, `ghp_`, `xoxb-`, …) are matched case-sensitively, mirroring the real
-/// token formats so ordinary words like "skill" or "apiserver" are not redacted.
-const SECRET_TOKEN_PREFIXES: [&str; 17] = [
-    "sk-",
-    "pk-",
-    "sk_",
-    "pk_",
-    "api_",
-    "key_",
-    "token_",
-    "secret_",
-    "AKIA",
-    "ghp_",
-    "gho_",
-    "ghs_",
-    "github_pat_",
-    "xoxb-",
-    "xoxp-",
-    "xoxa-",
-    "xoxr-",
-];
-
-/// Minimum token length for the prefix and high-entropy heuristics. Avoids
-/// redacting short false positives (a bare `sk-`, `api_`, or a short word).
-const MIN_SECRET_LEN: usize = 12;
-
-/// Minimum Shannon entropy (bits/char) for the high-entropy password heuristic.
-/// A 12-char string of distinct characters has ~3.58 bits/char; ordinary words
-/// fall well below this once combined with the character-class requirement.
-const MIN_SECRET_ENTROPY_BITS: f64 = 3.0;
-
-/// Minimum distinct character classes (lowercase / uppercase / digit / symbol)
-/// for the high-entropy heuristic. Prose words rarely mix three or more classes,
-/// which keeps the false-positive rate low.
-const MIN_SECRET_CHAR_CLASSES: u32 = 3;
-
 /// Redact copied secrets (generic high-entropy passwords and known credential
 /// tokens) from `text` before it is truncated into the clipboard preview.
 ///
 /// The wired `PiiSanitizer` is pattern-only and cannot catch arbitrary passwords
-/// or — at non-Strict levels — API tokens, so this local heuristic runs first at
-/// every non-Off level. Whitespace is preserved so the downstream pattern
-/// sanitizer still sees the original structure of the remaining text.
+/// or — at non-Strict levels — API tokens, so this heuristic runs first at every
+/// non-Off level. Whitespace is preserved so the downstream pattern sanitizer
+/// still sees the original structure of the remaining text.
+///
+/// The prefix + Shannon-entropy heuristic itself lives in
+/// [`maekon_core::secret_redaction`] so the exact same logic also protects the
+/// OCR/window-title redaction pipeline in `maekon-vision` (#8041 — previously the
+/// entropy fallback existed only here, leaving persisted/egressed OCR + AX text
+/// exposed to prefix-less secrets). This is a thin marker-binding wrapper.
 fn redact_secrets(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut token = String::new();
-    for ch in text.chars() {
-        if ch.is_whitespace() {
-            if !token.is_empty() {
-                out.push_str(&redact_secret_token(&token));
-                token.clear();
-            }
-            out.push(ch);
-        } else {
-            token.push(ch);
-        }
-    }
-    if !token.is_empty() {
-        out.push_str(&redact_secret_token(&token));
-    }
-    out
-}
-
-/// Classify a single whitespace-delimited token, returning the redaction marker
-/// when it looks like a secret and the original token otherwise.
-fn redact_secret_token(token: &str) -> String {
-    if token.chars().count() >= MIN_SECRET_LEN
-        && SECRET_TOKEN_PREFIXES
-            .iter()
-            .any(|prefix| token.starts_with(prefix))
-    {
-        return SECRET_MARKER.to_string();
-    }
-    if looks_like_high_entropy_secret(token) {
-        return SECRET_MARKER.to_string();
-    }
-    token.to_string()
-}
-
-/// Heuristic for a randomly-generated credential: long enough, mixing several
-/// character classes, and with high per-character Shannon entropy.
-fn looks_like_high_entropy_secret(token: &str) -> bool {
-    token.chars().count() >= MIN_SECRET_LEN
-        && character_class_count(token) >= MIN_SECRET_CHAR_CLASSES
-        && shannon_entropy_bits(token) >= MIN_SECRET_ENTROPY_BITS
-}
-
-/// Count the distinct character classes present in `token`: lowercase,
-/// uppercase, digit, and other (symbol / punctuation).
-fn character_class_count(token: &str) -> u32 {
-    let mut lower = false;
-    let mut upper = false;
-    let mut digit = false;
-    let mut symbol = false;
-    for ch in token.chars() {
-        if ch.is_lowercase() {
-            lower = true;
-        } else if ch.is_uppercase() {
-            upper = true;
-        } else if ch.is_numeric() {
-            digit = true;
-        } else {
-            symbol = true;
-        }
-    }
-    u32::from(lower) + u32::from(upper) + u32::from(digit) + u32::from(symbol)
-}
-
-/// Shannon entropy of `token` in bits per character.
-fn shannon_entropy_bits(token: &str) -> f64 {
-    let chars: Vec<char> = token.chars().collect();
-    let len = chars.len();
-    if len == 0 {
-        return 0.0;
-    }
-    let mut counts: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
-    for ch in &chars {
-        *counts.entry(*ch).or_insert(0) += 1;
-    }
-    let len_f = len as f64;
-    counts
-        .values()
-        .map(|&count| {
-            let p = count as f64 / len_f;
-            -p * p.log2()
-        })
-        .sum()
+    maekon_core::secret_redaction::redact_secrets_with_marker(text, SECRET_MARKER)
 }
 
 #[cfg(test)]
@@ -659,14 +559,17 @@ mod tests {
     #[test]
     fn redacts_known_token_prefix_even_when_low_entropy() {
         // A `ghp_` token of repeated chars has low entropy + only two character
-        // classes, so the entropy path skips it — the prefix path must still catch it.
+        // classes, so the entropy path skips it — the prefix path must still catch
+        // it. The heuristic now lives in `maekon-core` (shared with maekon-vision,
+        // #8041); assert the clipboard marker binding still classifies correctly.
+        use maekon_core::secret_redaction::redact_secret_token;
         assert_eq!(
-            redact_secret_token("ghp_aaaaaaaaaaaaaaaaaa"),
+            redact_secret_token("ghp_aaaaaaaaaaaaaaaaaa", SECRET_MARKER),
             SECRET_MARKER,
             "low-entropy ghp_ token must be redacted by the prefix heuristic"
         );
         assert_eq!(
-            redact_secret_token("AKIAIOSFODNN7EXAMPLE"),
+            redact_secret_token("AKIAIOSFODNN7EXAMPLE", SECRET_MARKER),
             SECRET_MARKER,
             "AWS access-key id must be redacted (case-sensitive AKIA prefix)"
         );
@@ -674,6 +577,7 @@ mod tests {
 
     #[test]
     fn high_entropy_secret_heuristic_flags_random_token_only() {
+        use maekon_core::secret_redaction::looks_like_high_entropy_secret;
         // Random mixed-class token → secret.
         assert!(looks_like_high_entropy_secret("xQ9!mB2#vL8z"));
         // Ordinary long single-class word → not a secret (too few classes).
@@ -689,6 +593,16 @@ mod tests {
             redact_secrets(input),
             input,
             "ordinary prose must pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn truncate_counts_unicode_scalars_not_utf8_bytes() {
+        let two_chars = "\u{D55C}\u{AE00}";
+        assert_eq!(truncate(two_chars, 2), two_chars);
+        assert_eq!(
+            truncate("\u{D55C}\u{AE00}\u{D55C}", 2),
+            format!("{two_chars}...")
         );
     }
 

@@ -9,6 +9,20 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
+# #7734 (Wave-3 B2 of #7744): thin `[lib]` target so integration tests can
+# `use maekon_app::...` real types instead of parsing/duplicating source. Name
+# and path are Cargo defaults once `src/lib.rs` exists (package name
+# `maekon-app` -> lib name `maekon_app`), so only the non-default setting is
+# declared here. `doctest = false`: this is an internal app library with no
+# published-API contract, not a crate meant to carry runnable doc examples —
+# activating doctests over ~1,200 LOC of composition-root code would add a
+# brand-new failure surface orthogonal to this enabler.
+[lib]
+doctest = false
+
 [[bin]]
 name = "maekon"
 path = "src/main.rs"
@@ -23,7 +37,8 @@ tauri-plugin-global-shortcut = { workspace = true }
 tauri-plugin-dialog = { workspace = true }
 tauri-plugin-notification = { workspace = true }
 tauri-plugin-single-instance = "2"
-tauri-plugin-webdriver = { workspace = true, optional = true }
+tauri-plugin-wdio = { workspace = true, optional = true }
+tauri-plugin-wdio-webdriver = { workspace = true, optional = true }
 
 # 내부 크레이트
 maekon-core = { workspace = true }
@@ -31,6 +46,16 @@ maekon-automation = { workspace = true }
 maekon-monitor = { workspace = true }
 maekon-vision = { workspace = true }
 maekon-network = { workspace = true, optional = true }
+# ADR-034 P2: unconditional on purpose. The breaker registry + backoff live
+# here now; every third-party crate this pulls (reqwest, parking_lot, rand,
+# url) is already unconditional in this manifest, so the minimal build gains
+# no supply-chain surface — and the old cfg-branched CircuitBreakerRegistry
+# stub (#5032/#7743) could be deleted because the real type now exists in
+# every feature-matrix cell.
+maekon-http-core = { workspace = true }
+# ADR-034 P3: connector adapter (read-only Context Sources). `integration_runtime`
+# is compiled unconditionally (lib.rs:88), so this is unconditional too.
+maekon-integration = { workspace = true }
 maekon-storage = { workspace = true }
 maekon-suggestion = { workspace = true }
 maekon-web = { workspace = true }
@@ -48,7 +73,6 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-chrono-tz = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
 futures = { workspace = true }
@@ -57,8 +81,19 @@ sha2 = { workspace = true }
 uuid = { workspace = true }
 # E20-41 (#4833): OS-CSPRNG source for the per-session local-API auth token.
 rand = { workspace = true }
+# #8044: Argon2id PIN hashing for the capture-history re-auth fallback (offline
+# brute-force resistant verifier stored in app_meta; never a plaintext PIN).
+argon2 = { workspace = true }
 ed25519-dalek = { workspace = true }
+# #9707: URL parsing for the OS handoff allowlist. Already in Cargo.lock via
+# maekon-network, so this adds no crate to the supply-chain surface.
+url = { workspace = true }
 directories = { workspace = true }
+# #11068: cross-platform "are these two paths the same file", replacing three
+# hand-written cfg branches whose Windows arm used unstable std APIs. Already in
+# Cargo.lock (via walkdir) and already in supply-chain/audits.toml, so this adds
+# no new crate to the graph.
+same-file = "1.0"
 parking_lot = { workspace = true }
 sysinfo = { workspace = true }
 tempfile = { workspace = true }
@@ -74,7 +109,6 @@ base64 = { workspace = true }
 thiserror = { workspace = true }
 keyring = { workspace = true }
 image = { workspace = true }
-lru = { workspace = true }
 raw-window-handle = "0.6"
 
 # D13-v2c: generate-external-cert subcommand (feature-gated, external-grpc-tools)
@@ -147,7 +181,7 @@ native-input = ["maekon-automation/enigo"]
 hnsw = ["maekon-analysis/hnsw"]
 linux-atspi = ["maekon-vision/linux-atspi"]
 lan-sync = ["maekon-network/lan-sync"]
-webdriver = ["dep:tauri-plugin-webdriver"]
+webdriver = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 ml-detect = ["maekon-vision/ml-detect"]
 linux-sandbox = ["maekon-automation/linux-sandbox"]
 windows-sandbox = ["maekon-automation/windows-sandbox"]
@@ -172,6 +206,7 @@ dispatch2 = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 tauri = { workspace = true, features = ["tray-icon"] }
+tauri-winrt-notification = { workspace = true }
 windows-sys = { workspace = true }
 
 [package.metadata.bundle]
@@ -199,13 +234,38 @@ section = "utility"
 priority = "optional"
 assets = [
     ["target/release/maekon", "usr/bin/", "755"],
+    # #11023: without this profile the app aborts a few seconds after start on
+    # stock Ubuntu 24.04, which restricts unprivileged user namespaces through
+    # AppArmor and so stops WebKitGTK from sandboxing its helper processes.
+    ["packaging/apparmor/maekon", "etc/apparmor.d/", "644"],
+    # #11064: without these the package installs a GUI application that never
+    # appears in a launcher. The autostart entry the app writes at runtime is a
+    # different file for a different purpose and does not put it in a menu.
+    # The icon must ship with the entry — an `Icon=` pointing at nothing renders
+    # blank, which looks like a broken app rather than a missing asset.
+    ["packaging/desktop/maekon.desktop", "usr/share/applications/", "644"],
+    ["icons/128x128.png", "usr/share/icons/hicolor/128x128/apps/maekon.png", "644"],
+    ["icons/32x32.png", "usr/share/icons/hicolor/32x32/apps/maekon.png", "644"],
 ]
+# A conffile: it lives in /etc and a user may edit it (the profile includes
+# <local/maekon> for that), so an upgrade must not silently overwrite it.
+conf-files = ["/etc/apparmor.d/maekon"]
+# postinst loads the profile, postrm unloads it. Loading is best-effort — a
+# system without AppArmor is not an install failure — but a failure prints why,
+# because the symptom it causes looks nothing like a packaging problem.
+maintainer-scripts = "packaging/debian"
 
 [dev-dependencies]
 serde_json = { workspace = true }
 image = { workspace = true }
 base64 = { workspace = true }
 uuid = { workspace = true }
+# #7735 E-1: `SyncEngine::has_egress_sink` (moved to maekon-core) is gated
+# `cfg(any(test, feature = "test-support"))`. maekon-core is a [dependencies]
+# entry above (compiled without our `cfg(test)`), so the `agent_runtime::sync_setup`
+# regression test needs the dev-only `test-support` feature to see the method.
+# Dual-declaration idiom precedent: crates/maekon-analysis/Cargo.toml.
+maekon-core = { workspace = true, features = ["test-support"] }
 # #4928: cross-family erasure 통합 테스트의 GuardedConnection funnel 직접 INSERT 용
 # (rusqlite::Error 타입 명시). 이미 maekon-storage 를 통한 transitive 의존이다.
 rusqlite = { workspace = true }
@@ -218,3 +278,12 @@ serial_test = "3"
 # D13-v2c: generate-external-cert test helpers.
 x509-parser = { workspace = true }
 jsonwebtoken = { workspace = true }
+# #7735 E-2: `FocusAnalyzer::on_app_switch` (test-only convenience wrapper) is
+# gated `#[cfg(any(test, feature = "test-support"))]` in maekon-analysis and
+# used from this crate's own `#[cfg(test)]` tests (e.g.
+# scheduler/loops/helpers/mod.rs). Plain `#[cfg(test)]` on the maekon-analysis
+# side would not activate for a normal (non-test) dependency build, so the
+# feature must be enabled here via `[dev-dependencies]` only (#7729 house
+# pattern; never via `[dependencies]`, so it never reaches the shipped
+# binary).
+maekon-analysis = { workspace = true, features = ["test-support"] }

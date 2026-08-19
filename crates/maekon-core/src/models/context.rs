@@ -6,7 +6,6 @@ pub struct UserContext {
     pub timestamp: DateTime<Utc>,
     pub active_window: Option<WindowInfo>,
     pub processes: Vec<ProcessInfo>,
-    pub mouse_position: Option<MousePosition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +34,13 @@ pub struct ProcessInfo {
     pub memory_bytes: u64,
 }
 
+/// On-demand cursor position lookup (Win32 `GetCursorPos`). NOT part of
+/// `UserContext` -- that per-tick polling path was removed as dead/wasteful
+/// (#7652 HIGH-1: collected every tick on every platform, never read).
+/// Still used for two legitimate, bounded, event-triggered call sites:
+/// `mouse_hook::windows` resolves a left-click's screen position at the
+/// moment of the click, and the `windows_sandbox_overhead` CLI diagnostic
+/// resolves the current position once per invocation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct MousePosition {
     pub x: i32,

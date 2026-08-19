@@ -129,7 +129,7 @@ where
                                 auth_type: AuthType::Jwt,
                                 client_id: "unknown".into(),
                                 jti: None,
-                                command_id: Ulid::new().to_string(),
+                                command_id: Ulid::generate().to_string(),
                             };
                             let bridge = audit_bridge.clone();
                             let remote = peer.remote_addr.to_string();
@@ -169,7 +169,7 @@ where
                             auth_type: AuthType::Jwt,
                             client_id: "unknown".into(),
                             jti: None,
-                            command_id: Ulid::new().to_string(),
+                            command_id: Ulid::generate().to_string(),
                         };
                         let bridge = audit_bridge.clone();
                         let remote = peer.remote_addr.to_string();
@@ -221,7 +221,7 @@ where
                                 auth_type: AuthType::Mtls,
                                 client_id: "unknown".into(),
                                 jti: None,
-                                command_id: Ulid::new().to_string(),
+                                command_id: Ulid::generate().to_string(),
                             };
                             let bridge = audit_bridge.clone();
                             let remote = peer.remote_addr.to_string();
@@ -260,7 +260,7 @@ where
                             auth_type: AuthType::Mtls,
                             client_id: "unknown".into(),
                             jti: None,
-                            command_id: Ulid::new().to_string(),
+                            command_id: Ulid::generate().to_string(),
                         };
                         let bridge = audit_bridge.clone();
                         let remote = peer.remote_addr.to_string();
@@ -299,7 +299,7 @@ where
                 auth_type,
                 client_id: client_id.unwrap_or_else(|| "unknown".into()),
                 jti,
-                command_id: Ulid::new().to_string(),
+                command_id: Ulid::generate().to_string(),
             };
 
             // AuditLayer now owns Started + Completed recording (Task 13 spec §2.2).

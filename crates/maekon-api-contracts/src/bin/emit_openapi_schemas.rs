@@ -35,6 +35,7 @@ fn main() {
     generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderDiscoveredModel>();
     generator.subschema_for::<maekon_api_contracts::ai_providers::ProviderModelsResponse>();
     generator.subschema_for::<maekon_api_contracts::annotations::CreateAnnotationRequest>();
+    generator.subschema_for::<maekon_api_contracts::audit_export::AuditExportEntryDto>();
     generator.subschema_for::<maekon_api_contracts::audit_export::AuditExportQuery>();
     generator.subschema_for::<maekon_api_contracts::automation::AutomationStatusDto>();
     generator.subschema_for::<maekon_api_contracts::automation::AuditEntryDto>();
@@ -92,6 +93,9 @@ fn main() {
     generator.subschema_for::<maekon_api_contracts::data::DeleteRangeRequest>();
     generator.subschema_for::<maekon_api_contracts::data::DeleteResult>();
     generator.subschema_for::<maekon_api_contracts::digests::DigestListQuery>();
+    generator.subschema_for::<maekon_api_contracts::egress_ledger::EgressLedgerQuery>();
+    generator.subschema_for::<maekon_api_contracts::egress_ledger::EgressLedgerEntryDto>();
+    generator.subschema_for::<maekon_api_contracts::egress_ledger::EgressLedgerResponse>();
     generator.subschema_for::<maekon_api_contracts::error::ErrorResponse>();
     generator.subschema_for::<maekon_api_contracts::events::EventResponse>();
     generator.subschema_for::<maekon_api_contracts::export::ExportQuery>();
@@ -131,6 +135,10 @@ fn main() {
         .subschema_for::<maekon_api_contracts::integration::IntegrationSessionDisconnectPayload>();
     generator.subschema_for::<maekon_api_contracts::integration::IntegrationAckPayload>();
     generator.subschema_for::<maekon_api_contracts::integration::IntegrationBootstrapResponse>();
+    generator.subschema_for::<maekon_api_contracts::memory_claims::ClaimListQuery>();
+    generator.subschema_for::<maekon_api_contracts::memory_claims::ClaimDto>();
+    generator.subschema_for::<maekon_api_contracts::memory_claims::ClaimListResponse>();
+    generator.subschema_for::<maekon_api_contracts::memory_claims::RetractClaimResponse>();
     generator.subschema_for::<maekon_api_contracts::metrics::MetricsResponse>();
     generator.subschema_for::<maekon_api_contracts::metrics::HourlyQuery>();
     generator.subschema_for::<maekon_api_contracts::metrics::HourlyMetricsResponse>();
@@ -240,6 +248,7 @@ fn main() {
     generator.subschema_for::<maekon_api_contracts::support::ProviderCliDiagnosticSummaryDto>();
     generator.subschema_for::<maekon_api_contracts::support::DiagnosticsBundleDto>();
     generator.subschema_for::<maekon_api_contracts::support::RuntimeLogSnapshotDto>();
+    generator.subschema_for::<maekon_api_contracts::support::ResourceUsageSnapshotDto>();
     generator.subschema_for::<maekon_api_contracts::tags::TagResponse>();
     generator.subschema_for::<maekon_api_contracts::tags::CreateTagRequest>();
     generator.subschema_for::<maekon_api_contracts::tags::UpdateTagRequest>();
