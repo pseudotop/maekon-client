@@ -60,10 +60,10 @@ jobs:
               echo 'matrix={"include":[{"os":"macos-13","target":"x86_64-apple-darwin","artifact_name":"maekon-macos-x64","asset_ext":"tar.gz"}]}' >> "$GITHUB_OUTPUT"
               ;;
             linux)
-              echo 'matrix={"include":[{"os":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","artifact_name":"maekon-linux-x64","asset_ext":"tar.gz"}]}' >> "$GITHUB_OUTPUT"
+              echo 'matrix={"include":[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","artifact_name":"maekon-linux-x64","asset_ext":"tar.gz"}]}' >> "$GITHUB_OUTPUT"
               ;;
             all)
-              echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","artifact_name":"maekon-macos-arm64","asset_ext":"tar.gz"},{"os":"macos-13","target":"x86_64-apple-darwin","artifact_name":"maekon-macos-x64","asset_ext":"tar.gz"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","artifact_name":"maekon-windows-x64","asset_ext":"zip"},{"os":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","artifact_name":"maekon-linux-x64","asset_ext":"tar.gz"}]}' >> "$GITHUB_OUTPUT"
+              echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","artifact_name":"maekon-macos-arm64","asset_ext":"tar.gz"},{"os":"macos-13","target":"x86_64-apple-darwin","artifact_name":"maekon-macos-x64","asset_ext":"tar.gz"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","artifact_name":"maekon-windows-x64","asset_ext":"zip"},{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","artifact_name":"maekon-linux-x64","asset_ext":"tar.gz"}]}' >> "$GITHUB_OUTPUT"
               ;;
           esac
 
@@ -98,6 +98,21 @@ jobs:
         if: runner.os == 'Windows'
         uses: ./.github/actions/setup-windows-openssl
 
+      # #11237: the Linux leg ran on `ubuntu-22.04` while `release.yml` builds on
+      # `ubuntu-latest`. The feature strings matched, so this step called itself
+      # "release feature parity" — but the axis that decides this build is the
+      # system PipeWire header, and that is set by the runner image, not by
+      # features. `libspa 0.9.2` does not match 22.04's PipeWire 0.3.48
+      # (`spa_video_info_raw` has no `flags`; `modifier` is `i64`), so the leg was
+      # red while the release it claimed to rehearse built fine — rc.8 shipped
+      # Linux artifacts from that same feature set.
+      #
+      # WHAT THIS DROPS: nothing here observes whether the source still builds on
+      # 22.04 any more. `docs/guides/autostart.md` claims Ubuntu 20.04+, and that
+      # claim is now unverified by CI. It was already only half-verified — the
+      # shipped `.deb` is built on `ubuntu-latest`, so whether a 22.04 user can
+      # run it is a separate, still-open question that this leg never answered.
+      #
       # Must cover the SHIPPED Linux feature set, not just the webview stack.
       # `stt` pulls cpal -> PipeWire SPA and whisper -> bindgen, so a list
       # without libspa/libpipewire/libasound/libclang fails the build outright:

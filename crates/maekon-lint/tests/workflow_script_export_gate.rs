@@ -7,8 +7,14 @@
 //! script missing from the allowlist passes every local check and then dies
 //! with exit 127 on the public runner — public PR #83 hit this twice in one
 //! run (`check-tauri-csp-sync.sh`, `check-consent-erasure-barrier.sh`; the
-//! same forgotten-registration class also hid `pnpm-workspace.yaml`). This
-//! gate runs via `cargo test --workspace` (ADR-075 P-4: no dead gates).
+//! same forgotten-registration class also hid `pnpm-workspace.yaml`).
+//!
+//! ADR-075 P-4 (no dead gates): this gate is named explicitly in the parent's
+//! `Run hedge + LOC + bundle capability + orphan IPC gates` step. It has to be
+//! — that step passes `--test` filters, so a gate not on that list runs only in
+//! the public export's `continue-on-error` sweep and can sit red for months
+//! with nobody looking. #11234 is that story: this file was orphaned, and the
+//! red it was holding turned out to be its own false positive.
 //!
 //! #7081 covers two scope holes in this gate:
 //!  - MLINT-1: both checks now also recurse `.github/actions/**` composite
@@ -118,8 +124,29 @@ fn workflow_referenced_local_actions_exist_and_are_exported() {
 /// Repository-relative `scripts/...` paths (with a file extension) referenced
 /// anywhere in the workflow text. `./scripts/foo.sh` and `scripts/foo.sh`
 /// forms both count; extensionless tokens (directories) are ignored.
+///
+/// Comment-only lines are skipped (#11234). What this gate is for is "the
+/// public runner will hit exit 127 on a script we did not export", and a
+/// comment never runs. `ci.yml` explains its release-build step by naming the
+/// script that pins it (`# … pinned against it by scripts/…-governance.sh`),
+/// which is prose about a deliberately parent-only script — flagging it
+/// demanded either exporting a private script or rewording documentation,
+/// and both are the wrong answer. The sibling `find_local_action_references`
+/// already treats `#` as ending a path; only this scanner lacked it.
 fn find_script_references(source: &str) -> BTreeSet<String> {
     let mut refs = BTreeSet::new();
+    for line in source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+    {
+        collect_script_references_in_line(line, &mut refs);
+    }
+    refs
+}
+
+/// Scan a single non-comment line. Split out so the comment filter above reads
+/// as one decision rather than an index dance inside the scan loop.
+fn collect_script_references_in_line(source: &str, refs: &mut BTreeSet<String>) {
     let bytes = source.as_bytes();
     let mut i = 0;
     while let Some(rel) = source[i..].find("scripts/") {
@@ -159,7 +186,6 @@ fn find_script_references(source: &str) -> BTreeSet<String> {
         }
         i = end.max(start + 1);
     }
-    refs
 }
 
 fn parse_include_entries(manifest: &str) -> Vec<String> {
@@ -258,6 +284,36 @@ fn scanner_ignores_directories_and_nested_scripts_dirs() {
     let src = "      - run: ls scripts/ci\n      - run: node frontend/scripts/test.mjs\n";
     let refs = find_script_references(src);
     assert!(refs.is_empty(), "{refs:?}");
+}
+
+#[test]
+fn scanner_ignores_comment_lines(/* #11234 */) {
+    // The real regression: `ci.yml` documents its release-build step by naming
+    // the parent-only script that pins it. Prose is not an invocation, so the
+    // public runner can never hit exit 127 on it.
+    let src = "        # pinned against it by scripts/test-release-workflow-governance.sh.\n";
+    assert!(
+        find_script_references(src).is_empty(),
+        "comment must not count"
+    );
+
+    // A shell comment inside a `run:` block is equally inert.
+    let src = "        run: |\n          # helper lives at scripts/dev-only.sh\n";
+    assert!(
+        find_script_references(src).is_empty(),
+        "shell comment must not count"
+    );
+}
+
+#[test]
+fn scanner_still_sees_a_real_reference_next_to_commented_ones(/* #11234 */) {
+    // The comment filter must not swallow the line that actually runs — that
+    // would turn a false positive into a false negative, which is worse: an
+    // unexported script would reach the public runner unflagged.
+    let src = "      # scripts/decoy.sh is only mentioned\n      - run: ./scripts/real.sh\n";
+    let refs = find_script_references(src);
+    assert!(refs.contains("scripts/real.sh"), "{refs:?}");
+    assert!(!refs.contains("scripts/decoy.sh"), "{refs:?}");
 }
 
 #[test]
