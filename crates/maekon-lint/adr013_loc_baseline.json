@@ -12,7 +12,7 @@
   "crates/maekon-automation/src/gui_interaction/tests/execute.rs": 1106,
   "crates/maekon-automation/src/policy/mod.rs": 986,
   "crates/maekon-automation/src/sandbox/linux.rs": 1245,
-  "crates/maekon-automation/src/sandbox/windows.rs": 1611,
+  "crates/maekon-automation/src/sandbox/windows.rs": 1697,
   "crates/maekon-core/src/capture_gate.rs": 1783,
   "crates/maekon-core/src/codex_approval.rs": 1939,
   "crates/maekon-core/src/config/app_config.rs": 1382,

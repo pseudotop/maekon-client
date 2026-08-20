@@ -274,7 +274,7 @@ tokio-test = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 zeroize = { workspace = true }
-serial_test = "3"
+serial_test = "4"
 # D13-v2c: generate-external-cert test helpers.
 x509-parser = { workspace = true }
 jsonwebtoken = { workspace = true }

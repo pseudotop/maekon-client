@@ -58,6 +58,8 @@ jobs:
   changes:
     name: Change Detection
     runs-on: ubuntu-latest
+    # 실측 n=12 p50=8s max=9s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 10
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -106,6 +108,8 @@ jobs:
       (github.event_name != 'pull_request' &&
       needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
+    # 실측 n=11 p50=307s max=324s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
@@ -205,6 +209,8 @@ jobs:
       needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
+    # 실측 n=12 p50=1125s max=2352s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 80
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -403,6 +409,8 @@ jobs:
       (github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
       (needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
+    # 실측 n=3 p50=414s max=421s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 15
     env:
       MAEKON_ENABLE_PERF_GATES: '1'
     steps:
@@ -462,6 +470,8 @@ jobs:
       needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
+    # 실측 n=30 p50=2263s max=5307s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 120
     env:
       RUN_HEAVY_TESTS: ${{ github.event_name == 'workflow_dispatch' || ((needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true') && needs.changes.outputs.release_metadata_only != 'true') }}
     steps:
@@ -640,6 +650,8 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
+    # 실측 n=30 p50=2263s max=5307s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 120
     env:
       # Relax the workflow-global `-Dwarnings` for the platform test legs (see job comment).
       RUSTFLAGS: -W warnings
@@ -767,6 +779,8 @@ jobs:
       needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
+    # 실측 n=12 p50=576s max=796s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
@@ -862,6 +876,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: maekon-linux-x64
     runs-on: ${{ matrix.os }}
+    # 실측 n=37 p50=923s max=1868s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 

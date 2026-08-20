@@ -1,3 +1,10 @@
+// OOS-TBD: ADR-013 file split (#11218) — LOC: 1645; `mod tests` starts at 968
+// so tests are ~41% of the file and `windows_tests.rs` is the first split
+// candidate. The cap has been raised five times in two months
+// (1595 -> 1603 -> 1606 -> 1611 -> 1645), each time to exactly the new LOC,
+// which returns headroom to zero — so the next one-line change breaks main for
+// every maekon-client PR. That is the ratchet erosion #9636 named, and this
+// marker exists so the sixth raise is not silent.
 //! Windows sandbox — Job Object resource limits + restricted token enforcement.
 //!
 //! **Enforcement model (subprocess):**
@@ -495,11 +502,6 @@ use restricted_token::create_restricted_token;
 #[cfg(all(test, feature = "windows-sandbox"))]
 use restricted_token::{build_logon_sid, build_user_sid, build_write_restricted_code_sid};
 
-// #10288 diagnostic in its own file: closing that issue is then a deletion.
-#[cfg(all(test, feature = "windows-sandbox"))]
-#[path = "windows_dll_init_bisect.rs"]
-mod dll_init_bisect;
-
 /// Log-only stub when `windows-sandbox` feature is disabled.
 ///
 /// Token restriction is unenforced in this path: without the feature the worker
@@ -690,10 +692,10 @@ fn spawn_process_with_token(
     use windows_sys::Win32::System::Threading::{
         CreateProcessAsUserW, DeleteProcThreadAttributeList, GetExitCodeProcess,
         InitializeProcThreadAttributeList, ResumeThread, TerminateProcess,
-        UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
-        CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
-        PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESTDHANDLES,
-        STARTUPINFOEXW, STARTUPINFOW,
+        UpdateProcThreadAttribute, WaitForSingleObject, CREATE_SUSPENDED,
+        CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT,
+        LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
     };
 
     struct ProcThreadAttributeListGuard(LPPROC_THREAD_ATTRIBUTE_LIST);
@@ -774,8 +776,21 @@ fn spawn_process_with_token(
     startup_ex.lpAttributeList = attribute_list;
 
     // CREATE_SUSPENDED: assign to the Job Object before the child runs.
-    // CREATE_NO_WINDOW: the worker is a background console process; no window.
-    let mut creation_flags = CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT;
+    //
+    // DETACHED_PROCESS, not CREATE_NO_WINDOW (#10288): both hide the console
+    // window, but CREATE_NO_WINDOW still *allocates* a console for the child,
+    // and that allocation goes through conhost/CSRSS. A restricted token cannot
+    // complete it, so the child dies during initialization and surfaces as
+    // STATUS_DLL_INIT_FAILED (0xC0000142) — the whole of #10288. DETACHED_PROCESS
+    // allocates no console at all, which is what this worker actually wants: all
+    // three std handles are redirected to the pipes above, so it never needs one.
+    //
+    // Measured on Windows 11 client (26200.9168) with the production token
+    // shapes, full spawn path, console flag as the only variable:
+    //   Permissive      CREATE_NO_WINDOW 0xC0000142 | DETACHED_PROCESS exit 7
+    //   Standard/Strict CREATE_NO_WINDOW 0xC0000142 | DETACHED_PROCESS exit 7
+    // The token restrictions are unchanged by this fix; containment is identical.
+    let mut creation_flags = CREATE_SUSPENDED | DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT;
 
     // Empty Unicode environment block (two NUL WCHARs) when clearing the env.
     let empty_env: [u16; 2] = [0, 0];
@@ -1130,29 +1145,12 @@ mod tests {
         .expect("CreateProcessAsUserW restricted-token launch must succeed");
 
         assert!(!outcome.timed_out, "child must not time out");
-        // #10288: windows-latest runner images 20260728+ kill the restricted-token
-        // cmd.exe child during DLL init (STATUS_DLL_INIT_FAILED) — deterministic
-        // across image builds, code unchanged since the last green run on
-        // 20260714. Skip ONLY that exact signature, and only on GitHub-hosted
-        // CI. The bounded #10288 diagnostic lane sets the strict override to
-        // expose the real exit code instead of taking this release-unblock path.
-        // Every other failure mode and environment also asserts at full strength.
-        let strict_ci_probe =
-            std::env::var("MAEKON_STRICT_WINDOWS_RESTRICTED_TOKEN_PROBE").as_deref() == Ok("1");
-        if outcome.exit_code == 0xC000_0142
-            && std::env::var_os("GITHUB_ACTIONS").is_some()
-            && !strict_ci_probe
-        {
-            // #10959: `eprintln!` alone is invisible — libtest captures a
-            // passing test's output and CI passes no `--nocapture`, so a skip
-            // and a real pass both surface as `... ok`.
-            record_probe_verdict(ProbeVerdict::SkippedDllInitFailed);
-            eprintln!(
-                "SKIP restricted_token_launch probe: STATUS_DLL_INIT_FAILED on \
-                 GitHub-hosted runner image (known image regression, #10288)"
-            );
-            return;
-        }
+        // #10288 previously skipped 0xC0000142 here on GitHub-hosted CI, on the
+        // diagnosis that the runner image was at fault. The diagnosis was wrong
+        // — the cause was CREATE_NO_WINDOW allocating a console the restricted
+        // token cannot complete — and the skip is gone with it. This asserts at
+        // full strength on every environment now, so a console-allocation
+        // regression fails the column instead of being swallowed by it.
         assert_eq!(
             outcome.exit_code,
             0,
@@ -1200,6 +1198,56 @@ mod tests {
         std::fs::write(&target, b"parent-can-write\n")
             .expect("normal token must write through Authenticated Users");
 
+        // #11213 diagnostics. The first honest run of this probe came back red:
+        // the restricted child wrote the file (`file_unchanged = false`). That
+        // rules out the old vacuous pass but leaves two explanations standing,
+        // and the data could not separate them.
+        //
+        //   1. The restriction does not deny this write.
+        //   2. The fixture's DACL was never what this test assumes — the probe
+        //      only checked `icacls`'s exit code, never the resulting ACEs.
+        //
+        // The sibling test `restricted_token_contains_write_restricted_code_sid`
+        // passes in the same run, so the token side is already established: the
+        // kernel token carries exactly the write-restricted code, logon, and user
+        // SIDs. What is not established is the object side, so capture it.
+        //
+        // The containing directory is captured too, and is not an afterthought:
+        // the temp directory inherits from %TEMP%, which normally grants the
+        // invoking user Full Control, and the user SID is one of the three
+        // restricting SIDs. An access path satisfied through the directory would
+        // therefore pass the second access check while the file's own ACEs look
+        // exactly as intended.
+        //
+        // Captured here — after setup, before the spawn — so the message records
+        // the state actually under test rather than one re-read after the child
+        // may have altered it.
+        let describe = |label: &str, out: std::io::Result<std::process::Output>| -> String {
+            match out {
+                Ok(o) => format!(
+                    "{label}:\n{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+                Err(err) => format!("{label}: <could not run: {err}>\n"),
+            }
+        };
+        let acl_state = format!(
+            "{}{}{}",
+            describe(
+                "icacls <target>",
+                Command::new("icacls.exe").arg(&target).output()
+            ),
+            describe(
+                "icacls <tempdir>",
+                Command::new("icacls.exe").arg(temp.path()).output()
+            ),
+            describe(
+                "whoami /user",
+                Command::new("whoami.exe").args(["/user"]).output()
+            ),
+        );
+
         let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
         let system32_dir = format!("{system_root}\\System32");
         let cmd_path = format!("{system32_dir}\\cmd.exe");
@@ -1244,14 +1292,52 @@ mod tests {
         .expect("launch write-restricted child");
 
         assert!(!outcome.timed_out, "ACL probe must not time out");
-        assert_ne!(
-            outcome.exit_code, 0,
-            "write granted only by an omitted group must be denied"
-        );
-        assert_eq!(
-            std::fs::read(&target).expect("read ACL fixture"),
-            b"parent-can-write\n",
-            "restricted child must not modify the group-only file"
+
+        // #11213 — this probe used to assert `exit_code != 0` first and read the
+        // file only afterwards. Under CREATE_NO_WINDOW the restricted child died
+        // during initialization with STATUS_DLL_INIT_FAILED, so `exit_code != 0`
+        // held for a reason that has nothing to do with access checks, and the
+        // decisive assertion was never reached. The probe passed for months while
+        // proving nothing. #11191's DETACHED_PROCESS fix let the child actually
+        // run, and the first honest measurement came back red.
+        //
+        // Two changes follow from that.
+        //
+        // 1. A positive control. "The file is unchanged" passes trivially when the
+        //    child never ran, so the probe first proves the child got far enough
+        //    for its access checks to be exercised at all.
+        // 2. One combined verdict. The three facts are gathered before anything
+        //    panics, so a single run reports all of them — an early panic is what
+        //    hid the decisive one last time.
+        //
+        // The exit code stays in the verdict but is no longer the invariant. A
+        // denied redirect must surface as a non-zero errorlevel from cmd; if that
+        // ever disagrees with the file contents, the disagreement is itself the
+        // finding and belongs in the failure message rather than in whichever
+        // assertion happened to run first.
+        const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
+
+        let after = std::fs::read(&target).expect("read ACL fixture");
+        let child_ran = outcome.exit_code != STATUS_DLL_INIT_FAILED;
+        let file_unchanged = after == b"parent-can-write\n";
+        let write_reported_denied = outcome.exit_code != 0;
+
+        assert!(
+            child_ran && file_unchanged && write_reported_denied,
+            "restricted-token ACL containment probe failed (#11213)\n  \
+             child_ran (exit != STATUS_DLL_INIT_FAILED) = {child_ran}\n  \
+             file_unchanged                             = {file_unchanged}\n  \
+             write_reported_denied (exit != 0)          = {write_reported_denied}\n  \
+             exit   = {:#010x}\n  \
+             after  = {:?}\n  \
+             stdout = {:?}\n  \
+             stderr = {:?}\n\
+             ---- object side, captured before the spawn (#11213) ----\n{}",
+            outcome.exit_code,
+            String::from_utf8_lossy(&after),
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            acl_state,
         );
     }
 

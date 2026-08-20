@@ -25,7 +25,7 @@ MaekonはONESHIMなしでも独立して利用できるApache-2.0 local-firstデ
 
 ## Source Buildクイックスタート
 
-公開リポジトリは利用可能で、`v0.0.1-rc.6`が現在の公開prereleaseです。GitHubの`latest` endpointはprereleaseを除外するため、release binaryの検証ではinstall guideのversion固定commandを使用してください。開発とdebug buildはローカルのsource checkoutから実行します。
+公開リポジトリは利用可能で、`v0.0.1-rc.8`が現在の公開prereleaseです。GitHubの`latest` endpointはprereleaseを除外するため、release binaryの検証ではinstall guideのversion固定commandを使用してください。開発とdebug buildはローカルのsource checkoutから実行します。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -244,17 +244,17 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.6 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.8/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.8 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.6/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.8/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.6 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.8 -RequireSignature
 ```
 
 ### リリースアセット
