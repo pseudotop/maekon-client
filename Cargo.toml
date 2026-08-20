@@ -198,7 +198,7 @@ tauri-build = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-notification = "2"
-tauri-winrt-notification = "0.7.2"
+tauri-winrt-notification = "0.8.1"
 tauri-plugin-wdio = "1.2.0"
 tauri-plugin-wdio-webdriver = "1.2.0"
 

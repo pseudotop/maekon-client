@@ -5302,6 +5302,32 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.serial_test]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-run"
+delta = "3.5.0 -> 4.0.1"
+notes = """
+Dependabot bump 3.5.0 -> 4.0.1 (#11167). Diff reviewed by unpacking both crates.io
+tarballs and comparing trees.
+
+src/ is byte-identical between the two versions. `diff -r` over the source trees
+reports no differences at all; the only files that differ are packaging metadata
+(Cargo.toml, Cargo.toml.orig, Cargo.lock, README.md, .cargo_vcs_info.json).
+
+The major version bump is an MSRV raise, not a code change:
+  rust-version = "1.68" -> "1.93.1"
+
+Static signals, both trees: zero `unsafe` occurrences, no build.rs, no inline asm,
+no process/network syscalls. Dependency set otherwise unchanged apart from the
+companion serial_test_derive pin moving in lockstep (~3.5.0 -> ~4.0.1).
+
+Criteria is safe-to-run, matching the existing 3.5.0 record: this crate is a
+dev-dependency used to serialise tests and never ships in the desktop binary.
+
+Scope: delta review of the shipping source change (here: none) plus capability/static
+signals. Not a line-by-line audit of the whole crate.
+"""
+
 [[audits.serial_test_derive]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5315,6 +5341,35 @@ and no process/network/Command syscalls in crate source. Pure safe-Rust →
 no memory-unsafety and no build-time or runtime code-execution / exfiltration
 vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
+"""
+
+[[audits.serial_test_derive]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-run"
+delta = "3.5.0 -> 4.0.1"
+notes = """
+Dependabot bump 3.5.0 -> 4.0.1 (#11167). Diff reviewed by unpacking both crates.io
+tarballs and comparing trees.
+
+The only source change is inside a `#[cfg(test)]` helper. `unparse` builds a
+`syn::File` literal for pretty-printing in the crate's own tests; syn 3 added a
+`frontmatter` field to that struct, so the literal gains `frontmatter: None`
+(and `shebang: None` moves position). No change to the proc-macro logic that
+actually expands at consumer build time.
+
+Dependency bumps that drive the major version:
+  syn          2 -> 3      (dependency)
+  prettyplease 0.2 -> 0.3  (dev-dependency)
+  rust-version 1.68 -> 1.93.1
+
+Static signals, both trees: zero `unsafe` occurrences, no build.rs, no inline asm,
+no process/network syscalls.
+
+Criteria is safe-to-run, matching the existing 3.5.0 record: this is the derive half
+of a dev-dependency and never ships in the desktop binary.
+
+Scope: delta review of the shipping source change plus capability/static signals.
+Not a line-by-line audit of the whole crate, and not an audit of syn 3 itself.
 """
 
 [[audits.serialize-to-javascript]]
@@ -5669,6 +5724,67 @@ syscalls. Build script reviewed and benign: invokes `rustc --version`, codegens 
 linking, no cc/cmake/bindgen native compilation, writes only under OUT_DIR.
 safe-to-deploy on that basis. Scope: capability + build-script + memory-safety
 audit, not a line-by-line logic review.
+"""
+
+[[audits.tauri-winrt-notification]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.7.3"
+notes = """
+Reviewed for #11166 (dependabot 0.7.2 -> 0.8.1; 0.7.3 remains in the graph as a
+transitive pin, so both versions need a record). Crate source unpacked from the
+crates.io tarball. License: MIT OR Apache-2.0.
+
+Capability scan of this exact version (2 .rs files, 822 lines):
+no `unsafe`, no build.rs, no inline asm!/global_asm!, no process/Command spawn,
+no network (std::net / TcpStream / http client), no filesystem writes.
+Runtime dependencies: thiserror, windows, windows-version.
+
+Change from 0.7.2 that matters here — the crate dropped its `quick-xml` dependency
+and replaced it with `src/xml_escape.rs`, a 60-line module carrying an explicit
+provenance header ("Copied from quick-xml/src/escape.rs") and the upstream
+Apache-2.0/MIT SPDX lines. Reviewed in full: it escapes the five XML
+metacharacters (< > & ' ") plus the xs:list delimiters, allocates only on first
+match, and contains no unsafe. Net effect is one fewer external dependency for
+the same escaping behaviour.
+
+Notification text reaches Windows through `format!`-built XML in this version, so
+the escape module is on the injection path; that is why it was read line by line
+rather than scanned.
+
+Scope: capability + memory-safety audit (reproducible static check) plus a full
+read of the escaping module. Not a line-by-line audit of the whole crate.
+"""
+
+[[audits.tauri-winrt-notification]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.8.1"
+notes = """
+Reviewed for #11166 (dependabot 0.7.2 -> 0.8.1). Crate source unpacked from the
+crates.io tarball. License: MIT OR Apache-2.0.
+
+Capability scan of this exact version (1 .rs file, 882 lines):
+no `unsafe`, no build.rs, no inline asm!/global_asm!, no process/Command spawn,
+no network (std::net / TcpStream / http client), no filesystem writes.
+Runtime dependencies: thiserror, windows, windows-version — same set as 0.7.3.
+
+Change from 0.7.3 that matters here — manual XML escaping is gone, and so is the
+class of bug it guarded. 0.7.3 built the toast payload by string concatenation
+(`format!(r#"<text id="1">{}</text>"#, xml_escape::escape(content))`). 0.8.1
+removes `src/xml_escape.rs` entirely and builds the document through the WinRT DOM
+API instead: `XmlDocument::new()` plus `xml_el.SetInnerText(...)` for title, line1
+and line2. Text never passes through a markup string, so XML injection is
+structurally impossible rather than escaped-against. This is strictly stronger
+than the 0.7.3 approach.
+
+Other deltas: windows 0.61 -> 0.62 (required for the DOM API surface),
+windows-registry 0.5 -> 0.6 (dev-dependency only), rust-version 1.74 -> 1.82,
+plus a new example resource PNG. No new capability appears in the scan above.
+
+Scope: capability + memory-safety audit (reproducible static check) plus a
+targeted read of the XML construction path. Not a line-by-line audit of the whole
+crate, and not an audit of the `windows` crate bump itself.
 """
 
 [[audits.thread_local]]
@@ -6373,6 +6489,39 @@ Well-maintained by the uuid-rs organization. Commercial use permitted.
 Note: ADR-055 requires use of generate_id() wrapper, not direct uuid::Uuid::new_v4().
 Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch3.out + deny-batch3.out).
+"""
+
+[[audits.uuid]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "1.24.0 -> 1.24.1"
+notes = """
+Dependabot bump 1.24.0 -> 1.24.1 (#11165). Diff reviewed by unpacking both crates.io
+tarballs and comparing trees.
+
+Shipping change is a parser correctness fix, and it closes a real defect:
+
+  src/error.rs — the per-character validation loop used `character as u8` and matched
+  the truncated byte against `b'0'..=b'9' | b'a'..=b'f'`. `as u8` truncates, so a
+  non-ASCII char whose low byte lands in the hex range was accepted as a hex digit.
+  Concretely U+0130 (LATIN CAPITAL LETTER I WITH DOT ABOVE, 0x130) truncates to 0x30
+  = '0'. 1.24.1 replaces the cast with `character.is_ascii_hexdigit()`, so the check
+  operates on the char, not a truncated byte.
+
+  src/parser.rs — adds the matching regression test asserting that parsing a string
+  containing U+0130 yields `ErrorKind::ParseChar` instead of being accepted.
+
+  src/lib.rs — doc-comment version strings only (1.24.0 -> 1.24.1 in examples).
+
+Static signals, both trees:
+- Cargo.toml dependency set unchanged; only the crate's own version string differs.
+- `unsafe` occurrence count unchanged (25 -> 25); no new unsafe surface.
+- No build.rs in either version; no inline asm, no process/network syscalls added.
+
+Upgrading is strictly safer than staying: 1.24.0 can accept input that 1.24.1 rejects.
+
+Scope: delta review of the shipping source change plus capability/static signals
+(dependencies, unsafe count, build script). Not a line-by-line audit of the whole crate.
 """
 
 [[audits.version_check]]

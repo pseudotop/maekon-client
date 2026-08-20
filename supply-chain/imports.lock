@@ -949,13 +949,6 @@ user-id = 95389
 user-login = "tauri-bot"
 user-name = "tauri"
 
-[[publisher.tauri-winrt-notification]]
-version = "0.7.2"
-when = "2025-04-08"
-user-id = 95389
-user-login = "tauri-bot"
-user-name = "tauri"
-
 [[publisher.tendril]]
 version = "0.4.3"
 when = "2022-03-27"

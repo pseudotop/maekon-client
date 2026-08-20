@@ -25,6 +25,13 @@
 - Rust 주석, doc comment, `tracing` message는 영어로 쓴다.
 - 사용자 문자열은 i18n resource로 관리하고 locale 문자열을 selector로 사용하지 않는다.
 - frontend component는 shared tokens와 primitives를 사용한다.
+- `supply-chain/audits.toml`의 `[[audits.*]]`·`[[trusted.*]]` notes는 영어로 쓴다. 이 파일은
+  공개 저장소로 export되고 다른 조직이 `cargo vet` import로 가져간다 — 그 소비자에게 근거가
+  읽혀야 한다. `supply-chain/config.toml`의 `[[exemptions.*]]` notes는 내부 판단 기록이므로
+  이 제약을 받지 않는다.
+
+  2026-08-19 실측: `[[audits.*]]` 576건은 이미 전부 영어였다(관례로 지켜지고 있었다).
+  이 줄은 그 관례를 계약으로 옮긴 것이며 기존 항목을 소급 번역하지 않는다.
 
 ## Validation from repository root
 
