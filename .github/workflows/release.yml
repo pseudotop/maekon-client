@@ -39,6 +39,8 @@ jobs:
   verify-version:
     name: Verify Version Consistency
     runs-on: ubuntu-latest
+    # 실측 n=10 p50=15s max=23s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 10
     environment: release-signing
     outputs:
       release_tag: ${{ steps.release.outputs.release_tag }}
@@ -487,6 +489,8 @@ jobs:
     name: Build Frontend Assets
     needs: verify-version
     runs-on: ubuntu-latest
+    # 실측 n=10 p50=58s max=153s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -553,6 +557,8 @@ jobs:
             artifact_name: maekon-linux-x64
             asset_ext: tar.gz
     runs-on: ${{ matrix.os }}
+    # 실측 n=31 p50=746s max=2904s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -1331,6 +1337,8 @@ jobs:
             artifact_name: maekon-windows-x64-archive
             run_updater_tests: true
     runs-on: ${{ matrix.os }}
+    # 실측 n=13 p50=517s max=2119s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -1517,6 +1525,8 @@ jobs:
     needs: [verify-version, build-release, build-macos-universal, release-reliability-smoke]
     if: needs.build-release.result == 'success' && needs.build-macos-universal.result == 'success' && needs.release-reliability-smoke.result == 'success'
     runs-on: ubuntu-latest
+    # 실측 n=2 p50=928s max=928s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 35
     environment: release-signing
     permissions:
       actions: read

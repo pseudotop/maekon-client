@@ -97,6 +97,10 @@ pub(super) fn create_restricted_token(
     // child fails during DLL/desktop initialization with STATUS_DLL_INIT_FAILED.
     // Adding the exact logon SID preserves only the current interactive session
     // access; it does not restore arbitrary user/group SIDs.
+    //
+    // That covers the window station and desktop, and only those. It does not
+    // make a console-allocating child work on an administrator account — the
+    // logon SID does not carry that grant (#11197, table below).
     let logon_sid_buffer = if restrictions.disable_most_sids {
         Some(build_logon_sid(process_token)?)
     } else {
@@ -107,6 +111,31 @@ pub(super) fn create_restricted_token(
     } else {
         None
     };
+    // ── Do NOT add BUILTIN\Administrators to this list (#11197) ─────────────
+    //
+    // A console-allocating child (`CREATE_NO_WINDOW`) dies at 0xC0000142 under
+    // this token whenever the account is an administrator, and the one edit that
+    // fixes it is putting S-1-5-32-544 here. Measured on Windows 11 26200.9168,
+    // elevated, console flag and spawn path held fixed, list as the only variable:
+    //
+    //   [WRC, logon, user]              0xC0000142    [WRC, logon, user, ADMIN]  exit 7
+    //   [WRC, logon, user, RESTRICTED]  0xC0000142    [ADMIN] alone              exit 7
+    //   [RESTRICTED] alone              0xC0000142
+    //   [logon, user]                   0xC0000142
+    //   [WRC] alone                     0xC0000142
+    //
+    // Every list without that SID fails; every list with it passes, `[ADMIN]`
+    // alone included. The access the console path needs is granted through
+    // Administrators and nothing else — which is exactly the grant
+    // `disable_admin_sid` exists to remove (#7071). Restoring it here would let
+    // the worker write through admin-derived access again and quietly undo the
+    // containment, in exchange for a capability this worker does not need: its
+    // three std handles are pipes, so it never wants a console.
+    //
+    // `DETACHED_PROCESS` in `spawn_process_with_token` is the resolution, and it
+    // is the design rather than a workaround — on an administrator account a
+    // properly restricted token cannot allocate a console at all. Adding
+    // S-1-5-12 does not substitute; it was measured and it fails.
     let mut sids_to_restrict: Vec<SID_AND_ATTRIBUTES> = Vec::new();
     if let Some(buffer) = write_restricted_code_sid_buffer.as_ref() {
         sids_to_restrict.push(SID_AND_ATTRIBUTES {

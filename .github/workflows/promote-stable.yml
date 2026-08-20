@@ -16,6 +16,8 @@ jobs:
   promote:
     name: Prepare Stable Promotion PR
     runs-on: ubuntu-latest
+    # 추정 — 실행 이력 없음. git/gh 작업만 하는 가벼운 잡이다
+    timeout-minutes: 15
     steps:
       - name: Generate App installation token
         id: app_token

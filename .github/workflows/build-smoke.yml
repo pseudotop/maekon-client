@@ -39,6 +39,8 @@ jobs:
   resolve-matrix:
     name: Resolve Build Matrix
     runs-on: ubuntu-latest
+    # 실측 n=5 p50=2s max=4s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 10
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
@@ -72,6 +74,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.resolve-matrix.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    # 실측 n=3 p50=1679s max=1986s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 70
     env:
       BUILD_REF: ${{ inputs.ref }}
     steps:
