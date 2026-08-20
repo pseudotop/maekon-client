@@ -15,6 +15,8 @@ jobs:
   linux-systemd-integration:
     name: Linux systemd Integration Tests (T8-T10)
     runs-on: ubuntu-latest
+    # 추정 — 공개 저장소 실행 이력 없음. cargo build/test 를 도는 무거운 잡이라 같은 성격인 integrity(50분)·build(65분) 사이로 잡았다
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
