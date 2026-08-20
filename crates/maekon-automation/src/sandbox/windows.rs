@@ -1198,6 +1198,56 @@ mod tests {
         std::fs::write(&target, b"parent-can-write\n")
             .expect("normal token must write through Authenticated Users");
 
+        // #11213 diagnostics. The first honest run of this probe came back red:
+        // the restricted child wrote the file (`file_unchanged = false`). That
+        // rules out the old vacuous pass but leaves two explanations standing,
+        // and the data could not separate them.
+        //
+        //   1. The restriction does not deny this write.
+        //   2. The fixture's DACL was never what this test assumes — the probe
+        //      only checked `icacls`'s exit code, never the resulting ACEs.
+        //
+        // The sibling test `restricted_token_contains_write_restricted_code_sid`
+        // passes in the same run, so the token side is already established: the
+        // kernel token carries exactly the write-restricted code, logon, and user
+        // SIDs. What is not established is the object side, so capture it.
+        //
+        // The containing directory is captured too, and is not an afterthought:
+        // the temp directory inherits from %TEMP%, which normally grants the
+        // invoking user Full Control, and the user SID is one of the three
+        // restricting SIDs. An access path satisfied through the directory would
+        // therefore pass the second access check while the file's own ACEs look
+        // exactly as intended.
+        //
+        // Captured here — after setup, before the spawn — so the message records
+        // the state actually under test rather than one re-read after the child
+        // may have altered it.
+        let describe = |label: &str, out: std::io::Result<std::process::Output>| -> String {
+            match out {
+                Ok(o) => format!(
+                    "{label}:\n{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+                Err(err) => format!("{label}: <could not run: {err}>\n"),
+            }
+        };
+        let acl_state = format!(
+            "{}{}{}",
+            describe(
+                "icacls <target>",
+                Command::new("icacls.exe").arg(&target).output()
+            ),
+            describe(
+                "icacls <tempdir>",
+                Command::new("icacls.exe").arg(temp.path()).output()
+            ),
+            describe(
+                "whoami /user",
+                Command::new("whoami.exe").args(["/user"]).output()
+            ),
+        );
+
         let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
         let system32_dir = format!("{system_root}\\System32");
         let cmd_path = format!("{system32_dir}\\cmd.exe");
@@ -1281,11 +1331,13 @@ mod tests {
              exit   = {:#010x}\n  \
              after  = {:?}\n  \
              stdout = {:?}\n  \
-             stderr = {:?}",
+             stderr = {:?}\n\
+             ---- object side, captured before the spawn (#11213) ----\n{}",
             outcome.exit_code,
             String::from_utf8_lossy(&after),
             String::from_utf8_lossy(&outcome.stdout),
             String::from_utf8_lossy(&outcome.stderr),
+            acl_state,
         );
     }
 
