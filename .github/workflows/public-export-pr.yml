@@ -26,6 +26,8 @@ jobs:
   open-public-export-pr:
     name: Open App-Authored Public Export PR
     runs-on: ubuntu-latest
+    # 실측 n=11 p50=10s max=13s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 10
     steps:
       - name: Validate public export branch
         env:
@@ -34,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${HEAD_BRANCH}" != codex/public-export-* && "${HEAD_BRANCH}" != release/public-export-* ]]; then
-            echo "::error::head_branch must be a public export branch"
+            echo "::error::head_branch must start with codex/public-export- or release/public-export- (got: ${HEAD_BRANCH})"
             exit 1
           fi
 

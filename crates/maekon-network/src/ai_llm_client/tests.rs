@@ -683,8 +683,16 @@ mod http_status_mapping {
 
     // ── D7 Circuit breaker behavior ───────────────────────────────────────
 
-    fn breaker_registry_fast_llm(
+    /// Build a breaker registry whose cooldown length the caller chooses.
+    ///
+    /// Cooldown length is not a shared detail: some tests need the breaker to *stay*
+    /// Open across the rest of the test, others need it to expire so half-open can be
+    /// observed. A single shared value cannot serve both, and the tests that need
+    /// "stays Open" silently become timing-dependent when it is short.
+    fn breaker_registry_llm(
         server_url: &str,
+        initial_cooldown: std::time::Duration,
+        max_cooldown: std::time::Duration,
     ) -> Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry> {
         let registry = maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new();
         let key = maekon_http_core::resilience::endpoint_authority(server_url).unwrap();
@@ -692,12 +700,50 @@ mod http_status_mapping {
             &key,
             maekon_http_core::circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 3,
-                initial_cooldown: std::time::Duration::from_millis(50),
-                max_cooldown: std::time::Duration::from_millis(200),
+                initial_cooldown,
+                max_cooldown,
                 half_open_probes: 1,
             },
         );
         registry
+    }
+
+    /// Cooldown short enough to expire inside a test — for observing half-open.
+    ///
+    /// Only use this when the test *waits* for expiry. A test that asserts the breaker
+    /// is still Open must not use it: on a slow runner the cooldown can lapse between
+    /// tripping the breaker and the assertion, and the call then reaches the server and
+    /// returns a non-CircuitOpen error.
+    fn breaker_registry_expiring_llm(
+        server_url: &str,
+    ) -> Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry> {
+        breaker_registry_llm(
+            server_url,
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(200),
+        )
+    }
+
+    /// Cooldown long enough that the breaker stays Open for the whole test.
+    ///
+    /// 2026-08-19: `shared_registry_trips_across_adapters` used the 50 ms cooldown and
+    /// failed on the macOS runner only — 588 passed, 1 failed, and the seven CI runs
+    /// before it were green. The breaker had already moved to half-open by the time the
+    /// embedding adapter was called, so the request reached the mock server and came
+    /// back as ServiceUnavailable with a code other than CircuitOpen. Nothing about the
+    /// production code changed; the export that preceded the failure did not touch this
+    /// crate. The test was timing-dependent by construction.
+    ///
+    /// 30 s is far longer than any of these tests take, so expiry cannot occur while the
+    /// test runs. Wall-clock cost is zero — the breaker is never waited on.
+    fn breaker_registry_sticky_llm(
+        server_url: &str,
+    ) -> Arc<maekon_http_core::circuit_breaker::CircuitBreakerRegistry> {
+        breaker_registry_llm(
+            server_url,
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(60),
+        )
     }
 
     fn test_screen_ctx() -> ScreenContext {
@@ -736,7 +782,7 @@ mod http_status_mapping {
             .create_async()
             .await;
 
-        let registry = breaker_registry_fast_llm(&server.url());
+        let registry = breaker_registry_sticky_llm(&server.url());
         let provider = make_llm_provider(&server.url(), registry);
         for _ in 0..3 {
             let _ = provider
@@ -764,7 +810,7 @@ mod http_status_mapping {
             .create_async()
             .await;
 
-        let registry = breaker_registry_fast_llm(&server.url());
+        let registry = breaker_registry_expiring_llm(&server.url());
         let provider = make_llm_provider(&server.url(), registry.clone());
         for _ in 0..3 {
             let _ = provider
@@ -800,7 +846,7 @@ mod http_status_mapping {
             .create_async()
             .await;
 
-        let registry = breaker_registry_fast_llm(&server.url());
+        let registry = breaker_registry_sticky_llm(&server.url());
         let llm = make_llm_provider(&server.url(), registry.clone());
         let emb = RemoteEmbeddingProvider::new(
             server.url(),
