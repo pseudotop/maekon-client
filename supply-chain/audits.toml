@@ -7135,6 +7135,20 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[trusted.aead]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2020-06-05"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.aes-gcm]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2019-08-16"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.alsa]]
 criteria = "safe-to-deploy"
 user-id = 429 # diwic
@@ -7193,7 +7207,7 @@ notes = "#9374 publisher-trust: Marshall Pierce (marshallpierce), base64 의 원
 
 [[trusted.blake2]]
 criteria = "safe-to-deploy"
-user-id = 267
+user-id = 267 # Tony Arcieri (tarcieri)
 start = "2020-06-10"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Tony Arcieri). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
@@ -7240,6 +7254,13 @@ start = "2023-07-23"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Bilal Elmoussaoui, gtk-rs/GNOME — soup3 bindings. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.clang-sys]]
+criteria = "safe-to-deploy"
+user-id = 36629 # Mads Marquart (madsmtm)
+start = "2026-07-29"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.clap]]
 criteria = "safe-to-deploy"
 user-id = 6743 # Ed Page (epage)
@@ -7254,9 +7275,16 @@ start = "2023-03-28"
 end = "2027-05-29"
 notes = "#11082 publisher-trust (owner-approved identity): clap 의 분리된 builder crate, 같은 발행자(epage)가 전 108판을 발행했다. clap 과 함께 이관한다."
 
+[[trusted.clap_derive]]
+criteria = "safe-to-deploy"
+user-id = 6743 # Ed Page (epage)
+start = "2021-12-08"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.cmov]]
 criteria = "safe-to-deploy"
-user-id = 267
+user-id = 267 # Tony Arcieri (tarcieri)
 start = "2022-02-27"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Tony Arcieri). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
@@ -7274,6 +7302,13 @@ user-id = 2396 # Josh Matthews (jdm)
 start = "2019-10-28"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Josh Matthews, Servo project — tendril/string_cache. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.ctr]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2020-06-06"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
 
 [[trusted.cxx]]
 criteria = "safe-to-deploy"
@@ -7359,6 +7394,13 @@ start = "2021-05-05"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Victor Brekenfeld, Smithay project — drm bindings. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.ed25519]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2019-08-10"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.endi]]
 criteria = "safe-to-deploy"
 user-id = 6423 # Zeeshan Ali Khan (zeenix)
@@ -7372,6 +7414,13 @@ user-id = 79201 # Nicolas Patry (Narsil)
 start = "2020-06-06"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Nicolas Patry, Hugging Face — tokenizers/hf-hub. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.fastrand]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2021-04-24"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
 
 [[trusted.futures-core]]
 criteria = "safe-to-deploy"
@@ -7429,6 +7478,41 @@ start = "2022-01-15"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): gtk-rs / GNOME FFI bindings glib/gio/gobject (Sebastian Droege, gtk-rs/gstreamer-rs core maintainer). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
 
+[[trusted.gdk4]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2022-01-15"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.gdk4-sys]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2021-04-04"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.gdk4-wayland-sys]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2021-04-04"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.gdk4-x11]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2021-04-04"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.gdk4-x11-sys]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2021-04-04"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.gdkwayland-sys]]
 criteria = "safe-to-deploy"
 user-id = 3623 # Sebastian Dröge (sdroege)
@@ -7449,6 +7533,20 @@ user-id = 3623 # Sebastian Dröge (sdroege)
 start = "2022-01-15"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): gtk-rs / GNOME FFI bindings glib/gio/gobject (Sebastian Droege, gtk-rs/gstreamer-rs core maintainer). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
+
+[[trusted.getrandom]]
+criteria = "safe-to-deploy"
+user-id = 5059 # Artyom Pavlov (newpavlov)
+start = "2019-06-28"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.ghash]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2019-09-19"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
 
 [[trusted.gif]]
 criteria = "safe-to-deploy"
@@ -7527,6 +7625,34 @@ start = "2023-07-23"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Bilal Elmoussaoui, gtk-rs/GNOME — soup3 bindings. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.graphene-rs]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2021-04-04"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.graphene-sys]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2021-04-04"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.gsk4]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2022-01-15"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.gsk4-sys]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2021-04-04"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.gtk]]
 criteria = "safe-to-deploy"
 user-id = 3623 # Sebastian Dröge (sdroege)
@@ -7547,6 +7673,27 @@ user-id = 3623 # Sebastian Dröge (sdroege)
 start = "2021-04-04"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): gtk-rs / GNOME FFI bindings glib/gio/gobject (Sebastian Droege, gtk-rs/gstreamer-rs core maintainer). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
+
+[[trusted.gtk4]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2022-01-15"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.gtk4-macros]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2021-04-04"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.gtk4-sys]]
+criteria = "safe-to-deploy"
+user-id = 3623 # Sebastian Dröge (sdroege)
+start = "2021-04-04"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
 
 [[trusted.h2]]
 criteria = "safe-to-deploy"
@@ -7569,6 +7716,13 @@ start = "2019-04-05"
 end = "2027-05-29"
 notes = "#11082 publisher-trust (owner-approved identity): hyper/http 정본 관리자 seanmonstar. 버전 고정 exemption(1.4.2)이 패치 bump마다 무효화됐다."
 
+[[trusted.http-body]]
+criteria = "safe-to-deploy"
+user-id = 359 # Sean McArthur (seanmonstar)
+start = "2019-10-01"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.http-body-util]]
 criteria = "safe-to-deploy"
 user-id = 359 # Sean McArthur (seanmonstar)
@@ -7578,7 +7732,7 @@ notes = "#11082 publisher-trust (owner-approved identity): http-body-util, 같�
 
 [[trusted.hybrid-array]]
 criteria = "safe-to-deploy"
-user-id = 267
+user-id = 267 # Tony Arcieri (tarcieri)
 start = "2022-05-07"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Tony Arcieri). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
@@ -7659,6 +7813,13 @@ user-id = 95389 # tauri (tauri-bot)
 start = "2021-10-04"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): Tauri (tauri-apps org) official release automation — tauri/wry/tao/muda and plugins. Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
+
+[[trusted.jni]]
+criteria = "safe-to-deploy"
+user-id = 68864 # Robert Bragg (rib)
+start = "2022-10-18"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
 
 [[trusted.jni-sys]]
 criteria = "safe-to-deploy"
@@ -7947,6 +8108,20 @@ start = "2024-04-17"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved, specific identity): objc2 project — Apple/Foundation/AppKit/UIKit FFI bindings, largely generated from Apple SDK headers; the de-facto Rust Apple-FFI ecosystem. Line-by-line audit of generated FFI bindings is neither feasible nor meaningful; trusting the publisher per cargo-vet's trust mechanism."
 
+[[trusted.onig]]
+criteria = "safe-to-deploy"
+user-id = 2876 # Vincent Prouillet (Keats)
+start = "2020-05-16"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.onig_sys]]
+criteria = "safe-to-deploy"
+user-id = 2876 # Vincent Prouillet (Keats)
+start = "2020-05-16"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.ort]]
 criteria = "safe-to-deploy"
 user-id = 152041 # Carson M. (decahedron1)
@@ -7998,10 +8173,17 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): pipewire-rs b
 
 [[trusted.polyval]]
 criteria = "safe-to-deploy"
-user-id = 267
+user-id = 267 # Tony Arcieri (tarcieri)
 start = "2019-08-13"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Tony Arcieri). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
+
+[[trusted.portable-atomic-util]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2023-01-15"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
 
 [[trusted.ppmd-rust]]
 criteria = "safe-to-deploy"
@@ -8066,6 +8248,41 @@ start = "2019-04-02"
 end = "2027-05-29"
 notes = "#11127 publisher-trust (owner-approved identity): rustls 저자 ctz(Joe Birr-Pixton), 54/114 판. 나머지는 cpu·djc 등 같은 프로젝트 관리자다. 창은 2019-04-02 이후로 한정해 그 이전 판은 범위 밖에 둔다."
 
+[[trusted.rustls-pki-types]]
+criteria = "safe-to-deploy"
+user-id = 2751 # Joe Birr-Pixton (ctz)
+start = "2023-09-07"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.rustls-platform-verifier]]
+criteria = "safe-to-deploy"
+user-id = 2751 # Joe Birr-Pixton (ctz)
+start = "2024-08-23"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.rustls-platform-verifier-android]]
+criteria = "safe-to-deploy"
+user-id = 209038 # Daniel McCarney (cpu)
+start = "2024-07-29"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.rustls-webpki]]
+criteria = "safe-to-deploy"
+user-id = 2751 # Joe Birr-Pixton (ctz)
+start = "2023-01-09"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.safetensors]]
+criteria = "safe-to-deploy"
+user-id = 79201 # Nicolas Patry (Narsil)
+start = "2022-12-13"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.scc]]
 criteria = "safe-to-deploy"
 user-id = 19682
@@ -8128,6 +8345,13 @@ user-id = 2844 # Martin Robinson (mrobinson)
 start = "2025-11-12"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Martin Robinson, Servo project — servo_arc/string_cache. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.signature]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2019-05-25"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
 
 [[trusted.softbuffer]]
 criteria = "safe-to-deploy"
@@ -8339,6 +8563,13 @@ start = "2022-12-01"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved, specific identity): Tauri (tauri-apps org) official release automation — tauri/wry/tao and plugins; the desktop framework this client is built on. Line-by-line audit of generated FFI bindings is neither feasible nor meaningful; trusting the publisher per cargo-vet's trust mechanism."
 
+[[trusted.universal-hash]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2019-08-30"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
 [[trusted.wasi]]
 criteria = "safe-to-deploy"
 user-id = 6825 # Dan Gohman (sunfishcode)
@@ -8471,6 +8702,20 @@ user-id = 6423 # Zeeshan Ali Khan (zeenix)
 start = "2021-07-30"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Zeeshan Ali — zbus/zvariant lead maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.zeroize]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2021-11-05"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
+
+[[trusted.zeroize_derive]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2019-03-23"
+end = "2027-08-20"
+notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
 
 [[trusted.zerotrie]]
 criteria = "safe-to-deploy"
