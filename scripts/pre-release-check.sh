@@ -218,6 +218,40 @@ else
   pass "Tag v$VERSION does not exist yet"
 fi
 
+# #11256: release.yml rejects a tag whose signature is not GitHub-verified, and
+# that check can only run once the tag exists — by which point the tag is
+# already pushed and irreversible. v0.0.1-rc.9 was tagged unsigned, the release
+# job refused it, and the tag had to be deleted and recreated; the release
+# produced no assets, which is the same shape as #10698.
+#
+# The signature cannot be checked before the tag exists, but the *ability to
+# produce one* can. Prove it by signing throwaway bytes rather than by reading
+# config: `user.signingkey` being set says nothing about whether the key is
+# present, readable, or unlocked.
+echo "[Tag Signing]"
+signing_key="$(git config --get user.signingkey || true)"
+if [ -z "$signing_key" ]; then
+  fail "user.signingkey is unset — this checkout cannot produce a signed tag, and release.yml requires one"
+else
+  sig_probe="$(mktemp)"
+  if [ "$(git config --get gpg.format || echo openpgp)" = "ssh" ]; then
+    if printf 'release-signing-probe\n' >"$sig_probe" &&
+       ssh-keygen -Y sign -f "${signing_key%.pub}" -n git "$sig_probe" >/dev/null 2>&1; then
+      pass "SSH signing key can sign (${signing_key})"
+    else
+      fail "SSH signing key at ${signing_key} could not sign — a tag made here would be rejected as unsigned"
+    fi
+    rm -f "$sig_probe" "$sig_probe.sig"
+  else
+    if printf 'release-signing-probe\n' | gpg --local-user "$signing_key" --sign --output /dev/null >/dev/null 2>&1; then
+      pass "OpenPGP signing key can sign (${signing_key})"
+    else
+      fail "OpenPGP key ${signing_key} could not sign — a tag made here would be rejected as unsigned"
+    fi
+    rm -f "$sig_probe"
+  fi
+fi
+
 echo ""
 
 # --- Frontend Build Verification ---

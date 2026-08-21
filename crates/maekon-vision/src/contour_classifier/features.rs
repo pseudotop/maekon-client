@@ -31,8 +31,11 @@ pub fn extract_visual_features(rgba: &[u8], w: u32, h: u32) -> VisualFeatures {
     }
 
     // RGBA → Luma grayscale (BT.601 approximation)
+    // `.0` drops a trailing partial pixel exactly as `chunks_exact(4)` did.
     let gray: Vec<u8> = rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|px| ((px[0] as u32 * 77 + px[1] as u32 * 150 + px[2] as u32 * 29) >> 8) as u8)
         .collect();
 
