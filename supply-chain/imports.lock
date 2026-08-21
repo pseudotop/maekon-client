@@ -1,6 +1,13 @@
 
 # cargo-vet imports lock
 
+[[publisher.aes-gcm]]
+version = "0.11.0"
+when = "2026-06-28"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
+
 [[publisher.alsa]]
 version = "0.11.0"
 when = "2025-12-26"
@@ -111,6 +118,13 @@ user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
 
+[[publisher.clap_derive]]
+version = "4.6.4"
+when = "2026-07-21"
+user-id = 6743
+user-login = "epage"
+user-name = "Ed Page"
+
 [[publisher.core-foundation]]
 version = "0.9.3"
 when = "2022-02-07"
@@ -215,6 +229,13 @@ user-id = 79201
 user-login = "Narsil"
 user-name = "Nicolas Patry"
 
+[[publisher.fastrand]]
+version = "2.4.1"
+when = "2026-04-07"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
+
 [[publisher.futures-core]]
 version = "0.3.34"
 when = "2026-08-11"
@@ -245,6 +266,41 @@ user-name = "Sebastian Dröge"
 
 [[publisher.gdk-pixbuf-sys]]
 version = "0.22.0"
+when = "2026-02-20"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gdk4]]
+version = "0.11.2"
+when = "2026-04-05"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gdk4-sys]]
+version = "0.11.2"
+when = "2026-04-05"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gdk4-wayland-sys]]
+version = "0.11.0"
+when = "2026-02-20"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gdk4-x11]]
+version = "0.11.0"
+when = "2026-02-20"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gdk4-x11-sys]]
+version = "0.11.0"
 when = "2026-02-20"
 user-id = 3623
 user-login = "sdroege"
@@ -334,6 +390,55 @@ user-id = 3623
 user-login = "sdroege"
 user-name = "Sebastian Dröge"
 
+[[publisher.graphene-rs]]
+version = "0.22.0"
+when = "2026-02-20"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.graphene-sys]]
+version = "0.22.0"
+when = "2026-02-20"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gsk4]]
+version = "0.11.1"
+when = "2026-03-14"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gsk4-sys]]
+version = "0.11.1"
+when = "2026-03-14"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gtk4]]
+version = "0.11.3"
+when = "2026-04-27"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gtk4-macros]]
+version = "0.11.0"
+when = "2026-02-20"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
+[[publisher.gtk4-sys]]
+version = "0.11.3"
+when = "2026-04-27"
+user-id = 3623
+user-login = "sdroege"
+user-name = "Sebastian Dröge"
+
 [[publisher.h2]]
 version = "0.4.16"
 when = "2026-08-17"
@@ -344,6 +449,13 @@ user-name = "Sean McArthur"
 [[publisher.http]]
 version = "1.5.0"
 when = "2026-07-29"
+user-id = 359
+user-login = "seanmonstar"
+user-name = "Sean McArthur"
+
+[[publisher.http-body]]
+version = "1.1.0"
+when = "2026-07-13"
 user-id = 359
 user-login = "seanmonstar"
 user-name = "Sean McArthur"
@@ -410,6 +522,13 @@ when = "2026-03-10"
 user-id = 11453
 user-login = "HeroicKatora"
 user-name = "Aurelia Molzer"
+
+[[publisher.jni]]
+version = "0.22.4"
+when = "2026-03-16"
+user-id = 68864
+user-login = "rib"
+user-name = "Robert Bragg"
 
 [[publisher.jni-sys]]
 version = "0.3.1"
@@ -784,6 +903,20 @@ user-name = "Elliott Mahler"
 [[publisher.rustls]]
 version = "0.23.43"
 when = "2026-07-29"
+user-id = 2751
+user-login = "ctz"
+user-name = "Joe Birr-Pixton"
+
+[[publisher.rustls-platform-verifier-android]]
+version = "0.1.1"
+when = "2024-07-29"
+user-id = 209038
+user-login = "cpu"
+user-name = "Daniel McCarney"
+
+[[publisher.rustls-webpki]]
+version = "0.103.13"
+when = "2026-04-21"
 user-id = 2751
 user-login = "ctz"
 user-name = "Joe Birr-Pixton"

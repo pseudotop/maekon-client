@@ -22,7 +22,7 @@ fn create_policies(n: usize) -> Vec<ExecutionPolicy> {
             policy_id: format!("policy-{}", i),
             process_name: format!("process-{}", i),
             process_hash: None,
-            allowed_args: vec![format!("--config=*"), format!("--output=/tmp/*")],
+            allowed_args: vec!["--config=*".to_string(), "--output=/tmp/*".to_string()],
             requires_sudo: false,
             max_execution_time_ms: 30_000,
             audit_level: AuditLevel::Basic,
