@@ -11,8 +11,11 @@ pub fn f32_vec_to_bytes(v: &[f32]) -> Vec<u8> {
 
 /// Convert a byte slice back to a `Vec<f32>` (little-endian).
 pub fn bytes_to_f32_vec(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    // `.0` drops a trailing partial word exactly as `chunks_exact(4)` did.
+    b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 

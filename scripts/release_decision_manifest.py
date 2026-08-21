@@ -29,6 +29,33 @@ def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _load_benchmark_report(path: Path) -> Any:
+    """벤치마크 리포트를 읽되, 감싸인 형태를 그 자리에서 잡아낸다.
+
+    E19 워크플로가 업로드하는 `windows-gui-session-benchmark.json` 은 리포트가
+    아니라 `{"ok": ..., "report": {...}}` 래퍼다. **두 층 모두 같은
+    `schema_version` 을 들고 있어서** 래퍼를 넘겨도 스키마 검사는 통과하고,
+    거부는 저 아래 "results must not be empty" 로 나온다. 그 문구는 벤치마크가
+    아무것도 실행하지 못한 것처럼 읽혀서, 실제로는 인자를 잘못 준 것인데
+    리포트 내용을 의심하게 만든다. 2026-08-21 rc.9 에서 그 오독으로 시간을 썼다.
+
+    모양 문제는 모양 문제라고 말한다.
+    """
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("schema_version") == SOURCE_REPORT_SCHEMA_VERSION:
+        return payload
+    inner = payload.get("report")
+    if isinstance(inner, dict) and inner.get("schema_version") == SOURCE_REPORT_SCHEMA_VERSION:
+        raise SystemExit(
+            f"{path} is a wrapper, not a benchmark report: the "
+            f"{SOURCE_REPORT_SCHEMA_VERSION} object is nested under its 'report' key. "
+            "Pass that inner object (e.g. `jq .report` into a temporary file)."
+        )
+    return payload
+
+
 def _parse_utc(value: str) -> datetime:
     if not value.endswith("Z"):
         raise ValueError(f"timestamp must be UTC/Z: {value}")
@@ -337,7 +364,7 @@ def build_manifest(
     cleanup_summary: str,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    report = _load_json(benchmark_report_path)
+    report = _load_benchmark_report(benchmark_report_path)
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "source_report_schema_version": SOURCE_REPORT_SCHEMA_VERSION,
@@ -417,7 +444,22 @@ def _cmd_build(args: argparse.Namespace) -> int:
         Path(args.output).write_text(output, encoding="utf-8")
     else:
         print(output, end="")
-    return 0 if manifest["release_decision"]["state"] == "pass" else 1
+
+    decision = manifest["release_decision"]
+    if decision["state"] == "pass":
+        return 0
+    # `validate` 는 거부 사유를 stderr 로 찍는데 `build` 는 exit 1 만 냈다. 사유가
+    # 결과 JSON 안에만 있으니, 막힌 이유를 알려면 build 한 뒤 validate 를 또 돌려야
+    # 했다 — rc.9 에서 실제로 세 번 반복했다. 같은 실패는 같은 모양으로 보고한다.
+    for reason in decision["reasons"]:
+        print(f"release-decision manifest rejection: {reason}", file=sys.stderr)
+    if args.output:
+        print(
+            f"release-decision manifest written to {args.output} in state "
+            f"{decision['state']!r}; it will not pass validate",
+            file=sys.stderr,
+        )
+    return 1
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -448,8 +490,12 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--manual-evidence-id")
     build.add_argument("--runner-os", required=True)
     build.add_argument("--runner-label", action="append", default=[])
-    build.add_argument("--evidence-artifacts")
-    build.add_argument("--claims")
+    # 둘 다 optional 로 보였지만 validate 는 빈 값을 언제나 거부한다
+    # ("evidence_artifacts must not be empty" / "release-critical claims must not
+    # be empty"). optional 처럼 생긴 필수 인자는 한 번에 하나씩만 알려주므로
+    # 왕복이 쌓인다 — 서명 없이 만든 태그를 되돌리던 rc.9 에서 그 왕복이 비쌌다.
+    build.add_argument("--evidence-artifacts", required=True)
+    build.add_argument("--claims", required=True)
     build.add_argument("--issue-number", action="append", default=[])
     build.add_argument("--cleanup-status", required=True)
     build.add_argument("--cleanup-summary", required=True)

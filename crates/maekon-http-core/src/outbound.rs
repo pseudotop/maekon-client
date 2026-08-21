@@ -109,6 +109,10 @@ pub const MAX_AUTH_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 /// Callers map it to their own error type (CoreError / NetworkError), and
 /// transport errors are preserved in `Transport` so the `e.is_timeout()` branch
 /// can be kept.
+///
+/// `Debug` is derived so a failing assertion can name the variant it got;
+/// without it a cap-guard test can only say "not TooLarge".
+#[derive(Debug)]
 pub enum BodyReadError {
     /// Network/transport read error (original reqwest error preserved — enables timeout branching).
     Transport(reqwest::Error),
@@ -351,6 +355,142 @@ mod tests {
             .expect("req");
         let body = read_body_capped(resp, 1024).await.ok().expect("within cap");
         assert_eq!(body.len(), 100);
+        m.assert_async().await;
+    }
+
+    /// #11296: the caps ARE the guard, yet no test read them, so a mutant turning
+    /// `64 * 1024 * 1024` (67,108,864) into `64 + 1024 + 1024` (2,112) or
+    /// `64 / 1024 / 1024` (0) passed the suite untouched. Six such mutants survived
+    /// run 32449318499.
+    ///
+    /// Written as plain byte counts rather than `64 * 1024 * 1024`, so the
+    /// assertion cannot drift in sympathy with the expression it guards.
+    #[test]
+    fn response_caps_hold_their_documented_sizes() {
+        assert_eq!(
+            MAX_AI_RESPONSE_BYTES, 67_108_864,
+            "#6939: the BYOK AI response cap must stay 64 MiB"
+        );
+        assert_eq!(
+            MAX_INTEGRATION_RESPONSE_BYTES, 8_388_608,
+            "#6940: the integration transport cap must stay 8 MiB"
+        );
+        assert_eq!(
+            MAX_AUTH_RESPONSE_BYTES, 16_777_216,
+            "#6949: the auth/control-plane cap must stay 16 MiB"
+        );
+    }
+
+    /// #11296: `100 > 10` and `100 >= 10` agree, so the pre-existing pair of tests
+    /// could not tell `>` from `>=`. The boundary is the only place the two
+    /// disagree, and a body of exactly `cap` is within the cap.
+    #[tokio::test]
+    async fn read_body_capped_allows_body_exactly_at_cap() {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("GET", "/exact")
+            .with_status(200)
+            .with_body(vec![b'z'; 64])
+            .create_async()
+            .await;
+        let resp = reqwest::get(format!("{}/exact", server.url()))
+            .await
+            .expect("req");
+        let body = read_body_capped(resp, 64)
+            .await
+            .expect("a body of exactly `cap` bytes is within the cap");
+        assert_eq!(body.len(), 64);
+        m.assert_async().await;
+    }
+
+    /// #11296: the other side of the same boundary. The reported `len` is asserted
+    /// too — a guard that rejects but misreports the size cannot be reasoned about
+    /// from a log, and pinning it also fixes which of the two checks fired.
+    #[tokio::test]
+    async fn read_body_capped_rejects_one_byte_over_cap() {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("GET", "/over")
+            .with_status(200)
+            .with_body(vec![b'z'; 65])
+            .create_async()
+            .await;
+        let resp = reqwest::get(format!("{}/over", server.url()))
+            .await
+            .expect("req");
+        match read_body_capped(resp, 64).await {
+            Err(BodyReadError::TooLarge { len, cap }) => {
+                assert_eq!(len, 65, "the reported length must be the real body length");
+                assert_eq!(cap, 64, "the reported cap must be the cap that was applied");
+            }
+            other => panic!("65B body with a 64B cap must be TooLarge, got {other:?}"),
+        }
+        m.assert_async().await;
+    }
+
+    /// #11296: with a `Content-Length` the pre-check at the top of the function
+    /// rejects first and the streaming accumulator never runs — every mutant inside
+    /// that loop is unobservable. A chunked response carries no `Content-Length`,
+    /// which is the only way to reach it.
+    ///
+    /// The exact `len` is asserted rather than just the variant: it is what
+    /// separates `bytes.len() + chunk.len()` from `bytes.len() * chunk.len()`
+    /// under ANY chunk split, whereas the variant alone agrees for most splits.
+    #[tokio::test]
+    async fn read_body_capped_rejects_over_cap_without_content_length() {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("GET", "/chunked-over")
+            .with_status(200)
+            .with_chunked_body(|w| {
+                w.write_all(&[b'a'; 40])?;
+                w.write_all(&[b'b'; 40])
+            })
+            .create_async()
+            .await;
+        let resp = reqwest::get(format!("{}/chunked-over", server.url()))
+            .await
+            .expect("req");
+        assert!(
+            resp.content_length().is_none(),
+            "this test is only meaningful without a Content-Length; \
+             with one the pre-check fires and the streaming path is never taken"
+        );
+        match read_body_capped(resp, 64).await {
+            Err(BodyReadError::TooLarge { len, cap }) => {
+                assert_eq!(len, 80, "the accumulated length must be 40 + 40");
+                assert_eq!(cap, 64, "the reported cap must be the cap that was applied");
+            }
+            other => panic!("80B streamed with a 64B cap must be TooLarge, got {other:?}"),
+        }
+        m.assert_async().await;
+    }
+
+    /// #11296: the streaming side of the boundary. Without this, `>` and `>=`
+    /// inside the accumulator loop remain indistinguishable.
+    #[tokio::test]
+    async fn read_body_capped_allows_body_exactly_at_cap_without_content_length() {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("GET", "/chunked-exact")
+            .with_status(200)
+            .with_chunked_body(|w| {
+                w.write_all(&[b'a'; 32])?;
+                w.write_all(&[b'b'; 32])
+            })
+            .create_async()
+            .await;
+        let resp = reqwest::get(format!("{}/chunked-exact", server.url()))
+            .await
+            .expect("req");
+        assert!(
+            resp.content_length().is_none(),
+            "this test is only meaningful without a Content-Length"
+        );
+        let body = read_body_capped(resp, 64)
+            .await
+            .expect("32 + 32 streamed bytes are exactly at a 64B cap, not over it");
+        assert_eq!(body.len(), 64);
         m.assert_async().await;
     }
 

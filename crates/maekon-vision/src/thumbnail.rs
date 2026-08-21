@@ -137,15 +137,15 @@ fn compute_image_hash(image: &DynamicImage) -> u64 {
     // bottom-right strip — collide and return the WRONG image's thumbnail (uploaded
     // + stored as dashcam). This runs inside spawn_blocking (off the 1s capture
     // loop), so a full-buffer scan is affordable. 8 bytes/iteration for speed.
-    let mut chunks = raw.chunks_exact(8);
-    for chunk in &mut chunks {
-        let word = u64::from_le_bytes([
-            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-        ]);
-        hash ^= word;
+    // `as_chunks` hands back the trailing bytes as the second tuple element, so
+    // the tail below still folds them in — dropping it would let two buffers
+    // that differ only past the last whole word hash the same.
+    let (words, remainder) = raw.as_chunks::<8>();
+    for chunk in words {
+        hash ^= u64::from_le_bytes(*chunk);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
-    for &byte in chunks.remainder() {
+    for &byte in remainder {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(FNV_PRIME);
     }
@@ -429,6 +429,29 @@ mod tests {
         let hash1 = compute_image_hash(&img);
         let hash2 = compute_image_hash(&img);
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn image_hash_covers_bytes_past_the_last_whole_word() {
+        // The existing hash tests use 640x480, whose RGBA buffer is a multiple of
+        // 8 bytes — so the trailing-remainder branch never runs and dropping it
+        // would leave every one of them green. 3x3 gives 36 bytes: four whole
+        // 8-byte words plus a 4-byte tail that holds exactly the last pixel.
+        //
+        // That tail is not cosmetic. The comment on compute_image_hash records a
+        // real incident where frames differing only in an unhashed region
+        // collided and the cache returned the WRONG image's thumbnail.
+        let mut a = RgbaImage::from_pixel(3, 3, image::Rgba([10, 20, 30, 255]));
+        let mut b = a.clone();
+        a.put_pixel(2, 2, image::Rgba([10, 20, 30, 255]));
+        b.put_pixel(2, 2, image::Rgba([11, 20, 30, 255]));
+
+        assert_eq!(a.as_raw().len() % 8, 4, "fixture must leave a partial word");
+        assert_ne!(
+            compute_image_hash(&DynamicImage::ImageRgba8(a)),
+            compute_image_hash(&DynamicImage::ImageRgba8(b)),
+            "images differing only past the last whole word must not collide"
+        );
     }
 
     #[test]

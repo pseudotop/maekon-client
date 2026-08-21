@@ -212,9 +212,34 @@ declare -a APP_RESTORE_PATHS=()
 
 mkdir -p "$LOG_DIR"
 
+detach_mount() {
+  # A GUI bootstrap smoke launched from the DMG can still hold the volume when
+  # cleanup runs, and diskimages-helper outlives the process that opened it.
+  # One quiet detach loses that race, and `|| true` swallowed the failure — so
+  # the volume stayed mounted and every later path was read-only.
+  local attempt
+  for attempt in 1 2 3; do
+    if hdiutil detach "$MOUNT_DIR" -quiet; then
+      return 0
+    fi
+    sleep 2
+  done
+  if hdiutil detach "$MOUNT_DIR" -force -quiet; then
+    info "Detached ${MOUNT_DIR} only after -force"
+    return 0
+  fi
+  info "Could not detach ${MOUNT_DIR}; leaving it for the runner to reap"
+  return 1
+}
+
 cleanup() {
+  # Whatever the script was already exiting with. Teardown reports problems but
+  # does not get to change the verdict — see the rm below.
+  local rc=$?
+
   if [[ "$MOUNTED" == "1" ]]; then
-    hdiutil detach "$MOUNT_DIR" -quiet || true
+    detach_mount || true
+    MOUNTED=0
   fi
 
   local candidate
@@ -234,7 +259,17 @@ cleanup() {
     fi
   done
 
-  rm -rf "$TMP_DIR"
+  # This `rm` used to be the last statement in an EXIT trap, so its status
+  # became the script's status. On 2026-08-21 the rc.9 release printed
+  # "macOS installer smoke completed" and then failed the step anyway: the DMG
+  # was still mounted, every path under it was read-only, and `rm` exited 1.
+  # `create-release` needs this job, so a teardown race blocked publication of
+  # a build that had passed every check.
+  if ! rm -rf "$TMP_DIR" 2>/dev/null; then
+    info "Could not fully remove ${TMP_DIR}; leaving it for the runner to reap"
+  fi
+
+  return "$rc"
 }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
