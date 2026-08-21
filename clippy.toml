@@ -1,0 +1,24 @@
+# Workspace-wide clippy configuration.
+#
+# H1 (#7719): `clippy::unwrap_used`/`clippy::expect_used` are enabled
+# (`warn`) at the workspace level (see root `Cargo.toml`
+# `[workspace.lints.clippy]`). Test code should keep using `.unwrap()`/
+# `.expect()` freely — these two keys tell clippy to skip both lints for
+# any item nested under `#[cfg(test)]`, which covers unit tests
+# (`#[cfg(test)] mod tests { ... }`) and cfg(test)-gated test-only modules
+# (`#[cfg(test)] mod foo;` pointing at a `*_tests.rs`/`tests_*.rs` file).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# #11299: clippy did not know this workspace's MSRV, so it suggested APIs newer
+# than the version we claim to support — and `-D warnings` turned each such
+# suggestion into a build error.
+#
+# On 2026-08-21 upstream promoted 1.98.0 to stable. CI installs `stable` with no
+# `rust-toolchain.toml` pinning it, so the very next run picked up the new
+# `clippy::chunks_exact_to_as_chunks` lint and public main went red with no code
+# change at all: the same source passed on 1.97.1 the day before. That check is
+# a required status check on public main, so every open PR was blocked.
+#
+# Keep this in step with `rust-version` in the workspace Cargo.toml.
+msrv = "1.88.0"

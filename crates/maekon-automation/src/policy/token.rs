@@ -205,8 +205,12 @@ fn hex_decode(hex: &str) -> Option<Vec<u8>> {
     if !hex.is_ascii() || !bytes.len().is_multiple_of(2) {
         return None;
     }
+    // The length guard above rejects odd input, so `as_chunks` never leaves a
+    // remainder and this is exactly what `chunks_exact(2)` produced.
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
         .collect()
 }
