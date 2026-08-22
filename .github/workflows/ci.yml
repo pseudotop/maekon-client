@@ -577,6 +577,18 @@ jobs:
         uses: ./.github/actions/rust-cache
         with:
           key: ci-test
+          # #11369: exactly ONE cell writes the shared key. Left to themselves
+          # all eight race for the reservation and the SHORTEST cell wins —
+          # measured on run 32550027173, the 2-minute `linux-sandbox` cell took
+          # it while the 12-minute `standalone` cell logged "Failed to save:
+          # Unable to reserve cache". The surviving cache then held a single
+          # small crate's tree, which is why `Linux-rust-ci-test` was worth so
+          # little that it was the first thing evicted.
+          #
+          # `standalone` is the broadest tree here (`--workspace`, default
+          # features) and its `~/.cargo/registry` download is what every other
+          # cell reuses regardless of feature set.
+          save: ${{ matrix.cell.name == 'standalone' }}
 
       - name: Create frontend dist stub for Tauri generate_context!()
         if: env.RUN_HEAVY_TESTS == 'true'
@@ -879,7 +891,19 @@ jobs:
       - name: Cache Rust build artifacts
         uses: ./.github/actions/rust-cache
         with:
-          key: ci-linux-autostart-unit
+          # #11369: this job's body is one test target —
+          # `-p maekon-app --features systemd-notify --test linux_autostart_unit`
+          # — but `-p maekon-app` drags in the whole dependency tree, so its
+          # dedicated key held **3.19 GiB, 24% of the repository's entire cache
+          # allowance**, for a 9-minute job.
+          #
+          # The repository was 32% over that allowance (13.22 GiB against 10 GB),
+          # which is why caches were being evicted every run. Reading the shared
+          # Linux test key instead of writing its own frees that 3.19 GiB, and
+          # the `~/.cargo/registry` half — the part this job actually reuses — is
+          # the same content either way.
+          key: ci-test
+          save: "false"
 
       - name: Create frontend dist stub for Tauri generate_context!()
         run: mkdir -p crates/maekon-web/frontend/dist && echo '<!doctype html><title>Maekon Dashboard</title><h1>Maekon</h1>' > crates/maekon-web/frontend/dist/index.html

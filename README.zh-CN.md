@@ -25,7 +25,7 @@ Maekon 是一款 Apache-2.0 local-first 桌面代理，可在不依赖 ONESHIM �
 
 ## Source Build 快速开始
 
-公开仓库已经可用，`v0.0.1-rc.8` 是当前公开 prerelease。GitHub 的 `latest` endpoint 不包含 prerelease，因此验证 release binary 时请使用安装文档中的版本固定命令。开发和 debug build 请从本地 source checkout 运行。
+公开仓库已经可用，`v0.0.1-rc.9` 是当前公开 prerelease。GitHub 的 `latest` endpoint 不包含 prerelease，因此验证 release binary 时请使用安装文档中的版本固定命令。开发和 debug build 请从本地 source checkout 运行。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -244,17 +244,17 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.8/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.8 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.9/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.9 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.8/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.9/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.8 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.9 -RequireSignature
 ```
 
 ### 发布产物
