@@ -20,6 +20,29 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
+  # #11369: incremental compilation state is the single largest thing in this
+  # repository's caches, and in CI it buys nothing.
+  #
+  # Measured on a local checkout of this workspace:
+  #
+  #     target/debug/incremental   29 GB
+  #     target/debug (total)       45 GB      -> 64% is incremental state
+  #
+  # `cargo test` uses the dev profile, where rustc defaults `incremental` to
+  # true; the release builds in `build:` already have it off. That is why the
+  # test caches dwarf the build ones (Windows-rust-ci-test 3.52 GiB against
+  # Windows-rust-ci-build 1.36 GiB) — and those test caches are exactly what
+  # gets evicted when total demand crosses the 10 GB allowance mid-run, which
+  # is what #11369 measured happening on run 32557380616.
+  #
+  # Incremental only pays off across REPEATED builds in one target directory.
+  # Since #11348 split the eight feature combinations into a matrix, each cell
+  # builds once — so the value here dropped to roughly zero at the same moment
+  # the cost became the binding constraint.
+  #
+  # Set on the workflow, deliberately NOT in `.cargo/config.toml`: local
+  # development does rebuild repeatedly and should keep incremental on.
+  CARGO_INCREMENTAL: 0
   # `-W warnings`, NOT `-D`: the vendored `patches/` crates (muda/tao/wry) are
   # uncapped local path deps — verified via `cargo build -v` that cargo emits
   # no `--cap-lints allow` for their rustc invocations (unlike plain
