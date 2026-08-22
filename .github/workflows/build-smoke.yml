@@ -93,6 +93,18 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
         with:
           key: smoke-build-${{ matrix.target }}
+          # #11396: this workflow checks out whatever `inputs.ref` names, and a
+          # dispatch started on `main` writes its cache into `main`'s scope no
+          # matter which ref was built. Without this guard, anyone who can
+          # dispatch could point `ref` at their own tree and leave a poisoned
+          # cache for every later trusted build to consume.
+          #
+          # `release.yml` avoids the same trap by verifying the requested SHA
+          # against the release tag BEFORE running any code from that tree
+          # (#11155). There is no equivalent verification here — this is a smoke
+          # builder, not a release path — so the cache is made read-only instead
+          # whenever the ref is anything but the default branch.
+          save-if: ${{ inputs.ref == 'main' }}
 
       - name: Configure OpenSSL for SQLCipher (Windows)
         if: runner.os == 'Windows'
@@ -160,6 +172,9 @@ jobs:
         with:
           version: '10'
           lockfile-path: crates/maekon-web/frontend/pnpm-lock.yaml
+          # #11396: same reasoning as the Rust cache above — the pnpm store is
+          # restored but never written back when building an untrusted ref.
+          save-cache: ${{ inputs.ref == 'main' }}
 
       - name: Build frontend
         working-directory: crates/maekon-web/frontend

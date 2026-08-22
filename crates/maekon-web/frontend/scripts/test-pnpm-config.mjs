@@ -42,15 +42,22 @@ if (Object.keys(overrides).length === 0) {
   fail('pnpm overrides are not configured in pnpm-workspace.yaml.')
 }
 
+// #11396: these versions are SECURITY pins, so restating them here is what
+// keeps a silent downgrade from landing. The same property made them stale —
+// three of them had drifted into being the vulnerable version themselves while
+// this list asserted they were correct. Re-check against open Dependabot
+// alerts when touching this block; a pin that is never re-measured stops being
+// a guard and becomes the thing holding the vulnerability in place.
 const expectedOverrides = {
   'serialize-javascript': '7.0.5',
   '@babel/core': '7.29.6',
   'form-data': '4.0.6',
-  'js-yaml': '4.3.0',
+  'js-yaml': '4.3.1',
   ws: '8.21.0',
-  'cheerio>undici': '7.28.0',
+  'ip-address': '10.3.1',
+  'cheerio>undici': '7.29.0',
   'minimatch@10.2.5>brace-expansion': '5.0.7',
-  'webdriver>undici': '6.27.0',
+  'webdriver>undici': '6.28.0',
 }
 
 for (const [packageName, expectedVersion] of Object.entries(expectedOverrides)) {
