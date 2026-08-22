@@ -5,12 +5,48 @@ inputs:
   key:
     description: Job-specific cache key suffix
     required: true
+  save:
+    # #11369: a repository has ONE cache allowance (10 GB) and every job that
+    # writes a key spends from it. This repository sat at 13.22 GiB, so caches
+    # were being evicted every run — including ones that had just been written.
+    #
+    # Two shapes of waste come from letting every job save:
+    #
+    #   1. Jobs that share a key RACE for it. Whichever finishes first wins the
+    #      reservation, and the first to finish is by definition the one that did
+    #      the least work — so the surviving cache holds the least useful tree.
+    #      Measured on run 32550027173: the 2-minute `linux-sandbox` cell won
+    #      `ci-test`, and the 12-minute `standalone` cell logged
+    #      "Failed to save: Unable to reserve cache".
+    #   2. Jobs that build one small target still cache the whole workspace
+    #      `target/` under their own key, holding gigabytes for minutes of reuse.
+    #
+    # Set this to 'false' for a job that should read a shared cache without
+    # spending allowance on writing one back.
+    description: Whether this job writes the cache back ('true') or only reads it ('false')
+    required: false
+    default: "true"
 
 runs:
   using: composite
   steps:
     - name: Cache Rust artifacts
+      if: inputs.save == 'true'
       uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/bin
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-rust-${{ inputs.key }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-rust-${{ inputs.key }}-
+          ${{ runner.os }}-rust-
+
+    - name: Restore Rust artifacts (read-only)
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@v5
       with:
         path: |
           ~/.cargo/bin

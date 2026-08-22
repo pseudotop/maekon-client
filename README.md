@@ -43,7 +43,7 @@ is not a stable release or evidence of production readiness.
 
 ## Source Build Quick Start
 
-The public repository is live, and `v0.0.1-rc.8` is available as the current
+The public repository is live, and `v0.0.1-rc.9` is available as the current
 public prerelease. Because GitHub's `latest` release endpoint excludes
 prereleases, use the version-pinned installer commands in the install guide for
 release-binary testing. For monorepo development and debug builds, run Maekon
@@ -354,31 +354,31 @@ Full install guide:
 
 ### Quick Install (Terminal)
 
-> The current public binary release is the prerelease `v0.0.1-rc.8`. GitHub's
+> The current public binary release is the prerelease `v0.0.1-rc.9`. GitHub's
 > `latest` stable URL is not available until the first stable release, so the
 > commands below pin the prerelease explicitly.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.8/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.8 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.9/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.9 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.8/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.9/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.8 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.9 -RequireSignature
 ```
 
 ### Release Assets
 
 Download from [Releases](https://github.com/pseudotop/maekon-client/releases):
 
-The current published prerelease is `v0.0.1-rc.8`. This table documents the
+The current published prerelease is `v0.0.1-rc.9`. This table documents the
 expected release asset names used by the installer, updater, checksum, and
 signature flows.
 
