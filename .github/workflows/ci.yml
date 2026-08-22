@@ -459,8 +459,34 @@ jobs:
       - name: Run vision perf gate tests
         run: ./scripts/cargo-cache.sh test --locked --release -p maekon-vision perf_budget_ -- --nocapture
 
-  test:
-    name: Test
+  # #11348: the eight feature-combination test runs below used to be sequential
+  # steps inside a single `test` job. Measured on the last green `pull_request`
+  # run before this change (32464194805): 10 + 12 + 12 + 4 + 4 + 4 + 0 + 7 = 53
+  # minutes of that job's 58, with every setup step (checkout, apt, toolchain,
+  # cache, stubs, sandbox worker) under a minute COMBINED. `build:` waits on
+  # `test`, so those 53 minutes sat squarely on the critical path:
+  # check 17m -> test 58m -> build 32m = the 108m total wall clock measured.
+  #
+  # A matrix makes the critical path the SLOWEST CELL instead of their sum.
+  # `runs-on: ubuntu-latest` on a public repository bills no hosted minutes, so
+  # the added concurrency is free. The `max-parallel: 1` contract in
+  # scripts/ci-cost-control-contracts.test.mjs governs the PAID hosted legs in
+  # maekon-client-patch-audit.yml, not this job — its own comment notes the
+  # sibling `first-party-lint-per-os` is already a matrix.
+  #
+  # `fail-fast: false` is load-bearing, not cosmetic. As sequential steps the
+  # first failing feature set aborted the rest, so a red run only ever revealed
+  # "the next one" and each fix cost another full round trip. Cells now report
+  # independently and one run shows every failure.
+  #
+  # The cache key stays SHARED (`ci-test`) rather than becoming per-cell. The
+  # repository holds 9.84 GiB against a 10 GB Actions cache allowance
+  # (`Linux-rust-ci-test` alone is 1.08 GiB), so eight distinct keys would evict
+  # one another and every cell would build cold — slower than the sequential job
+  # this replaces. actions/cache skips the upload when the key already exists,
+  # so concurrent cells do not fight over the save.
+  test-matrix:
+    name: Test (${{ matrix.cell.name }})
     needs: [changes, check]
     if: >
       always() &&
@@ -470,8 +496,39 @@ jobs:
       needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
-    # 실측 n=30 p50=2263s max=5307s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
-    timeout-minutes: 120
+    # 이전 실측 n=30 p50=2263s max=5307s 는 여덟 조합의 **합**에 대한 값이다. 셀
+    # 하나의 최댓값은 12분이었으나 콜드 캐시 셀을 위해 여유를 둔다.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        cell:
+          - name: standalone
+            args: test --locked --workspace
+          - name: server
+            args: test --locked --workspace --features server
+          - name: grpc
+            args: test --locked --workspace --features grpc
+          # D13-v2b PR-B2: execute the SubscribeMetrics handler tests.
+          # test-support enables MockSystemMonitor + active_stream_count accessor.
+          - name: grpc-dashboard
+            args: test --locked -p maekon-web --no-default-features --features grpc-dashboard,test-support
+          # D13-v2c follow-up (PR #491): execute the 36 external_grpc_integration
+          # tests + 2 sibling integration files (audit_query_surface,
+          # live_config_endpoint). The default `--workspace` run happens without
+          # the `grpc-dashboard-external` + `external-grpc-tools` feature set, so
+          # without this cell the ~40 integration tests guarding D14 request-id
+          # correlation, D22 fallback, D25 audit query, D27 warmup preservation,
+          # D28 status mapping, D29 live-config, D33 1s reload convergence are
+          # not actually executed by CI.
+          - name: grpc-dashboard-external
+            args: test --locked -p maekon-web --no-default-features --features grpc-dashboard-external,external-grpc-tools,test-support
+          - name: lan-sync
+            args: test --locked -p maekon-network --features lan-sync
+          - name: linux-sandbox
+            args: test --locked -p maekon-automation --features linux-sandbox
+          - name: telemetry
+            args: test --locked -p maekon-app --features telemetry -- --test-threads=1
     env:
       RUN_HEAVY_TESTS: ${{ github.event_name == 'workflow_dispatch' || ((needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true') && needs.changes.outputs.release_metadata_only != 'true') }}
     steps:
@@ -537,47 +594,49 @@ jobs:
         if: env.RUN_HEAVY_TESTS == 'true'
         run: ./scripts/cargo-cache.sh build --locked -p maekon-sandbox-worker
 
-      - name: Run tests (standalone)
+      # The cell's argv arrives through the environment rather than being
+      # interpolated into this script. `Analyze (actions)` is a required check
+      # and template expansion inside `run:` is what its injection queries look
+      # for. The unquoted expansion below is deliberate — the argv needs word
+      # splitting (`-- --test-threads=1`).
+      - name: Run tests (${{ matrix.cell.name }})
         if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --locked --workspace
+        env:
+          CELL_ARGS: ${{ matrix.cell.args }}
+        run: ./scripts/cargo-cache.sh $CELL_ARGS
 
-      - name: Run tests (server features)
-        if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --locked --workspace --features server
-
-      - name: Run tests (grpc features)
-        if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --locked --workspace --features grpc
-
-      # D13-v2b PR-B2: execute the SubscribeMetrics handler tests.
-      # test-support enables MockSystemMonitor + active_stream_count accessor.
-      - name: Run tests (grpc-dashboard + test-support)
-        if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --locked -p maekon-web --no-default-features --features grpc-dashboard,test-support
-
-      # D13-v2c follow-up (PR #491): execute the 36 external_grpc_integration
-      # tests + 2 sibling integration files (audit_query_surface,
-      # live_config_endpoint). The default `cargo test --workspace` runs
-      # without the `grpc-dashboard-external` + `external-grpc-tools` feature
-      # set, so without this step the ~40 integration tests guarding D14
-      # request-id correlation, D22 fallback, D25 audit query, D27 warmup
-      # preservation, D28 status mapping, D29 live-config, D33 1s reload
-      # convergence are not actually executed by CI.
-      - name: Run tests (grpc-dashboard-external + external-grpc-tools + test-support)
-        if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --locked -p maekon-web --no-default-features --features grpc-dashboard-external,external-grpc-tools,test-support
-
-      - name: Run tests (lan-sync features)
-        if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --locked -p maekon-network --features lan-sync
-
-      - name: Run tests (linux-sandbox features)
-        if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --locked -p maekon-automation --features linux-sandbox
-
-      - name: Run tests (telemetry feature)
-        if: env.RUN_HEAVY_TESTS == 'true'
-        run: ./scripts/cargo-cache.sh test --locked -p maekon-app --features telemetry -- --test-threads=1
+  # `Test` is a REQUIRED status check. Splitting the job above into a matrix
+  # renames its cells to `Test (standalone)` and friends, and a required context
+  # that stops being reported leaves every PR permanently pending — the same
+  # trap landing-build.yml records from #10076. This aggregate keeps the `Test`
+  # name reporting and derives its verdict from the matrix.
+  #
+  # `if: always()` and the explicit result check are both required. Without the
+  # former the aggregate is skipped when a cell fails and the context vanishes;
+  # without the latter a failed matrix reads as green here.
+  test:
+    name: Test
+    needs: [test-matrix]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify every Test cell succeeded
+        env:
+          # 'skipped' passes: when `changes` finds no Rust/CI edits the matrix
+          # does not run, which matches the previous job going green with its
+          # own steps skipped.
+          MATRIX_RESULT: ${{ needs.test-matrix.result }}
+        run: |
+          case "$MATRIX_RESULT" in
+            success|skipped)
+              echo "Test matrix result: $MATRIX_RESULT"
+              ;;
+            *)
+              echo "Test matrix result: $MATRIX_RESULT - failing the aggregate Test check."
+              exit 1
+              ;;
+          esac
 
   # #4826 (E20-34): run the test suite on macOS + Windows so platform-gated code
   # (`#[cfg(target_os = "macos"/"windows")]`) is actually EXERCISED, not just

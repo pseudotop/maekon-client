@@ -7,12 +7,11 @@ updates:
     # public repo는 export target이므로 version-update PR은 parent SSOT에서만 받는다.
     # Dependabot security update PR 한도는 GitHub가 별도로 관리한다.
     open-pull-requests-limit: 0
-    # sysinfo 0.39+ raises its required rustc to 1.95, violating the workspace
-    # `rust-version = "1.88.0"` MSRV. Hold at 0.38 until the MSRV is intentionally
-    # raised, so a routine Dependabot sweep cannot silently re-break it (#6848).
+    # #11339: the sysinfo hold is released. It existed because 0.39+ requires
+    # rustc 1.95 while the workspace declared 1.88.0 — a declaration the lockfile
+    # had already stopped honouring. The workspace now declares 1.95.0, so the
+    # gap this entry guarded no longer exists.
     ignore:
-      - dependency-name: "sysinfo"
-        versions: [">=0.39"]
       - dependency-name: "time"
         versions: [">=0.3.52"]
       # Dependabot grouped cargo updater가 tauri-build 2.6.3 lockfile 갱신 중

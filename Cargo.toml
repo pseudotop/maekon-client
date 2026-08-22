@@ -113,7 +113,23 @@ expect_used = "warn"
 edition = "2021"
 version = "0.0.1-rc.9"
 license = "Apache-2.0"
-rust-version = "1.88.0"  # jsonwebtoken 11.0.0 MSRV (#9375; 10.4.0 과 동일한 1.88.0)
+# #11339: 1.88.0 was declared for jsonwebtoken 11.0.0 (#9375) and stayed there
+# long after the lockfile stopped honouring it. Nothing verified the claim — no
+# workflow ever built on the declared toolchain — so it drifted silently while
+# other decisions kept citing it as their justification.
+#
+# The first run of the MSRV canary (#11324) resolved the committed Cargo.lock on
+# 1.88.0 and found 26 dependencies requiring rustc 1.92: the GTK/GLib stack that
+# Tauri pulls in (gtk4-sys, glib, pango, soup3, cairo-rs, gdk4, …).
+#
+# 1.92.0 was what the lockfile required once the false 1.88.0 was corrected.
+#
+# 1.95.0 is a second, different decision: sysinfo 0.39.x declares
+# `rust_version = 1.95` (verified against crates.io), and that line has been held
+# back since #6624 solely by the MSRV claim. Taking it means raising the floor
+# deliberately rather than because the lockfile forced us — the contributors who
+# build this workspace need 1.95 from here.
+rust-version = "1.95.0"
 repository = "https://github.com/pseudotop/maekon-client"
 homepage = "https://github.com/pseudotop/maekon-client"
 authors = ["Maekon Contributors"]
@@ -138,11 +154,9 @@ eventsource-stream = "0.2"
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 
 # 시스템 모니터링
-# Pinned to 0.38 (MSRV 1.88): sysinfo 0.39.x bumps the required rustc to 1.95,
-# violating the workspace `rust-version = "1.88.0"` policy. The 0.39 bump landed
-# unintentionally via the Dependabot queue sweep (#6624); 0.38 is the last line
-# honoring the declared MSRV (#6848).
-sysinfo = "0.38"
+# #11339: unpinned. 0.39.x declares `rust_version = 1.95`, which the workspace
+# now declares too — the hold since #6624/#6848 existed only for that gap.
+sysinfo = "0.39"
 
 # 로컬 DB
 #
