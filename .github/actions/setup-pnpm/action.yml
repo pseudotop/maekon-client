@@ -10,6 +10,20 @@ inputs:
     description: Lockfile path used to derive the cache key
     required: false
     default: ""
+  save-cache:
+    # #11396: a caller that checks out an ATTACKER-CHOSEN ref and then writes a
+    # cache hands that cache to every later run in the same scope. The dangerous
+    # shape is a `workflow_dispatch` run started on `main` whose `ref` input
+    # points elsewhere: the untrusted tree executes, but the cache it writes is
+    # scoped to `main`.
+    #
+    # CodeQL's `actions/cache-poisoning/poisonable-step` flags this action for
+    # exactly that reason. Callers that check out a fixed or verified ref should
+    # leave this alone; callers that honour an arbitrary `ref` input must pass
+    # 'false' so the store is restored but never written back.
+    description: Whether the pnpm store may be written back ('true') or only restored ('false')
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -25,8 +39,18 @@ runs:
         echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
     - name: Cache pnpm store
-      if: ${{ inputs.lockfile-path != '' }}
+      if: ${{ inputs.lockfile-path != '' && inputs.save-cache == 'true' }}
       uses: actions/cache@v5
+      with:
+        path: ${{ steps.pnpm.outputs.store_path }}
+        key: ${{ runner.os }}-pnpm-${{ inputs.version }}-${{ hashFiles(inputs.lockfile-path) }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-${{ inputs.version }}-
+          ${{ runner.os }}-pnpm-
+
+    - name: Restore pnpm store (read-only)
+      if: ${{ inputs.lockfile-path != '' && inputs.save-cache != 'true' }}
+      uses: actions/cache/restore@v5
       with:
         path: ${{ steps.pnpm.outputs.store_path }}
         key: ${{ runner.os }}-pnpm-${{ inputs.version }}-${{ hashFiles(inputs.lockfile-path) }}

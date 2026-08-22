@@ -40,6 +40,17 @@ jobs:
         uses: ./.github/actions/rust-cache
         with:
           key: macos-windowserver-gui-smoke
+          # #11396: the checkout above honours `inputs.ref`, so a dispatch can
+          # build an arbitrary tree while the cache it writes stays scoped to
+          # the branch the run was started on. CodeQL did NOT flag this file —
+          # only its sibling `build-smoke.yml` — which is a reminder that the
+          # alert list is a starting point, not the boundary of the problem.
+          # The shape here is identical, and this leg runs on a self-hosted
+          # runner.
+          #
+          # Empty `inputs.ref` means "current commit" (see the input's own
+          # description), which is the trusted case and still writes.
+          save: ${{ inputs.ref == '' }}
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
@@ -52,6 +63,8 @@ jobs:
         with:
           version: '10'
           lockfile-path: crates/maekon-web/frontend/pnpm-lock.yaml
+          # #11396: same reasoning as the Rust cache above.
+          save-cache: ${{ inputs.ref == '' }}
 
       - name: Build frontend assets for Tauri frontendDist
         working-directory: crates/maekon-web/frontend
