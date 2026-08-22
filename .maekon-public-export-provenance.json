@@ -2,12 +2,12 @@
   "export": {
     "git_commit_sha": null,
     "manifest_path": ".maekon-public-export-provenance.json",
-    "snapshot_sha256": "a8e2584511e088212fbeac7f8a3d198ee480d783ffa28a226f6c138ec56ae40e"
+    "snapshot_sha256": "d0a2faf52ffcee008d3183b63d8a6834c123b163aff38a0d5f47e27dbcc5287d"
   },
-  "generated_at": "2026-08-21T08:39:20Z",
+  "generated_at": "2026-08-22T00:58:32Z",
   "public_target": {
-    "base_sha": "1b1cd7952bfffdc6f26ae713414112a74589ef74",
-    "diff_result": "public_content_changed",
+    "base_sha": null,
+    "diff_result": "not_compared",
     "repo": "pseudotop/maekon-client"
   },
   "release_evidence_requirements": {
@@ -56,7 +56,7 @@
     "source_mode": "committed_ref",
     "source_path": "clients/maekon-client",
     "source_ref": "origin/main",
-    "source_sha": "6f306675374d8282723a2dc871fa4f755c6da5a5",
-    "source_tree_sha": "bc2a5d080dd7bcd81af6463c12ccb631d5aee6a4"
+    "source_sha": "029d9c3414025184e40404ee04d29314b12e6e00",
+    "source_tree_sha": "0fbc977e45d3d668f2420828912baa39a3b1c373"
   }
 }
