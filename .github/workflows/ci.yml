@@ -20,6 +20,36 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
+  # #11369: incremental compilation only pays off across REPEATED builds in one
+  # target directory. Since #11348 split the eight feature combinations into a
+  # matrix, each cell builds exactly once — so the bookkeeping is paid for and
+  # never used.
+  #
+  # This was introduced with a DIFFERENT and WRONG justification, and the
+  # correction is worth keeping here so nobody re-derives the mistake. The claim
+  # was that incremental state dominates this repository's CI caches, based on:
+  #
+  #     target/debug/incremental   29 GB
+  #     target/debug (total)       45 GB      -> 64%
+  #
+  # That is a LOCAL DEVELOPMENT tree, where incremental state accumulates over
+  # many rebuilds. CI restores a cache and builds once, so it never accumulates
+  # comparably. The same directory name was measured, but not the same thing.
+  #
+  # The measurement that settles it, comparing two like-for-like export-PR runs
+  # (32557380616 with incremental on, 32562522430 with it off):
+  #
+  #     Windows-rust-ci-test   3,787,555,740 B  ->  3,778,129,550 B   (-0.25%)
+  #     Test cells             13/14/14/8/5/5/5/2 -> 13/13/15/8/5/5/5/3
+  #
+  # So this setting does NOT shrink the caches and does NOT change durations.
+  # It stays because it is correct on its own terms, not because it helped the
+  # cache budget — that problem is still open and needs a policy decision about
+  # which jobs get caches at all.
+  #
+  # Set on the workflow, deliberately NOT in `.cargo/config.toml`: local
+  # development does rebuild repeatedly and should keep incremental on.
+  CARGO_INCREMENTAL: 0
   # `-W warnings`, NOT `-D`: the vendored `patches/` crates (muda/tao/wry) are
   # uncapped local path deps — verified via `cargo build -v` that cargo emits
   # no `--cap-lints allow` for their rustc invocations (unlike plain
