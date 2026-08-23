@@ -21,7 +21,7 @@ mod egress_policy;
 /// Called after `run_analysis_tick()` each cycle when `gui_intelligence.enabled`.
 pub(crate) mod gui_pipeline;
 pub(crate) mod heatmap;
-mod loops;
+pub(crate) mod loops;
 pub(crate) mod required_deps;
 pub(crate) mod schedule;
 pub(crate) mod shared_regime_state;

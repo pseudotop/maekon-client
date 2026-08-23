@@ -101,6 +101,28 @@ where
         Some("screen-capture-request") => {
             Some(DebugPermissionsRuntimeCliCommand::ScreenCaptureRequest)
         }
+        Some("screen-capture-watch") => {
+            let samples = args
+                .next()
+                .and_then(|value| value.as_ref().parse::<u32>().ok())
+                .unwrap_or(40)
+                .clamp(2, 240);
+            let interval_ms = args
+                .next()
+                .and_then(|value| value.as_ref().parse::<u64>().ok())
+                .unwrap_or(500)
+                .clamp(100, 5_000);
+            let warmup_ms = args
+                .next()
+                .and_then(|value| value.as_ref().parse::<u64>().ok())
+                .unwrap_or(5_000)
+                .min(30_000);
+            Some(DebugPermissionsRuntimeCliCommand::ScreenCaptureWatch {
+                samples,
+                interval_ms,
+                warmup_ms,
+            })
+        }
         _ => None,
     }
 }

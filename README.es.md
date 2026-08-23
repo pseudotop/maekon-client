@@ -81,6 +81,7 @@ El modo autónomo es la ruta de evaluación predeterminada para Global Alpha.
 - Los datos locales se almacenan en SQLite y se gestionan con controles de retención
 - La automatización requiere validación de políticas, perfiles de sandbox y registro local de auditoría
 - Política de informes y respuesta de seguridad: [SECURITY.md](./SECURITY.md)
+- Comentarios Alpha, solicitudes de privacidad o retiro (estado actual de recepción): [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - Línea base de integridad autónoma: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - Runbook de operaciones de integridad: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - Índice de documentación: [docs/README.md](./docs/README.md)

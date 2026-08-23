@@ -34,10 +34,12 @@ pub(super) const OS_PERMISSION_EVENT: &str = "capture-os-permission";
 /// surfaces transitions (event + desktop notification). Returns whether the
 /// OS axis currently permits capture.
 ///
-/// Callers must invoke this only while the config/consent capture gate is
-/// open — a closed gate already stops capture, and probing then would emit
-/// notification noise for a state the user cannot observe.
-pub(super) async fn observe_os_capture_permission<R: Runtime>(
+/// Production monitor callers must invoke this only while the config/consent
+/// capture gate is open — a closed gate already stops capture, and probing then
+/// would emit notification noise for a state the user cannot observe. The
+/// debug-only release-evidence watch is the sole exception: it isolates the OS
+/// permission axis inside a disposable VM and never persists captured frames.
+pub(crate) async fn observe_os_capture_permission<R: Runtime>(
     watch: &mut OsPermissionWatch,
     app_handle: Option<&AppHandle<R>>,
     notifier: Option<&dyn TsNotifier>,

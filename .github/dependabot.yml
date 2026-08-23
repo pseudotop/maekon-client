@@ -12,6 +12,21 @@ updates:
     # had already stopped honouring. The workspace now declares 1.95.0, so the
     # gap this entry guarded no longer exists.
     ignore:
+      # time 0.3.52 changed the `Parsable::parse` signature by adding parser
+      # defaults; cookie 0.18.1 still calls the one-argument API. This is an API
+      # incompatibility, NOT a version-range one — cookie 0.18.1 requires
+      # `time ^0.3`, so the range alone would happily accept 0.3.55.
+      #
+      # #11339: cookie 0.18.2 (2026-08-08) postdates that change and is the
+      # first version that could carry the fix, so this hold is releasable once
+      # the lockfile moves cookie forward. `test-release-export-guardrails.sh`
+      # derives that condition from the locked cookie version and will fail if
+      # this entry outlives it.
+      #
+      # Not released here: `time` already carries a deferred-audit exemption
+      # (#11281) sized at 21,951 insertions with 166 added unsafe lines in 88
+      # distinct forms. Bumping stacks more unaudited delta onto that backlog,
+      # which is a supply-chain decision rather than a dependency one.
       - dependency-name: "time"
         versions: [">=0.3.52"]
       # Dependabot grouped cargo updater가 tauri-build 2.6.3 lockfile 갱신 중

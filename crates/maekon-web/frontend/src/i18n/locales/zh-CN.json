@@ -740,6 +740,8 @@
     "supportTitle": "支持与诊断",
     "supportDesc": "打开支持快照，检查最近的运行日志，并使用正确的上下文提交 GitHub 错误报告。",
     "supportOpenDetails": "打开支持详情",
+    "supportAlphaFeedback": "Alpha 反馈与隐私",
+    "supportOpenFeedbackFailed": "无法打开 Alpha 反馈与隐私页面。",
     "supportReportBug": "报告错误",
     "supportDialogTitle": "支持与诊断",
     "supportDialogDesc": "在打开 GitHub Issue 之前，使用此面板查看当前的诊断快照。",

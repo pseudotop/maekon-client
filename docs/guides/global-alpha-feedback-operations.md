@@ -9,11 +9,14 @@ email-draft form is `https://maekon.dev/alpha-feedback`.
 
 ## Current gate
 
-Policy `2026-07-19.1` is in `hold`. New invitations, general Alpha intake, and
-scheduled Alpha posts are not allowed while repository issue #8683 remains on
-HOLD. Privacy requests, participation withdrawal, and private vulnerability
-reporting remain open. Changing `intake_state` requires a reviewed manifest
-change and cannot bypass the repository release gate.
+Policy `2026-08-23.1` is in `hold`. The old repository-wide HOLD on #8683 has
+been released; it is no longer the reason for this state. New invitations,
+general Alpha intake, and scheduled Alpha posts remain disallowed until #8685's
+release-trust residuals are closed, #8687 is measurement-ready, and a named
+operator confirms current response capacity. Privacy requests, participation
+withdrawal, and private vulnerability reporting remain open. No community is
+open or advertised. Changing `intake_state` requires a reviewed manifest change
+and cannot bypass those entry gates.
 
 ## Route separation
 
@@ -57,7 +60,7 @@ MAEKON-ALPHA-RECEIPT
 receipt_id: <opaque id>
 received_at: <UTC timestamp>
 request_type: <feedback|privacy|withdrawal>
-policy_version: 2026-07-19.1
+policy_version: 2026-08-23.1
 target_by: <UTC date>
 ```
 
@@ -116,7 +119,7 @@ boundary mismatch:
 1. keep privacy, withdrawal, and private security channels open;
 2. stop new invitations and scheduled posts;
 3. set the policy manifest to `paused` in a reviewed change;
-4. record the incident and owner on #8683 without participant content;
+4. open or link a dedicated incident issue and record its owner without participant content;
 5. require a new release decision before reopening general intake.
 
 Feedback, interviews, diagnostics, registrations, and receipts are not customer,

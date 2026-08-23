@@ -60,8 +60,25 @@ On Linux, Maekon first checks whether `systemctl --user` is available and prefer
 | Flatpak package | ❌ | Use the Flatpak background portal API instead |
 | Headless environments (SSH, no display) | ❌ | Desktop session required |
 
-> **Minimum systemd version**: systemd 219+ required (Ubuntu 20.04+, Fedora 33+, Debian 10+ all qualify).
-> On systemd 218 or earlier, the XDG fallback is applied automatically.
+> **Minimum systemd version**: systemd 219+ required for the systemd user-unit
+> path. On systemd 218 or earlier, the XDG fallback is applied automatically.
+>
+> **This is not the supported-distribution floor.** The systemd requirement
+> answers whether autostart works, not whether the release installs. The shipped
+> `.deb` is built on `ubuntu-latest` and its own metadata requires
+> **Ubuntu 24.04 or newer** (#11246):
+>
+> ```
+> Depends: libasound2t64 (>= 1.1.0), libc6 (>= 2.39), ..., libglib2.0-0t64
+> ```
+>
+> `libc6 (>= 2.39)` is 24.04's glibc — 20.04 ships 2.31 and 22.04 ships 2.35 —
+> and the `t64` package names come from the 64-bit `time_t` transition, which
+> landed in 24.04 and does not exist under those names on earlier releases.
+> Three independent reasons, all from the artifact rather than from intent.
+>
+> Older distributions are not blocked by policy; they are unsupported because
+> nothing builds or tests for them. Running there means building from source.
 
 **How support is detected**: at startup, Maekon probes the environment in this order.
 

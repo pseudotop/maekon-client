@@ -522,6 +522,8 @@
     "supportTitle": "Support & Diagnostics",
     "supportDesc": "Open a support snapshot, inspect recent runtime logs, and file a GitHub bug report with the right context.",
     "supportOpenDetails": "Open Support Details",
+    "supportAlphaFeedback": "Alpha feedback & privacy",
+    "supportOpenFeedbackFailed": "Could not open the Alpha feedback and privacy page.",
     "supportReportBug": "Report Bug",
     "supportDialogTitle": "Support & Diagnostics",
     "supportDialogDesc": "Use this panel to review the current diagnostics snapshot before opening a GitHub issue.",

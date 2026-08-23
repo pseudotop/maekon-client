@@ -10,7 +10,7 @@ mod intervals;
 mod monitor;
 mod monitor_phases;
 mod network;
-mod os_permission_helper;
+pub(crate) mod os_permission_helper;
 mod resource_health;
 // E20-24 (#4816): houses both the server-only SSE loop and the local maintenance
 // loop (deferred resurface). Gated on `local-suggestions` (default-on); the SSE

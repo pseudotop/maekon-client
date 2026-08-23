@@ -323,6 +323,16 @@ pub(crate) fn run_debug_permissions_runtime_cli_command<R: tauri::Runtime>(
             }
             exit_code
         }
+        DebugPermissionsRuntimeCliCommand::ScreenCaptureWatch {
+            samples,
+            interval_ms,
+            warmup_ms,
+        } => super::permission_watch::run_debug_screen_capture_watch(
+            app_handle,
+            samples,
+            interval_ms,
+            warmup_ms,
+        ),
     }
 }
 

@@ -4138,6 +4138,12 @@ criteria = "safe-to-deploy"
 version = "0.1.18"
 notes = "Phase 6 #3908 batch4: literal-to-type proc macro reviewed; emits type-level constants only, with no filesystem, network, process, or unsafe runtime side effects."
 
+[[audits.mutants]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.0.3"
+notes = "#8685 full-crate audit. Dependency-free proc macro with one inert `skip` attribute that returns its input token stream unchanged. No unsafe code, build script, filesystem/network/process access, generated runtime behavior, or transitive dependencies. License: MIT."
+
 [[audits.native-tls]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"

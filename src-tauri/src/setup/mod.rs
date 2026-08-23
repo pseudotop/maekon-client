@@ -31,10 +31,18 @@ where
         return false;
     }
 
-    matches!(
-        args.into_iter().next().as_ref().map(AsRef::as_ref),
-        Some("debug-notification" | "debug-permissions-runtime")
-    )
+    let mut args = args.into_iter();
+    match args.next().as_ref().map(AsRef::as_ref) {
+        Some("debug-notification") => true,
+        // The request probe needs only a Tauri AppHandle. The watch probe must
+        // keep the full runtime and WebView alive so the production
+        // `capture-os-permission` event reaches the real recovery banner.
+        Some("debug-permissions-runtime") => matches!(
+            args.next().as_ref().map(AsRef::as_ref),
+            Some("screen-capture-request")
+        ),
+        _ => false,
+    }
 }
 
 /// Tauri setup function — runs before the Agent + WebServer initialization in gui_runner.rs.
@@ -273,6 +281,10 @@ mod tests {
         ));
         assert!(debug_runtime_cli_requested_from(
             ["debug-permissions-runtime", "screen-capture-request"],
+            Some("1")
+        ));
+        assert!(!debug_runtime_cli_requested_from(
+            ["debug-permissions-runtime", "screen-capture-watch"],
             Some("1")
         ));
     }

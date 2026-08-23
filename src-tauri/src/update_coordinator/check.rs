@@ -126,6 +126,23 @@ pub(super) async fn run_check<E: UpdateExecutor>(
             guard.touch();
             broadcast_status(status_tx, &guard);
         }
+        // #11332: an empty channel is not a failure. A repository that has only
+        // published prereleases answers 404 to every stable-channel check, so
+        // treating it as an error left the DEFAULT configuration sitting in
+        // UpdatePhase::Error forever — and made the README's automatic-update
+        // promise look broken rather than simply not-yet-applicable.
+        Err(UpdateError::NoPublishedRelease { channel }) => {
+            info!(
+                channel = %channel,
+                "No release published on this channel yet; nothing to update to"
+            );
+            let mut guard = state.write().await;
+            guard.phase = UpdatePhase::Idle;
+            guard.message = Some(format!("No release published on the {channel} channel yet"));
+            guard.pending = None;
+            guard.touch();
+            broadcast_status(status_tx, &guard);
+        }
         Err(e) => {
             warn!("Failed to check for updates: {}", e);
             let mut guard = state.write().await;

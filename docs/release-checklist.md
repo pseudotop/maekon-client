@@ -208,3 +208,4 @@ Required before AI live smoke dispatch:
 - [ ] RC release created via `./scripts/release.sh <VERSION>` followed by `./scripts/publish-rc-tag.sh <VERSION>`.
 - [ ] Stable release created by running `promote-stable.yml` to open a stable promotion PR, merging that PR into `main`, then running `./scripts/publish-stable-tag.sh <VERSION>` from latest `main`.
 - [ ] **Do NOT use `git tag` directly** — the publish scripts synchronize release checks and create signed annotated tags that the release workflow verifies through GitHub.
+- [ ] If a tag has already been pushed and the release job failed, follow `docs/guides/release-tag-recovery.md` before deleting anything. Whether any asset was published is what decides the procedure, and it must be checked first — `v0.0.1-rc.9` was recovered by replacing the tag only because the failure happened before publication.

@@ -740,6 +740,8 @@
     "supportTitle": "Soporte y diagnóstico",
     "supportDesc": "Abra una instantánea de soporte, inspeccione los registros de ejecución recientes y presente un informe de error en GitHub.",
     "supportOpenDetails": "Abrir detalles de soporte",
+    "supportAlphaFeedback": "Comentarios Alpha y privacidad",
+    "supportOpenFeedbackFailed": "No se pudo abrir la página de comentarios Alpha y privacidad.",
     "supportReportBug": "Reportar error",
     "supportDialogTitle": "Soporte y diagnóstico",
     "supportDialogDesc": "Utilice este panel para revisar la instantánea de diagnóstico actual antes de abrir un issue en GitHub.",

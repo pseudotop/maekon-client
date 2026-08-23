@@ -32,6 +32,11 @@ tauri-build = { workspace = true, features = [] }
 chrono = { workspace = true }
 
 [dependencies]
+# #8685: cargo-mutants' inert marker attribute keeps OS/Tauri revocation
+# orchestration in the disposable-VM integration lane while the pure
+# fail-closed capture boundary remains mutation-tested. The macro has no
+# runtime behavior or transitive dependencies.
+mutants = "=0.0.3"
 tauri = { workspace = true }
 tauri-plugin-global-shortcut = { workspace = true }
 tauri-plugin-dialog = { workspace = true }
