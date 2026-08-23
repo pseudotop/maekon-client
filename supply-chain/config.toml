@@ -58,15 +58,6 @@ audit-as-crates-io = false
 [policy.wry]
 audit-as-crates-io = false
 
-[[exemptions.ashpd]]
-version = "0.11.1"
-criteria = "safe-to-deploy"
-notes = """
-reason: e31-upgrade-baseline (GTK4/WebKitGTK 6 migration dependency without manual audit)
-review-by: 2026-10-23
-follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
-"""
-
 [[exemptions.combine]]
 version = "4.6.7"
 criteria = "safe-to-deploy"
@@ -98,15 +89,6 @@ follow-up: Re-review the aaudio/alsa `unsafe` additions and the WASAPI windows-c
   pin before promotion beyond routine public export. category:public-dependabot-major
 """
 
-[[exemptions.criterion]]
-version = "0.8.2"
-criteria = "safe-to-run"
-notes = """
-reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
-review-by: 2026-10-09
-follow-up: triage per supply-chain/cycle15-triage-groups.md
-"""
-
 [[exemptions.enigo]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
@@ -126,16 +108,6 @@ follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pa
 refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 6.0.0->6.1.0, disposition unchanged
 """
 
-[[exemptions.fastembed]]
-version = "5.17.3"
-criteria = "safe-to-deploy"
-notes = """
-reason: #6605 public-dependabot-ssot (Dependabot queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
-review-by: 2026-12-31
-follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
-refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 5.17.2->5.17.3, disposition unchanged
-"""
-
 [[exemptions.heapless]]
 version = "0.8.0"
 criteria = "safe-to-deploy"
@@ -145,24 +117,6 @@ review-by: 2026-10-16
 follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:expert-concurrency-unsafe
 """
 
-[[exemptions.image-webp]]
-version = "0.2.4"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
-review-by: 2026-10-16
-follow-up: triage per supply-chain/cycle15-triage-groups.md
-"""
-
-[[exemptions.indicatif]]
-version = "0.18.4"
-criteria = "safe-to-deploy"
-notes = """
-reason: #5431 audit-triage-grace (0.18.x removes number_prefix in favor of unit-prefix; no full manual audit in this pass)
-review-by: 2026-11-01
-follow-up: Re-review with fastembed runtime path before production embedding release; retain cargo-audit/cargo-deny gate. category:maekon-audit-triage
-"""
-
 [[exemptions.jni-macros]]
 version = "0.22.4"
 criteria = "safe-to-deploy"
@@ -170,24 +124,6 @@ notes = """
 reason: e31-upgrade-baseline (lockfile refresh dependency without manual audit)
 review-by: 2026-11-06
 follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
-"""
-
-[[exemptions.khronos_api]]
-version = "3.1.0"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
-review-by: 2026-10-24
-follow-up: triage per supply-chain/cycle15-triage-groups.md
-"""
-
-[[exemptions.minimal-lexical]]
-version = "0.2.1"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
-review-by: 2026-10-31
-follow-up: triage per supply-chain/cycle15-triage-groups.md
 """
 
 [[exemptions.moxcms]]
@@ -228,15 +164,6 @@ follow-up: triage per supply-chain/cycle15-triage-groups.md
 
 [[exemptions.nix]]
 version = "0.30.1"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
-review-by: 2026-10-31
-follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
-"""
-
-[[exemptions.ntapi]]
-version = "0.4.3"
 criteria = "safe-to-deploy"
 notes = """
 reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
@@ -312,24 +239,6 @@ review-by: 2026-11-06
 follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
 """
 
-[[exemptions.r-efi]]
-version = "5.3.0"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
-review-by: 2026-11-08
-follow-up: triage per supply-chain/cycle15-triage-groups.md
-"""
-
-[[exemptions.r-efi]]
-version = "6.0.0"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
-review-by: 2026-11-08
-follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
-"""
-
 [[exemptions.rubato]]
 version = "3.0.0"
 criteria = "safe-to-deploy"
@@ -337,6 +246,17 @@ notes = """
 reason: #7200 public-dependabot-ssot (#121 rubato-major queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass)
 review-by: 2026-10-31
 follow-up: Complete rubato 0.15.0..3.0.0 resampler behavior, buffer shape, and tail-drain hand audit before promotion beyond routine public export. category:public-dependabot-major
+disposition 2026-08-23 (#11281): 5.0.0 audited while unblocking dependabot #11345 — all five
+  crates that PR needs are now covered. This exemption is for 3.0.0, which is what the current
+  lockfile still resolves; it retires when #11345 lands and the tree moves to 5.0.0.
+  The 5.0.0 audit is in audits.toml and carries the reasoning: the resampler's 51 unsafe sites
+  are all `get_unchecked` / `write_sample_unchecked` in the hot loops, and their bounds come
+  from `calculate_output_size`, whose `space = chunk_size - (interpolator_len + 1) - last_index`
+  reserves the interpolator window. Verified arithmetically for Cubic, Quintic and Septic with
+  slack 2, 3 and 4 respectively, plus the lower bound at the initial negative index.
+  Also closed in that batch: audioadapter-sample 5.2.0 drops the `mem::zeroed::<T>()` on the
+  public unsealed *safe* `BytesSample` trait that this repository flagged at 3.0.0, replacing it
+  with `T::zero()`; that crate now has no unsafe at all.
 """
 
 [[exemptions.serde_with]]
@@ -375,19 +295,56 @@ notes = """
 reason: #7200 public-dependabot-ssot (#125 cargo-minor-patch queue resolved through parent SSOT; cargo-vet diff not fully certified in this pass). This continues the unaudited acceptance path from #6220 rather than serving as a safe-to-deploy attestation.
 review-by: 2026-09-20
 follow-up: #6220/#7200 — hand-audit the time 0.3.49..0.3.51 diff together with the pending num_fmt / FormatDescriptionV3 unsafe review, or replace with explicit trusted audit before promotion beyond routine public export.
-disposition 2026-08-23 (#11281): auditable, but deferred to a dedicated pass — sized, not skipped.
-  The 0.3.47 -> 0.3.51 delta is 21,951 insertions across 104 files. Its unsafe surface was
-  measured rather than eyeballed: 166 added unsafe lines in 88 distinct forms, with the five
-  most common forms covering only 32% of them. That shape matters more than the line count.
-  A crate where one guarded idiom repeats 160 times can be reasoned about once; here almost
-  every site is its own obligation — mostly `*_unchecked` range constructors
-  (`ru16::new_unchecked`, `Seconds::new_unchecked`, `Self::__new_unchecked`) that each need
-  an in-range proof at that call site, plus 2 `core::mem::transmute`, 4
-  `str::from_utf8_unchecked` and 6 `str_from_raw_parts`.
-  Nothing else in the scan is alarming: no filesystem, network, process, or environment
-  access, no build script, no inline asm, no `#[no_mangle]`.
-  This is the largest remaining delta and the next tractable target after the 8,000~20,000
-  full-inspect band; it wants its own batch rather than a tail-end pass.
+disposition 2026-08-23 (#11281), revised after a partial audit — three findings change the picture.
+
+  **Exposure is boundary, not general.** The prior note left this implicit and the reason line
+  still says category:small-maintainer-or-other, which is the wrong axis. Under
+  PUBLISHER-TRUST-POLICY.md §4 the test is whether a single malicious release, on its own,
+  yields code execution or access to key material. Measured on Cargo.lock, `time` is a direct
+  dependency of rcgen, x509-parser, asn1-rs, simple_asn1, yasna, der-parser, oid-registry,
+  jsonwebtoken, cookie and cookie_store — the certificate and token validity stack. Date
+  arithmetic that is wrong there makes expired certificates and tokens validate, which is a
+  trust decision compromised without a second bug. That places it in the policy's
+  "cryptography and certificates" family, so **publisher trust alone is not sufficient** and
+  the remaining options are an audit or a recorded owner exception.
+  For the record, publisher trust would otherwise have looked easy: jhpratt#15682 shipped 86
+  of the 90 releases carrying publisher records (95.6%), with github:time-rs/time Trusted
+  Publishing on the other 4. But 0.3.51 itself was published by the individual, not the
+  signature, and jhpratt is trusted nowhere in this file — so it would also have been a new
+  identity decision.
+
+  **The unsafe surface grew 2.5x and it is not a relocation.** Counting `src/**/*.rs` in both
+  versions rather than diff `+` lines: 105 -> 259 unsafe lines, 69 -> 145 distinct forms, with
+  83 forms that do not appear in 0.3.47 at all and 36 additional occurrences of forms that do.
+  The growth is concentrated in a new hand-optimised integer formatting path (src/num_fmt.rs)
+  that writes into `MaybeUninit` buffers at computed offsets.
+
+  **That new path was read end to end and is sound.** src/num_fmt.rs is 630 lines and was
+  audited in full. Array-indexed lookups stay in bounds (`SINGLE_DIGITS` 10 bytes indexed by
+  ru8<0,9>; `ZERO_PADDED_PAIRS`/`SPACE_PADDED_PAIRS` 200 bytes indexed by ru8<0,99>*2 reading
+  2). The magic-constant division in `div_100` was checked at its upper bound: with
+  SIG = (1<<19)/100+1 = 5243, n = 9999 gives (9999*5243)>>19 = 99, so the claimed
+  `high < 100` holds across ru16<0,9_999>. Both `MaybeUninit` writers were traced through
+  every caller: `u64_pad_none` (20-byte buffer) and `u128_pad_none` (39-byte buffer, seeded by
+  `enc_16lsd::<23>` and `enc_16lsd::<7>`). In each the tail loop consumes exactly four digits
+  per four bytes of offset, and the `offset -= 1` step cannot underflow because the only case
+  reaching offset 0 is the full-width value, where remain is 0 and value is non-zero so the
+  branch is skipped.
+
+  **One defect found, not exploitable.** `write_one_digit` documents its requirement as
+  "`buf` must be at least `offset` bytes long"; writing one byte at `offset` needs
+  `offset + 1`. The sibling `write_two_digits` states `offset + 2` correctly. It is a private
+  `const unsafe fn` with exactly two call sites (num_fmt.rs:478 and :548) and both satisfy the
+  correct bound, so nothing in the crate relies on the weaker wording and it is unreachable
+  from outside. Worth reporting upstream as a documentation fix.
+
+  **What remains.** Roughly 90 unsafe sites outside num_fmt.rs — timestamp.rs (10 internal
+  `__*_unchecked`), formattable.rs, component_provider.rs, date.rs, lexer_ast.rs, strftime.rs,
+  plus 6 `transmute` and 10 `unwrap_unchecked`. Nearly all are `deranged` range assertions, and
+  `deranged::new_unchecked` calls `core::hint::assert_unchecked`, so an out-of-range value is
+  genuine UB rather than a wrong number — each site needs its own in-range proof. Certifying
+  safe-to-deploy on a boundary crate requires finishing those; this pass did not, and the
+  exemption stays until it does. The revisit date recorded on this entry above is 2026-09-20.
 """
 
 [[exemptions.usearch]]
@@ -494,15 +451,6 @@ follow-up: E31 post-migration supply-chain hand audit; local patched upstream cr
 
 [[exemptions.xcb]]
 version = "1.7.0"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
-review-by: 2026-12-31
-follow-up: triage per supply-chain/cycle15-triage-groups.md
-"""
-
-[[exemptions.xkeysym]]
-version = "0.2.1"
 criteria = "safe-to-deploy"
 notes = """
 reason: cycle15-baseline-grace (cargo vet baseline import without manual audit)
