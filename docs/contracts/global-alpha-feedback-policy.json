@@ -1,11 +1,24 @@
 {
-  "schema_version": "1.0",
-  "policy_version": "2026-07-19.1",
+  "schema_version": "1.1",
+  "policy_version": "2026-08-23.1",
   "canonical_url": "https://maekon.dev/alpha-feedback",
   "intake_state": "hold",
-  "hold_reason": "repository_hold_issue_8683",
+  "hold_reason": "release_trust_and_operator_capacity_gates_incomplete",
+  "reopen_requires": [
+    "issue_8685_release_trust_residuals_closed",
+    "issue_8687_measurement_contract_ready",
+    "named_operator_capacity_confirmed"
+  ],
   "external_invites_allowed": false,
   "scheduled_posts_allowed": false,
+  "community": {
+    "state": "closed",
+    "channels": [],
+    "owner": null,
+    "response_expectation": null,
+    "moderation_policy": null,
+    "incident_route": "https://github.com/pseudotop/maekon-client/security/advisories/new"
+  },
   "channels": {
     "general_feedback": {
       "email": "support@maekon.dev",
@@ -83,7 +96,7 @@
     "actions": [
       "stop_new_invites",
       "stop_scheduled_posts",
-      "record_incident_on_issue_8683",
+      "open_or_link_dedicated_incident_issue",
       "keep_privacy_and_security_channels_open"
     ]
   },

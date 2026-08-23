@@ -23,6 +23,16 @@ vi.mock('../api/client', () => ({
 }))
 
 describe('SupportToolsCard privacy', () => {
+  it('opens the canonical Alpha feedback and privacy route', () => {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue({} as Window)
+    renderWithProviders(<SupportToolsCard />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Alpha feedback & privacy' }))
+
+    expect(openSpy).toHaveBeenCalledWith('https://maekon.dev/alpha-feedback', '_blank', 'noopener,noreferrer')
+    openSpy.mockRestore()
+  })
+
   it('shows useful frames-directory status without rendering the local path', async () => {
     renderWithProviders(<SupportToolsCard />)
 

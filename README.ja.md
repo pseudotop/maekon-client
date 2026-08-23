@@ -81,6 +81,7 @@ Global AlphaではStandaloneモードが現在のデフォルト評価パスで�
 - ローカルデータはSQLiteに保存され、保持ポリシーで管理されます
 - 自動化にはポリシー検証、サンドボックスプロファイル、ローカル監査ログが必要です
 - セキュリティ報告および対応ポリシー: [SECURITY.md](./SECURITY.md)
+- Alphaフィードバック・プライバシー要求・参加撤回（現在の受付状態）: [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - Standalone整合性ベースライン: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - 整合性運用ランブック: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - ドキュメントインデックス: [docs/README.md](./docs/README.md)

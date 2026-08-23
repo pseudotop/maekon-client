@@ -8,6 +8,7 @@
 //!   parsers.rs     — argument parsers + env-gate helpers
 //!   output.rs      — JSON emission, path resolution, file I/O
 //!   runners.rs     — run_debug_* command executors
+//!   permission_watch.rs — isolated screen-capture revoke evidence watch
 //!   macos_notify.rs — macOS UNUserNotification delegate + send helper
 
 #![allow(unused_imports)]
@@ -18,6 +19,8 @@ mod macos_notify;
 mod output;
 #[cfg(debug_assertions)]
 mod parsers;
+#[cfg(debug_assertions)]
+mod permission_watch;
 #[cfg(debug_assertions)]
 mod pointer_capture;
 #[cfg(debug_assertions)]
@@ -471,6 +474,38 @@ mod cli_runtime_flag_tests {
     }
 
     #[test]
+    fn debug_permissions_runtime_cli_parses_screen_capture_watch() {
+        assert_eq!(
+            debug_permissions_runtime_cli_command_from(
+                [
+                    "debug-permissions-runtime",
+                    "screen-capture-watch",
+                    "24",
+                    "250",
+                    "3000"
+                ],
+                Some("1")
+            ),
+            Some(DebugPermissionsRuntimeCliCommand::ScreenCaptureWatch {
+                samples: 24,
+                interval_ms: 250,
+                warmup_ms: 3000,
+            })
+        );
+        assert_eq!(
+            debug_permissions_runtime_cli_command_from(
+                ["debug-permissions-runtime", "screen-capture-watch"],
+                Some("1")
+            ),
+            Some(DebugPermissionsRuntimeCliCommand::ScreenCaptureWatch {
+                samples: 40,
+                interval_ms: 500,
+                warmup_ms: 5000,
+            })
+        );
+    }
+
+    #[test]
     fn debug_notification_cli_requires_explicit_env_gate() {
         assert_eq!(
             debug_notification_cli_command_from(["debug-notification", "status"], None),
@@ -512,6 +547,14 @@ mod cli_runtime_flag_tests {
         assert!(!should_enable_single_instance_for_debug_runtime(
             None,
             Some(DebugPermissionsRuntimeCliCommand::ScreenCaptureRequest)
+        ));
+        assert!(!should_enable_single_instance_for_debug_runtime(
+            None,
+            Some(DebugPermissionsRuntimeCliCommand::ScreenCaptureWatch {
+                samples: 2,
+                interval_ms: 100,
+                warmup_ms: 0,
+            })
         ));
     }
 

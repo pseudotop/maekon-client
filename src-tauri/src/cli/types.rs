@@ -90,4 +90,9 @@ impl DebugNotificationBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DebugPermissionsRuntimeCliCommand {
     ScreenCaptureRequest,
+    ScreenCaptureWatch {
+        samples: u32,
+        interval_ms: u64,
+        warmup_ms: u64,
+    },
 }

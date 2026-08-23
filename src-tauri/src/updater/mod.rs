@@ -57,6 +57,13 @@ pub enum UpdateError {
     #[error("Failed to parse API response: {0}")]
     ParseResponse(String),
 
+    // #11332: distinct from ParseResponse so callers can tell "nothing has been
+    // published on this channel yet" apart from "the check failed". The former
+    // is a normal state for a project that has only shipped prereleases; the
+    // latter deserves an error surface.
+    #[error("no release has been published on the {channel} channel yet")]
+    NoPublishedRelease { channel: String },
+
     #[error("Failed to parse version: {0}")]
     VersionParse(#[from] semver::Error),
 
@@ -365,6 +372,23 @@ impl Updater {
         };
 
         let response = self.http_client.get(&url).send().await?;
+
+        // #11332: a 404 here is not a failure — it is GitHub saying the channel
+        // has nothing published. `/releases/latest` excludes prereleases, so a
+        // repository that has only ever shipped release candidates answers 404
+        // to every stable-channel check. Reporting that as an error puts the
+        // updater in a permanent Error state for the DEFAULT configuration,
+        // which is how the public README came to promise automatic updates that
+        // could never arrive.
+        //
+        // Narrowed to the stable channel deliberately: the prerelease path uses
+        // the all-releases endpoint, which answers 200 with `[]` rather than
+        // 404, so a 404 there really would be something wrong.
+        if response.status() == reqwest::StatusCode::NOT_FOUND && !wants_prerelease {
+            return Err(UpdateError::NoPublishedRelease {
+                channel: self.config.effective_channel().to_string(),
+            });
+        }
 
         if !response.status().is_success() {
             return Err(UpdateError::ParseResponse(format!(

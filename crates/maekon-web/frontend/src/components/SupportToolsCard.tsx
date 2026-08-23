@@ -24,6 +24,7 @@ import {
 // same diagnostics + bug-report toolset from a single source.
 
 const SUPPORT_DEVELOPER_DETAILS_KEY = 'maekon-support-developer-details'
+const ALPHA_FEEDBACK_URL = 'https://maekon.dev/alpha-feedback'
 
 interface RuntimeLogSnapshot {
   generated_at: string
@@ -155,6 +156,13 @@ export function SupportToolsCard() {
     }
   }, [runtimeLogs, t])
 
+  const handleOpenAlphaFeedback = useCallback(() => {
+    const opened = window.open(ALPHA_FEEDBACK_URL, '_blank', 'noopener,noreferrer')
+    if (!opened) {
+      addToast('error', t('settings.supportOpenFeedbackFailed'), 5000)
+    }
+  }, [t])
+
   return (
     <>
       <Card variant="default" padding="lg">
@@ -166,6 +174,9 @@ export function SupportToolsCard() {
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(true)}>
               {t('settings.supportOpenDetails')}
+            </Button>
+            <Button type="button" variant="secondary" size="sm" onClick={handleOpenAlphaFeedback}>
+              {t('settings.supportAlphaFeedback')}
             </Button>
             <Button type="button" variant="primary" size="sm" onClick={() => setWizardOpen(true)}>
               {t('settings.supportReportBug')}

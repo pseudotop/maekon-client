@@ -267,7 +267,21 @@ async fn check_for_updates_api_error() {
     let updater = Updater::new(test_config());
     let result = updater.check_for_updates_with_base_url(&server.url()).await;
     mock.assert_async().await;
-    assert!(matches!(result, Err(UpdateError::ParseResponse(_))));
+
+    // #11332: a 404 from `/releases/latest` is not a failure — that endpoint
+    // excludes prereleases, so a repository that has only shipped release
+    // candidates answers 404 to every stable-channel check. This test used to
+    // assert ParseResponse here, which encoded the behaviour that left the
+    // DEFAULT configuration in a permanent error state.
+    match result {
+        Err(UpdateError::NoPublishedRelease { channel }) => {
+            assert_eq!(
+                channel, "stable",
+                "channel name should identify the empty channel"
+            );
+        }
+        other => panic!("expected NoPublishedRelease, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -439,5 +453,29 @@ async fn check_for_updates_offers_release_within_max_allowed_version() {
     assert!(
         matches!(result, Ok(UpdateCheckResult::Available { .. })),
         "release at the ceiling must still be offered, got {result:?}"
+    );
+}
+
+// #11332: the negative half of the 404 change. Without this, the test above
+// would pass just as well if EVERY status collapsed into NoPublishedRelease —
+// which would hide a real outage behind an idle-looking updater.
+#[tokio::test]
+async fn other_stable_channel_failures_stay_errors() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .with_status(500)
+        .with_body("upstream exploded")
+        .create_async()
+        .await;
+    let updater = Updater::new(test_config());
+    let result = updater.check_for_updates_with_base_url(&server.url()).await;
+    mock.assert_async().await;
+
+    // A 500 must NOT be softened into "nothing published" — that would hide a
+    // real outage behind an idle-looking updater.
+    assert!(
+        matches!(result, Err(UpdateError::ParseResponse(_))),
+        "non-404 failures must stay hard errors, got {result:?}"
     );
 }

@@ -8,10 +8,13 @@
 
 ## 현재 게이트
 
-정책 `2026-07-19.1`의 상태는 `hold`다. 저장소 이슈 #8683이 HOLD인 동안
+정책 `2026-08-23.1`의 상태는 `hold`다. #8683의 이전 저장소 전역 HOLD는
+해제되었으며 현재 보류 사유가 아니다. #8685의 릴리스 신뢰 잔여가 닫히고,
+#8687 측정 계약이 준비되며, 지정 운영자가 현재 응답 역량을 확인하기 전까지
 신규 초대, 일반 Alpha 접수, 예약 Alpha 게시를 허용하지 않는다. 프라이버시
-요청, 참여 철회, 비공개 취약점 신고는 계속 연다. `intake_state` 변경은 검토된
-manifest 수정이 필요하며 저장소 릴리스 게이트를 우회할 수 없다.
+요청, 참여 철회, 비공개 취약점 신고는 계속 연다. 현재 커뮤니티는 열거나
+홍보하지 않는다. `intake_state` 변경은 검토된 manifest 수정이 필요하며 이
+진입 게이트를 우회할 수 없다.
 
 ## 경로 분리
 
@@ -52,7 +55,7 @@ MAEKON-ALPHA-RECEIPT
 receipt_id: <opaque id>
 received_at: <UTC timestamp>
 request_type: <feedback|privacy|withdrawal>
-policy_version: 2026-07-19.1
+policy_version: 2026-08-23.1
 target_by: <UTC date>
 ```
 
@@ -105,7 +108,7 @@ retention·customer 증거에 사용할 수 없다.
 1. 프라이버시·철회·비공개 보안 경로는 계속 연다.
 2. 신규 초대와 예약 게시를 중단한다.
 3. 검토된 변경으로 정책 manifest를 `paused`로 바꾼다.
-4. 참여자 내용을 제외한 인시던트와 owner를 #8683에 기록한다.
+4. 참여자 내용을 제외한 전용 인시던트 이슈를 생성하거나 연결하고 owner를 기록한다.
 5. 일반 접수 재개 전에 새 릴리스 결정을 요구한다.
 
 피드백, 인터뷰, 진단, 등록, 접수증은 customer, revenue, retention,

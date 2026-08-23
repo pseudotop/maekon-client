@@ -81,6 +81,7 @@ Release 安装命令记录在下面的安装文档中。如需 prerelease 版本
 - 本地数据存储在 SQLite 中，并通过保留策略进行管理
 - 自动化需要策略验证、沙箱配置和本地审计日志
 - 安全报告与响应策略: [SECURITY.md](./SECURITY.md)
+- Alpha 反馈、隐私请求或退出参与（当前接收状态）: [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - 独立模式完整性基线: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - 完整性操作手册: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - 文档索引: [docs/README.md](./docs/README.md)
