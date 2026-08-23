@@ -12,7 +12,7 @@
       "transform": "snapshot-copy",
       "consumers": ["pseudotop/maekon-client repository root", "GitHub repository landing surface"],
       "publicationBoundary": "Included in the public snapshot; claims describe an early Global Alpha prerelease, not a stable release or production readiness.",
-      "verificationCommand": "node web/apps/maekon-landing/scripts/verify-public-contracts.mjs --expected-version=v0.0.1-rc.6"
+      "verificationCommand": "node web/apps/maekon-landing/scripts/verify-public-contracts.mjs --expected-version=v0.0.1-rc.9 --expected-source-sha=1b1cd7952bfffdc6f26ae713414112a74589ef74 --expected-release-notes-sha=bc92cccd1aed0c57892df9db6ef505d2ece6fcd5a46cf778c3be62b61154a8da"
     },
     {
       "id": "status-snapshot",
@@ -44,9 +44,9 @@
     {
       "id": "landing-locales",
       "owner": "maekon-public-web",
-      "sources": ["web/apps/maekon-landing/src/locales/en.json", "web/apps/maekon-landing/src/locales/ko.json"],
+      "sources": ["web/apps/maekon-landing/src/locales/en.json", "web/apps/maekon-landing/src/locales/ko.json", "web/apps/maekon-landing/src/data/release-currentness.v1.json", "web/apps/maekon-landing/src/pages/Changelog.tsx"],
       "transform": "Vite route build plus search, metadata, sitemap, and localized-href generation",
-      "consumers": ["maekon.dev English routes", "maekon.dev Korean routes", "generated search and discovery artifacts"],
+      "consumers": ["maekon.dev English routes", "maekon.dev Korean routes", "maekon.dev/changelog", "maekon.dev/ko/changelog", "generated search and discovery artifacts"],
       "publicationBoundary": "EN is the authoring baseline and KO must preserve semantic parity; deployment evidence is separate from source and local-build evidence.",
       "verificationCommand": "pnpm -C web --filter @maekon/landing verify"
     },
