@@ -522,6 +522,8 @@
     "supportTitle": "지원 및 진단",
     "supportDesc": "지원 스냅샷을 열고, 최근 런타임 로그를 확인하고, 필요한 정보가 채워진 GitHub 버그 리포트를 시작합니다.",
     "supportOpenDetails": "지원 상세 열기",
+    "supportAlphaFeedback": "Alpha 피드백 및 프라이버시",
+    "supportOpenFeedbackFailed": "Alpha 피드백 및 프라이버시 페이지를 열지 못했습니다.",
     "supportReportBug": "버그 신고",
     "supportDialogTitle": "지원 및 진단",
     "supportDialogDesc": "GitHub 이슈를 열기 전에 현재 진단 스냅샷과 최근 로그를 확인하세요.",

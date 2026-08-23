@@ -740,6 +740,8 @@
     "supportTitle": "サポート & 診断",
     "supportDesc": "サポートスナップショットを開き、最近のランタイムログを確認し、適切なコンテキストでGitHubバグレポートを送信します。",
     "supportOpenDetails": "サポート詳細を開く",
+    "supportAlphaFeedback": "Alphaフィードバックとプライバシー",
+    "supportOpenFeedbackFailed": "Alphaフィードバックとプライバシーのページを開けませんでした。",
     "supportReportBug": "バグ報告",
     "supportDialogTitle": "サポート & 診断",
     "supportDialogDesc": "GitHubイシューを作成する前に、現在の診断スナップショットを確認してください。",

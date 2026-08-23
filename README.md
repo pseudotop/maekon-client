@@ -115,6 +115,7 @@ Standalone mode is the current default evaluation path for Global Alpha.
 - Local data is stored in SQLite and managed with retention controls
 - Automation requires policy validation, sandbox profiles, and local audit logging
 - Security reporting and response policy: [SECURITY.md](./SECURITY.md)
+- Alpha feedback, privacy requests, or withdrawal (current intake state): [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - Standalone integrity baseline: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
 - Integrity operation runbook: [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - Documentation index: [docs/README.md](./docs/README.md)

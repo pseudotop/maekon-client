@@ -97,6 +97,7 @@ Connected 모드는 opt-in 프리뷰 경로로만 제공됩니다.
 - 로컬 데이터는 SQLite에 저장되며, 보존 정책으로 관리됩니다
 - 자동화는 실행 정책, 샌드박스 프로필, 로컬 감사 로그를 통과합니다
 - 보안 보고 및 대응 정책: [SECURITY.md](./SECURITY.md)
+- Alpha 피드백·프라이버시 요청·참여 철회(현재 접수 상태): [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - Standalone 무결성 베이스라인: [docs/security/standalone-integrity-baseline.ko.md](./docs/security/standalone-integrity-baseline.ko.md)
 - 무결성 운영 런북(영문): [docs/security/integrity-runbook.md](./docs/security/integrity-runbook.md)
 - 문서 인덱스: [docs/README.ko.md](./docs/README.ko.md)

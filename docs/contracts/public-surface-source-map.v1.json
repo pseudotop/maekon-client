@@ -53,10 +53,10 @@
     {
       "id": "alpha-feedback",
       "owner": "maekon-global-alpha-operations",
-      "sources": ["clients/maekon-client/docs/contracts/global-alpha-feedback-policy.json", "clients/maekon-client/docs/guides/global-alpha-feedback-operations.md", "clients/maekon-client/docs/guides/global-alpha-feedback-operations.ko.md", "web/apps/maekon-landing/src/pages/AlphaFeedback.tsx"],
-      "transform": "snapshot-copy for client docs; Vite route build for landing",
-      "consumers": ["pseudotop/maekon-client feedback policy and runbook", "maekon.dev/alpha-feedback", "maekon.dev/ko/alpha-feedback"],
-      "publicationBoundary": "General feedback and privacy participation requests use the Alpha path; security vulnerabilities use private reporting only.",
+      "sources": ["clients/maekon-client/docs/contracts/global-alpha-feedback-policy.json", "clients/maekon-client/docs/guides/global-alpha-feedback-operations.md", "clients/maekon-client/docs/guides/global-alpha-feedback-operations.ko.md", "clients/maekon-client/README.md", "clients/maekon-client/README.ko.md", "clients/maekon-client/README.ja.md", "clients/maekon-client/README.zh-CN.md", "clients/maekon-client/README.es.md", "clients/maekon-client/crates/maekon-web/frontend/src/components/SupportToolsCard.tsx", "web/apps/maekon-landing/src/pages/AlphaFeedback.tsx", "web/apps/maekon-landing/src/data/release-currentness.v1.json"],
+      "transform": "snapshot-copy for client docs; maekon-web Vite bundle for in-app Support; Vite route build for landing",
+      "consumers": ["pseudotop/maekon-client feedback policy and runbook", "pseudotop/maekon-client localized READMEs", "Maekon Support and Diagnostics", "maekon.dev/alpha-feedback", "maekon.dev/ko/alpha-feedback"],
+      "publicationBoundary": "General feedback stays closed until the declared entry gates pass; privacy and withdrawal remain available, security vulnerabilities use private reporting only, and no community is advertised while unstaffed.",
       "verificationCommand": "pnpm -C web --filter @maekon/landing verify:contracts:test"
     },
     {
