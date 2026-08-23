@@ -2449,6 +2449,37 @@ who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
 version = "0.10.0"
 
+[[audits.isrg.audits.criterion]]
+who = "Brandon Pitman <bran@bran.land>"
+criteria = "safe-to-run"
+delta = "0.4.0 -> 0.5.1"
+
+[[audits.isrg.audits.criterion]]
+who = "Tim Geoghegan <timg@divviup.org>"
+criteria = "safe-to-run"
+delta = "0.5.1 -> 0.6.0"
+notes = "No new unsafe code and nothing suspicious in build scripts."
+
+[[audits.isrg.audits.criterion]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-run"
+delta = "0.6.0 -> 0.7.0"
+
+[[audits.isrg.audits.criterion]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-run"
+delta = "0.7.0 -> 0.8.0"
+
+[[audits.isrg.audits.criterion]]
+who = "J.C. Jones <jc@divviup.org>"
+criteria = "safe-to-run"
+delta = "0.8.0 -> 0.8.1"
+
+[[audits.isrg.audits.criterion]]
+who = "J.C. Jones <jc@divviup.org>"
+criteria = "safe-to-run"
+delta = "0.8.1 -> 0.8.2"
+
 [[audits.isrg.audits.criterion-plot]]
 who = "J.C. Jones <jc@divviup.org>"
 criteria = "safe-to-run"

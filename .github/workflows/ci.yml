@@ -799,23 +799,39 @@ jobs:
             chmod +x "src-tauri/maekon-sandbox-worker-${TARGET}"
           fi
 
-      # #11061: compile the exact Windows default/no-sandbox-feature surface
-      # before executing tests. `--keep-going` lets Cargo report failures in
-      # independent crates during the same export PR, instead of discovering
-      # one blocked layer per #164 -> #165 -> #166 round-trip. The workspace
-      # manifest's `unused`/`dead_code` deny policy makes the two known
-      # maekon-automation regressions hard failures even under `RUSTFLAGS=-W`.
-      - name: Check Windows default workspace without sandbox features (keep-going)
-        if: env.RUN_HEAVY_TESTS == 'true' && matrix.os == 'windows-latest'
-        run: cargo check --locked --workspace --all-targets --exclude maekon-lint --exclude maekon-embedding --keep-going
-
       - name: Run tests (default workspace)
+        id: tests
         if: env.RUN_HEAVY_TESTS == 'true'
         # Exclude maekon-lint from the REQUIRED run: its tests are house-style
         # gates (value-blind assertion hedges, i18n, language-check) we hold the
         # core team to but do not hard-block external contributors on (#6346).
         # House-style is surfaced by the separate advisory step below.
         run: cargo test --locked --workspace --exclude maekon-lint --exclude maekon-embedding
+
+      # #11061: `--keep-going` reports failures across independent crates in one
+      # run, instead of surfacing one blocked layer per export round trip
+      # (#164 -> #165 -> #166). The workspace manifest's `unused`/`dead_code`
+      # deny policy makes the two known maekon-automation regressions hard
+      # failures even under `RUSTFLAGS=-W`.
+      #
+      # #11368: this used to run BEFORE the tests, which meant paying for it on
+      # every green run. Measured on run 32550027173:
+      #
+      #   Check Windows (keep-going)     12m48s  -- all compilation
+      #   Run tests (default workspace)  23m11s  -- 19m16s compile, 3m55s tests
+      #
+      # 32 of the leg's 36 minutes were compilation, the workspace compiled twice
+      # in two profiles (249 crates then 514), and the Windows leg succeeded in
+      # 14 of the last 14 runs — so the diagnostic was collected zero times while
+      # being paid for every time.
+      #
+      # Gated on the test step failing, the benefit is unchanged (a broken build
+      # still reports every crate in the same run) and the green path drops the
+      # cost entirely. On the failure path the cache is warm from the test
+      # compile, so it is cheaper here than it was in front.
+      - name: Check Windows default workspace without sandbox features (keep-going)
+        if: failure() && steps.tests.conclusion == 'failure' && matrix.os == 'windows-latest'
+        run: cargo check --locked --workspace --all-targets --exclude maekon-lint --exclude maekon-embedding --keep-going
 
       - name: House-style gates (advisory — does not block external PRs)
         if: env.RUN_HEAVY_TESTS == 'true'

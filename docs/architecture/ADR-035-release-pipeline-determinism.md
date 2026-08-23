@@ -164,10 +164,11 @@ out as the single word `Any`. Prose is not a key: it changes when someone
 rewords, and a registry keyed on it would silently lose its mapping. Giving each
 item an ID is therefore the first move of this step, not an afterthought.
 
-The pass must also be allowed to answer **"the subject does not exist yet"**.
-Sampling found at least one item asserting behaviour of machinery that is not
-wired (D7), and marking such an item `human` would leave an operator ticking
-something unverifiable.
+The pass must also encode **when a subject can be observed**. D7 contains an
+item whose runtime evidence cannot exist until publication. Marking it `human`
+or pretending a mock test is the observation would leave an operator ticking
+something unverifiable. The registry therefore distinguishes pre-publish and
+post-publish phases while keeping both in one visible checklist.
 
 Several items *are* the required checks — "Quick suite (PR CI) — all green" is
 one. Those are owned by D1, and the registry **references the lane rather than
@@ -222,58 +223,41 @@ verified before the tag exists, but the **ability to produce one** can be — by
 signing throwaway bytes rather than by reading configuration. `user.signingkey`
 being set says nothing about whether the key is present, readable, or unlocked.
 
-### D7. The delivery half of the pipeline is documented but not wired, and the checklist already assumes it works
+### D7. The updater exists, but its observation belongs after publication
 
-An earlier draft of this ADR asserted that an auto-updater carries every release
-to users, and derived urgency from that. **Measurement refuted it:**
+The first measurement in this ADR looked only at Tauri's plugin configuration
+and concluded that no updater was wired. That conclusion was incomplete. Maekon
+ships a custom updater in `src-tauri/src/updater`: stable clients query GitHub's
+`/releases/latest`, while prerelease clients query `/releases?per_page=1` and
+select signed platform assets. Mock API tests cover both channels and an ignored
+network test reaches the real GitHub Releases API.
 
-| Checked | Found |
-| --- | --- |
-| `plugins.updater` in `src-tauri/tauri.conf.json` | empty — no endpoints |
-| Update manifest among the published release assets | none |
-| `promote-stable.yml` (rc → stable promotion) | dispatch-only; its own comment records no execution history |
+The empty `plugins.updater` endpoint and the absence of a Tauri update manifest
+therefore do not prove updater absence. They prove only that Maekon does not use
+the Tauri updater plugin as its delivery adapter.
 
-So today a published release does **not** reach users on its own. The correction
-matters because it changes what is urgent, and because the earlier claim is
-exactly the kind of confident-but-unmeasured assertion this ADR exists to remove
-from the release path.
-
-What the measurement does establish is a different and more actionable problem:
-**the delivery half is written down but not connected, while the release
-checklist already treats it as working.** The checklist asks the operator to
-confirm that the *"auto-updater detects the new version (staging)"* — an item
-that cannot be honestly satisfied while no endpoint is configured and no manifest
-is published. Guides exist for rollout, rollback windows, and updater key
-rotation; a promotion workflow exists and has never run.
-
-That is the same shape as the dormant guards found elsewhere in this pipeline: a
-control that reads as covered because a document describes it.
-
-It also reaches further than the checklist. The public `README.md` lists
-**"Auto-Update: Automatic updates based on GitHub Releases"** as a feature. The
-release does produce updater-compatible artifacts — every asset ships a
-signature — but with no endpoint in the app and no manifest published, nothing
-consumes them. A product claim on the public surface is the strongest form of
-"reads as evidence while measuring nothing", because the reader is a user rather
-than a maintainer.
+The remaining defect is lifecycle ordering. The release-decision manifest is a
+pre-tag authorization gate, but *"a previous RC detects the new version"* is
+observable only after the signed tag produces a public GitHub Release. Requiring
+that observation to pass before the tag creates an impossible cycle; marking it
+passed from mock tests would confuse implementation proof with runtime evidence.
 
 So this decision states three things:
 
-- **The pipeline owns the handoff.** Whatever delivery mechanism is enabled —
-  updater endpoint, manual download, staged promotion — the release decision must
-  name the stage a tag enters and what halts it. Enabling delivery without that
-  is what makes a bad week reach everyone before anyone reads the report.
+- **The pipeline owns both phases.** Pre-publish authorization records the
+  updater observation as explicit `pending`; post-publish completion requires a
+  previous-RC runtime receipt bound to the exact tag and commit.
 - **Reversal is rehearsed before it is needed.** The recovery most recently
   exercised was manual and undocumented: confirm no release object exists, delete
   the tag, recreate it. It worked only because the failure landed *before* assets
   published. `docs/guides/updater-rollback-windows.md` describes a path nobody
   has walked.
-- **Checklist items may not outrun the machinery.** The disposition pass in D3
-  must mark items whose subject does not exist yet, rather than classifying them
-  as `human` and leaving an operator to tick something unverifiable.
+- **Checklist items may not outrun their lifecycle.** A post-publish item may be
+  pending before publication, but it cannot disappear, become a mock-test pass,
+  or be used to call the RC operationally complete.
 
-This decision does not enable or redesign the updater. It refuses to let the
-release pipeline claim a delivery guarantee it does not have.
+This correction does not redesign the updater. It makes the shipped adapter the
+architectural truth and separates authorization from later delivery evidence.
 
 ## Alternatives rejected
 

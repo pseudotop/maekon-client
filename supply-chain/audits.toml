@@ -287,6 +287,67 @@ standard for stack-based container implementations. No active RustSec advisories
 Actively maintained. Commercial use: permitted.
 """
 
+[[audits.ashpd]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.11.1"
+notes = """
+VD-05.7 full audit — ashpd 0.11.1 (69 files, 15,866 lines of src).
+
+An XDG Desktop Portal client. It reaches this tree only through
+rfd -> tauri-plugin-dialog -> maekon-app, and rfd declares it as
+
+    [target.'cfg(any(target_os = "linux", target_os = "freebsd", ...))'.dependencies.ashpd]
+    features = ["raw_handle"]
+    default-features = false
+
+so it compiles on Linux and the BSDs only, with `raw_handle` plus `wayland`
+(pulled in by rfd's own default `wayland` feature) and **without** gtk4.
+
+Unsafe: six shipped blocks, of which **five do not compile here**. Those five are
+in `activation_token/gtk4.rs` and `window_identifier/gtk4.rs`, and both modules
+sit behind `#[cfg(any(feature = "gtk4_wayland", feature = "gtk4_x11"))]`. The
+lockfile confirms it independently of the feature declaration: ashpd resolves
+with `enumflags2, futures-channel, futures-util, rand, raw-window-handle, serde,
+serde_repr, tokio, url, wayland-backend` and no gtk4 crate.
+
+What does compile is one `unsafe` block plus two marker impls.
+
+`window_identifier/mod.rs:168` calls `unsafe { Self::from_wayland_raw(..) }`.
+That callee is correctly declared `pub async unsafe fn` with a stated contract —
+"Both surface and display pointers have to be valid. You must ensure the
+`display_ptr` lives longer than the returned `WindowIdentifier`."
+
+**Observation worth recording.** The caller, `from_raw_handle`, is a *safe*
+`pub async fn`, and it discharges that contract on its caller's behalf without
+restating it — its doc comment says only "The constructor returns a valid handle
+under both Wayland & X11". `RawWindowHandle::Wayland` is safely constructible in
+raw-window-handle 0.6 (`WaylandWindowHandle::new` takes a `NonNull`, and
+`NonNull::new` accepts any non-null address), so a caller can build a handle
+holding a bogus pointer entirely in safe code and hand it to a safe function that
+dereferences it. This is the same shape as the finding this repository raised
+against audioadapter-sample 3.0.0: an unsafe obligation resting on a safe API.
+Two things bound it in practice — raw-window-handle 0.6 deliberately steers
+callers to the lifetime-bound `HasWindowHandle`/`WindowHandle<'_>` types and
+treats `RawWindowHandle` as the unchecked layer, and the only path here is rfd
+passing a genuine handle obtained from the live toolkit window. Worth reporting
+upstream as a missing safety note rather than treated as a live defect.
+
+`unsafe impl Send for WindowIdentifier` and `unsafe impl Sync` (mod.rs:102-103)
+are sound *in this configuration* and the qualifier matters. With gtk4 off the
+enum carries either `WaylandWindowIdentifier` — whose payload is
+`ZxdgExportedV1`/`ZxdgExportedV2`, wayland-client protocol proxies that
+wayland-backend already makes thread-safe, plus a plain `WindowIdentifierType` —
+or an X11 XID, which is a `c_ulong`. The impls cover the whole enum including the
+`Gtk4(Gtk4WindowIdentifier)` variant, and GTK4 objects are not thread-safe, so
+enabling `gtk4_wayland` or `gtk4_x11` would make these marker impls need a fresh
+look. They do not need one here.
+
+Capability surface: 4 filesystem, 1 process, 1 environment read, **zero network**
+— a portal client talks over D-Bus to the local portal service. No `extern "C"`,
+no `#[link]`, no `#[no_mangle]`, no dynamic loading. No build script.
+"""
+
 [[audits.asn1-rs]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -528,6 +589,26 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.audio-codec-algorithms]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.8.1"
+notes = """
+VD-05.7 full audit — audio-codec-algorithms 0.8.1 (5 files, 1,472 lines of src).
+
+Audited to unblock dependabot #11345.
+
+Unsafe: none. A scan of all five files finds zero occurrences of the token.
+
+Powerful imports: zero on every axis — filesystem, network, process spawning,
+environment access, `extern "C"`, `#[link]`, `#[no_mangle]`, libc and dynamic
+loading. No build script.
+
+Pure codec arithmetic (A-law / mu-law and related conversions) taking numbers in
+and returning numbers out. safe-to-deploy is met because there is nothing on
+either axis to reason about.
+"""
+
 [[audits.audio-core]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -556,6 +637,45 @@ This crate is the consumer of audioadapter-sample, whose BytesSample trait carri
 
 Exposure: through audioadapter-buffers into rubato and this workspace's maekon-audio."""
 
+[[audits.audioadapter]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "5.0.0"
+notes = """
+VD-05.7 full audit — audioadapter 5.0.0 (4 files, 1,896 lines of src).
+
+Audited to unblock dependabot #11345. This crate defines the contract that
+audioadapter-buffers implements and rubato consumes, so the reasoning here
+carries to those two.
+
+The design is the right one and worth stating explicitly, because this family
+previously got it wrong in the other direction: `pub unsafe trait Adapter<T>` is
+declared unsafe precisely so that the obligation lands on implementors, who must
+write `unsafe impl` to take it. Its documented requirement is that `frames()` and
+`channels()` report correct values and do not change spontaneously — "for example
+due to some internal logic or because of some action in another thread".
+`unsafe fn read_sample_unchecked(channel, frame)` then requires
+`channel < channels()` and `frame < frames()`, and the safe wrapper
+`read_sample` performs exactly that check before delegating. Contrast the 3.0.0
+audioadapter-sample finding, where an obligation of the same kind sat on a *safe*
+unsealed trait and could therefore be violated without anyone writing unsafe.
+
+Unsafe: 25 occurrences, all calls to `read_sample_unchecked` (or its mut
+counterpart) from inside this crate's own safe helpers. The non-obvious ones are
+the iterators, which cache bounds rather than re-reading them, and they were
+traced: `ChannelSamples::new` returns `None` unless `channel < buffer.channels()`
+and captures `nbr_frames = buffer.frames()`; `next()` returns `None` unless
+`self.frame < self.nbr_frames` and only then performs the unchecked read,
+incrementing afterwards. `FrameSamples::new` guards `frame >= buffer.frames()`
+the same way. Caching is sound exactly because the trait's unsafe contract
+forbids the bounds from moving underneath it — the cache is the reason the trait
+is unsafe rather than an oversight.
+
+Powerful imports: zero on every axis — filesystem, network, process spawning,
+environment access, `extern "C"`, `#[link]`, `#[no_mangle]`, libc, dynamic
+loading. No build script.
+"""
+
 [[audits.audioadapter-buffers]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -570,6 +690,42 @@ The crate is the concrete buffer implementations behind the audioadapter traits,
 That pairing is the whole audit. The unchecked accessors are only reachable through the unsafe trait methods, and the safe read_sample / write_sample wrappers in the sibling audioadapter crate perform the channel and frame comparisons before delegating -- that was verified in this same audit set. The internal callers that use the unchecked form iterate over ranges derived from the same channels and frames values the buffer was constructed with.
 
 Family context worth linking: audioadapter-sample, audited in this set, has a separate gap where mem::zeroed is called on a safe unsealed trait's parameter. Nothing in this crate widens it -- audioadapter-buffers implements no additional BytesSample."""
+
+[[audits.audioadapter-buffers]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "5.2.0"
+notes = """
+VD-05.7 full audit — audioadapter-buffers 5.2.0 (8 files, 4,574 lines of src).
+
+Audited to unblock dependabot #11345. This crate is the implementor side of the
+`unsafe trait Adapter` contract defined in audioadapter 5.0.0, audited alongside
+it; read that entry first, because the obligation this crate takes on is stated
+there.
+
+Unsafe: 127 occurrences, and they are two shapes rather than 127 arguments.
+`unsafe impl<..> Adapter<T> for <buffer type>` takes on the trait's obligation,
+and `unsafe fn read_sample_unchecked(&self, channel, frame)` supplies the
+unchecked accessor for each concrete buffer layout (interleaved, sequential,
+byte-backed, converting wrappers, and their mut counterparts). The macro
+expansion across sample types is why the raw count is high.
+
+The obligation is "report correct, stable `channels()` and `frames()`", and it is
+discharged at construction rather than trusted. The size getters resolve two
+ways, both honest: wrapper types delegate to the buffer they wrap
+(`adapter_to_float.rs:45` returns `self.buf.channels()`), and owning types return
+stored fields set once in the constructor. Those constructors are fallible for
+exactly this reason — they return `Result<Self, SizeError>` and call
+`check_slice_length!(channels, frames, buf.len())` before building, with
+`SizeError` carrying dedicated `ChannelBuffer { actual, required }`,
+`FrameBuffer`, `Total` and `Mask` variants. A buffer whose backing storage is too
+short for the declared dimensions cannot be constructed, so the stored bounds
+cannot over-report, and being plain fields they cannot drift afterwards.
+
+Powerful imports: zero on every axis — filesystem, network, process spawning,
+environment access, `extern "C"`, `#[link]`, `#[no_mangle]`, libc, dynamic
+loading. No build script.
+"""
 
 [[audits.audioadapter-sample]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -587,6 +743,43 @@ which calls mem::zeroed on a generic parameter. That is sound only if every T th
 The contrast is worth recording because the sibling crate gets it right: audio-core declares `pub unsafe trait Sample: Copy` and spells out "Implementor must make sure that a bit-pattern of all-zeros is a legal bit-pattern". Making BytesSample unsafe, or sealing it, would close this.
 
 What bounds it here, measured: the only implementations in the graph are the crate's own I24_*/U24_* newtypes over byte arrays, all valid at zero, and a grep across this workspace's crates finds no `impl BytesSample` of our own. Exposure is audioadapter-buffers into rubato into maekon-audio."""
+
+[[audits.audioadapter-sample]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "5.2.0"
+notes = """
+VD-05.7 full audit — audioadapter-sample 5.2.0 (3 files, 2,291 lines of src).
+
+Audited to unblock dependabot #11345. It also closes a finding this repository
+raised against 3.0.0, so that is worth recording rather than quietly dropping.
+
+**The 3.0.0 finding is fixed upstream.** The entry for 3.0.0 in this file records
+that `src/readwrite.rs` called `let mut sample: T = unsafe { std::mem::zeroed() }`
+where `T: BytesSample` — a public, unsealed, *safe* trait with no documented
+all-zeros requirement, so any downstream implementor could make that call unsound
+without writing unsafe themselves. 5.2.0 replaces it with exactly the fix that
+finding called for:
+
+    // Using `T::zero()` rather than `mem::zeroed` keeps this sound
+    // for any `T`, since `zero` is a safe, implementor-provided constructor.
+    let mut sample = T::zero();
+    self.read_exact(sample.as_mut_slice())?;
+
+The obligation now sits with the implementor's own `zero()`, which is safe code,
+rather than with a blanket assumption the trait never stated.
+
+Unsafe: **none at all**. 3.0.0 carried two unsafe items — the `mem::zeroed` above
+and an `unsafe impl Sample for $newtype` macro over the crate's 24-bit sample
+wrappers. Neither survives: a scan of all three files finds zero occurrences of
+the token.
+
+Powerful imports: zero on every axis — filesystem, network, process spawning,
+environment access, `extern "C"`, `#[link]`, `#[no_mangle]`, libc, dynamic
+loading. No build script.
+
+safe-to-deploy is met, and more cleanly than at 3.0.0.
+"""
 
 [[audits.avif-serialize]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -1222,6 +1415,63 @@ criteria = "safe-to-deploy"
 delta = "2.0.4 -> 3.1.1"
 notes = "Major bump with no unsafe anywhere in the delta. The type change is a new `Color::AnsiColor(u8)` variant alongside the existing named and truecolor variants, with the ANSI escape mapping rewritten around it. The one ambient behaviour is `truecolor_support()`, which reads the `COLORTERM` environment variable and compares it to `truecolor` or `24bit` — reading an environment variable to decide terminal capability is the crate's normal business and the value only selects which escape sequence is emitted. No filesystem, no process spawning, no network."
 
+[[audits.combine]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "4.6.7"
+notes = """
+VD-05.7 full audit — combine 4.6.7 (16,721 lines of runtime .rs).
+
+No build script. No C, C++, or Objective-C. Powerful imports: zero on every axis —
+filesystem, network, process, environment, `extern "C"`, `#[link]`,
+`#[no_mangle]`, libc, dynamic loading. The whole safe-to-deploy question is the
+unsafe.
+
+Fourteen unsafe sites. Nine are unreachable in this build, five were reviewed.
+
+Not compiled here — src/stream/buf_reader.rs (lines 258, 292, 377, 388, 401, 405,
+513, 523, 551). The module is `#[cfg(feature = "std")]` (stream/mod.rs:50-52), but
+every unsafe inside it sits in a region gated on `futures-03`, `tokio-02`,
+`tokio-03`, or `tokio`. Each site was mapped to its enclosing `cfg` by brace-depth
+rather than by picking the nearest preceding attribute, which would have
+misattributed sites that follow a closed block. Those features are off: combine's
+Cargo.lock entry lists exactly two dependencies, `bytes` and `memchr`, and the
+optional futures/tokio/pin-project-lite crates the features require have no
+entries. This matters because those nine include the sharpest edges in the crate —
+`&mut *(bs as *mut _ as *mut [u8])` casting `[MaybeUninit<u8>]` to initialized
+bytes, and `BufMut::advance_mut`. Anyone turning on an async feature must audit
+them; this audit does not.
+
+Reviewed:
+
+1-2. src/parser/sequence.rs:42, 236 — `SequenceState::unwrap_value` calls
+`core::hint::unreachable_unchecked()` on `None`, so a broken invariant here is
+genuine UB, not a wrong value. The invariant holds. In the sequence macro, the
+head (:180-194) and each tail parser (:200-231) run the same shape:
+`if mode.is_first() || state.$x.value.is_none() { ...parse...; state.$x.value =
+Some(temp); }`. Either the branch executes and assigns, or it is skipped precisely
+because the value is already `Some`. Every failure path inside the branch is an
+early `return` (`PeekErr`, `CommitErr`, or `add_errors!`), so reaching line 236
+implies every slot was assigned.
+
+3-4. src/stream/mod.rs:637, 1084 — `slice.get_unchecked(i)` inside an eight-way
+unrolled `while len - i >= 8` loop. Within one iteration `i` advances from i₀ to
+i₀+7 and the guard gives i₀+7 <= len-1, so each access is in bounds. The
+underflow question is the real one: `len - i` is usize subtraction, and the
+`debug_assert!(len >= i)` at :632 does nothing in release. It is sound anyway
+because `i` comes from the private `enum UnconsStart { Zero = 0, One = 1 }`
+(:618-621), so `i` is 0 or 1. `Zero` cannot underflow. `One` can only underflow on
+an empty slice, and both `One` call sites guard first: :710 and :1155 each `match
+self.first()` and return `PeekErr(Eoi)` on `None`. Worth recording that this
+soundness rests on a private enum plus two caller guards rather than on the
+assertion, so a future caller passing a computed offset would need a release-mode
+check.
+
+5. src/stream/mod.rs:862 — `&mut *(t as *mut S as *mut CompleteStream<S>)`. The
+comment claims `repr(transparent)`; verified at :850, directly above
+`pub struct CompleteStream<S>(pub S)`. A transparent newtype has the same layout
+as its field, so the reference cast is sound."""
+
 [[audits.compact_str]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -1453,6 +1703,55 @@ ARM CRC32 intrinsics; well-reviewed, widely used in compression pipelines (flate
 libflate, zip). Actively maintained.
 Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch1.out + deny-batch1.out).
+"""
+
+[[audits.criterion]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-run"
+version = "0.4.0"
+notes = """
+VD-05.7 full audit — criterion 0.4.0, safe-to-run (55 files, 12,189 lines of src).
+
+A benchmark harness, used at development and CI time only, which is why
+safe-to-run is the operative criterion rather than safe-to-deploy.
+
+Capability surface is wide but it is the crate's advertised job, not a surprise:
+12 process hits (`Command::new(env::var_os("CARGO")?)` to re-invoke cargo),
+6 network (`TcpStream::connect(("localhost", port))` at lib.rs:132, where the port
+comes from `CARGO_CRITERION_PORT`, speaking to a local cargo-criterion process),
+35 filesystem (reading and writing its own `target/criterion` result files), and
+5 environment reads (`CRITERION_DEBUG`, `CARGO`, `CARGO_CRITERION_PORT`). The
+network use is loopback with a port supplied by the caller's own toolchain; there
+is no outbound connection to a remote host anywhere in the crate.
+
+Unsafe: 8 occurrences, of which 5 ship, 2 are in tests and 1 is an `unsafe fn`
+definition. All five shipped sites are in the statistics module and all are
+guarded:
+
+  - stats/univariate/sample.rs:33 — `mem::transmute(slice)` producing
+    `&Sample<A>` from `&[A]`. `Sample<A>` is `#[repr(transparent)] struct
+    Sample<A>([A])`, so the layouts are identical, and the type's documented
+    invariants (at least two elements, no NaN) are established by an `assert!`
+    on the line immediately above.
+  - stats/univariate/sample.rs:138 — the same newtype cast after an in-place
+    sort; the invariants come from the `&self` it was derived from.
+  - stats/univariate/resamples.rs:55 — the same cast on `self.stage`, which was
+    filled from an already-valid `Sample`.
+  - stats/univariate/percentiles.rs:52 — `self.at_unchecked(p)` preceded by
+    `assert!(p >= 0 && p <= 100)` and `assert!(self.0.len() > 0)`.
+  - stats/bivariate/mod.rs:141 — `get_unchecked(i)` on both halves of a paired
+    dataset inside `Pairs::next`, guarded by `i < self.data.len()`.
+
+That last one deserves a note, because it carries `debug_assert!`s and this
+repository has flagged debug-assert-only bounds elsewhere in this initiative
+(compression-core). It is not that shape. The real guarantee is in
+`Data::new`, which runs a genuine `assert!(xs.len() == ys.len() && xs.len() > 1
+&& no NaNs)` at construction over private fields, and `Data::len()` returns
+`self.0.len()`. The runtime guard `i < self.data.len()` therefore bounds both
+slices, and the `debug_assert!`s are redundant confirmation rather than the
+load-bearing check.
+
+No build script.
 """
 
 [[audits.crossbeam]]
@@ -2300,6 +2599,53 @@ Streaming iterator with fallible operations. No unsafe code. Used by rusqlite.
 Actively maintained. Commercial use permitted.
 Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch2.out + deny-batch2.out).
+"""
+
+[[audits.fastembed]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "5.17.3"
+notes = """
+VD-05.7 full audit — fastembed 5.17.3 (37 files, 7,797 lines of src).
+
+Unsafe: three occurrences, all the same call —
+`unsafe { VarBuilder::from_mmaped_safetensors(&weight_files, dtype, device)? }`
+in models/qwen3.rs (×2) and models/nomic_v2_moe.rs. **None of them compile in
+this build**, and that was measured rather than inferred. Both modules are
+feature-gated in models/mod.rs (`#[cfg(feature = "qwen3")]`,
+`#[cfg(feature = "nomic-v2-moe")]`), this repository declares
+`default-features = false` with only `ort-download-binaries-native-tls` and
+`hf-hub-native-tls` enabled, and the confirming evidence is the lockfile:
+fastembed resolves with `anyhow, hf-hub, ndarray, ort, safetensors, serde,
+serde_json, tokenizers` and **no candle**, which is where `VarBuilder` lives. Our
+path is ONNX Runtime (`ort`), not candle. Nothing else in the crate uses unsafe.
+
+Capability surface, which is the substantive part and is the crate's declared
+purpose rather than a surprise: it downloads model weights over HTTPS from
+`HF_ENDPOINT` (defaulting to https://huggingface.co) into a cache directory taken
+from `HF_HOME` or `FASTEMBED_CACHE_DIR`, then loads them. Ten filesystem hits and
+three environment reads, all in service of that. No process spawning, no
+`extern "C"`, no `#[link]`, no `#[no_mangle]`, no dynamic loading. No build
+script.
+
+fastembed itself performs **no integrity verification** of what it downloads —
+it delegates fetching to `hf-hub`, whose ETag handling is cache-validity logic,
+not content authentication. TLS to the endpoint is the only trust anchor, and
+`HF_ENDPOINT` is an environment variable, so the endpoint is operator-controlled.
+
+That gap is already compensated in this repository and the compensation was
+checked, not assumed. `maekon-embedding` (the only consumer;
+`default = ["fastembed-local"]`, so it is live) calls
+`model_integrity::verify_cached_weights(..)` against a SHA-256 allowlist,
+fail-closed for any model with a registered digest — issue #7082 MEMB-3. The
+wrapper's own comment records the residual honestly: verification runs after
+`TextEmbedding::try_new` has already handed the graph to ONNX Runtime, so it
+guards inference rather than parsing, and a strict before-parse check needs a
+pinned-revision pre-fetch (tracked by #7082). Worth carrying forward, but it is a
+property of our integration, not of this crate.
+
+safe-to-deploy is met: no unsafe compiles here, and the capability surface is the
+documented behaviour of a model-fetching embedding library.
 """
 
 [[audits.fastrand]]
@@ -3221,6 +3567,34 @@ Scope: the sockaddr casts rest on the kernel setting sa_family consistently with
 
 Exposure: network interface enumeration, reached through the workspace's own networking path."""
 
+[[audits.image-webp]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.2.4"
+notes = """
+VD-05.7 full audit — image-webp 0.2.4 (14 files, 8,670 lines of src).
+
+A WebP decoder written entirely in safe Rust. `src/lib.rs` opens with
+`#![forbid(unsafe_code)]`, so the absence of unsafe is enforced by the compiler
+rather than asserted by this audit; a scan of every `.rs` file under src/
+confirms zero occurrences of the token, consistent with that.
+
+Powerful imports: none. Scanning all 14 files for filesystem access, network
+access, process spawning, environment variable reads or writes, `extern "C"`,
+`#[link]`, `#[no_mangle]`, libc, and dynamic loading returned zero hits on every
+axis. The crate takes bytes in and produces pixels out.
+
+No build script — neither a `build.rs` at the package root nor a `build` key in
+Cargo.toml, so nothing executes at build time.
+
+Dependencies are two and both non-optional: `byteorder-lite` and `quick-error`,
+which is what this repository's Cargo.lock resolves as well. No target-gated or
+feature-gated dependency can widen that surface.
+
+safe-to-deploy is met: there are no unsafe blocks and no powerful imports to
+reason about.
+"""
+
 [[audits.indexmap]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -3241,6 +3615,39 @@ Phase 4C Group D audit — indexmap.
 Crate: indexmap/2.13.0. License: MIT OR Apache-2.0.
 Hash map that preserves insertion order. Built on hashbrown. Limited unsafe code.
 No active RustSec advisories. Actively maintained by the bluss org. Commercial use: permitted.
+"""
+
+[[audits.indicatif]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.18.4"
+notes = """
+VD-05.7 full audit — indicatif 0.18.4 (11 files, 6,336 lines of src).
+
+A terminal progress-bar library. Unlike the other two crates in this batch it
+carries no `#![forbid(unsafe_code)]`, so the absence of unsafe was established by
+scanning rather than delegated to the compiler: every `.rs` file under src/ was
+searched and the token `unsafe` does not appear anywhere, in code or comments.
+
+Powerful imports: two apparent hits, both benign on inspection. `src/iter.rs:175`
+and `:176` match on `read_to_string`, but they are the `io::Read` trait
+implementation for the progress-wrapping reader —
+`fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize>` delegating
+to `self.it.read_to_string(buf)`. That is a method the crate *implements* on data
+a caller already owns, not an access the crate initiates. Nothing opens a path.
+Network, process spawning, environment access, `extern "C"`, `#[link]`,
+`#[no_mangle]`, libc and dynamic loading returned zero hits.
+
+No build script.
+
+Nine declared dependencies, six of them optional (`futures-core`, `rayon`,
+`tokio`, `unicode-segmentation`, `unicode-width`, `vt100`). This repository's
+Cargo.lock resolves it with `console`, `portable-atomic`, `unicode-width`,
+`unit-prefix` and `web-time` — the async and parallel integrations are not
+enabled here. Enabling `tokio` or `rayon` later would pull in code this audit did
+not cover.
+
+safe-to-deploy is met for the crate as it stands.
 """
 
 [[audits.infer]]
@@ -3578,6 +3985,37 @@ Two shapes are worth naming individually. Three sites do `unsafe { std::mem::tra
 Two more are `unsafe impl` on the Dynamic API trait for libloading-backed instances, asserting that a dynamically loaded EGL library can be used through the trait.
 
 Exposure: the EGL path under libwayshot-xcap and screen capture. Linux."""
+
+[[audits.khronos_api]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "3.1.0"
+notes = """
+VD-05.7 full audit — khronos_api 3.1.0.
+
+The crate is data: `src/lib.rs` is 47 lines of `pub const … : &[u8] =
+include_bytes!(..)` exposing the official Khronos OpenGL / EGL / WebGL registry
+XML. Zero unsafe, and zero on every capability axis in the library — no
+filesystem, network, process, environment, `extern "C"`, `#[link]`,
+`#[no_mangle]` or dynamic loading.
+
+It does carry a build script, so that is where the audit actually lands.
+build.rs is 61 lines and does exactly one thing: it reads `OUT_DIR`, creates
+`$OUT_DIR/webgl_exts.rs`, walks `api_webgl/extensions/` — a directory inside the
+crate's own packaged sources, reached via `env::current_dir()` — and for each
+subdirectory that is not named `template` and contains an `extension.xml`, writes
+one `&*include_bytes!("<absolute path>"),` line into a slice literal.
+
+Checked against the ways a build script goes wrong: it spawns no process, opens
+no network connection, reads nothing outside its own package, and writes nothing
+outside `OUT_DIR`. The only environment variable it touches is `OUT_DIR`, which
+Cargo supplies. The generated line uses `{:?}` on the path, so the value is
+emitted as a properly escaped Rust string literal rather than pasted raw — and
+the paths come from files Cargo unpacked from the crate itself, not from anything
+a caller controls.
+
+Reaches this tree through `gl_generator`. safe-to-deploy is met.
+"""
 
 [[audits.kuchikiki]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -4016,6 +4454,40 @@ criteria = "safe-to-deploy"
 delta = "0.19.1 -> 0.20.2"
 notes = """No unsafe anywhere in the delta, and one change is worth recording because it is a resource-exhaustion mitigation rather than a refactor. In `DnsCache::add_or_update` the "not for us" early return previously ran after `entry().or_default()` had already inserted an empty vector for the incoming record's name; the check now runs first, against a plain `get`, and only records the crate actually wants cause an entry to be created. Because mDNS accepts multicast traffic from any host on the local network, the old order let unrelated traffic grow the cache maps under attacker-chosen names. The rest is test additions and the ordinary handling of PTR, SRV, TXT, A, AAAA and NSEC record types, which is unchanged in behaviour."""
 
+[[audits.mdns-sd]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.20.2 -> 0.21.0"
+notes = """
+VD-05.7 delta audit — mdns-sd 0.20.2 -> 0.21.0 (1,152 insertions / 212 deletions).
+
+Audited to unblock dependabot #11202, which fails `cargo vet` on this version alone.
+
+Unsafe: none. Not just in the delta — a scan of all six files in src/ (13,300
+lines) finds zero occurrences of the token in either version. That matters for
+how the rest of this note reads: any indexing or length mistake in this crate
+panics rather than corrupting memory.
+
+The substance of the change is in src/dns_parser.rs (678 lines) and
+src/service_daemon.rs (349). It is **outbound** packet construction, not inbound
+parsing: `DnsOutPacket` gains `max_pkt_absolute()`, `set_truncated()`,
+`rollback()`, `set_short_at()` and a `PacketBuilder`, implementing DNS message
+truncation when a response would exceed the MTU. The code that handles untrusted
+inbound packets is not what moved.
+
+Powerful imports: filesystem, process spawning, environment access, `extern "C"`,
+`#[link]`, `#[no_mangle]`, libc and dynamic loading all return zero across the
+crate. Network use is present and extensive (33 hits, mio and std UdpSocket) —
+that is the crate's declared purpose as an mDNS service-discovery daemon, not an
+unexpected capability. Two apparent hits in the delta scan were false positives:
+`Command::SetOption(DaemonOption::MaxPacketSize(..))` is the crate's own daemon
+command enum, not `std::process::Command`, and the `net::{...}` line is an import.
+
+Dependency surface unchanged: zero added, removed, or version-changed across
+normal, build, dev and target-gated sections, measured by parsing both Cargo.toml
+files rather than reading diff hunks. Neither version has a build script.
+"""
+
 [[audits.memchr]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -4080,6 +4552,69 @@ notes = """
 Phase 4B async/network audit re-apply (OOS #4191) — mime_guess 2.0.5.
 Guesses MIME type from file extension using a static lookup table. No unsafe code.
 MIT OR Apache-2.0. No active RustSec advisories.
+"""
+
+[[audits.minimal-lexical]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.2.1"
+notes = """
+VD-05.7 full audit — minimal-lexical 0.2.1 (19 files, 5,412 lines of src).
+
+Reaches this tree through `nom`. Capability surface is **zero** on every axis —
+no filesystem, network, process, environment, `extern "C"`, `#[link]`,
+`#[no_mangle]` or dynamic loading — and there is no build script, so the whole
+safe-to-deploy question is the unsafe.
+
+A raw count says 42 unsafe lines. **Twenty compile here**, and the difference is
+module-level `cfg`, not judgement:
+
+    stackvec.rs  17  #![cfg(not(feature = "alloc"))]                  — alloc is on
+    libm.rs       3  #![cfg(all(not(feature = "std"), feature = "compact"))]
+    fpu.rs        2  #![cfg(feature = "nightly")]
+
+`default = ["std"]` and `compact`/`nightly` are opt-in, so the no-alloc vector,
+the musl libm port and the x87 control-word code are all out. What remains is
+bigint.rs 3, heapvec.rs 2, num.rs 9, number.rs 4, slow.rs 2.
+
+**Length changes — three call sites, all discharged.**
+  - bigint.rs:164 `normalize` shrinks inside `while let Some(_) = x.get(x.len().wrapping_sub(1))`.
+    The access is bounds-checked, so an empty vector exits the loop rather than
+    wrapping into it, and `x.len() >= 1` holds wherever `set_len(x.len() - 1)` runs.
+  - bigint.rs:663 `shl_limbs` grows, and the guard is a real runtime check, not a
+    debug assert: `if n + x.len() > x.capacity() { None } else if !x.is_empty() {
+    .. set_len(n + x.len()) }`.
+  - stackvec.rs:139 is inside `extend_unchecked`, itself a `pub unsafe fn` stating
+    "Safe if `self.len() + slc.len() <= self.capacity()`" — and it does not compile
+    here anyway.
+  `HeapVec::set_len` is correctly a `pub unsafe fn` with the capacity contract
+  documented; its `debug_assert!` is a development aid rather than the guard, which
+  is the right shape for an explicitly-unsafe API.
+
+**Everything else is one concept: bounded lookups into const power tables**,
+reached through two `unsafe fn` whose contracts say the exponent must be smaller
+than the table. The gate is `Number::is_fast_path::<F>()`, which requires
+`MIN_EXPONENT_FAST_PATH <= exponent <= MAX_EXPONENT_DISGUISED_FAST_PATH`, bounding
+both ends before any lookup. Checked against the actual table lengths for both
+float types rather than argued in general:
+
+    type  path                          max index   table              len
+    f32   normal pow_fast_path                 10   SMALL_F32_POW10     16
+    f32   disguised int_pow_fast_path           7   SMALL_INT_POW10     20
+    f32   disguised tail pow_fast              10   SMALL_F32_POW10     16
+    f64   normal pow_fast_path                 22   SMALL_F64_POW10     32
+    f64   disguised int_pow_fast_path          15   SMALL_INT_POW10     20
+    f64   disguised tail pow_fast              22   SMALL_F64_POW10     32
+
+The disguised bound follows from `MAX_EXPONENT_DISGUISED_FAST_PATH =
+MAX_EXPONENT_FAST_PATH + ⌊(MANTISSA_SIZE+1)/log2(10)⌋`, giving shift ≤ 15 for f64
+and ≤ 7 for f32. bigint.rs:398 reaches `int_pow_fast_path(exp, 5)` only after
+`while exp >= small_step { .. }` has driven `exp < small_step`, and
+`SMALL_INT_POW5` has 28 entries. The `_ => hint::unreachable_unchecked()` arm in
+`int_pow_fast_path` is reachable only with a radix other than 5 or 10, and both
+call sites pass a literal.
+
+safe-to-deploy is met.
 """
 
 [[audits.miniz_oxide]]
@@ -4262,6 +4797,52 @@ who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
 version = "2.1.0"
 notes = "Phase 6 #3908 batch6: notify-types reviewed; pure event/config/debouncer data types with serde/bitflags support, no unsafe code and no runtime filesystem watcher or I/O implementation."
+
+[[audits.ntapi]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.4.3"
+notes = """
+VD-05.7 full audit — ntapi 0.4.3 (36 files, 20,881 lines of src).
+
+Declarations for the Windows NT native API. Reaches this tree through `sysinfo`,
+which gates it `[target."cfg(windows)".dependencies]`, so it compiles on Windows
+only.
+
+A raw scan reports 41 unsafe hits, 8 filesystem and 6 FFI. Split apart, the
+shipped unsafe surface is **one block**:
+
+  - 6 + more are `pub type $func = Option<unsafe extern "C" fn(..) -> $ret>` and
+    `pub type $n = unsafe extern $c fn(..)` produced by macros in src/macros.rs —
+    signature declarations for foreign functions, not unsafe code. This is the
+    same shape as r-efi 6.0.0 audited in this batch, where 318 of 324 hits were
+    type aliases.
+  - The 8 "filesystem" hits are a false match on my scanner: they are
+    `OpenOptions: ULONG` **parameter names** in NT API signatures in
+    src/ntzwapi.rs, not `std::fs::OpenOptions`. There is no filesystem access in
+    the crate, and likewise no network, process spawning, environment access or
+    dynamic loading.
+
+The one real block is `FIELD_OFFSET!` in src/macros.rs:33:
+
+    let obj = core::mem::MaybeUninit::<$_type>::uninit();
+    let base = obj.as_ptr();
+    unsafe { core::ptr::addr_of!((*base).$field$(.$cfields)*) as usize - base as usize }
+
+This is the standard pre-`offset_of!` idiom and it is sound: `addr_of!` forms a
+pointer to a place without creating a reference and without reading, so the
+uninitialised `MaybeUninit` is never loaded from, and the subtraction stays
+within one allocation. Rust stabilised `offset_of!` in 1.77 and this crate
+predates relying on it; the hand-rolled version has the same semantics.
+
+Build script: 15 lines. On `x86_64-pc-windows-gnu` / `i686-pc-windows-gnu` with
+the `user` feature it prints one `cargo:rustc-link-lib=ntdll` or
+`=winapi_ntdll` line, choosing between them on the presence of
+`WINAPI_NO_BUNDLED_LIBRARIES`. It reads two environment variables, writes no
+files, spawns nothing and opens no sockets.
+
+safe-to-deploy is met.
+"""
 
 [[audits.num-bigint]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -4955,6 +5536,49 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.plotters]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-run"
+version = "0.3.7"
+notes = """
+VD-05.7 full audit — plotters 0.3.7, safe-to-run (17,583 lines of runtime .rs).
+
+Reachability first, because it decides the scope. plotters enters this graph only
+through `criterion` (Cargo.lock: criterion 0.8.2 lists "plotters" among its
+dependencies), so it is a benchmark-time dependency. That is why safe-to-run is
+the criteria the exemption asked for, and it is what this audit certifies.
+
+No build script. No C, C++, or Objective-C sources.
+
+Unsafe: exactly one site in the whole crate — src/style/font/ttf.rs:83, a
+lifetime transmute
+`transmute::<Option<_>, Option<Face<'static>>>(ttf_parser::Face::parse(data, idx).ok())`
+that builds a self-referential `FontExt { inner: Font, face: Option<Face<'static>> }`.
+
+That site is not compiled here. `mod ttf` is gated on `feature = "ttf"`
+(src/style/font/mod.rs:11-13), and the feature is off in this lockfile: `font-kit`
+and `ttf-parser` — the dependencies the feature pulls in — have zero entries in
+Cargo.lock. The check is falsifiable rather than inferred from the feature list:
+if `ttf` were on, those two packages would have to be present, and they are not.
+
+Recorded for whoever enables that feature later, since this audit does not clear
+it: the transmute's soundness rests on the font bytes outliving the `Face`.
+`FontExt::new` takes `data` from a `Handle::Memory { bytes, .. }` bound to a local
+`handle` that drops at end of scope, so the buffer survives only if `font` — moved
+into `inner` — shares ownership of the same allocation. `Drop for FontExt` does
+take care to drop `face` before `inner`. Resolving this needs font-kit internals
+and is out of scope for safe-to-run; it must be settled before any safe-to-deploy
+claim on the `ttf` feature.
+
+Powerful imports: two, both in src/evcxr.rs (`std::fs::File` at :5,
+`File::create` at :63). That module is gated on `feature = "evcxr"`
+(src/lib.rs:800-802), which is likewise off — `plotters-bitmap` has zero
+Cargo.lock entries. No process spawning, no network, no environment writes
+anywhere in the crate.
+
+With `ttf` and `evcxr` both off, the compiled surface of this crate in this build
+contains no unsafe and no filesystem, process, or network access."""
+
 [[audits.plotters-backend]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-run"
@@ -5251,6 +5875,67 @@ byte slicing operations. Widely used in the Rust ecosystem (serde support, SAML 
 No active RustSec advisories for these versions. Actively maintained. Commercial use: permitted.
 """
 
+[[audits.quick-xml]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.39.2 -> 0.39.4"
+notes = """
+VD-05.7 delta audit — quick-xml 0.39.2 -> 0.39.4 (35 insertions / 10 deletions).
+
+Audited to unblock dependabot #11201, which fails `cargo vet` on 0.39.4 and 0.41.0.
+
+A small patch release, and a welcome one. Thirty-three of the changed lines are in
+src/parser/dtd.rs and most of them are comments explaining the fix. The fix itself
+is a panic: `UndecidedMarkup` carries a 9-byte work buffer sized for the longest
+DTD keyword (`!NOTATION`), and when a chunk boundary delivered nine or more bytes
+after `<` while `switch()` still returned `None`, the old code staged more bytes
+than the buffer could hold, which panicked on the slice copy. The new code
+recognises that case as definitively-not-a-keyword and skips to `>` instead.
+Reachable from malformed or adversarially chunked XML, so this is a denial-of-
+service fix worth taking.
+
+Unsafe: none, and this is a property of the whole crate rather than the delta —
+a scan of all 36 files in src/ (35,283 lines) finds zero occurrences. The
+consequence matters for reading the above: the bug it fixes was a panic, not
+memory corruption, because there is no unsafe code for it to corrupt.
+
+Powerful imports in the delta: none on any axis. Dependency surface unchanged,
+measured by parsing both Cargo.toml files. No build script in either version.
+"""
+
+[[audits.quick-xml]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.39.2 -> 0.41.0"
+notes = """
+VD-05.7 delta audit — quick-xml 0.39.2 -> 0.41.0 (3,127 insertions / 486 deletions).
+
+Audited to unblock dependabot #11201. This span includes the 0.39.4 DTD panic fix
+audited separately.
+
+Unsafe: none. Not merely in the delta — the whole crate is unsafe-free, 36 files
+and 35,283 lines in src/ with zero occurrences of the token. For an XML parser
+that is the single most useful fact available: a mistake in escaping or bounds
+produces wrong output or a panic, never memory corruption.
+
+The change is concentrated in the text-handling core: src/encoding.rs (1,011
+lines), src/escape.rs (928), src/events/attributes.rs (622) and src/name.rs (125)
+— encoding detection, entity escape/unescape, and attribute parsing. Consumers
+that trust unescaped output should track upstream's changelog for behavioural
+differences, but that is a correctness concern for the caller rather than a
+safe-to-deploy one.
+
+Powerful imports across the crate: filesystem 3 hits, everything else zero. The
+filesystem hits are `use std::fs::File` and `File::open(path)` inside
+`impl Reader<BufReader<File>> { pub fn from_file<P: AsRef<Path>>(path: P) }` at
+reader/buffered_reader.rs:575 — a documented public constructor where the caller
+supplies the path. No network, process spawning, environment access, `extern "C"`,
+`#[link]`, `#[no_mangle]`, libc or dynamic loading anywhere.
+
+Dependency surface unchanged: zero added, removed or version-changed across
+normal, build, dev and target-gated sections. Neither version has a build script.
+"""
+
 [[audits.quinn]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5264,6 +5949,56 @@ Method note shared by this batch: the zero was not taken from one grep. Every li
 
 Exposure: present in Cargo.lock as a dependency of reqwest 0.13.4 -- the HTTP/3 path -- and absent from the resolved graph even under --all-features, so it is carried but not built here."""
 
+[[audits.quinn-proto]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.11.15"
+notes = """
+VD-05.7 full audit — quinn-proto 0.11.15 (24,616 lines of runtime .rs).
+
+No build script. No C, C++, or Objective-C.
+
+Unsafe: five sites, and they are one thing — `VarInt::from_u64_unchecked`
+(varint.rs:44) and its four callers. What matters is that the function body is
+
+    pub const unsafe fn from_u64_unchecked(x: u64) -> Self { Self(x) }
+
+There is no unsafe operation inside it. The `unsafe` is a contract marker for a
+library invariant (`VarInt < 2^62`), not a memory operation, so violating it can
+only be UB if some other code leans on that invariant unsafely.
+
+Nothing does. `grep` for `get_unchecked`, `set_len`, `from_raw`, `assume_init`,
+`unreachable_unchecked`, `assert_unchecked`, `transmute`, and
+`copy_nonoverlapping` over the entire crate returns zero hits. And the one place
+the invariant is consumed, `VarInt::size` (varint.rs:53-66), ends its range ladder
+with `panic!("malformed VarInt")` rather than `unreachable_unchecked`. So an
+out-of-range `VarInt` yields a panic or a malformed wire encoding — never memory
+unsafety — within this crate.
+
+Callers, each checked:
+  - connection/mod.rs:3257 — CRYPTO frame offset, bounded by the handshake.
+  - connection/send_buffer.rs:99 — retransmit `range.start`, a stream offset.
+  - connection/send_buffer.rs:118 — `self.unsent`, a stream offset.
+    QUIC caps stream offsets at 2^62-1 because they are varints on the wire; the
+    parse direction cannot exceed it.
+  - lib.rs:280 — `From<StreamId> for VarInt`, passing `StreamId`'s inner u64.
+
+Recorded finding on that last one, since it is the only caller whose input is not
+protocol-bounded: `StreamId::new(initiator, dir, index)` (lib.rs:257) is public
+and computes `(index << 2) | ..` without validating `index`. An application
+passing `index >= 2^60` produces a `StreamId >= 2^62`, and the `From` impl then
+hands that to `from_u64_unchecked`, breaking its documented contract. Given the
+absence of unchecked memory operations above, the consequence is a panic in
+`VarInt::size` or a malformed frame, not UB, and it requires local misuse of the
+API rather than remote input — `From<VarInt> for StreamId` is the direction the
+wire takes, and a `VarInt` parsed from the wire is already below 2^62. Not a
+blocker for safe-to-deploy; worth an upstream report.
+
+Powerful imports: three hits, all `std::net::{Ipv4Addr, Ipv6Addr}` (coding.rs:3,
+token.rs:437, token.rs:465). These are address value types used for encoding and
+token validation. quinn-proto is the sans-io protocol state machine — it owns no
+sockets and performs no I/O. No filesystem, process, or environment access."""
+
 [[audits.quote]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5274,6 +6009,90 @@ Crate: quote/1.0.45. Author: dtolnay. License: MIT OR Apache-2.0.
 Quasi-quoting macro for constructing TokenStream in proc-macros.
 No unsafe code. Compile-time only. Part of the rust-lang org.
 No active RustSec advisories. Maintenance: actively maintained. Commercial use: permitted.
+"""
+
+[[audits.r-efi]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "5.3.0"
+notes = """
+VD-05.7 full audit — r-efi 5.3.0 (55 files, 8,804 lines of src).
+
+UEFI type and ABI definitions. Powerful imports: none — filesystem, network,
+process spawning, environment access, `#[link]`, `#[no_mangle]`, libc and dynamic
+loading all returned zero across every file. No build script.
+
+Unsafe: the raw token appears 10 times, but only **two** are unsafe code that
+ships. The rest are one doc comment, macro arms in `eficall!` that match the
+`unsafe` token while rewriting a signature, and one occurrence inside `mod tests`.
+Both shipped blocks are in `src/base.rs` and both are `Guid` layout casts:
+
+  - `:752` `transmute::<[u8; 16], Guid>(*bytes)`
+  - `:760` `transmute::<&Guid, &[u8; 16]>(self)`
+
+`Guid` is `#[repr(C, align(4))]` over `time_low: [u8; 4]`, `time_mid: [u8; 2]`,
+`time_hi_and_version: [u8; 2]`, `clk_seq_hi_res: u8`, `clk_seq_low: u8`,
+`node: [u8; 6]`. Every field is u8-based and therefore align 1, so under repr(C)
+they lay out contiguously at offsets 0, 4, 6, 8, 9, 10 for a total of exactly 16
+bytes with no interior padding; 16 is a multiple of the declared alignment of 4,
+so there is no trailing padding either. Size matches `[u8; 16]` and every bit
+pattern is a valid `Guid`, so the first transmute is sound. The second goes from
+`&Guid` (align 4) to `&[u8; 16]` (align 1) — same size, weaker alignment
+requirement — and is likewise sound.
+
+The one test-only transmute, `:907` `transmute::<u8, Boolean>(i)`, is inside
+`mod tests` (which begins at :765) and is itself a positive control: the test
+iterates all 256 u8 values and asserts the transmute agrees with the `From` impl.
+`Boolean` is `#[repr(C)] pub struct Boolean(u8)`, so all 256 are valid.
+
+Reachability in this repository, measured rather than assumed: the only crate
+depending on r-efi is `getrandom`, and it does so as
+`[target.'cfg(all(target_os = "uefi", getrandom_backend = "efi_rng"))'.dependencies.r-efi]`
+— gated on both a UEFI target and an opt-in backend cfg. This tree builds for
+macOS, Windows and Linux desktop, so the crate does not enter compilation at all.
+Nothing in the workspace references `r_efi` directly.
+"""
+
+[[audits.r-efi]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "6.0.0"
+notes = """
+VD-05.7 full audit — r-efi 6.0.0 (55 files, 8,819 lines of src).
+
+UEFI type and ABI definitions. Powerful imports: none — filesystem, network,
+process spawning, environment access, `#[link]`, `#[no_mangle]`, libc and dynamic
+loading all returned zero across every file. No build script.
+
+Unsafe: the raw token appears 324 times, but only **two** are unsafe code that
+ships. Of the remainder, **318 are `unsafe extern "efiapi" fn` type aliases** declaring the UEFI protocol ABI — signatures describing foreign functions, not unsafe code, and the reason a raw count makes this version look thirty times heavier than 5.3.0 when its actual unsafe surface is identical. The rest are three doc comments, macro arms in `eficall!` that match the
+`unsafe` token while rewriting a signature, and one occurrence inside `mod tests`.
+Both shipped blocks are in `src/base.rs` and both are `Guid` layout casts:
+
+  - `:752` `transmute::<[u8; 16], Guid>(*bytes)`
+  - `:760` `transmute::<&Guid, &[u8; 16]>(self)`
+
+`Guid` is `#[repr(C, align(4))]` over `time_low: [u8; 4]`, `time_mid: [u8; 2]`,
+`time_hi_and_version: [u8; 2]`, `clk_seq_hi_res: u8`, `clk_seq_low: u8`,
+`node: [u8; 6]`. Every field is u8-based and therefore align 1, so under repr(C)
+they lay out contiguously at offsets 0, 4, 6, 8, 9, 10 for a total of exactly 16
+bytes with no interior padding; 16 is a multiple of the declared alignment of 4,
+so there is no trailing padding either. Size matches `[u8; 16]` and every bit
+pattern is a valid `Guid`, so the first transmute is sound. The second goes from
+`&Guid` (align 4) to `&[u8; 16]` (align 1) — same size, weaker alignment
+requirement — and is likewise sound.
+
+The one test-only transmute, `:907` `transmute::<u8, Boolean>(i)`, is inside
+`mod tests` (which begins at :765) and is itself a positive control: the test
+iterates all 256 u8 values and asserts the transmute agrees with the `From` impl.
+`Boolean` is `#[repr(C)] pub struct Boolean(u8)`, so all 256 are valid.
+
+Reachability in this repository, measured rather than assumed: the only crate
+depending on r-efi is `getrandom`, and it does so as
+`[target.'cfg(all(target_os = "uefi", getrandom_backend = "efi_rng"))'.dependencies.r-efi]`
+— gated on both a UEFI target and an opt-in backend cfg. This tree builds for
+macOS, Windows and Linux desktop, so the crate does not enter compilation at all.
+Nothing in the workspace references `r_efi` directly.
 """
 
 [[audits.rand]]
@@ -5702,6 +6521,159 @@ network access, or build-time code execution surface. Upstream remains
 the GeoRust R*-tree spatial-index crate; 0.13.0 raises MSRV to 1.85, which
 is below this workspace baseline. Scope: capability + memory-safety audit
 for safe-to-deploy dependency certification, not a line-by-line logic review.
+"""
+
+[[audits.rubato]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "3.0.0"
+notes = """
+VD-05.7 full audit — rubato 3.0.0 (15 files, 5,783 lines of runtime .rs).
+
+This repository already audits rubato 5.0.0. 3.0.0 is what the lockfile actually
+resolves, and it was exempted rather than audited, so this is a full inspection.
+The 5.0.0 reasoning was not copied over: `asynchro_fast.rs` in 3.0.0 does not
+import `validate_buffers` at all, so the caller chain had to be re-traced.
+
+No build script. No C, C++, or Objective-C. Powerful imports: zero — filesystem,
+network, process, environment, `extern "C"`, `#[link]`, `#[no_mangle]`, libc,
+dynamic loading all absent.
+
+Fifty-one unsafe sites in four groups.
+
+1. src/sinc_interpolator/aligned_buf.rs (8 sites) — a hand-rolled 32-byte-aligned
+heap buffer, the sharpest thing in the crate.
+  - `layout()` uses `checked_mul` for `len * size_of::<T>()` and
+    `Layout::from_size_align`, so neither the multiply nor the alignment round-up
+    can overflow silently.
+  - `zeroed(0)` and `from_slice(&[])` allocate nothing and store
+    `NonNull::dangling()`. That is `align_of::<T>()`-aligned and non-null, which
+    is what `slice::from_raw_parts(ptr, 0)` requires.
+  - `alloc_zeroed` / `alloc` results go through
+    `NonNull::new(..).unwrap_or_else(|| handle_alloc_error(layout))`, so a null
+    return aborts rather than being dereferenced.
+  - `from_slice` copies with `copy_nonoverlapping` into a freshly allocated
+    region — no overlap possible — with `count == src.len() ==` the allocated
+    length, and `T: Copy` so nothing is dropped twice.
+  - `Drop` recomputes the layout as `len * size_of::<T>()` with plain `*`, which
+    is safe here because the same product already passed `checked_mul` at
+    construction and `len` is never mutated afterwards. It skips `dealloc` when
+    `len == 0`, matching the paths that never allocated, and passes the same size
+    and alignment the allocation used.
+  - `Deref`/`DerefMut` hand out `from_raw_parts(ptr, len)` over memory that is
+    always initialized (zeroed or copied) and exclusively owned; `&mut self`
+    supplies the exclusivity for the mut version.
+  - `unsafe impl<T: Send> Send` / `unsafe impl<T: Sync> Sync` are the standard
+    bounds for a uniquely-owning container — the same ones `Vec<T>` carries. The
+    raw `NonNull<T>` would otherwise make the type neither.
+  - Documented limitation, and it is real: `zeroed` is only valid for types whose
+    all-zero bit pattern is a value, which `T: Copy` does not enforce. The type is
+    `pub(crate)` and instantiated only with the numeric `Sample` types.
+
+2. src/sinc_interpolator/{sinc_interpolator_avx,_sse,_neon}.rs (~13 each) —
+`#[target_feature(enable = ...)]` functions, which are UB to call on a CPU
+lacking the feature. Each interpolator's constructor gates on that:
+`pub fn new(..) -> Result<Self, MissingCpuFeature>` starts with
+`if let Some(feature) = FEATURES.iter().find(|f| !f.is_detected()) { return Err(..) }`
+(avx:263, sse:263, neon:266), where `is_detected` is `is_x86_feature_detected!` /
+`is_aarch64_feature_detected!` (error.rs:23-42). The `#[target_feature]` functions
+are reachable only through methods on a constructed instance, so the runtime check
+dominates every call.
+
+3. src/sinc_interpolator/mod.rs (2 sites).
+  - :118 `ptr::write_bytes(combined.as_mut_ptr(), 0, combined.len())` — a memset
+    over a `&mut [T]`, valid because `T: Sample` is f32/f64 and all-zero bits are
+    0.0 for both.
+  - :225 the scalar dot product. `wave_cut` is built by *checked* slicing,
+    `&wave[index..index + sinc.len()]`, so an out-of-range index panics before
+    any unsafe runs. The eight-way unrolled loop runs `wave_cut.len() / 8` times
+    with `idx += 8`, so the highest offset touched is `(n/8)*8 - 1 < n`, and
+    `sinc.len() == wave_cut.len()` by construction. The remainder below 8 that the
+    loop skips is not a silent truncation: all four constructors assert
+    `sinc_len % 8 == 0` (mod.rs:280, avx:267, sse:267, neon:270).
+
+4. src/asynchro_fast.rs (5 sites) — `wave_in.get_unchecked(chan).get_unchecked(range)`
+feeding `wave_out.write_sample_unchecked(..)`, one per polynomial degree.
+`InnerResampler::process` asserts no preconditions of its own, so the bounds come
+from its only caller, `Async::process_into_buffer` (asynchro.rs:450). That call
+runs `validate_buffers(buffer_in, buffer_out, &channel_mask, nbr_channels,
+frames_to_read + input_offset, needed_output_size + output_offset)?` at :470 —
+with `?`, so a mismatch returns before :516 dispatches to `process`. The window
+arithmetic fits the buffer by construction: the internal buffer is
+`calculate_max_input_size(..) + 2 * interpolator_len` per channel (asynchro.rs:214),
+and each degree reads `(start_idx + 2 * interpolator_len) .. + nbr_points()`,
+consuming exactly that headroom. Degree and window agree —
+`Septic → nbr_points() == 8` with a `+ 8` slice and `start_idx = idx_floor - 3`
+(points at x = -3..4, as the doc states); `Quintic → 6` with `+ 6`. The
+interpolators themselves index with safe `yvals[0..7]`, so a short slice would
+panic rather than read out of bounds."""
+
+[[audits.rubato]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "5.0.0"
+notes = """
+VD-05.7 full audit — rubato 5.0.0 (16 files, 7,838 lines of src).
+
+Audited to unblock dependabot #11345, the last of the five crates that PR needs.
+A full inspection rather than a delta: 3.0.0 is exempted in this repository, not
+audited, so there was no chain to shorten.
+
+Powerful imports: zero on every axis — filesystem, network, process spawning,
+environment access, `extern "C"`, `#[link]`, `#[no_mangle]`, libc, dynamic
+loading. No build script. The entire safe-to-deploy question is the unsafe.
+
+Unsafe: 51 sites, and they are one thing — the resampler hot loops pairing
+`wave_in.get_unchecked(chan).get_unchecked(range)` with
+`wave_out.write_sample_unchecked(chan, frame + output_offset, ..)`. The
+`InnerResampler::process` that contains them is `pub(crate)` and asserts no
+preconditions, so soundness rests on invariants established by its single caller,
+`Async::process_into_buffer` (asynchro.rs:601). Those were traced.
+
+Channel and output-frame bounds are checked per call:
+`validate_buffers(buffer_in, buffer_out, nbr_channels, frames_to_read +
+input_offset, needed_output_size + output_offset)?` runs before the loop, and the
+loop writes `frame + output_offset` for `frame in 0..nbr_frames` with
+`nbr_frames <= needed_output_size`. `chan` comes from
+`channel_mask.iter().enumerate()` over the same `nbr_channels` the internal
+buffer was allocated with.
+
+The input-side index bound is the substantive one, and the author states the
+invariant in the code. `calculate_output_size` for `FixedAsync::Input` reads:
+
+    // n * avg_t_ratio + 0.5*(1/r2 - 1/r1) <= space
+    let space = chunk_size as f64 - (interpolator_len + 1) as f64 - last_index;
+
+so `needed_output_size` is chosen such that the total index advance stays within
+`space`, giving `idx <= chunk_size - L - 1`. The `- (interpolator_len + 1)` term
+is exactly the interpolator-window reserve. The buffer is
+`calculate_max_input_size(..) + 2 * interpolator_len` (asynchro.rs:231-237), and
+`idx` starts at `init_last_index() = -(nbr_points / 2)`.
+
+Checked arithmetically for every degree the crate offers rather than argued in
+general terms, since the margin is small:
+
+    degree   L  back  window   idx max      read end   buffer_len   slack
+    Cubic    4    1     4      chunk-5      chunk+6    chunk+8        2
+    Quintic  6    2     6      chunk-7      chunk+9    chunk+12       3
+    Septic   8    3     8      chunk-9      chunk+12   chunk+16       4
+
+and the lower bound, `start_idx + 2L` at the initial index, is 5 / 7 / 9
+respectively — never negative despite `start_idx = idx.floor() - back` being
+negative on the first frames.
+
+The sizing depends on `max_resample_ratio_relative`, so that parameter has to
+hold at runtime, and it does: `set_resample_ratio` and
+`set_resample_ratio_relative` both gate on `relative_ratio_in_bounds` and return
+`ResampleError::RatioOutOfBounds` otherwise, and `validate_ratios` rejects a
+non-positive ratio at construction. `step_index` itself is unguarded float
+arithmetic, which is why the bound has to come from the output-size calculation
+rather than from a clamp.
+
+Note for future readers: a first pass at this deferred the crate after reading
+the hot loop alone and judging the margin unprovable. That was premature — the
+reserve is in `calculate_output_size`, one file away, and omitting its
+`- (interpolator_len + 1)` term makes the arithmetic look tight when it is not.
 """
 
 [[audits.rusqlite]]
@@ -6298,6 +7270,62 @@ Crate: serde_urlencoded/0.7.1. License: MIT OR Apache-2.0.
 URL-encoded (application/x-www-form-urlencoded) serialization/deserialization.
 Pure-Rust. Used by reqwest for form encoding. No unsafe code. No active RustSec advisories.
 """
+
+[[audits.serde_with]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "3.21.0"
+notes = """
+VD-05.7 full audit — serde_with 3.21.0 (22,553 lines of runtime .rs).
+
+Supersedes the `no-publisher` exemption: the reason for that exemption was the
+absence of a publisher to trust, which a full audit makes moot.
+
+No build script. No C, C++, or Objective-C. `#![no_std]`.
+
+A trap worth recording, because it nearly shortened this audit: lib.rs:20 contains
+`forbid(unsafe_code)`, but it sits inside `#![doc(test(attr(...)))]` (lib.rs:1-21),
+so it constrains generated doctest binaries only, not the crate. The crate does
+contain unsafe. Reading the attribute in context rather than grepping for the
+token is what separated the two.
+
+Unsafe: four sites, all in src/utils.rs, and all reachable in this build.
+
+1-3. `array_from_iterator` (utils.rs:154-205) — fixed-size array deserialization,
+called from de/impls.rs:424, :991, :1585, :1732. Ungated. This is the array
+initialization idiom from the standard library's `MaybeUninit` docs.
+  - :179 `MaybeUninit::uninit().assume_init()` producing `[MaybeUninit<T>; N]`.
+    Sound: the type claimed initialized is itself `MaybeUninit`, which requires no
+    initialization.
+  - :168 `ptr::drop_in_place` in `drop_array_elems(num, arr)`, reached on the two
+    error arms with `num = idx`. At iteration `idx`, elements `[0, idx)` have been
+    assigned and `[idx, N)` have not, so it drops exactly the initialized prefix.
+    The moved `arr` is then dropped as `[MaybeUninit<T>; N]`, which is a no-op —
+    no double free.
+  - :204 `transmute_copy::<_, [T; N]>(&arr)` on the success path only, after every
+    element is assigned. `MaybeUninit<T>` shares size and alignment with `T`, so
+    the layouts match. The source stays a `MaybeUninit` array and its drop is a
+    no-op, so the bitwise copy does not create a double drop.
+  - Panic inside the loop leaks the initialized prefix (dropping the
+    `MaybeUninit` array does not run `T::drop`). A leak, not unsoundness; the
+    in-source comment says the same.
+  - Adversarial input was considered, since this is a deserializer: `N` is a const
+    generic fixed at compile time and the attacker controls only how many items
+    the iterator yields. Fewer than `N` takes the `None` arm and errors after
+    dropping the prefix; more than `N` simply stops at `N`. Neither path indexes
+    past the array.
+
+4. `ManuallyDrop::take(&mut self.value)` (utils.rs:314) inside
+`impl Drop for DropGuard`. Reachable — `DropGuard` is gated on
+`schemars_0_8`/`schemars_0_9`/`schemars_1`, and Cargo.lock lists `schemars 0.9.0`
+and `schemars 1.2.2` among serde_with's dependencies, so the feature is on. Sound:
+`Drop::drop` runs at most once per value and this `take` is the only place the
+value is removed, so it cannot be taken twice.
+
+Powerful imports: one hit, lib.rs:359 `include_str!` inside a `#[doc = ...]`
+attribute macro. It embeds documentation markdown at compile time and reads
+nothing at runtime. No filesystem, process, network, or environment access
+anywhere in the crate."""
 
 [[audits.serde_with_macros]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -7104,6 +8132,220 @@ Version 0.3.47 post-dates all known advisories. Contains some unsafe for libc ca
 (time zone queries) which are gated and minimal. No active RustSec advisories.
 Actively maintained. Commercial use: permitted.
 """
+
+[[audits.time]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.3.51"
+notes = """
+VD-05.7 delta audit — time 0.3.47 -> 0.3.51 (41,442 diff lines).
+
+A boundary crate: `time` feeds rcgen, x509-parser, and jsonwebtoken in this graph,
+so PUBLISHER-TRUST-POLICY §4 rules out discharging it with publisher trust. This
+is a hand audit.
+
+Base correction, recorded because following the exemption would have left a gap:
+the exemption's follow-up text says to audit "0.3.49..0.3.51". The audited base in
+this repository is 0.3.47 (`[[audits.time]] version = "0.3.47"`, Phase 4C Group D),
+which is also what `cargo vet suggest` proposes. Auditing from 0.3.49 would have
+skipped 0.3.47..0.3.49 entirely.
+
+Scope. The diff is 21,951 added lines, but 11,393 of those are in tests, benches,
+and fuzz targets; the runtime path is 10,558 lines across 66 files. Extracting
+only *added* runtime unsafe expressions — and truncating each file at its first
+inline `#[cfg(test)]`, which a path-based filter misses — gives 218 sites in 21
+files. That is the audit surface; the rest of the crate is covered by the 0.3.47
+audit.
+
+Everything below was verified by computation with falsification controls, not by
+reading the safety comments. Where the domain was small enough the check is
+exhaustive rather than sampled.
+
+## num_fmt.rs (55) — new integer formatter
+
+`StackStr`/`StackTrailingStr` hold `[MaybeUninit<u8>; N]` and hand out
+`str_from_raw_parts`, so every write path must fill exactly what it later reads.
+`u64_pad_none` was traced by hand: `offset` starts at 20 and decreases by 4, so it
+only ever takes {20,16,12,8,4,0}; reaching 0 implies `remain == 0`, which disables
+both later decrements, so the usize cannot underflow. `enc_16lsd::<OFFSET>` covers
+exactly `OFFSET..OFFSET+16`, and its two call sites (23, 7) fit the 39-byte buffer.
+
+`div_rem_1e16` is a magic-constant division and the one place a wrong answer is UB
+rather than a wrong number: its remainder feeds
+`ru64::<0, 9_999_999_999_999_999>::new_unchecked`, and deranged's `new_unchecked`
+calls `core::hint::assert_unchecked`. It was verified in exact integer arithmetic:
+the crate's 64-bit-limb `mulhi` matches full-width multiplication on 20,005 cases;
+`M_HIGH == ceil(2^179 / 1e16)` exactly; the magic-division error bound
+`(M*d - 2^s) * (2^128-1) <= 2^s` holds; and 42,009 boundary and random points
+(k*d-1, k*d, k*d+1, plus 2^128 neighbourhoods) all reproduce `n // 1e16` with a
+remainder inside [0, 1e16). Falsification fired on every perturbation — M±1 and
+shift±1 each produce mismatches. `M_HIGH + 1` breaks only 1 of 5,000 sampled
+points, which is why the ±1 control was necessary rather than decorative.
+
+Recorded defect, not blocking: `write_one_digit`'s doc says "`buf` must be at
+least `offset` bytes long" while it writes one byte *at* `offset`, so the stated
+contract is one byte short. `write_two_digits` above it correctly says
+`offset + 2`. Both in-tree callers satisfy the stronger requirement, so this is a
+documentation bug, not a live one. Worth an upstream report.
+
+## timestamp.rs (28) — new module
+
+`Timestamp::__new_unchecked` forwards to `Seconds::new_unchecked` and
+`Nanoseconds::new_unchecked`, so every caller owes a range proof.
+
+The three public constructors (`from_milliseconds`, `from_microseconds`,
+`from_nanoseconds`) share one shape: `ensure_ranged!` then truncating division,
+`rem_euclid`, and a `if v < 0 && nanos != 0 { seconds -= 1 }` correction.
+`ensure_ranged!` is a real runtime check — it calls deranged's checked `::new()`
+and returns `Err(ComponentRange)`, present in release builds. The decomposition was
+verified over 40,019 points per constructor (range endpoints, ±3 neighbourhoods,
+unit boundaries, random fill), confirming `seconds` stays inside
+`[Seconds::MIN, Seconds::MAX]`, `nanos` inside [0, 1e9), and that the split is
+lossless. Because `large-dates` cannot be read off the lockfile — it pulls in no
+dependency — both bounds were checked: ±9,999 and ±999,999. Falsification: dropping
+the negative-side correction breaks 20,034–23,888 of 40,019 points in every case,
+so that one line is what turns truncating division into floor division.
+
+`add`/`sub` (:794, :837, :865, :893) use `checked_add` plus explicit
+`< Seconds::MIN.get()` / `> Seconds::MAX.get()` tests returning `Overflow`.
+
+`Timestamp::time()` (:435) decomposes `as_seconds().rem_euclid(86_400)` into
+hour/minute/second. Exhaustive over all 86,400 values: hour ∈ [0,23], minute and
+second ∈ [0,59], and the split is lossless. Falsification: feeding the same
+arithmetic negative values (i.e. removing `rem_euclid`) puts all 86,400 out of
+range, so that call is load-bearing.
+
+`replace_time` (:1012) and `replace_date` (:1034) floor to midnight and re-add a
+time of day. Their safety comments claim const assertions enforce the needed
+invariant, and they do — timestamp.rs:35-38 is a `const _: () = { assert!(...) }`
+block checking that `Timestamp::MIN.time() == Time::MIDNIGHT` and
+`Timestamp::MAX.time() == Time::MAX`, with a comment saying the soundness of some
+functions depends on it. Being `const`, a violation is a compile error. That is
+exactly the property the two functions need: MIN is day-aligned and MAX is the last
+instant of a day, so replacing the time-of-day cannot leave the range.
+
+Negation (:1356) computes `1e9 - nanosecond` behind an `if nanosecond != 0` guard,
+mapping [1, 999_999_999] onto itself. Without the guard, n = 0 would yield
+1_000_000_000 and leave `Nanoseconds<0, 999_999_999>`.
+
+## date.rs (14) and util.rs (3)
+
+`Date::fmt_into_buffer` writes into `[MaybeUninit<u8>; 13]` with raw
+`copy_to_nonoverlapping`, so the constant has to be right. Exhaustive over every
+representable year: with `large-dates` off the worst case is 11 bytes (2 spare);
+with it on the worst case is **exactly 13 with zero slack** (year -999999). The
+`ZERO_PADDED_PAIRS` table access inside `four_to_six_digits` was checked in the
+same sweep and lands on [2, 200] — touching the exact end of the 200-byte table at
+`first_two = 99`. Falsification: a 12-byte buffer overflows for 3 years, so 13 is
+derived, not chosen.
+
+The three `core::hint::unreachable_unchecked()` sites (util.rs:79, date.rs:380,
+date.rs:522) all sit behind the same ordinal-to-month bit trick,
+`((ordinal * 268 + 8031) >> 13) + month_adj`, feeding
+`Month::from_number(NonZero::new_unchecked(month as u8))`. Exhaustive over both
+365- and 366-day years: month is never zero, always in [1,12], and the (month, day)
+pair matches a real calendar on every day. Falsification on two axes — ordinals
+past the year end (366, 367, 400, 500) produce months 13-17, so the unchecked
+depends on the caller's contract; and the magic constants are tight, with valid
+windows of width 1 (`268`, unique), 3 (`3917`), 24 (`3866`) and 36 (`8031`), three
+of the four sitting exactly at a window edge. An initial ±1 control on `8031`
+passed and was too weak — measuring the window is what showed the constants are
+derived.
+
+## formatting/ (71) and parsing/component.rs
+
+One pattern: unchecked narrowing of an already-ranged value. Verified exhaustively.
+`year / 100` over every year gives [-99, 99] without `large-dates` and exactly
+[-9999, 9999] with it — saturating `ri16<-9_999, 9_999>` precisely. Offset
+components narrow from `ri8<-25, 25>` and `ri8<-59, 59>` through `unsigned_abs()`
+into [0, 25] and [0, 59]. Falsification: years beyond ±999,999 push the century out
+of range in 3 of 3 cases, so the unchecked genuinely rests on `Year`'s bounds.
+
+The standard-range formatting paths do not assume: they take `StandardYear`
+(`ri16<-9_999, 9_999>`) and `StandardCentury` (`ri8<-99, 99>`), distinct types, and
+the conversion into them goes through a **checked** `narrow::<-99, 99>()` with
+`.ok_or_else(|| ComponentRange::conditional("year"))?`. So unchecked is used only
+where the type already proves the range, and a checked narrow guards the step that
+would not.
+
+`buf.first_chunk_mut().unwrap_unchecked()` (utc_date_time.rs:1267 and siblings) is
+sound by construction: the outer buffer is
+`PrimitiveDateTime::DISPLAY_BUFFER_SIZE + 4`, so a chunk of the inner size always
+exists, and the following 4-byte `copy_to_nonoverlapping` at `pdt_len` fits because
+`fmt_into_buffer` cannot return more than its own buffer length.
+
+`transmute::<u8, Weekday>` (parsing/component.rs:460, :518, :540) is guarded by
+`if index > 6 { return None }` — and at :518 the subsequent `(digit + 6) % 7`
+preserves [0,6]. The transmute itself is sound because `Weekday` is `#[repr(u8)]`
+(weekday.rs:15) with exactly seven variants and implicit discriminants 0..6; both
+facts were checked rather than assumed, since a value-only argument would not
+suffice without the repr.
+
+## time.rs, utc_offset.rs, component_provider.rs
+
+`Time::as_u64` transmutes `Time` to `u64`. Sound, and the reason is structural
+rather than incidental: `Time` is `#[repr(C)]` (time.rs:56) with fields
+`Nanoseconds`(4) + `Seconds`(1) + `Minutes`(1) + `Hours`(1) + an explicit
+`padding: Padding` field that is `#[repr(u8)]` (time.rs:33). Those sum to exactly
+8, so there is no room for implicit padding, and `transmute` enforces the size
+equality at compile time. Every `u64` bit pattern is valid. The struct even carries
+a "do not reorder" comment on the field list.
+
+`duration_until` (time.rs:474-510) asserts bounds on component differences through
+eight `hint::assert_unchecked` calls — false conditions there are UB directly, not
+via a ranged type. Verified exhaustively for Hours (576 pairs), Minutes and Seconds
+(3,600 each) and on boundaries plus 163,216 sampled pairs for Nanoseconds: every
+difference lands in `[Xmin - Xmax, Xmax - Xmin]` and fits the signed type the
+`cast_signed()` produces (i8 for the u8 components, i32 for nanoseconds).
+Falsification: components outside their declared ranges break the assertion, so it
+rests on the `ru8`/`ru32` bounds rather than being vacuous.
+
+`UtcOffset::as_u32_for_equality` transmutes `[i8; 4]` to `u32`. A by-value
+transmute between POD types of equal size: `[i8; 4]` has no padding, all four
+elements are explicitly initialized (including the literal `0`), and every `u32`
+bit pattern is valid. Alignment is not a concern because nothing is dereferenced.
+
+`from_whole_seconds_ranged` (utc_offset.rs:292) splits `WholeSeconds` into h/m/s
+for `__from_hms_unchecked`, whose contract is hours ∈ [-25,25] and minutes,
+seconds ∈ [-59,59]. Exhaustive over all 187,199 values of
+`WholeSeconds = ri32<-93_599, 93_599>`: hours saturates exactly [-25, 25], minutes
+and seconds stay inside [-59, 59], all three fit i8, and the split is lossless.
+Falsification: values one hour past either end give hours ±26, so the unchecked
+depends on the `WholeSeconds` bound.
+
+`component_provider.rs`'s narrowings feed `Day = ru8<1,31>`,
+`Ordinal = ru16<1,366>`, `IsoWeekNumber = ru8<1,53>` and friends — all deranged
+aliases with explicit ranges. Their sources are the `Date`/`Time` accessors: `day`
+comes from `to_calendar_date()`, which is the ordinal-to-month algorithm proven
+exhaustively above, and `ordinal` is the stored field validated at `Date`
+construction. Worth recording that `formatting/mod.rs` defines
+`Year = ri32<-999_999, 999_999>` unconditionally while `date.rs` defines it as
+`ri32<MIN_YEAR, MAX_YEAR>`; with `large-dates` off the latter is the narrower
+±9,999, a subset, so the narrowing is safe under either feature setting.
+
+## Method, and what is pattern-covered rather than individually traced
+
+Every one of the 218 sites was classified, and the classifier was widened twice
+when it mis-sorted verified work into "unclassified" — first because the crate uses
+type aliases (`Day::new_unchecked`) rather than the raw `ru8::` form, then because
+multi-line `unsafe {` openers were counted separately from the call inside them.
+Both corrections were driven by inspecting the leftovers rather than by assuming
+the classifier was right.
+
+The load-bearing sites are proven, most of them exhaustively: the magic division,
+the timestamp decompositions, the time-of-day split, the calendar arithmetic, the
+display buffer sizes, the century and offset narrowings, the difference assertions,
+and both transmutes.
+
+A residue of roughly a dozen sites is covered by pattern rather than by an
+individual trace: `duration.rs:206`
+(`new_ranged_unchecked(i64::MIN, Nanoseconds::new_static::<0>())`, constructing the
+documented minimum), the four interop `unwrap_unchecked` sites and
+`offset_date_time.rs:1614`, plus single sites in `rand010.rs`,
+`format_description_v3.rs`, `lexer_ast.rs` and `strftime.rs`. Each matches a
+pattern whose soundness condition is established above, but the specific source
+range was not re-derived for each. Stated here so the next reader knows exactly
+where the audit is proof and where it is classification."""
 
 [[audits.time-core]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -8514,6 +9756,260 @@ License: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT. All permissive.
 Maintainer: Bytecode Alliance.
 """
 
+[[audits.x11-dl]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "2.21.0"
+notes = """
+VD-05.7 full audit — x11-dl 2.21.0 (9,607 lines of runtime .rs, 56-line build.rs).
+
+A grep for `unsafe` returns 117 hits, and that number is misleading in the usual
+way for a binding crate: almost all of them are `unsafe extern "C" fn` appearing
+in *type* position inside function-pointer declarations (xt.rs and glx.rs alone
+account for most), not executable code. Separating declarations from bodies leaves
+four things to review.
+
+1. src/internal.rs:12 `pub unsafe fn mem_eq<T: Sized>(a: &T, b: &T) -> bool` —
+byte-compares two values. Reading padding or uninitialized bytes would be UB, so
+the obligation is on the caller; the `unsafe fn` marker carries it, though there
+is no `# Safety` doc. One caller: xlib.rs:2775, `impl PartialEq for ImageFns`.
+`ImageFns` (xlib.rs:2744) is a struct whose every field is
+`Option<unsafe extern "C" fn(..) -> ..>`. `Option<fn>` uses the null-pointer
+niche, so each field is exactly pointer-sized and pointer-aligned and the struct
+has no padding; both `Some` and `None` are fully initialized bit patterns. The
+bytes read are all initialized. Sound.
+
+2. src/internal.rs:25 `pub unsafe fn transmute_union<I, O>(input: &I) -> O` —
+`let mut output: O = zeroed();` then a byte copy of
+`min(size_of::<I>(), size_of::<O>())`. `zeroed()` on an arbitrary `O` is UB when
+`O` has no valid all-zero representation, so again the caller carries it. One
+caller: xlib.rs:2720, `impl From<[$ty; $n]> for ClientMessageData`, converting a
+POD integer array into the X11 client-message union. Both sides are integer
+arrays, all-zero is a value for both, and the `min` bounds the copy to the smaller
+side with any tail left zeroed. Sound.
+
+Recorded, not blocking: both helpers do pointer arithmetic through `usize`
+(`(a_addr + i) as *const u8`) instead of `.add(i)`. That is exposed-provenance
+style — permitted today, but it would not survive a strict-provenance model. An
+upstream cleanup, not a defect here.
+
+3. src/link.rs:26-66 — the `link!` macro. It builds a struct of function pointers
+by `mem::transmute`-ing `dlsym` results, which is the standard shape for a
+dynamic binding; soundness rests on the declared signatures matching the real X11
+ABI, which is the premise of the crate. The handles do not dangle: the
+`DynamicLibrary` and the function struct are stored together in a
+`once_cell::sync::OnceCell` static (`CACHED`), so the library is never unloaded
+while the pointers live. `unsafe impl Send`/`Sync` on the generated struct covers
+function pointers plus `*mut T` globals; for the globals this matches X11's own
+threading contract (callers are expected to use `XInitThreads`) rather than adding
+a new guarantee.
+
+4. src/link.rs:80-135 `DynamicLibrary::open` / `open_multi`. `CString::new(name)`
+rejects interior NUL with an error rather than truncating. A null `dlopen` result
+is turned into an error, and `dlerror()` is read through `CStr::from_ptr` with
+`to_string_lossy`. The names are compile-time literals from the `link!`
+invocations plus `libdir` baked in by build.rs; no runtime input reaches the
+`dlopen` path. Library resolution still follows the system loader's rules, which
+is inherent to dynamic linking.
+
+build.rs (56 lines): calls `pkg_config::get_variable(pcname, "libdir")` for 16 X
+libraries, writes the results as string constants into `$OUT_DIR/config.rs`, and
+emits `cargo:rustc-link-lib=dl` on Linux (`c` on FreeBSD/DragonFly). It spawns
+`pkg-config` — expected for a `-sys`-shaped crate — and writes nothing outside
+`OUT_DIR`. No network access. The usual build-environment caveat applies: a
+hostile `PKG_CONFIG_PATH` would change the baked libdir, the same exposure every
+pkg-config-using crate has.
+
+No C, C++, or Objective-C sources in the package."""
+
+[[audits.x11rb]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.13.2"
+notes = """
+VD-05.7 full audit — x11rb 0.13.2 (28,324 lines of runtime .rs).
+
+Same crate and same reasoning as the 0.14.0 audit in this file. The equivalence
+was measured: `diff -rq` over both `src/` trees reports two differing files, and
+neither changes the safety picture — `xcb_ffi/mod.rs` is behind the closed
+`allow-unsafe-code` gate, and `rust_connection/stream.rs` differs by 34 lines
+where 0.13.2 carries an extra abstract-Unix-socket attempt
+(`connect_abstract_unix_stream`, Linux/Android) that 0.14.0 removed. That code is
+plain `rustix` calls with no unsafe, which the crate could not contain anyway.
+
+Unsafe: none compiled here, compiler-enforced. lib.rs:147 is
+
+    #![cfg_attr(not(feature = "allow-unsafe-code"), forbid(unsafe_code))]
+
+and `forbid` cannot be lifted by an inner `#[allow]`.
+
+The feature is off, verified against the lockfile rather than the feature list:
+`allow-unsafe-code = ["libc", "as-raw-xcb-connection"]` (Cargo.toml:73-76), and
+x11rb 0.13.2's Cargo.lock entry lists only `gethostname`, `rustix`, and
+`x11rb-protocol`. `dl-libxcb`, which also pulls the feature in, would additionally
+need `libloading` and `once_cell` — also absent.
+
+Everything unsafe sits behind that gate: `pub mod xcb_ffi`
+(`#[cfg(feature = "allow-unsafe-code")]`, lib.rs:161-162) and `mod unsafe_code` in
+utils.rs holding `CSlice`, its `unsafe impl Send`/`Sync`, `libc::free`, and
+`from_raw_parts` (utils.rs:13-14). The `#[link(name = "xcb")] extern "C"` block is
+inside xcb_ffi and is likewise not compiled.
+
+No build script. No C, C++, or Objective-C sources.
+
+Powerful imports in the compiled surface: the X11 connection itself
+(`TcpStream::connect` and the Unix-socket path in rust_connection/stream.rs, with
+the address coming from `$DISPLAY`), plus `$XCURSOR_THEME` / `$XCURSOR_SIZE`
+lookups (cursor/mod.rs:93,344) and read-only `File::open` on the cursor theme
+paths they name (cursor/find_cursor.rs:10,131). No process spawning, no writes to
+the filesystem or environment, no libc."""
+
+[[audits.x11rb]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = """
+VD-05.7 full audit — x11rb 0.14.0 (28,296 lines of runtime .rs).
+
+Unsafe: none compiled here, and the crate enforces it rather than merely avoiding
+it. lib.rs:147 carries
+
+    #![cfg_attr(not(feature = "allow-unsafe-code"), forbid(unsafe_code))]
+
+so with that feature off the compiler forbids unsafe crate-wide, and `forbid`
+cannot be lifted by an inner `#[allow]`.
+
+The feature is off, and this was checked against the lockfile rather than assumed
+from the feature list. Cargo.toml:73-76 defines
+`allow-unsafe-code = ["libc", "as-raw-xcb-connection"]`, both optional
+dependencies. x11rb 0.14.0's Cargo.lock entry lists exactly `gethostname`,
+`rustix`, and `x11rb-protocol` — neither optional crate is present, so the feature
+cannot be enabled in this build. The `dl-libxcb` feature that also pulls it in
+(Cargo.toml:92-95) would additionally require `libloading` and `once_cell`, also
+absent.
+
+Everything unsafe in the crate sits behind that gate: `pub mod xcb_ffi` is
+`#[cfg(feature = "allow-unsafe-code")]` (lib.rs:161-162), and `mod unsafe_code`
+in utils.rs — holding `CSlice`, its `unsafe impl Send`/`Sync`, `libc::free`, and
+`from_raw_parts` — is gated the same way (utils.rs:13-14). With the gate closed,
+none of it is compiled, and neither is the `#[link(name = "xcb")] extern "C"`
+block in xcb_ffi/raw_ffi/ffi.rs.
+
+No build script. No C, C++, or Objective-C sources.
+
+Powerful imports in the compiled surface, each read:
+  - src/rust_connection/stream.rs — `TcpStream::connect((*host, *port))` (:165)
+    and the Unix-socket path. This is the X11 connection itself; a display client
+    that could not open the display socket would be useless. Egress goes only to
+    the address parsed from `$DISPLAY`.
+  - src/cursor/mod.rs:93,344 — reads `$XCURSOR_THEME` and `$XCURSOR_SIZE`.
+  - src/cursor/find_cursor.rs:10,131 — `File::open` on cursor theme paths derived
+    from those variables. Read-only.
+  No process spawning, no filesystem or environment writes, no libc.
+
+Relationship to 0.13.2, measured rather than assumed: `diff -rq` over both `src/`
+trees reports two differing files. `xcb_ffi/mod.rs` is behind the closed gate.
+`rust_connection/stream.rs` differs by 34 lines, and the delta is a *removal* —
+0.13.2 tries an abstract Unix socket first on Linux/Android via
+`connect_abstract_unix_stream` (safe `rustix` calls, no unsafe since the crate
+forbids it), and 0.14.0 drops that path. So 0.14.0's compiled surface is a strict
+subset of 0.13.2's.
+
+Method note: "no unsafe" is an absence claim, so the gate was the evidence rather
+than a grep result — a grep does find `unsafe` tokens in this crate, all of them
+inside `#[cfg(feature = "allow-unsafe-code")]` regions or in the `cfg_attr` line
+itself."""
+
+[[audits.x11rb-protocol]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.13.2"
+notes = """
+VD-05.7 full audit — x11rb-protocol 0.13.2 (142,364 lines of runtime .rs).
+
+Same crate, same reasoning as the 0.14.0 audit in this file, and the equivalence
+was measured rather than assumed. `diff -rq` over both `src/` trees reports
+exactly two differing files, 34 diff lines in total:
+
+  - src/parse_display/connect_instruction.rs — a doc comment only. 0.13.2 tells
+    the caller to try the abstract namespace before the named socket; 0.14.0
+    drops that sentence. The `ConnectAddress::Socket(String)` variant is
+    unchanged, and this crate does not open the socket.
+  - src/protocol/xproto.rs — the generated constants `CUT_BUFFE_R0..7` are
+    renamed `CUT_BUFFER0..7`. The discriminants (9..=16) are identical; this is
+    a name-mangling fix in the code generator, not a protocol change.
+
+Nothing in that delta touches unsafe, imports, or control flow.
+
+Unsafe: none, compiler-enforced. lib.rs:63 sits inside `#![forbid(...)]` and
+names `unsafe_code`. `forbid` cannot be lifted by an inner `#[allow]`. A raw
+`grep -rn unsafe` over the whole crate returns one line, and it is that attribute.
+`#![no_std]` at lib.rs:69, with `extern crate alloc`.
+
+No build script. No C, C++, or Objective-C sources. No `extern "C"`, `#[link]`,
+or `#[no_mangle]`.
+
+Powerful imports: 18 hits, identical set and identical line numbers to 0.14.0.
+Benchmarks use TCP (not a runtime path). `parse_display` reads `$DISPLAY`;
+`xauth.rs` reads `$XAUTHORITY` and opens the cookie file; `resource_manager`
+reads `$XENVIRONMENT` and `.Xresources`. All read-only, all required to speak the
+protocol. The three `set_var`/`remove_var` calls are inside
+`#[cfg(all(test, feature = "std"))] mod test` (parse_display/mod.rs:144) and are
+absent from non-test builds.
+
+No process spawning, no runtime network egress, no filesystem or environment
+writes.
+
+Method note: "no unsafe" is an absence claim and was falsified rather than
+asserted — the raw grep above is the positive control for the classifier used in
+the survey, which could have returned zero by failing to match anything."""
+
+[[audits.x11rb-protocol]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = """
+VD-05.7 full audit — x11rb-protocol 0.14.0 (142,361 lines of runtime .rs).
+
+Line count is the wrong difficulty signal here. This is machine-generated X11
+protocol serialization: the bulk is `impl TryParse`/`impl Serialize` for the
+request and reply structs of every X extension. The audit surface is elsewhere.
+
+Unsafe: none, and this is compiler-enforced rather than observed. lib.rs:55-68
+carries `#![forbid(unsafe_code)]`. `forbid` — not `deny` — cannot be lifted by an
+inner `#[allow]`, so no module can reintroduce unsafe without the crate failing to
+compile. Grepping `unsafe` across every .rs file in the crate returns exactly one
+hit, and it is that lint attribute itself. The crate is also `#![no_std]`
+(lib.rs:69) with `extern crate alloc`.
+
+No build script. No C, C++, or Objective-C sources. No `extern "C"`, `#[link]`,
+or `#[no_mangle]`.
+
+Powerful imports: 18 hits across the crate, and each was read.
+  - benches/proto_connection.rs — `TcpListener`/`TcpStream`. Benchmark only, not
+    a runtime path, not compiled into a dependent build.
+  - src/parse_display/mod.rs:51-54 — reads `$DISPLAY`. Required to locate the X
+    server; read-only.
+  - src/parse_display/mod.rs:153,156,176 — `std::env::set_var`/`remove_var`.
+    These are inside `#[cfg(all(test, feature = "std"))] mod test` (mod.rs:144),
+    so they are absent from any non-test build. The module comment states the
+    tests are serialized into one `#[test]` function precisely because the
+    environment is process-global.
+  - src/xauth.rs:75,76,155 — `std::env::var_os` for `$XAUTHORITY` and
+    `File::open` on the resulting path. This is the X authority cookie lookup the
+    protocol requires; read-only, no writes, no execution.
+  - src/resource_manager/mod.rs:15,136,148,158,171,334 — `var_os` plus
+    `std::fs::read` for `$XENVIRONMENT` and `.Xresources`. Read-only.
+  - src/utils.rs:51 — a doc-comment link to `std::fs::File`, not code.
+
+No process spawning, no network egress from the runtime path, no writes to the
+filesystem or environment.
+
+Method note: "no unsafe" is an absence claim, so it was falsified rather than
+asserted. A raw `grep -rn unsafe` over the crate (not the classifier used for the
+survey) returned a single line, and that line was read in context to confirm it
+is `forbid`, not a suppressed `allow`."""
+
 [[audits.x509-parser]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -8543,6 +10039,33 @@ The dominant idiom is the fixed C buffer: declare a stack array of known length,
 Recorded as a behaviour rather than a soundness issue: names crossing into the C API go through `CString::new(name.as_bytes().to_owned()).unwrap()`, so a name containing an interior NUL panics rather than returning an error. That is a panic, not undefined behaviour, and it rejects the input rather than truncating it -- but a caller passing attacker-influenced keysym names should know it aborts the thread.
 
 Exposure: keyboard handling on Linux."""
+
+[[audits.xkeysym]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.2.1"
+notes = """
+VD-05.7 full audit — xkeysym 0.2.1 (2 files, 14,197 lines of src).
+
+X11 keysym constants and the mapping between keysyms and Unicode. The line count
+is almost entirely table data in two files, not logic. `src/lib.rs` opens with
+`#![forbid(unsafe_code)]`, so freedom from unsafe is compiler-enforced; a scan of
+both files confirms zero occurrences.
+
+Powerful imports: none. Filesystem, network, process, environment, `extern "C"`,
+`#[link]`, `#[no_mangle]`, libc and dynamic loading all returned zero. The two
+hits on `Deserialize` are `#[cfg_attr(feature = "serde", derive(serde::Serialize,
+serde::Deserialize))]` on keysym types at lib.rs:45 and :104 — derives behind an
+optional feature, not a parser the crate runs.
+
+No build script.
+
+Both declared dependencies — `bytemuck` and `serde` — are optional, and neither
+is enabled in this repository's build.
+
+safe-to-deploy is met: no unsafe, no powerful imports, and the bulk of the crate
+is constant data.
+"""
 
 [[audits.xml-rs]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -8868,6 +10391,70 @@ Method note shared by this batch: the zero was not taken from one grep. Every li
 
 Exposure: reached through image 0.25.10 and zune-jpeg, which arrive here via libwayshot-xcap and the screen-capture path."""
 
+[[audits.zune-jpeg]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.5.15"
+notes = """
+VD-05.7 full audit — zune-jpeg 0.5.15 (9,737 lines of runtime .rs).
+
+A decoder for attacker-supplied input, so bounds were the whole audit.
+
+No build script. No C, C++, or Objective-C. Powerful imports: zero on every axis.
+
+Eighty-eight unsafe sites, all SIMD (avx2, sse, neon) across idct, upsampler, and
+color_convert. Two questions decide them: may these functions run at all, and can
+they write outside their buffers.
+
+**May they run.** Every `#[target_feature]` function is reached through a
+dispatcher that consults `options.use_avx2()` / `use_neon()`
+(upsampler.rs:95-160, color_convert.rs:64-80), whose SAFETY comments claim those
+return true only when the feature is present. The claim was followed into
+zune-core 0.5.1 rather than taken at face value: `use_avx2`
+(options/decoder.rs:570-594) first requires the user flag, then on x86/x86_64
+with `std` returns true only if `is_x86_feature_detected!("avx2")`, and without
+`std` only if `target_feature = "avx2"` was set at compile time; every other path
+falls through to `false`. `use_neon` has the same shape. The claim holds.
+
+**Can they write out of bounds.** The defensive pattern is not uniform across the
+SIMD files, so each family was checked rather than generalised from one.
+  - upsampler/{avx2,neon}.rs — the strongest. Entry runs
+    `assert_eq!(input.len() * 2, output.len())` and `assert!(input.len() > 2)`,
+    falls back to the scalar path below 18 samples, and then drives the intrinsics
+    through a closure taking `&[i16; 18]` / `&mut [i16; 32]`, so lengths are a
+    type guarantee. The loop feeding it is entirely safe API:
+    `input.windows(18).step_by(16).zip(output[2..].chunks_exact_mut(32))` with
+    `try_into().unwrap()`, and the tail uses `last_chunk::<18>()` /
+    `last_chunk_mut::<32>()`. Loads at offsets 0,1,2 of 16 lanes touch index 17 at
+    most, inside 18.
+  - idct/avx2.rs — no entry asserts, but the input is `&mut [i32; 64]`, so the
+    eight loads at offsets 0,8,…,56 of 8 lanes reach index 63 at most. Output
+    stores go through `out.get_mut(idx..idx + 8)`, bounds-checked; the first uses
+    `.unwrap_or(&mut tmp)` and silently discards into a local scratch, the second
+    `.unwrap()` and panics. Inconsistent, but neither writes out of bounds.
+  - color_convert/avx.rs — the one place the obligation is implicit.
+    `ycbcr_to_rgb_avx2_1` writes 48 bytes into `out: &mut [u8]` (32 at the base,
+    16 at `out[32..]`) with no length check, and the wrapper
+    `ycbcr_to_rgb_avx2` (:86) is a **safe** `fn`. `out[32..]` panics below 32, but
+    a length of 32..47 would slip through and `_mm_storeu_si128` would write past
+    the end. It is sound as shipped because the module is private
+    (`mod color_convert;` at lib.rs:176, not `pub mod`) and every call site
+    supplies enough: worker.rs:340 passes
+    `out.chunks_exact_mut(16 * num_components)`, exactly 48 bytes for RGB, and
+    worker.rs:326/:358 pass `temp`, a local `[0; 64]` (worker.rs:302). The RGBA
+    variant checks for itself with
+    `out.get_mut(*offset..*offset + 64).expect(..).try_into().unwrap()`.
+    Recorded as an upstream report: a safe `fn` with an unstated 48-byte
+    requirement, no `# Safety` note and no debug assert, so a future internal
+    caller with a shorter slice gets out-of-bounds writes and no diagnostic.
+
+The two `core::mem::transmute` calls in unsafe_utils_neon.rs:291,315 are inside
+`#[cfg(test)] mod tests` (:271) and are not in any shipped build. Noting the
+method, because a path-based test filter misses inline `#[cfg(test)]` modules and
+would have promoted these to runtime findings: files were re-scanned by truncating
+at the first `#[cfg(test)]`. With that correction, the runtime path contains no
+`get_unchecked`, `from_raw_parts`, `set_len`, `assume_init`, or `transmute` at all."""
+
 [[audits.zvariant_derive]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -8931,7 +10518,7 @@ criteria = "safe-to-deploy"
 user-id = 3618 # David Tolnay (dtolnay)
 start = "2019-07-23"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): async-trait 정본 관리자 dtolnay, 93/93 판을 단독 발행. #11091 dependabot bump 를 막던 항목이다."
+notes = "#11127 publisher-trust (owner-approved identity): dtolnay is the canonical maintainer of async-trait and published all 93 releases. This entry is what blocked the #11091 dependabot bump."
 
 [[trusted.atk]]
 criteria = "safe-to-deploy"
@@ -8966,7 +10553,7 @@ criteria = "safe-to-deploy"
 user-id = 5563 # Marshall Pierce (marshallpierce)
 start = "2019-10-25"
 end = "2027-08-18"
-notes = "#9374 publisher-trust: Marshall Pierce (marshallpierce), base64 의 원 저자이자 유일 발행자(2019-10-25~). 0.22.1 은 상위 import 레지스트리로 덮여 있었고 0.23.1 은 아직 어느 상위 감사에도 없다. 범프 동작은 직접 쟀다 — 이 크레이트를 쓰는 상위 두 크레이트(maekon-core · maekon-network)를 --all-features 로 돌려 2143건이 전부 통과한다. MSRV 영향 없음(0.23.1 은 rust-version 1.71.0, 워크스페이스는 1.88.0). exemption 은 다음 범프에서 다시 무효화되므로 발행자 신뢰로 덮는다."
+notes = "#9374 publisher-trust: Marshall Pierce (marshallpierce) is the original author and sole publisher of base64 (since 2019-10-25). 0.22.1 was covered by an upstream import registry; 0.23.1 is not yet in any upstream audit. The bump was measured directly — the two dependent crates (maekon-core, maekon-network) were run with --all-features and all 2143 tests pass. No MSRV impact: 0.23.1 declares rust-version 1.71.0 and the workspace is on 1.88.0. An exemption would be invalidated again at the next bump, so publisher trust covers it instead."
 
 [[trusted.blake2]]
 criteria = "safe-to-deploy"
@@ -9050,14 +10637,14 @@ criteria = "safe-to-deploy"
 user-id = 6743 # Ed Page (epage)
 start = "2021-12-08"
 end = "2027-05-29"
-notes = "#11082 publisher-trust (owner-approved identity): clap CLI parser 정본 관리자 epage. 버전 고정 exemption(4.6.4)이 패치 bump마다 무효화돼 게이트를 반복 차단했다 — 발행자 단위 신뢰로 옮겨 O(버전) 재작업을 없앤다. 창 안의 이 발행자 릴리스만 신뢰한다."
+notes = "#11082 publisher-trust (owner-approved identity): epage is the canonical maintainer of the clap CLI parser. A version-pinned exemption (4.6.4) was invalidated by every patch bump and repeatedly blocked the gate — moving to publisher-level trust removes that per-version rework. Only this publisher's releases inside the window are trusted."
 
 [[trusted.clap_builder]]
 criteria = "safe-to-deploy"
 user-id = 6743 # Ed Page (epage)
 start = "2023-03-28"
 end = "2027-05-29"
-notes = "#11082 publisher-trust (owner-approved identity): clap 의 분리된 builder crate, 같은 발행자(epage)가 전 108판을 발행했다. clap 과 함께 이관한다."
+notes = "#11082 publisher-trust (owner-approved identity): clap's split-out builder crate; the same publisher (epage) published all 108 releases. Migrated together with clap."
 
 [[trusted.clap_derive]]
 criteria = "safe-to-deploy"
@@ -9232,7 +10819,7 @@ criteria = "safe-to-deploy"
 user-id = 33035 # Taiki Endo (taiki-e)
 start = "2020-10-05"
 end = "2027-05-29"
-notes = "#11082 publisher-trust (owner-approved identity): futures-rs 유지보수자 taiki-e. 버전 고정 exemption(0.3.33)이 패치 bump마다 무효화됐다. 2020-10-05 이전 cramertj 발행분은 신뢰 범위 밖으로 남긴다."
+notes = "#11082 publisher-trust (owner-approved identity): taiki-e maintains futures-rs. A version-pinned exemption (0.3.33) was invalidated by every patch bump. Releases published by cramertj before 2020-10-05 stay outside the trust range."
 
 [[trusted.gbm]]
 criteria = "safe-to-deploy"
@@ -9512,7 +11099,7 @@ criteria = "safe-to-deploy"
 user-id = 359 # Sean McArthur (seanmonstar)
 start = "2019-03-13"
 end = "2027-08-18"
-notes = "#11091 RUSTSEC-2026-0258 publisher-trust: Sean McArthur (seanmonstar), hyper/h2/tokio-rs HTTP stack 의 원 저자이자 유일 발행자. h2 0.4.13 은 상위 import 레지스트리로 덮여 있었으나 보안 패치 0.4.16 은 당일 릴리스라 어느 상위 감사에도 아직 없다 — refresh_vet_imports.sh 로 확인했다(lock 갱신으로 풀리지 않음). exemption 은 다음 범프에서 다시 무효화되므로 발행자 신뢰로 덮는다. 이 발행자의 창 안 릴리스만 신뢰하며, HTTP/2 프레이밍 상태기계는 triage 수준의 line-by-line 감사가 의미 있는 코드가 아니다."
+notes = "#11091 RUSTSEC-2026-0258 publisher-trust: Sean McArthur (seanmonstar) is the original author and sole publisher of the hyper/h2/tokio-rs HTTP stack. h2 0.4.13 was covered by an upstream import registry, but the security patch 0.4.16 shipped the same day and is not yet in any upstream audit — confirmed with refresh_vet_imports.sh, and a lock refresh does not resolve it. An exemption would be invalidated again at the next bump, so publisher trust covers it instead. Only this publisher's releases inside the window are trusted; an HTTP/2 framing state machine is not code where a triage-level line-by-line audit would mean anything."
 
 [[trusted.hf-hub]]
 criteria = "safe-to-deploy"
@@ -9526,7 +11113,7 @@ criteria = "safe-to-deploy"
 user-id = 359 # Sean McArthur (seanmonstar)
 start = "2019-04-05"
 end = "2027-05-29"
-notes = "#11082 publisher-trust (owner-approved identity): hyper/http 정본 관리자 seanmonstar. 버전 고정 exemption(1.4.2)이 패치 bump마다 무효화됐다."
+notes = "#11082 publisher-trust (owner-approved identity): seanmonstar is the canonical maintainer of hyper/http. A version-pinned exemption (1.4.2) was invalidated by every patch bump."
 
 [[trusted.http-body]]
 criteria = "safe-to-deploy"
@@ -9540,7 +11127,7 @@ criteria = "safe-to-deploy"
 user-id = 359 # Sean McArthur (seanmonstar)
 start = "2022-10-25"
 end = "2027-05-29"
-notes = "#11082 publisher-trust (owner-approved identity): http-body-util, 같은 발행자(seanmonstar)가 전 9판을 발행했다. http 와 함께 이관한다."
+notes = "#11082 publisher-trust (owner-approved identity): http-body-util; the same publisher (seanmonstar) published all 9 releases. Migrated together with http."
 
 [[trusted.hybrid-array]]
 criteria = "safe-to-deploy"
@@ -9554,49 +11141,49 @@ criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2022-08-05"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.icu_locale_core]]
 criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2024-11-23"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.icu_normalizer]]
 criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2022-08-05"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.icu_normalizer_data]]
 criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2023-09-23"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.icu_properties]]
 criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2021-11-02"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.icu_properties_data]]
 criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2023-09-23"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.icu_provider]]
 criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2021-07-29"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.image]]
 criteria = "safe-to-deploy"
@@ -9652,7 +11239,7 @@ criteria = "safe-to-deploy"
 user-id = 2876 # Vincent Prouillet (Keats)
 start = "2019-04-21"
 end = "2027-08-18"
-notes = "#9375 publisher-trust: Vincent Prouillet (Keats), jsonwebtoken 의 원 저자이자 유일 발행자(2019-04-21~). 10.4.0 은 상위 import 레지스트리로 덮여 있었고 11.0.0 은 아직 어느 상위 감사에도 없다. major 범프의 실제 위험은 컴파일이 아니라 검증 의미론이라 그 축을 직접 쟀다 — jwt_verifier 단위 10건(alg:none 거부 · HS256/RS256 혼동 거부 · issuer/audience/만료/iat 시계오차)과 external gRPC 인증 매트릭스 통합 36건이 11.0.0 에서 전부 통과한다. 또한 이 코드는 Validation 의 기본값에 의존하지 않고 algorithms·audience·leeway·validate_exp/nbf·required_spec_claims 를 모두 명시로 고정한다. exemption 은 다음 범프에서 다시 무효화되므로 발행자 신뢰로 덮는다."
+notes = "#9375 publisher-trust: Vincent Prouillet (Keats) is the original author and sole publisher of jsonwebtoken (since 2019-04-21). 10.4.0 was covered by an upstream import registry; 11.0.0 is not yet in any upstream audit. The real risk in a major bump is verification semantics rather than compilation, so that axis was measured directly — 10 jwt_verifier unit tests (reject alg:none, reject HS256/RS256 confusion, issuer/audience/expiry/iat clock skew) and 36 external gRPC auth matrix integration tests all pass on 11.0.0. This code also does not rely on Validation's defaults: algorithms, audience, leeway, validate_exp/nbf and required_spec_claims are all set explicitly. An exemption would be invalidated again at the next bump, so publisher trust covers it instead."
 
 [[trusted.keyboard-types]]
 criteria = "safe-to-deploy"
@@ -9680,7 +11267,7 @@ criteria = "safe-to-deploy"
 user-id = 1609 # Mickaël Salaün (l0kod)
 start = "2021-04-14"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): Landlock LSM 의 Rust 바인딩 관리자 l0kod(Mickaël Salaün, Landlock 커널 기능 저자), 12/12 판 단독 발행."
+notes = "#11127 publisher-trust (owner-approved identity): l0kod (Mickaël Salaün), author of the Landlock kernel feature, maintains the Rust bindings for Landlock LSM and published all 12 releases."
 
 [[trusted.libappindicator]]
 criteria = "safe-to-deploy"
@@ -9736,7 +11323,7 @@ criteria = "safe-to-deploy"
 user-id = 5062 # gwenn (gwenn)
 start = "2019-03-10"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): rusqlite 의 sys crate, 같은 발행자 gwenn 29/65 판. rusqlite 와 함께 이관한다."
+notes = "#11127 publisher-trust (owner-approved identity): rusqlite's sys crate, 29 of 65 releases by the same publisher (gwenn). Migrated together with rusqlite."
 
 [[trusted.linux-raw-sys]]
 criteria = "safe-to-deploy"
@@ -10051,7 +11638,7 @@ criteria = "safe-to-deploy"
 user-id = 209038 # Daniel McCarney (cpu)
 start = "2024-01-26"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): rcgen 현 관리자 cpu(Daniel McCarney, rustls·Let's Encrypt 계열). 52판 중 2판으로 점유가 낮은 것은 최근 인수했기 때문이며, 창을 2024-01-26 이후로 한정해 이전 관리자(est31·djc) 발행분은 신뢰 범위 밖에 남긴다. 인증서 생성 crate 이므로 창 확대 시 재검토가 필요하다."
+notes = "#11127 publisher-trust (owner-approved identity): cpu (Daniel McCarney, from the rustls / Let's Encrypt lineage) is the current maintainer of rcgen. The low share — 2 of 52 releases — is because the handover is recent; the window starts at 2024-01-26, leaving releases by the previous maintainers (est31, djc) outside the trust range. This is a certificate-generation crate, so widening the window needs a fresh review."
 
 [[trusted.redox_syscall]]
 criteria = "safe-to-deploy"
@@ -10079,7 +11666,7 @@ criteria = "safe-to-deploy"
 user-id = 5062 # gwenn (gwenn)
 start = "2019-03-10"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): rusqlite 관리자 gwenn, 26/85 판. 나머지 다수는 발행자 기록 이전 구판이고 thomcc 는 공동 관리자다. 창은 2019-03-10 이후."
+notes = "#11127 publisher-trust (owner-approved identity): gwenn maintains rusqlite, 26 of 85 releases. Most of the rest are older releases from before publisher records existed, and thomcc is a co-maintainer. The window starts at 2019-03-10."
 
 [[trusted.rustfft]]
 criteria = "safe-to-deploy"
@@ -10093,7 +11680,7 @@ criteria = "safe-to-deploy"
 user-id = 2751 # Joe Birr-Pixton (ctz)
 start = "2019-04-02"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): rustls 저자 ctz(Joe Birr-Pixton), 54/114 판. 나머지는 cpu·djc 등 같은 프로젝트 관리자다. 창은 2019-04-02 이후로 한정해 그 이전 판은 범위 밖에 둔다."
+notes = "#11127 publisher-trust (owner-approved identity): ctz (Joe Birr-Pixton) authored rustls, 54 of 114 releases. The rest are from cpu, djc and other maintainers on the same project. The window starts at 2019-04-02, leaving earlier releases out of range."
 
 [[trusted.rustls-pki-types]]
 criteria = "safe-to-deploy"
@@ -10142,14 +11729,14 @@ criteria = "safe-to-deploy"
 user-id = 55662 # Graham Esau (GREsau)
 start = "2019-08-08"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): schemars 저자 GREsau, 97/97 판을 단독 발행."
+notes = "#11127 publisher-trust (owner-approved identity): GREsau authored schemars and published all 97 releases."
 
 [[trusted.schemars_derive]]
 criteria = "safe-to-deploy"
 user-id = 55662 # Graham Esau (GREsau)
 start = "2019-08-08"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): schemars 의 derive crate, 같은 발행자 GREsau 가 93/93 판 발행."
+notes = "#11127 publisher-trust (owner-approved identity): schemars' derive crate; the same publisher (GREsau) published all 93 releases."
 
 [[trusted.scoped-tls]]
 criteria = "safe-to-deploy"
@@ -10184,7 +11771,7 @@ criteria = "safe-to-deploy"
 user-id = 3618 # David Tolnay (dtolnay)
 start = "2019-09-08"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): dtolnay, 7/24 판(나머지 17판은 발행자 기록 이전의 구판). 창은 2019-09-08 이후로 한정된다."
+notes = "#11127 publisher-trust (owner-approved identity): dtolnay, 7 of 24 releases; the other 17 predate publisher records. The window starts at 2019-09-08."
 
 [[trusted.servo_arc]]
 criteria = "safe-to-deploy"
@@ -10408,7 +11995,7 @@ criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2022-08-04"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.tokenizers]]
 criteria = "safe-to-deploy"
@@ -10709,7 +12296,7 @@ criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2022-08-04"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.wry]]
 criteria = "safe-to-deploy"
@@ -10730,14 +12317,14 @@ criteria = "safe-to-deploy"
 user-id = 1139 # Manish Goregaokar (Manishearth)
 start = "2021-05-01"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 관리자 Manishearth, 18/24 판. 나머지는 robertbastian·sffc 로 같은 팀이다."
+notes = "#11127 publisher-trust (owner-approved identity): Manishearth maintains ICU4X, 18 of 24 releases. The rest are from robertbastian and sffc — the same team."
 
 [[trusted.yoke-derive]]
 criteria = "safe-to-deploy"
 user-id = 1139 # Manish Goregaokar (Manishearth)
 start = "2021-07-02"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): yoke 의 derive crate, 같은 발행자 Manishearth 15/19 판."
+notes = "#11127 publisher-trust (owner-approved identity): yoke's derive crate, 15 of 19 releases by the same publisher (Manishearth)."
 
 [[trusted.zbus]]
 criteria = "safe-to-deploy"
@@ -10772,21 +12359,21 @@ criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2023-09-23"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.zerovec]]
 criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2021-08-26"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.zerovec-derive]]
 criteria = "safe-to-deploy"
 user-id = 128408 # Shane F. Carr (sffc)
 start = "2022-08-05"
 end = "2027-05-29"
-notes = "#11127 publisher-trust (owner-approved identity): ICU4X 기술 리드 sffc(Shane Carr). 나머지 판은 Manishearth·robertbastian·dminor 등 같은 unicode-org 팀 관리자가 올렸고, 창을 sffc 의 최초 발행일 이후로 한정해 그 이전은 신뢰 범위 밖에 남긴다."
+notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is the ICU4X technical lead. The remaining releases were published by Manishearth, robertbastian, dminor and other maintainers on the same unicode-org team; the window starts at sffc's first release, leaving anything earlier outside the trust range."
 
 [[trusted.zmij]]
 criteria = "safe-to-deploy"
