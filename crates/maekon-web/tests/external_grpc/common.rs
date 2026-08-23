@@ -56,18 +56,51 @@ pub(crate) fn make_test_shutdown_pair() -> (
 
 // ── Port allocator ───────────────────────────────────────────────────────────
 
-/// Global counter for ephemeral test ports. Starts at 44200 — below macOS's
-/// default ephemeral range (49152-65535). Linux's default `net.ipv4.ip_local_port_range`
-/// is 32768-60999, so 44200 falls INSIDE Linux's ephemeral range; the
-/// `next_test_port()` helper retries on EADDRINUSE to tolerate collisions.
-/// Tests consume one port each; 10 tests = 10 ports.
-static NEXT_PORT: AtomicU16 = AtomicU16::new(44200);
+/// Lowest port this allocator will hand out. Below Linux's default
+/// `net.ipv4.ip_local_port_range` floor of 32768 and macOS's 49152, so the
+/// kernel never assigns one of these to an outgoing connection.
+const PORT_FLOOR: u16 = 20_000;
+/// Ports reserved per process. Tests consume one each; ~40 exist today.
+const PORT_WINDOW: u16 = 200;
+/// Number of disjoint windows between `PORT_FLOOR` and 32000.
+const PORT_SLOTS: u16 = 60;
 
-/// Acquire one ephemeral test port. The port is verified to be free before
-/// returning by attempting a std::net bind.
+/// The first port of this process's window.
+///
+/// Two collision sources were observed on CI (`EADDRINUSE` on 44218 and 44220,
+/// both `serve_external` binds timing out after 5s) and both are addressed here.
+///
+/// The old base, 44200, sat **inside** Linux's ephemeral range — the previous
+/// comment said so and treated it as tolerable. It is not: between this
+/// allocator's probe bind and the server's real bind, the kernel is free to
+/// hand that exact port to an outgoing connection from any process on the box.
+///
+/// The counter is also per-process, so two CI jobs sharing a self-hosted runner
+/// both started at 44200 and walked into each other from the first test. Keying
+/// the window off the pid gives concurrent jobs disjoint ranges.
+fn port_window_base() -> u16 {
+    let slot = (std::process::id() as u16) % PORT_SLOTS;
+    PORT_FLOOR + slot * PORT_WINDOW
+}
+
+/// Offset within this process's window. Kept as an offset rather than an
+/// absolute port so the modulo below keeps allocation inside the window
+/// without a read-modify-write race between the wrap and the next handout.
+static NEXT_OFFSET: AtomicU16 = AtomicU16::new(0);
+
+/// Acquire one test port, verified free at the moment of allocation.
+///
+/// **This does not reserve the port.** The probe listener is dropped before the
+/// caller's server binds, so a race remains open in that gap; it is now narrow
+/// and no longer fed by the two mechanisms above. Closing it entirely means
+/// binding `:0` and handing the live `TcpListener` to `serve_external` via
+/// `serve_with_incoming`, which is a production-API change and deliberately not
+/// bundled with this test-only fix.
 pub(crate) fn next_test_port() -> u16 {
+    let base = port_window_base();
     loop {
-        let port = NEXT_PORT.fetch_add(1, Ordering::Relaxed);
+        let offset = NEXT_OFFSET.fetch_add(1, Ordering::Relaxed) % PORT_WINDOW;
+        let port = base + offset;
         // Verify the port is free by binding a std listener momentarily.
         if std::net::TcpListener::bind(format!("127.0.0.1:{port}")).is_ok() {
             return port;

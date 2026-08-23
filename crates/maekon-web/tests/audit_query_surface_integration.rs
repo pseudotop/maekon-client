@@ -392,11 +392,30 @@ async fn audit_entries_by_command_id_falls_through_to_storage_when_buffer_empty(
 
     // In-memory SQLite + 3 entries with target command_id at known offsets.
     let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory SQLite"));
+    // #11474: one clock reading for the whole loop. Calling `Utc::now()` per
+    // iteration made the 100ms offsets relative to a moving base, so a loop
+    // body slower than 100ms produced `t_1 - 100ms > t_0` and inverted the
+    // order the assertions below depend on.
+    //
+    // Measured, not argued. The delay was varied and the failure tracked it:
+    //
+    //   no probe, loaded runner   left "storage-only-1"  adjacent flip
+    //     (public run 32638488008, while the same job pruned a target
+    //      directory over its 8 GiB soft limit)
+    //   150ms probe every pass    left "storage-only-2"  full reversal
+    //     (public run 32648945810, throwaway branch)
+    //
+    // A cause that did not depend on elapsed time -- storage returning rows
+    // unordered, say -- would not scale with the delay like that.
+    //
+    // Anchoring to one base fixes the spacing at 100ms no matter how slow the
+    // runner is.
+    let seeded_at = Utc::now();
     for i in 0..3_i64 {
         let entry = AuditEntry {
             entry_id: format!("storage-only-{i}"),
             // Newer i = larger offset back; results[0] should be i=0.
-            timestamp: Utc::now() - chrono::Duration::milliseconds(i * 100),
+            timestamp: seeded_at - chrono::Duration::milliseconds(i * 100),
             session_id: "sess-storage".to_string(),
             command_id: "cmd-storage-fallthrough".to_string(),
             action_type: format!("storage-act-{i}"),
