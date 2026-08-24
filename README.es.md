@@ -25,7 +25,7 @@ El canal público es un prerelease temprano para Global Alpha por invitación. N
 
 ## Inicio Rápido desde Source Build
 
-El repositorio público ya está disponible y `v0.0.1-rc.9` es el prerelease público actual. Como el endpoint `latest` de GitHub excluye prereleases, use los comandos con versión fijada de la guía de instalación para validar binarios. Para desarrollo y builds de debug, ejecute Maekon desde un source checkout local.
+El repositorio público ya está disponible y este source snapshot apunta al release candidate `v0.0.1-rc.10`. Trátelo como publicado solo cuando existan el GitHub Release y sus artefactos correspondientes. Como el endpoint `latest` de GitHub excluye prereleases, use los comandos con versión fijada de la guía de instalación para validar binarios. Para desarrollo y builds de debug, ejecute Maekon desde un source checkout local.
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -242,20 +242,22 @@ Guía de instalación completa:
 
 ### Instalación Rápida (Terminal)
 
+Ejecute los siguientes comandos fijados a `v0.0.1-rc.10` únicamente después de que el GitHub Release correspondiente publique sus artefactos.
+
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.9/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.9 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.9/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.9 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
 ```
 
 ### Recursos de Lanzamiento

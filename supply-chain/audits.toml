@@ -2487,6 +2487,136 @@ Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch2.out + deny-batch2.out).
 """
 
+[[audits.enigo]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.6.1"
+notes = """
+VD-05.7 full audit — enigo 0.6.1 (17 runtime .rs files, 8,876 lines).
+
+An input-simulation crate: it synthesizes keyboard and mouse events, so its unsafe
+is almost entirely OS FFI. No build script, no C/C++/Objective-C sources of its
+own.
+
+## Reachability decided most of the scope
+
+A raw count gives 55 unsafe sites. Twenty of those are in Linux backends that this
+build does not compile, and the deciding line is a path attribute rather than a
+plain `cfg`:
+
+    #[cfg(any(feature = "x11rb", feature = "xdo"))]
+    #[cfg_attr(feature = "x11rb", path = "x11rb.rs")]
+    #[cfg_attr(not(feature = "x11rb"), path = "xdo.rs")]
+    mod x11;
+
+`default = ["x11rb"]`, and x11rb and nom are both present in enigo's Cargo.lock
+entry, so `mod x11` resolves to `x11rb.rs` and `xdo.rs` — with its
+`#[link(name = "xdo")]` block and sixteen unsafe sites — is never compiled. Feature
+state was read off the lockfile rather than the feature list: `wayland` is off
+(no wayland-client, wayland-protocols-misc or -wlr), and `libei_tokio`/`libei_smol`
+are off (no reis, no ashpd). Note that `xkbcommon` *is* present, but it is an
+unconditional `cfg(all(unix, not(target_os = "macos")))` dependency and does not
+imply the wayland feature.
+
+Not compiled here: `linux/xdo.rs` (16), `linux/libei.rs` (2),
+`linux/keymap2/mod.rs` (1), `linux/wayland.rs`. Compiled: `macos/macos_impl.rs`
+(27) and `win/win_impl.rs` (8), plus the pure-Rust `x11rb.rs` and `keymap.rs`.
+
+All four desktop targets are built by CI (x86_64-pc-windows-msvc,
+x86_64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-apple-darwin), so unlike a
+platform-gated dependency, both the macOS and Windows paths genuinely ship.
+
+## `unsafe impl Send`
+
+Four of them. Each was checked against the three ways such a claim fails —
+Clone/Copy defeating unique ownership, a missing or doubled Drop, and a public
+field letting a caller extract the handle.
+
+`xdo::Con` (not compiled, but reviewed): holds a raw `Xdo` pointer, has no Clone or
+Copy, keeps the field private, and its Drop calls `xdo_free` exactly once. `Sync`
+is deliberately not claimed, which is the right distinction for a handle that may
+be moved between threads but not used from two at once. Sound.
+
+`Keymap2` and the macOS `Enigo` follow the same shape and are sound.
+
+`libei::Con` is the exception and is recorded rather than cleared: it carries
+`#[derive(Clone)]` alongside `unsafe impl Send`. Its fields are Rust types
+(`HashMap`s, `ei::Context`, `Connection`, `xkb::Keymap`) rather than raw pointers,
+so the `Send` claim exists to cover whatever those wrap — and `xkb::Keymap` wraps a
+libxkbcommon handle whose refcounting is not atomic. Clone plus Send on a
+non-atomically-refcounted handle is the shape of a data race on the refcount. This
+module is **not compiled here**, so it is not a finding against this build, but
+anyone enabling `libei_tokio` or `libei_smol` must resolve it first.
+
+## macOS (27 sites) — two findings
+
+The CoreFoundation ownership discipline is correct where it matters. In
+`keycode_to_string`, `TISCopy*` results are +1 retained and `TISGetInputSourceProperty`
+returns a borrowed reference; the code releases the former and not the latter, and
+critically the `CFRelease(current_keyboard)` at :1118 happens *after* the last use
+of `keyboard_layout` — the pointer `CFDataGetBytePtr` returns is only valid while
+its owner lives, so the ordering is what keeps this from being a use-after-free.
+
+Two gaps, both the same family — an Apple API that can return NULL, used without a
+check:
+
+1. `keycode_to_string` (macos_impl.rs:1069) never NULL-checks any of the three
+   `TISCopy*` results. `TISCopyCurrentKeyboardInputSource()` can return NULL when
+   the process has no current input source. The value then flows into
+   `TISGetInputSourceProperty(NULL, ..)` and, at :1089 and :1118, into
+   `CFRelease(NULL)` — which Apple documents as undefined ("This value must not be
+   NULL"). Separately, the first two fallback levels guard `layout_data` with a
+   real `if .is_null()`, but the last one uses only
+   `debug_assert!(!layout_data.is_null())`, so a release build proceeds to
+   `CFDataGetBytePtr(NULL)`. The asymmetry between the two guards is what makes
+   this look like an oversight rather than a decision.
+
+   Reachability: `get_layoutdependent_keycode` loops keycodes 0..128 and calls
+   `keycode_to_string` twice per iteration, so a NULL input source would hit the
+   path up to 256 times per invocation, and that function runs whenever
+   layout-dependent text is typed — the crate's main purpose. The trigger is an
+   unusual system state (no current keyboard input source), not attacker-controlled
+   input.
+
+2. `ns_event_cg_event` (macos_impl.rs:653) is an `unsafe fn` with no `# Safety`
+   doc. It does `msg_send![event, CGEvent]` and feeds the result straight to
+   `CGEventRef::from_ptr` without a NULL check. `-[NSEvent CGEvent]` returns NULL
+   for events not backed by a CGEvent. The call sites (:604, :635) pass events
+   built by `+otherEventWithType:...` with `NSEventType::SystemDefined`, an idiom
+   AppKit does synthesize a CGEvent for in practice — but "works in practice" is
+   not the same as a checked contract, and the function's signature invites callers
+   to pass any `&NSEvent`.
+
+   The returned lifetime is fine: `&NSEvent -> &CGEventRef` ties the borrow to the
+   event through elision, so the reference cannot outlive its owner.
+
+Neither finding is reachable through untrusted input, which is why this audit still
+certifies safe-to-deploy — but both are genuine UB if the NULL case occurs, and
+both deserve an upstream report. A reviewer who reads safe-to-deploy as "no UB
+reachable under any system state" should overrule this and keep the exemption.
+
+## Windows (8 sites)
+
+Thin wrappers over the `windows` crate (0.61.3): `SendInput`, `GetSystemMetrics`,
+`GetCursorPos`, `GetWindowThreadProcessId`, `GetKeyboardLayout`, `MapVirtualKeyExW`,
+`SetProcessDpiAwareness`. No raw buffers and no pointer arithmetic — `SendInput`
+takes a slice, so a length/pointer mismatch is not expressible at the call site, and
+the wrapper additionally returns early on an empty input, converts both
+`size_of::<INPUT>()` and `input.len()` through `try_into()` with an error on
+overflow, and compares the return value against the expected count.
+`GetCursorPos(&raw mut point)` passes a pointer to a stack local. Nothing here
+needs a range or lifetime proof.
+
+## Powerful imports
+
+Seven, all in the FFI declarations: `libc::useconds_t` and `#[link(name = "xdo")]`
+in the uncompiled `xdo.rs`, and `#[link(name = "Carbon", kind = "framework")]` plus
+`#[link(name = "ApplicationServices", kind = "framework")]` on macOS. No filesystem,
+process, network, or environment access anywhere in the crate. The privilege this
+crate carries is the input simulation itself, which is its stated purpose and is
+gated by the OS — on macOS it needs Accessibility permission, and the crate exposes
+`has_permission()` to check it."""
+
 [[audits.enumflags2]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -2600,6 +2730,114 @@ Actively maintained. Commercial use permitted.
 Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch2.out + deny-batch2.out).
 """
+
+[[audits.fast_image_resize]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "6.1.0"
+notes = """
+VD-05.7 full audit — fast_image_resize 6.1.0 (149 runtime .rs files, 25,233 lines).
+
+`#![no_std]` with an alloc-backed std compat layer. No build script, no C, C++ or
+Objective-C sources. The entire safe-to-deploy question is SIMD unsafe.
+
+## Structure — 652 sites are a product, not 652 problems
+
+411 `unsafe fn` definitions across 107 files, but only **150 distinct names**: the
+same kernels (`horiz_convolution_one_row` ×32, `horiz_convolution_four_rows` ×31,
+`multiply_alpha*` and `divide_alpha*` ×20 each) instantiated per ISA and per pixel
+format. Broken down by operation: 284 `#[target_feature]`, 233 `get_unchecked`,
+42 pointer add/offset, 22 transmute, 6 assume_init, 4 from_raw_parts.
+
+By ISA: neon 126, avx2 94, sse4 94, wasm32 73, shared 24. This project ships
+x86_64 and aarch64 desktop targets, so the sse4/avx2 and neon families both
+compile; the 73 wasm32 definitions do not.
+
+## May the kernels run at all
+
+Every kernel is `#[target_feature(enable = ...)]`, so calling one on a CPU without
+the feature is UB regardless of arguments. Two things had to hold.
+
+First, detection must be real. It is on both compat paths, which mattered because
+this crate is `no_std` by default and a missing-detection fallback would be the
+dangerous shape: `compat/std_impl.rs` uses `is_x86_feature_detected!` and
+`is_aarch64_feature_detected!`; `compat/no_std_impl.rs` uses the `cpufeatures`
+crate, which does its own CPUID. Neither assumes. `CpuExtensions::default()`
+(cpu_extensions.rs:41-58) picks the best *detected* extension and falls back to
+`None`. This build takes the std path — `cpufeatures` has no Cargo.lock entry, so
+the `std` feature is on.
+
+Second, the caller must not be able to override detection safely. It cannot:
+`Resizer::set_cpu_extensions` (resizer.rs:309) and `MulDiv::set_cpu_extensions`
+(mul_div.rs:44) are both `pub unsafe fn`, correctly pushing the obligation onto a
+caller who wants to force an ISA.
+
+On our side, `maekon-vision/src/thumbnail.rs` never calls either setter — it uses
+`Resizer::new()` (detected default), `Image::from_vec_u8` and `resize`, both of
+which return `Result`. The compiled surface we exercise is the safe API only.
+
+## Can the kernels write out of bounds
+
+The kernels carry explicit, precise contracts rather than a vague "caller must
+ensure". For example convolution/u8x4/neon.rs:196-200:
+
+    /// - bounds.len() == dst_row.len()
+    /// - coefficients_chunks.len() == dst_row.len()
+    /// - max(chunk.start + chunk.values.len() for chunk in coefficients_chunks)
+    ///     <= src_row.len()
+    /// - precision <= MAX_COEFS_PRECISION
+
+The entry point `horiz_convolution` (same file, :8) is a safe `pub(crate) fn` and
+does not assert these locally; it obtains `coefficients_chunks` from
+`Normalizer16::chunks()` and iterates rows through the `ImageView`/`ImageViewMut`
+traits. So, as in rubato, the proof lives in the caller chain rather than at the
+unsafe site. That chain was traced: kernel → `horiz_convolution` →
+`Normalizer16::new` (optimisations.rs:52), which builds one chunk per entry of
+`coefficients.bounds` from `values.chunks_exact(window_size)` → `Coefficients`,
+computed by the resize algorithm from the source and destination dimensions.
+
+`Normalizer16::clip` (optimisations.rs:105-115) was checked numerically because it
+is the one place the bound is stated as arithmetic: the contract is
+`v >> precision ∈ [-512, 511]`, giving `index = 640 + (v >> precision)` ∈
+[128, 1151], and `CLIP8_LOOKUPS` is `[u8; 1280]`. So the reachable index range sits
+inside the table with 128 elements of margin at each end — deliberate slack, not a
+coincidence. The in-source guard is a `debug_assert!`, so that margin is what
+absorbs a moderate contract violation in release.
+
+## Recorded, because this project has already been bitten here
+
+`maekon-vision/src/thumbnail.rs:177` carries a caller-side guard:
+
+    // Guard against buffer overflow inside fast_image_resize.
+    // 32768 accommodates triple 6K displays (18048px) and 8K monitors.
+    // The actual crash was from usize::unchecked_add — log dimensions for diagnosis.
+    const MAX_DIM: u32 = 32768;
+
+So an earlier version of this crate reached `usize::unchecked_add` with dimensions
+large enough to overflow, and the workaround lives at our call site rather than
+upstream. Checked against 6.1.0: `unchecked_add`, `unchecked_mul` and
+`unchecked_sub` appear **zero** times in the crate today, so the specific operation
+is gone. The guard is now defence against a fixed defect; worth keeping, worth
+knowing it is no longer load-bearing for that reason.
+
+## Where this audit is proof and where it is trace
+
+Proven: the feature-detection chain on both compat paths, the `unsafe fn` setter
+design, our own usage staying on the safe API, the `clip` index range against the
+table size, and the reachability exclusion of the wasm32 kernels.
+
+Traced structurally but **not verified numerically**: the final link of the kernel
+contract — that `max(chunk.start + chunk.values.len())` cannot exceed
+`src_row.len()` for every filter and every source/destination size pair. That
+bottoms out in the `Coefficients` computation, one level above `Normalizer16`, and
+proving it would mean enumerating the filter/window arithmetic the way the timestamp
+and calendar audits enumerated theirs.
+
+For this project's exposure that gap is narrow: thumbnail.rs resizes screen
+captures whose dimensions come from the display server and are additionally clamped
+to 32768 before the call, so the inputs are not attacker-controlled. A reviewer who
+reads safe-to-deploy as requiring the full arithmetic proof should overrule this and
+keep the exemption until that link is closed."""
 
 [[audits.fastembed]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"

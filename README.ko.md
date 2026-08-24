@@ -26,10 +26,11 @@ Maekon은 ONESHIM 없이도 독립 사용 가능한 Apache-2.0 local-first 데�
 
 ## Source Build 빠른 시작
 
-공개 저장소는 준비되었고, `v0.0.1-rc.9`가 현재 공개 prerelease로 게시되어
-있습니다. GitHub의 `latest` release endpoint는 prerelease를 포함하지 않으므로
-릴리즈 바이너리 테스트는 설치 문서의 버전 고정 명령을 사용하세요. 개발 및
-debug 빌드는 로컬 source checkout에서 실행합니다.
+공개 저장소는 준비되었고, 이 source snapshot은 `v0.0.1-rc.10` release
+candidate를 대상으로 합니다. 같은 GitHub Release와 자산이 실제로 존재할 때만
+게시된 버전으로 취급합니다. GitHub의 `latest` release endpoint는 prerelease를
+포함하지 않으므로 릴리즈 바이너리 테스트는 설치 문서의 버전 고정 명령을
+사용하세요. 개발 및 debug 빌드는 로컬 source checkout에서 실행합니다.
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -242,33 +243,33 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 
 ### 빠른 설치 (터미널)
 
-> 현재 공개 바이너리 릴리즈는 prerelease `v0.0.1-rc.9`입니다. GitHub의
-> `latest` stable URL은 첫 stable 릴리즈 전까지 사용할 수 없으므로, 아래
-> 명령은 prerelease 버전을 명시적으로 고정합니다.
+> 이 source snapshot의 prerelease 대상은 `v0.0.1-rc.10`입니다. 같은 GitHub
+> Release에 자산이 게시된 뒤에만 아래 명령을 실행하세요. `latest` stable URL은
+> 첫 stable 릴리즈 전까지 사용할 수 없습니다.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.9/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.9 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.9/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.9 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
 ```
 
 ### 릴리즈 아티팩트
 
 [Releases](https://github.com/pseudotop/maekon-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
 
-현재 게시된 prerelease는 `v0.0.1-rc.9`입니다. 아래 표는 설치 프로그램,
-업데이터, checksum, signature 흐름에서 사용하는 release asset 이름을
-문서화한 것입니다.
+release-candidate source 버전은 `v0.0.1-rc.10`입니다. 아래 표는 설치 프로그램,
+업데이터, checksum, signature 흐름에서 기대하는 자산 이름을 문서화하며, 실제
+게시 여부는 같은 GitHub Release를 정본으로 판단합니다.
 
 Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프로그램, 업데이터,
 체크섬 호환성을 위해 의도적으로 `maekon-*` 형식을 유지합니다.
