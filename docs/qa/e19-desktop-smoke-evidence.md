@@ -181,6 +181,14 @@ days. Runner inventory, both run URLs and exact SHAs, artifact digest, and the
 final cleanup receipt are the acceptance evidence; raw runtime logs and host
 identifiers are not.
 
+The sanitizer retains an allowlisted machine-readable projection of the two
+control receipts: expected/observed readiness state, `observed_as_expected`,
+non-identifying reason codes, cleanup status, profile/process absence, and the
+`tcc_mutation=not_performed` boundary. A missing, malformed, contradictory, or
+field-expanded control receipt blocks the bundle; empty input is not valid
+evidence. User names, hardware models, host paths, and raw receipt content are
+never copied into the retained bundle.
+
 For each control, preserve only `gh run view <run-id> --json headSha,status,conclusion,url`
 and the downloaded `windowserver-gui-smoke-log-sanitized-bundle`. A valid pair
 has the same reviewed exact SHA, conclusion `success`, readiness states `ready`
