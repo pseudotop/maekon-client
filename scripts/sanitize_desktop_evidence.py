@@ -90,6 +90,8 @@ def _validate_metadata(
         errors.append("runner_label is required")
     if cleanup_status not in {"pass", "blocked", "failed", "manual_required"}:
         errors.append("cleanup_status is unsupported")
+    elif cleanup_status != "pass":
+        errors.append("cleanup_not_verified")
     return errors
 
 

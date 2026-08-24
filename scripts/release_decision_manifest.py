@@ -15,6 +15,9 @@ SOURCE_REPORT_SCHEMA_VERSION = "automation.gui.benchmark_report.v1"
 EVIDENCE_POLICY_SCHEMA_VERSION = "automation.gui.permission_evidence.v1"
 CHECKLIST_REGISTRY_SCHEMA_VERSION = "maekon.release_checklist_dispositions.v2"
 CHECKLIST_RESULTS_SCHEMA_VERSION = "maekon.release_checklist_results.v2"
+CHECKLIST_RECEIPT_INDEX_SCHEMA_VERSION = "maekon.release_checklist_receipt_index.v1"
+CHECKLIST_HUMAN_RESULTS_SCHEMA_VERSION = "maekon.release_checklist_human_results.v1"
+CHECKLIST_COLLECTOR_SCHEMA_VERSION = "maekon.release_checklist_collector.v1"
 
 CLIENT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKLIST_PATH = CLIENT_ROOT / "docs" / "release-checklist.md"
@@ -41,6 +44,13 @@ CI_SUBSTITUTE_DEFERRED_CLAIMS = {
     "macos_consent_byte_invariance",
 }
 CI_SUBSTITUTE_PLATFORMS = {"linux", "macos-arm64", "macos-x64", "windows"}
+PLACEHOLDER_RECEIPT_MARKERS = (
+    "artifact://checklist/",
+    "review://checklist/",
+    "placeholder",
+    "example.invalid",
+)
+PLACEHOLDER_REVIEWERS = {"release-maintainer", "reviewer", "placeholder", "example"}
 
 
 def _load_json(path: Path) -> Any:
@@ -171,11 +181,200 @@ def _registry_blockers(
     return errors
 
 
+def _collection_payload_items(
+    payload: Any,
+    *,
+    schema_version: str,
+    label: str,
+    expected_ids: list[str],
+    commit_sha: str,
+    release_tag: str,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(payload, dict) or payload.get("schema_version") != schema_version:
+        raise SystemExit(f"{label} must use {schema_version}")
+    if payload.get("commit_sha") != commit_sha:
+        raise SystemExit(f"{label} commit_sha must match the requested commit")
+    if payload.get("release_tag") != release_tag:
+        raise SystemExit(f"{label} release_tag must match the requested release tag")
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise SystemExit(f"{label} items must be a list")
+    if any(not isinstance(item, dict) for item in items):
+        raise SystemExit(f"{label} items must be objects")
+
+    actual_ids = [item.get("id") for item in items]
+    if len(actual_ids) != len(set(actual_ids)):
+        raise SystemExit(f"{label} ids must be unique")
+    missing = [item_id for item_id in expected_ids if item_id not in actual_ids]
+    unknown = [item_id for item_id in actual_ids if item_id not in expected_ids]
+    if missing or unknown:
+        details: list[str] = []
+        if missing:
+            details.append(f"missing ids: {', '.join(missing)}")
+        if unknown:
+            details.append(f"unknown ids: {', '.join(str(item) for item in unknown)}")
+        raise SystemExit(f"{label} coverage mismatch: {'; '.join(details)}")
+    return {item["id"]: item for item in items}
+
+
+def _collected_result(
+    *,
+    item: dict[str, Any],
+    registered: dict[str, Any],
+    default_phase: str,
+    commit_sha: str,
+    release_tag: str,
+    now: str | None,
+) -> dict[str, Any]:
+    item_id = registered["id"]
+    disposition = registered["disposition"]
+    subject_ref = registered["subject"]["ref"]
+    phase = registered.get("phase", default_phase)
+
+    if item.get("disposition") != disposition:
+        raise SystemExit(f"receipt {item_id} disposition does not match the registry")
+    if item.get("subject_ref") != subject_ref:
+        raise SystemExit(f"receipt {item_id} subject_ref does not match the registry")
+
+    state = item.get("state")
+    if disposition == "human":
+        if state != "pass":
+            raise SystemExit(
+                f"human receipt {item_id} must record an actual pass decision"
+            )
+        reviewer = item.get("reviewer")
+        if not isinstance(reviewer, str) or not reviewer.strip():
+            raise SystemExit(f"human receipt {item_id} requires an actual reviewer")
+        if reviewer.strip().lower() in PLACEHOLDER_REVIEWERS:
+            raise SystemExit(f"human receipt {item_id} reviewer is a placeholder")
+    elif state != "pass" and not (phase == "post_publish" and state == "pending"):
+        raise SystemExit(f"receipt {item_id} is not release-eligible: {state}")
+
+    receipt = item.get("receipt")
+    if not isinstance(receipt, dict):
+        raise SystemExit(f"receipt {item_id} metadata is required")
+    uri = receipt.get("uri")
+    if not isinstance(uri, str) or not uri.strip():
+        raise SystemExit(f"receipt {item_id} uri is required")
+    normalized_uri = uri.strip().lower()
+    if any(marker in normalized_uri for marker in PLACEHOLDER_RECEIPT_MARKERS):
+        raise SystemExit(f"receipt {item_id} uri is a placeholder")
+    receipt_sha256 = receipt.get("sha256")
+    if not isinstance(receipt_sha256, str) or not _is_sha256(receipt_sha256):
+        raise SystemExit(f"receipt {item_id} sha256 must be 64 lowercase hex")
+    if receipt.get("commit_sha") != commit_sha:
+        raise SystemExit(
+            f"receipt {item_id} commit_sha does not match the release commit"
+        )
+    if receipt.get("release_tag") != release_tag:
+        raise SystemExit(
+            f"receipt {item_id} release_tag does not match the release tag"
+        )
+
+    observed_at = receipt.get("observed_at")
+    if not isinstance(observed_at, str):
+        raise SystemExit(f"receipt {item_id} observed_at is required")
+    try:
+        observed = _parse_utc(observed_at)
+        current = _parse_utc(now) if now else datetime.now(timezone.utc)
+    except ValueError as exc:
+        raise SystemExit(f"receipt {item_id} {exc}") from exc
+    if observed > current:
+        raise SystemExit(f"receipt {item_id} observed_at cannot be in the future")
+
+    return {
+        "id": item_id,
+        "state": state,
+        "receipt": uri.strip(),
+        "receipt_sha256": receipt_sha256,
+        "observed_at": observed_at,
+        "commit_sha": commit_sha,
+        "release_tag": release_tag,
+        **({"reviewer": item["reviewer"].strip()} if disposition == "human" else {}),
+    }
+
+
+def collect_checklist_results(
+    *,
+    receipt_index: Any,
+    human_results: Any,
+    commit_sha: str,
+    release_tag: str,
+    checklist_path: Path = DEFAULT_CHECKLIST_PATH,
+    checklist_registry_path: Path = DEFAULT_CHECKLIST_REGISTRY_PATH,
+    now: str | None = None,
+) -> dict[str, Any]:
+    if not _is_git_sha(commit_sha):
+        raise SystemExit("collector commit_sha must be a 40-character git SHA")
+    if not release_tag.startswith("v"):
+        raise SystemExit("collector release_tag must start with v")
+
+    try:
+        checklist_items = _load_checklist_items(checklist_path)
+    except ValueError as exc:
+        raise SystemExit(f"release checklist contract error: {exc}") from exc
+    registry = _load_json(checklist_registry_path)
+    registry_errors = _registry_blockers(registry, checklist_items=checklist_items)
+    if registry_errors:
+        raise SystemExit(
+            "release checklist contract error: " + "; ".join(registry_errors)
+        )
+
+    registry_items = registry["items"]
+    non_human_ids = [
+        item["id"] for item in registry_items if item["disposition"] != "human"
+    ]
+    human_ids = [
+        item["id"] for item in registry_items if item["disposition"] == "human"
+    ]
+    receipt_items = _collection_payload_items(
+        receipt_index,
+        schema_version=CHECKLIST_RECEIPT_INDEX_SCHEMA_VERSION,
+        label="receipt index",
+        expected_ids=non_human_ids,
+        commit_sha=commit_sha,
+        release_tag=release_tag,
+    )
+    human_items = _collection_payload_items(
+        human_results,
+        schema_version=CHECKLIST_HUMAN_RESULTS_SCHEMA_VERSION,
+        label="human results",
+        expected_ids=human_ids,
+        commit_sha=commit_sha,
+        release_tag=release_tag,
+    )
+
+    collected: list[dict[str, Any]] = []
+    for registered in registry_items:
+        source = human_items if registered["disposition"] == "human" else receipt_items
+        collected.append(
+            _collected_result(
+                item=source[registered["id"]],
+                registered=registered,
+                default_phase=registry["default_phase"],
+                commit_sha=commit_sha,
+                release_tag=release_tag,
+                now=now,
+            )
+        )
+
+    return {
+        "schema_version": CHECKLIST_RESULTS_SCHEMA_VERSION,
+        "collector_schema_version": CHECKLIST_COLLECTOR_SCHEMA_VERSION,
+        "commit_sha": commit_sha,
+        "release_tag": release_tag,
+        "items": collected,
+    }
+
+
 def _build_checklist_record(
     *,
     checklist_path: Path,
     registry_path: Path,
     results: Any,
+    commit_sha: str | None = None,
+    release_tag: str | None = None,
 ) -> dict[str, Any]:
     try:
         checklist_items = _load_checklist_items(checklist_path)
@@ -196,6 +395,21 @@ def _build_checklist_record(
         raise SystemExit(
             f"checklist results must use {CHECKLIST_RESULTS_SCHEMA_VERSION}"
         )
+
+    collector_schema_version = results.get("collector_schema_version")
+    if collector_schema_version is not None:
+        if collector_schema_version != CHECKLIST_COLLECTOR_SCHEMA_VERSION:
+            raise SystemExit(
+                f"checklist collector must use {CHECKLIST_COLLECTOR_SCHEMA_VERSION}"
+            )
+        if commit_sha is None or release_tag is None:
+            raise SystemExit(
+                "collected checklist validation requires commit_sha and release_tag"
+            )
+        if results.get("commit_sha") != commit_sha:
+            raise SystemExit("collected checklist commit_sha must match the manifest")
+        if results.get("release_tag") != release_tag:
+            raise SystemExit("collected checklist release_tag must match the manifest")
     result_items = results.get("items")
     if not isinstance(result_items, list):
         raise SystemExit("checklist results items must be a list")
@@ -254,6 +468,18 @@ def _build_checklist_record(
                     "state": state,
                     "receipt": result["receipt"],
                     **(
+                        {
+                            key: result[key]
+                            for key in (
+                                "receipt_sha256",
+                                "observed_at",
+                                "commit_sha",
+                                "release_tag",
+                            )
+                            if result.get(key) is not None
+                        }
+                    ),
+                    **(
                         {"reviewer": result["reviewer"]}
                         if result.get("reviewer")
                         else {}
@@ -275,6 +501,17 @@ def _build_checklist_record(
         "item_count": len(combined),
         "summary": state_counts,
         "items": combined,
+        **(
+            {
+                "collection": {
+                    "schema_version": CHECKLIST_COLLECTOR_SCHEMA_VERSION,
+                    "commit_sha": commit_sha,
+                    "release_tag": release_tag,
+                }
+            }
+            if collector_schema_version is not None
+            else {}
+        ),
     }
 
 
@@ -640,6 +877,8 @@ def _checklist_blockers(
     *,
     checklist_path: Path,
     checklist_registry_path: Path,
+    commit_sha: str | None = None,
+    release_tag: str | None = None,
 ) -> list[str]:
     errors: list[str] = []
     if not isinstance(checklist, dict):
@@ -666,6 +905,22 @@ def _checklist_blockers(
         errors.append("checklist source hash does not match the canonical checklist")
     if checklist.get("registry_sha256") != _sha256_file(checklist_registry_path):
         errors.append("checklist registry hash does not match the canonical registry")
+
+    collection = checklist.get("collection")
+    if collection is not None:
+        if not isinstance(collection, dict):
+            errors.append("checklist collection binding must be an object")
+        else:
+            if collection.get("schema_version") != CHECKLIST_COLLECTOR_SCHEMA_VERSION:
+                errors.append(
+                    f"checklist collection must use {CHECKLIST_COLLECTOR_SCHEMA_VERSION}"
+                )
+            if collection.get("commit_sha") != commit_sha:
+                errors.append("checklist collection commit_sha must match the manifest")
+            if collection.get("release_tag") != release_tag:
+                errors.append(
+                    "checklist collection release_tag must match the manifest"
+                )
 
     items = checklist.get("items")
     if not isinstance(items, list):
@@ -715,6 +970,22 @@ def _checklist_blockers(
         state_counts[state] += 1
         if not result.get("receipt"):
             errors.append(f"{prefix} receipt is required")
+        if collection is not None:
+            receipt_sha256 = result.get("receipt_sha256")
+            if not isinstance(receipt_sha256, str) or not _is_sha256(receipt_sha256):
+                errors.append(f"{prefix} receipt_sha256 must be 64 lowercase hex")
+            if result.get("commit_sha") != commit_sha:
+                errors.append(f"{prefix} commit_sha must match the manifest")
+            if result.get("release_tag") != release_tag:
+                errors.append(f"{prefix} release_tag must match the manifest")
+            observed_at = result.get("observed_at")
+            if not isinstance(observed_at, str):
+                errors.append(f"{prefix} observed_at is required")
+            else:
+                try:
+                    _parse_utc(observed_at)
+                except ValueError as exc:
+                    errors.append(f"{prefix} {exc}")
         if (
             registered.get("disposition") == "human"
             and state == "pass"
@@ -853,6 +1124,8 @@ def _manifest_blockers(
             manifest.get("checklist"),
             checklist_path=checklist_path,
             checklist_registry_path=checklist_registry_path,
+            commit_sha=commit_sha if isinstance(commit_sha, str) else None,
+            release_tag=release_tag if isinstance(release_tag, str) else None,
         )
     )
 
@@ -932,6 +1205,8 @@ def build_manifest(
         checklist_path=checklist_path,
         registry_path=checklist_registry_path,
         results=checklist_results,
+        commit_sha=commit_sha,
+        release_tag=release_tag,
     )
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -1049,6 +1324,24 @@ def _cmd_build(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_collect_checklist_results(args: argparse.Namespace) -> int:
+    results = collect_checklist_results(
+        receipt_index=_parse_json_arg(args.receipt_index, {}),
+        human_results=_parse_json_arg(args.human_results, {}),
+        commit_sha=args.commit_sha,
+        release_tag=args.release_tag,
+        checklist_path=Path(args.checklist),
+        checklist_registry_path=Path(args.checklist_registry),
+        now=args.now,
+    )
+    output = json.dumps(results, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        Path(args.output).write_text(output, encoding="utf-8")
+    else:
+        print(output, end="")
+    return 0
+
+
 def _cmd_validate(args: argparse.Namespace) -> int:
     manifest = _load_json(Path(args.manifest))
     errors = validate_manifest(
@@ -1068,7 +1361,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build or validate Maekon E19 release-decision manifests."
+        description="Collect, build, or validate Maekon release-decision evidence."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1099,6 +1392,19 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--generated-at")
     build.add_argument("--output")
     build.set_defaults(func=_cmd_build)
+
+    collect = subparsers.add_parser("collect-checklist-results")
+    collect.add_argument("--receipt-index", required=True)
+    collect.add_argument("--human-results", required=True)
+    collect.add_argument("--commit-sha", required=True)
+    collect.add_argument("--release-tag", required=True)
+    collect.add_argument("--checklist", default=str(DEFAULT_CHECKLIST_PATH))
+    collect.add_argument(
+        "--checklist-registry", default=str(DEFAULT_CHECKLIST_REGISTRY_PATH)
+    )
+    collect.add_argument("--now")
+    collect.add_argument("--output")
+    collect.set_defaults(func=_cmd_collect_checklist_results)
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("--manifest", required=True)

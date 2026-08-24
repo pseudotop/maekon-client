@@ -29,6 +29,10 @@
   공개 저장소로 export되고 다른 조직이 `cargo vet` import로 가져간다 — 그 소비자에게 근거가
   읽혀야 한다. `supply-chain/config.toml`의 `[[exemptions.*]]` notes는 내부 판단 기록이므로
   이 제약을 받지 않는다.
+- 신규 `[[audits.*]]`의 `version + safe-to-deploy`는 현재 dependency graph의 feature/target
+  도달성이 아니라 crate absolute version 전체를 인증한다. 전체 target·feature를 검토한 경우에만
+  notes에 `AUDIT SCOPE: full crate version; all targets and features reviewed.`를 정확히 기록한다.
+  일부만 검토했다면 exemption을 유지한다(#11528).
 
   2026-08-19 실측: `[[audits.*]]` 576건은 이미 전부 영어였다(관례로 지켜지고 있었다).
   이 줄은 그 관례를 계약으로 옮긴 것이며 기존 항목을 소급 번역하지 않는다.

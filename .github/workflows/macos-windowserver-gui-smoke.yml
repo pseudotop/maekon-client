@@ -3,11 +3,14 @@ name: macOS WindowServer GUI Smoke
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Git ref to run (branch, tag, or SHA). Empty uses current commit."
-        required: false
-        default: ""
-        type: string
+      control:
+        description: "Observe an unlocked GUI session or prove a locked/unavailable session fails closed."
+        required: true
+        default: ready
+        type: choice
+        options:
+          - ready
+          - locked-negative
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -17,60 +20,70 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-windowserver-gui-smoke-${{ github.ref }}
+  group: macos-windowserver-gui-smoke
   cancel-in-progress: false
 
 jobs:
   gui-windowserver-smoke:
     name: GUI Bootstrap Smoke (WindowServer)
+    if: github.ref_protected == true
     runs-on: [self-hosted, macOS, windowserver]
     environment: desktop-smoke
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          ref: ${{ inputs.ref || github.sha }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify dedicated runner and WindowServer state
+        id: readiness
+        shell: bash
+        env:
+          EXPECTED_STATE: ${{ inputs.control == 'locked-negative' && 'unavailable' || 'ready' }}
+        run: |
+          set -euo pipefail
+          RECEIPT="$RUNNER_TEMP/maekon-windowserver-readiness.json"
+          python3 scripts/verify-macos-windowserver-readiness.py \
+            --expected-state "$EXPECTED_STATE" \
+            --output "$RECEIPT"
+          echo "expected_state=$EXPECTED_STATE" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
+        if: inputs.control == 'ready'
         uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
         with:
           toolchain: stable
 
       - name: Cache Rust build artifacts
+        if: inputs.control == 'ready'
         uses: ./.github/actions/rust-cache
         with:
           key: macos-windowserver-gui-smoke
-          # #11396: the checkout above honours `inputs.ref`, so a dispatch can
-          # build an arbitrary tree while the cache it writes stays scoped to
-          # the branch the run was started on. CodeQL did NOT flag this file —
-          # only its sibling `build-smoke.yml` — which is a reminder that the
-          # alert list is a starting point, not the boundary of the problem.
-          # The shape here is identical, and this leg runs on a self-hosted
-          # runner.
-          #
-          # Empty `inputs.ref` means "current commit" (see the input's own
-          # description), which is the trusted case and still writes.
-          save: ${{ inputs.ref == '' }}
+          save: true
 
       - name: Setup Node.js
+        if: inputs.control == 'ready'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
         with:
           node-version: '22'
           package-manager-cache: false
 
       - name: Setup pnpm
+        if: inputs.control == 'ready'
         uses: ./.github/actions/setup-pnpm
         with:
           version: '10'
           lockfile-path: crates/maekon-web/frontend/pnpm-lock.yaml
-          # #11396: same reasoning as the Rust cache above.
-          save-cache: ${{ inputs.ref == '' }}
+          save-cache: true
 
       - name: Build frontend assets for Tauri frontendDist
+        if: inputs.control == 'ready'
         working-directory: crates/maekon-web/frontend
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Create sandbox worker stub for Tauri externalBin
+        if: inputs.control == 'ready'
         shell: bash
         run: |
           TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
@@ -78,22 +91,47 @@ jobs:
           chmod +x "src-tauri/maekon-sandbox-worker-${TRIPLE}"
 
       - name: Build release binary
+        if: inputs.control == 'ready'
         run: ./scripts/cargo-cache.sh build --locked --release -p maekon-app
 
+      - name: Prepare disposable app profile
+        if: inputs.control == 'ready'
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNTIME_HOME="$RUNNER_TEMP/maekon-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          case "$RUNTIME_HOME" in
+            "$RUNNER_TEMP"/maekon-runtime-*) ;;
+            *) echo "refusing unsafe runtime profile path" >&2; exit 1 ;;
+          esac
+          install -d -m 700 "$RUNTIME_HOME" "$RUNTIME_HOME/tmp"
+
       - name: GUI bootstrap smoke (WindowServer)
+        if: inputs.control == 'ready'
         shell: bash
         run: |
           set -euo pipefail
 
           BIN="target/release/maekon"
           LOG="$RUNNER_TEMP/maekon-windowserver-smoke.log"
+          PID_FILE="$RUNNER_TEMP/maekon-windowserver-smoke.pid"
+          RUNTIME_HOME="$RUNNER_TEMP/maekon-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           test -x "$BIN"
+          test -d "$RUNTIME_HOME"
 
           # Tauri GUI app — self-hosted runner has a real display.
           # Launch and verify no panics within startup window.
           set +e
-          MAEKON_DISABLE_TRAY=1 "$BIN" >"$LOG" 2>&1 &
+          CFFIXED_USER_HOME="$RUNTIME_HOME" \
+          HOME="$RUNTIME_HOME" \
+          TMPDIR="$RUNTIME_HOME/tmp" \
+          XDG_CACHE_HOME="$RUNTIME_HOME/.cache" \
+          XDG_CONFIG_HOME="$RUNTIME_HOME/.config" \
+          XDG_DATA_HOME="$RUNTIME_HOME/.local/share" \
+          MAEKON_DISABLE_TRAY=1 \
+            "$BIN" >"$LOG" 2>&1 &
           PID=$!
+          printf '%s\n' "$PID" >"$PID_FILE"
           sleep 8
           if kill -0 "$PID" >/dev/null 2>&1; then
             kill "$PID" >/dev/null 2>&1 || true
@@ -104,26 +142,61 @@ jobs:
 
           if grep -qE "Cannot start a runtime from within a runtime|Cannot drop a runtime|panicked at|SIGABRT|stack backtrace|CGSConnectionByID|CGAtomicGet" "$LOG"; then
             echo "GUI bootstrap smoke detected runtime/panic/windowserver failure"
-            cat "$LOG"
             exit 1
           fi
 
           # On self-hosted with WindowServer: expect clean exit or SIGTERM
           if [[ "$RC" -ne 0 && "$RC" -ne 143 ]]; then
             echo "GUI bootstrap smoke exited unexpectedly: rc=$RC"
-            cat "$LOG"
             exit 1
           fi
 
           echo "GUI bootstrap smoke OK (rc=$RC)"
 
-      - name: Sanitize WindowServer GUI smoke evidence
+      - name: Remove disposable app profile and record cleanup
+        id: cleanup
         if: always()
         shell: bash
         run: |
           set -euo pipefail
+          STATUS=pass
+          PID_FILE="$RUNNER_TEMP/maekon-windowserver-smoke.pid"
+          RUNTIME_HOME="$RUNNER_TEMP/maekon-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RECEIPT="$RUNNER_TEMP/maekon-windowserver-cleanup.json"
+
+          if [[ -f "$PID_FILE" ]]; then
+            PID="$(tr -cd '0-9' <"$PID_FILE")"
+            if [[ -n "$PID" ]] && kill -0 "$PID" >/dev/null 2>&1; then
+              kill "$PID" >/dev/null 2>&1 || true
+              sleep 1
+              if kill -0 "$PID" >/dev/null 2>&1; then
+                STATUS=failed
+              fi
+            fi
+          fi
+
+          case "$RUNTIME_HOME" in
+            "$RUNNER_TEMP"/maekon-runtime-*) rm -rf -- "$RUNTIME_HOME" ;;
+            *) STATUS=failed ;;
+          esac
+          [[ ! -e "$RUNTIME_HOME" ]] || STATUS=failed
+          rm -f -- "$PID_FILE"
+          printf '{"schema_version":1,"cleanup_status":"%s","profile_absent":%s,"process_absent":%s,"tcc_mutation":"not_performed"}\n' \
+            "$STATUS" \
+            "$([[ ! -e "$RUNTIME_HOME" ]] && echo true || echo false)" \
+            "$([[ "$STATUS" == pass ]] && echo true || echo false)" >"$RECEIPT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          [[ "$STATUS" == pass ]]
+
+      - name: Sanitize WindowServer GUI smoke evidence
+        if: always()
+        shell: bash
+        env:
+          CLEANUP_STATUS: ${{ steps.cleanup.outputs.status || 'failed' }}
+        run: |
+          set -euo pipefail
           SANITIZED_DIR="$RUNNER_TEMP/maekon-windowserver-smoke-sanitized"
-          RELEASE_TAG="${{ inputs.ref || github.ref_name }}"
+          RELEASE_TAG="${{ github.ref_name }}"
           if [[ "$RELEASE_TAG" != v* ]]; then
             RELEASE_TAG="v0.0.0-e19-smoke"
           fi
@@ -131,13 +204,17 @@ jobs:
           python3 scripts/sanitize_desktop_evidence.py \
             --input "$RUNNER_TEMP/maekon-windowserver-smoke.log" \
             --input-id windowserver-gui-smoke-log \
+            --input "$RUNNER_TEMP/maekon-windowserver-readiness.json" \
+            --input-id windowserver-readiness-receipt \
+            --input "$RUNNER_TEMP/maekon-windowserver-cleanup.json" \
+            --input-id windowserver-cleanup-receipt \
             --artifact-kind log_excerpt \
             --output-dir "$SANITIZED_DIR" \
             --commit-sha "$GITHUB_SHA" \
             --release-tag "$RELEASE_TAG" \
             --artifact-checksum "$ARTIFACT_CHECKSUM" \
             --runner-label macos-windowserver \
-            --cleanup-status pass
+            --cleanup-status "$CLEANUP_STATUS"
 
       - name: Upload WindowServer GUI smoke sanitized bundle
         if: always()

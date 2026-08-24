@@ -88,6 +88,34 @@ Manifest build requires `--checklist-results`. The results payload uses
 order, and records `state` plus a non-empty `receipt`. A passing `human` result
 also records the reviewer.
 
+For a release decision, do not hand-assemble that payload. Use the canonical
+collector:
+
+```bash
+python scripts/release_decision_manifest.py collect-checklist-results \
+  --receipt-index <machine-and-evidence-receipts.json> \
+  --human-results <actual-human-decisions.json> \
+  --commit-sha <40-character-public-sha> \
+  --release-tag <vX.Y.Z> \
+  --output <checklist-results.json>
+```
+
+The receipt index uses `maekon.release_checklist_receipt_index.v1` and contains
+exactly the 65 `machine` and `evidence` entries. Human decisions use the
+separate `maekon.release_checklist_human_results.v1` payload and contain exactly
+the four `human` entries. Both payloads bind the same public commit and release
+tag. Each entry repeats its registered disposition and subject reference and
+provides receipt metadata with `uri`, `sha256`, `observed_at`, `commit_sha`, and
+`release_tag`; human entries also name the actual reviewer.
+
+The split is a trust boundary. CI can gather machine and evidence receipts, but
+it cannot synthesize, default, or reuse the four maintainer decisions. The
+collector rejects missing or duplicate IDs, placeholder URIs or reviewers,
+subject/disposition drift, future timestamps, and receipt commit/tag mismatch.
+It emits all 69 results once in canonical order under
+`maekon.release_checklist_collector.v1`. A pre-publish item must pass; only the
+registered post-publish item may remain pending.
+
 The validator compares the embedded source and registry hashes to the checked
 out canonical files. Missing, duplicate, unknown, or reordered IDs fail closed.
 An unavailable subject is recorded as such in the registry and blocks release;

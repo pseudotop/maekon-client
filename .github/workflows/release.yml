@@ -72,8 +72,9 @@ jobs:
       # 실행하지 않는다. 쓰는 값(RELEASE_TAG·RELEASE_SHA)도 워크플로 `env:` 에서 오므로
       # 트리에 의존하지 않는다.
       #
-      # `Classify release version` 이 `source ./scripts/release-common.sh` 로 그 트리의
-      # 셸을 실행하는 첫 지점이라 검증 뒤로 옮겼다. 새 스텝을 넣을 때 이 경계를 넘지 말 것.
+      # `Verify update signing keypair` 가 검증된 트리의 스크립트를 실행하는 첫 지점이고,
+      # `Classify release version` 은 이어서 `source ./scripts/release-common.sh` 를 실행한다.
+      # 새 트리 코드 실행 스텝을 넣을 때 이 검증 경계를 넘지 말 것.
       - name: Verify release tag matches the requested commit
         shell: bash
         run: |
@@ -129,6 +130,12 @@ jobs:
             echo "::error::${RELEASE_TAG} tag signature is not GitHub-verified (reason: ${TAG_VERIFY_REASON})."
             exit 1
           fi
+
+      - name: Verify update signing keypair
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
+          MAEKON_UPDATE_PUBLIC_KEY: ${{ secrets.MAEKON_UPDATE_PUBLIC_KEY }}
+        run: python3 scripts/verify-update-signing-keypair.py
 
       - name: Classify release version
         id: release

@@ -93,6 +93,100 @@ Promotion criteria for any blocking subset:
 4. Privacy canaries pass.
 5. Manual fallback is documented for every platform row that remains optional.
 
+## Dedicated macOS WindowServer Runner
+
+The WindowServer lane must run on a separate physical or managed Mac. Tart,
+Apple Virtualization Framework guests, and a maintainer's development host are
+not eligible. Register the runner at repository scope with the labels
+`self-hosted`, `macOS`, and `windowserver`, and run the agent from the disposable
+user's unlocked Aqua session. Do not install release-signing or notarization
+secrets on this runner.
+
+Before registration, provision `/etc/maekon/desktop-smoke-runner.json` as a
+root-owned, non-writable-by-group-or-world file:
+
+```json
+{
+  "schema_version": 1,
+  "purpose": "maekon-desktop-smoke",
+  "dedicated": true,
+  "development_host": false,
+  "disposable_user": "maekon-smoke",
+  "runner_scope": "repository",
+  "tcc_mutation_policy": "forbidden"
+}
+```
+
+The disposable account name must match the user that runs the Actions agent.
+The workflow checks the root-owned declaration, rejects known virtual hardware,
+requires a matching console user, observes WindowServer and the Aqua launchd
+domain, and reads the macOS lock signal. It never invokes `tccutil` or changes
+host TCC state.
+
+On that dedicated Mac only, install the reviewed JSON file and register the
+runner from the disposable user's interactive Aqua session:
+
+```bash
+sudo install -d -o root -g wheel -m 0755 /etc/maekon
+sudo install -o root -g wheel -m 0644 desktop-smoke-runner.json \
+  /etc/maekon/desktop-smoke-runner.json
+./config.sh \
+  --url https://github.com/pseudotop/maekon-client \
+  --token "$RUNNER_REGISTRATION_TOKEN" \
+  --name maekon-windowserver-01 \
+  --labels macOS,windowserver \
+  --unattended \
+  --replace
+./run.sh
+```
+
+Obtain the one-time repository registration token through the approved
+maintainer credential path and keep it out of shell history and evidence. Do
+not install the runner as a development-host service. GitHub adds the
+`self-hosted` label automatically.
+
+Confirm inventory without publishing the runner name or host identity:
+
+```bash
+gh api repos/pseudotop/maekon-client/actions/runners \
+  --jq '[.runners[] | select(.status == "online" and .busy == false and ([.labels[].name] | contains(["self-hosted", "macOS", "windowserver"]))) | {status, busy, labels: [.labels[].name]}]'
+```
+
+Run the positive control while that account is unlocked:
+
+```bash
+gh workflow run macos-windowserver-gui-smoke.yml \
+  --repo pseudotop/maekon-client \
+  --ref main \
+  -f control=ready
+```
+
+Then lock or switch away from the disposable GUI session and run the negative
+control from a separate operator machine:
+
+```bash
+gh workflow run macos-windowserver-gui-smoke.yml \
+  --repo pseudotop/maekon-client \
+  --ref main \
+  -f control=locked-negative
+```
+
+The negative control passes only when the otherwise trusted dedicated runner
+observes the GUI session as locked or unavailable; an unlocked session cannot
+false-pass it. Each run uses one global concurrency group. The app receives an
+isolated temporary home/profile, the cleanup step removes it and terminates any
+remaining process, and a non-`pass` cleanup receipt makes the sanitizer produce
+`blocked_for_privacy`. Only the sanitized receipt bundle is uploaded, for seven
+days. Runner inventory, both run URLs and exact SHAs, artifact digest, and the
+final cleanup receipt are the acceptance evidence; raw runtime logs and host
+identifiers are not.
+
+For each control, preserve only `gh run view <run-id> --json headSha,status,conclusion,url`
+and the downloaded `windowserver-gui-smoke-log-sanitized-bundle`. A valid pair
+has the same reviewed exact SHA, conclusion `success`, readiness states `ready`
+and `unavailable` respectively, cleanup status `pass`, no raw log, and a
+seven-day artifact retention declaration.
+
 ## Runner Matrix
 
 | OS | Runner label | Session requirements | Permissions | Artifact classes | Evidence kinds | Fallback |
@@ -117,6 +211,6 @@ artifact classes.
 
 Use scriptable WDIO, Playwright, and Cargo tests when they can prove webview,
 IPC, contract, or build behavior without real desktop state. Use interactive
-desktop automation only for foreground native desktop behavior that requires a
-visible app, overlay, OS permission surface, tray/menu interaction, or manual
-provider flow.
+desktop automation, including Computer Use when explicitly authorized, only for
+foreground native desktop behavior that requires a visible app, overlay, OS
+permission surface, tray/menu interaction, or manual provider flow.
