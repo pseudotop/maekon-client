@@ -48,6 +48,8 @@ use tracing::debug;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::sync::Mutex;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 #[cfg(target_os = "windows")]
 use std::sync::atomic::AtomicU32;
@@ -68,6 +70,74 @@ pub type PlatformWaker = Arc<Mutex<Option<std::process::Child>>>;
 /// `CFRunLoopRun()` with no event ever firing the tap callback.
 #[cfg(target_os = "macos")]
 pub type PlatformWaker = Arc<Mutex<Option<core_foundation::runloop::CFRunLoop>>>;
+
+/// Maximum time a macOS hook run loop may remain blocked if `stop()` races
+/// with the small interval between checking `running` and entering
+/// `CFRunLoopRunInMode`.
+///
+/// `CFRunLoopStop` only terminates a currently running activation. The normal
+/// path still wakes immediately through [`PlatformWaker`]; this bounded wait
+/// is the fail-safe that makes an earlier stop request persistent through the
+/// atomic `running` flag instead of relying on Core Foundation to remember it.
+#[cfg(target_os = "macos")]
+const MACOS_RUN_LOOP_STOP_FALLBACK: Duration = Duration::from_secs(1);
+
+/// Publish and run the current macOS hook run loop until `running` becomes
+/// false.
+///
+/// Key and mouse hooks share this helper so their stop-before-entry behavior
+/// cannot drift. `stop()` normally interrupts the active run immediately via
+/// `CFRunLoopStop`; the bounded `run_in_mode` interval closes the remaining
+/// race where that call arrives just before the run-loop activation exists.
+#[cfg(target_os = "macos")]
+#[mutants::skip]
+pub(crate) fn run_macos_loop_until_stopped(
+    running: Arc<AtomicBool>,
+    run_loop: PlatformWaker,
+    current_loop: core_foundation::runloop::CFRunLoop,
+) {
+    run_macos_loop_until_stopped_impl(running, run_loop, current_loop, || {});
+}
+
+#[cfg(target_os = "macos")]
+#[mutants::skip]
+fn run_macos_loop_until_stopped_impl<F>(
+    running: Arc<AtomicBool>,
+    run_loop: PlatformWaker,
+    current_loop: core_foundation::runloop::CFRunLoop,
+    mut before_wait: F,
+) where
+    F: FnMut(),
+{
+    if let Ok(mut guard) = run_loop.lock() {
+        *guard = Some(current_loop);
+    }
+
+    while running.load(Ordering::SeqCst) {
+        // Test-only callers use this hook to force stop() into the otherwise
+        // microscopic interval immediately before the Core Foundation call.
+        before_wait();
+
+        // SAFETY: kCFRunLoopDefaultMode is a process-lifetime Core Foundation
+        // constant. The event-tap sources and the hang-regression timer are
+        // registered in this mode (or common modes, which include it).
+        let result = core_foundation::runloop::CFRunLoop::run_in_mode(
+            unsafe { core_foundation::runloop::kCFRunLoopDefaultMode },
+            MACOS_RUN_LOOP_STOP_FALLBACK,
+            false,
+        );
+        if matches!(
+            result,
+            core_foundation::runloop::CFRunLoopRunResult::Finished
+        ) {
+            break;
+        }
+    }
+
+    if let Ok(mut guard) = run_loop.lock() {
+        *guard = None;
+    }
+}
 
 /// Windows variant: the id of the message-pump thread, so `stop()` can
 /// `PostThreadMessageW(WM_STOP_HOOK)` to wake a loop blocked in
@@ -339,7 +409,7 @@ mod tests {
         let (ready_tx, ready_rx) = mpsc::channel();
         let mut lifecycle = HookLifecycle::start(
             "hook-lifecycle-test-macos-hang",
-            move |_running, run_loop| {
+            move |running, run_loop| {
                 // Fire an hour from now -- never fires during this test, but
                 // gives CFRunLoopRun() a timer to wait on so it genuinely
                 // blocks instead of returning immediately (see the callback
@@ -360,14 +430,8 @@ mod tests {
                 // `key_hook::macos`'s identical `unsafe { kCFRunLoopCommonModes }`
                 // access).
                 current_loop.add_timer(&timer, unsafe { kCFRunLoopDefaultMode });
-
-                if let Ok(mut guard) = run_loop.lock() {
-                    *guard = Some(current_loop);
-                }
                 let _ = ready_tx.send(());
-                // Blocks until the timer's (hour-away) fire date UNLESS
-                // CFRunLoopStop() is called on this loop from another thread.
-                CFRunLoop::run_current();
+                run_macos_loop_until_stopped(running, run_loop, current_loop);
             },
         )
         .expect("thread spawn must succeed");
@@ -386,6 +450,83 @@ mod tests {
              -- hang regression",
         );
         stopper.join().expect("stopper thread must not panic");
+    }
+
+    /// Deterministically force the stop-before-run-loop-entry ordering that a
+    /// plain `CFRunLoopStop` cannot close: the helper has observed
+    /// `running == true`, but its Core Foundation activation does not exist
+    /// yet. The stop call is therefore intentionally delivered before the
+    /// activation and the bounded run interval must still return promptly.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stop_before_cfrunloop_entry_cannot_be_lost() {
+        use core_foundation::date::CFDate;
+        use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopTimer};
+
+        let running = Arc::new(AtomicBool::new(true));
+        let run_loop = PlatformWaker::default();
+        let thread_running = running.clone();
+        let thread_run_loop = run_loop.clone();
+        let (before_wait_tx, before_wait_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+
+        let worker = std::thread::spawn(move || {
+            let fire_date = CFDate::now().abs_time() + 3600.0;
+            let timer = CFRunLoopTimer::new(
+                fire_date,
+                0.0,
+                0,
+                0,
+                hang_test_noop_timer_callback,
+                std::ptr::null_mut(),
+            );
+            let current_loop = CFRunLoop::get_current();
+            current_loop.add_timer(&timer, unsafe { kCFRunLoopDefaultMode });
+
+            let mut first_wait = true;
+            run_macos_loop_until_stopped_impl(
+                thread_running,
+                thread_run_loop,
+                current_loop,
+                || {
+                    if first_wait {
+                        first_wait = false;
+                        before_wait_tx
+                            .send(())
+                            .expect("test coordinator must still be waiting");
+                        continue_rx
+                            .recv_timeout(Duration::from_secs(2))
+                            .expect("test coordinator must release run-loop entry");
+                    }
+                },
+            );
+            let _ = done_tx.send(());
+        });
+
+        before_wait_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker must pause immediately before run-loop entry");
+
+        // Mirror HookLifecycle::stop ordering while the worker is known not to
+        // have entered CFRunLoopRunInMode yet. CFRunLoopStop cannot terminate
+        // a future activation, so the running flag plus bounded interval must
+        // carry the stop request across this gap.
+        running.store(false, Ordering::SeqCst);
+        if let Ok(guard) = run_loop.lock() {
+            guard
+                .as_ref()
+                .expect("worker must publish the run loop before waiting")
+                .stop();
+        }
+        continue_tx
+            .send(())
+            .expect("worker must still be paused before run-loop entry");
+
+        done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("bounded run-loop fallback must preserve the early stop request");
+        worker.join().expect("worker thread must not panic");
     }
 
     /// Revert-proof hang-regression guard (Linux): a body that spawns a

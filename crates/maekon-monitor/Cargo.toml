@@ -29,6 +29,11 @@ x11rb = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = { workspace = true }
 core-graphics = { workspace = true }
+# #8685: the changed-line mutation gate runs on Linux, where macOS-only hook
+# orchestration is cfg-elided and every whole-function replacement is therefore
+# equivalent. This inert marker keeps those unmeasurable functions out of that
+# lane; deterministic macOS lifecycle tests cover their behavior instead.
+mutants = "=0.0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true }

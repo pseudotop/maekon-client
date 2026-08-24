@@ -12,6 +12,7 @@
 //! CGEventTapCreate returns null and the function exits gracefully.
 
 use super::classify::classify_keycode;
+use crate::hook_lifecycle::run_macos_loop_until_stopped;
 use crate::input_activity::InputActivityCollector;
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::{
@@ -34,6 +35,9 @@ use tracing::{debug, info, warn};
 /// calls `CFRunLoopStop` through this slot to wake the loop on idle sessions
 /// where no key event ever fires the tap callback (the only other path that
 /// observes `running == false`). `CFRunLoopStop` is thread-safe.
+// The changed-line mutation lane runs on Linux, where this macOS adapter is
+// cfg-elided. Its event-tap orchestration is exercised by macOS CI instead.
+#[mutants::skip]
 pub fn run_event_tap(
     collector: Arc<InputActivityCollector>,
     running: Arc<AtomicBool>,
@@ -175,35 +179,10 @@ pub fn run_event_tap(
 
     info!("CGEventTap active -- passive key observer running");
 
-    // Publish this thread's run loop so KeyHook::stop() can wake it via
-    // CFRunLoopStop on idle sessions. The tap source is already added to the
-    // current run loop, so get_current() here is the loop that run_current()
-    // will block on.
-    //
-    // Startup-race guard: stop() sets `running = false` BEFORE locking this
-    // slot, while we check `running` AFTER publishing the loop, all under the
-    // same lock. So either stop() locks first (we then observe running == false
-    // and skip run_current()), or we lock and publish first (stop() then sees
-    // Some(..) and calls CFRunLoopStop). Either ordering avoids a permanent
-    // block on an idle session.
-    let should_run = if let Ok(mut guard) = run_loop.lock() {
-        *guard = Some(current_loop);
-        running.load(Ordering::SeqCst)
-    } else {
-        // Poisoned slot: fall back to the flag so we never block here.
-        running.load(Ordering::SeqCst)
-    };
-    if should_run {
-        // CFRunLoop::run_current() blocks until stop() is called (from the
-        // callback when `running` becomes false, or from KeyHook::stop() via
-        // the published run loop reference above).
-        CFRunLoop::run_current();
-    }
-    // Clear the slot so stop() does not act on a stale run loop after the loop
-    // has already returned.
-    if let Ok(mut guard) = run_loop.lock() {
-        *guard = None;
-    }
+    // Publish, run, and clear the shared run-loop slot through the lifecycle
+    // helper. Its bounded fallback closes the stop-before-entry race that a
+    // bare `CFRunLoop::run_current()` cannot represent safely.
+    run_macos_loop_until_stopped(running, run_loop, current_loop);
 
     // Break the Rc cycle before returning. The callback (owned by the tap) holds
     // a clone of `tap_cell`, and `tap_cell` holds the tap — so merely dropping

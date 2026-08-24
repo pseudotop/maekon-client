@@ -1,0 +1,176 @@
+name: Maekon Public Export Source Attestation
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact private ONESHIM parent SSOT commit recorded by the public provenance manifest
+        required: true
+        type: string
+      public_sha:
+        description: Exact public Maekon commit containing the provenance manifest
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  attest-source-binding:
+    name: Attest exact public export source binding
+    runs-on: ubuntu-latest
+    environment: release-signing
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Validate immutable inputs and public workflow ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha_pattern='^[0-9a-f]{40}$'
+          [[ "${SOURCE_SHA}" =~ ${sha_pattern} ]] || {
+            echo "::error::source_sha must be an exact lowercase 40-character Git SHA"
+            exit 1
+          }
+          [[ "${PUBLIC_SHA}" =~ ${sha_pattern} ]] || {
+            echo "::error::public_sha must be an exact lowercase 40-character Git SHA"
+            exit 1
+          }
+          [[ "${WORKFLOW_REF}" == "refs/heads/main" ]] || {
+            echo "::error::source attestations may only be dispatched from public main"
+            exit 1
+          }
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          [[ "${WORKFLOW_SHA}" == "${main_sha}" ]] || {
+            echo "::error::workflow SHA ${WORKFLOW_SHA} is not current public main ${main_sha}"
+            exit 1
+          }
+
+      - name: Check out trusted public verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Mint read-only parent source token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        with:
+          client-id: ${{ secrets.MAEKON_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MAEKON_RELEASE_APP_PRIVATE_KEY }}
+          owner: pseudotop
+          repositories: oneshim
+          permission-contents: read
+
+      - name: Check out current parent main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: pseudotop/oneshim
+          ref: main
+          path: source-control
+          token: ${{ steps.source-token.outputs.token }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check out exact parent source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: pseudotop/oneshim
+          ref: ${{ inputs.source_sha }}
+          path: source
+          token: ${{ steps.source-token.outputs.token }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check out exact public export
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: pseudotop/maekon-client
+          ref: ${{ inputs.public_sha }}
+          path: public
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Recompute and verify source binding
+        env:
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PUBLIC_SHA: ${{ inputs.public_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C source rev-parse HEAD)" == "${SOURCE_SHA}" ]]
+          [[ "$(git -C public rev-parse HEAD)" == "${PUBLIC_SHA}" ]]
+          [[ -z "$(git -C source status --porcelain)" ]]
+          [[ -z "$(git -C public status --porcelain)" ]]
+
+          current_source_sha="$(gh api repos/pseudotop/oneshim/git/ref/heads/main --jq '.object.sha')"
+          [[ "$(git -C source-control rev-parse HEAD)" == "${current_source_sha}" ]] || {
+            echo "::error::checked-out parent main is not current parent main"
+            exit 1
+          }
+          git -C source-control merge-base --is-ancestor "${SOURCE_SHA}" HEAD || {
+            echo "::error::source_sha is not merged into current parent main"
+            exit 1
+          }
+          if ! git -C public merge-base --is-ancestor "${PUBLIC_SHA}" refs/remotes/origin/main \
+            && [[ -z "$(git -C public tag --points-at "${PUBLIC_SHA}")" ]]; then
+            echo "::error::public_sha is neither reachable from public main nor the target of a public tag"
+            exit 1
+          fi
+
+          public_commit_epoch="$(git -C public show -s --format=%ct HEAD)"
+          public_commit_time="$(date -u -d "@${public_commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')"
+          python3 control/scripts/public-export-provenance.py verify \
+            --manifest public/.maekon-public-export-provenance.json \
+            --export-root public \
+            --source-root source \
+            --expected-source-sha "${SOURCE_SHA}" \
+            --require-public-target \
+            --now "${public_commit_time}"
+
+          source_tree_sha="$(git -C source rev-parse "${SOURCE_SHA}:clients/maekon-client")"
+          export_snapshot_sha256="$(jq -er '.export.snapshot_sha256' public/.maekon-public-export-provenance.json)"
+          jq -n \
+            --arg source_repository "pseudotop/oneshim" \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg source_tree_sha "${source_tree_sha}" \
+            --arg public_repository "${GITHUB_REPOSITORY}" \
+            --arg public_sha "${PUBLIC_SHA}" \
+            --arg export_snapshot_sha256 "${export_snapshot_sha256}" \
+            '{source_repository: $source_repository, source_sha: $source_sha, source_tree_sha: $source_tree_sha, public_repository: $public_repository, public_sha: $public_sha, export_snapshot_sha256: $export_snapshot_sha256}' \
+            > source-binding-predicate.json
+
+          {
+            echo "### Verified source binding"
+            echo "- Parent SSOT: \`${SOURCE_SHA}\`"
+            echo "- Public export: \`${PUBLIC_SHA}\`"
+            echo "- Client subtree: \`${source_tree_sha}\`"
+            echo "- Export snapshot: \`${export_snapshot_sha256}\`"
+            echo "- Subject: \`public/.maekon-public-export-provenance.json\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Attest verified provenance manifest
+        id: attest
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-path: public/.maekon-public-export-provenance.json
+          predicate-type: https://github.com/pseudotop/maekon-client/attestations/public-export-source-binding/v1
+          predicate-path: source-binding-predicate.json
+
+      - name: Record attestation receipt
+        env:
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${ATTESTATION_URL}" ]]
+          echo "- Attestation: ${ATTESTATION_URL}" >> "${GITHUB_STEP_SUMMARY}"
