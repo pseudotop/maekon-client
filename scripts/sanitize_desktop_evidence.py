@@ -23,6 +23,29 @@ RAW_REJECTED_ARTIFACT_KINDS = {
     "provider_account_data",
 }
 
+WINDOWSERVER_READINESS_RECEIPT_ID = "windowserver-readiness-receipt"
+WINDOWSERVER_CLEANUP_RECEIPT_ID = "windowserver-cleanup-receipt"
+WINDOWSERVER_REASON_CODES = {
+    "console_session_unavailable",
+    "gui_session_unavailable",
+    "hardware_model_unavailable",
+    "screen_locked",
+    "unsupported_platform",
+    "virtualized_hardware",
+    "windowserver_unavailable",
+}
+WINDOWSERVER_UNAVAILABLE_REASONS = {
+    "console_session_unavailable",
+    "gui_session_unavailable",
+    "screen_locked",
+    "windowserver_unavailable",
+}
+WINDOWSERVER_IDENTITY_FAILURE_REASONS = {
+    "hardware_model_unavailable",
+    "unsupported_platform",
+    "virtualized_hardware",
+}
+
 PATTERNS: dict[str, re.Pattern[str]] = {
     "email": re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
     "phone": re.compile(r"\b(?:\+?\d{1,3}[-. ]?)?(?:\(?\d{3}\)?[-. ]?)\d{3}[-. ]?\d{4}\b"),
@@ -71,6 +94,119 @@ def _artifact_summary(content: str, marker_counts: dict[str, int]) -> dict[str, 
     }
 
 
+def _receipt_object(content: str, artifact_id: str) -> dict[str, Any]:
+    if not content:
+        raise ValueError(f"{artifact_id}:missing_receipt")
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{artifact_id}:invalid_json") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{artifact_id}:receipt_must_be_object")
+    return payload
+
+
+def _windowserver_readiness_projection(content: str) -> dict[str, Any]:
+    artifact_id = WINDOWSERVER_READINESS_RECEIPT_ID
+    payload = _receipt_object(content, artifact_id)
+    required = {
+        "schema_version",
+        "probe",
+        "dedicated_config",
+        "hardware_isolation",
+        "expected_state",
+        "observed_state",
+        "observed_as_expected",
+        "reason_codes",
+    }
+    if set(payload) != required:
+        raise ValueError(f"{artifact_id}:fields_do_not_match_contract")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+        raise ValueError(f"{artifact_id}:unsupported_schema_version")
+    if payload["probe"] != "maekon-macos-windowserver-readiness":
+        raise ValueError(f"{artifact_id}:unsupported_probe")
+    if payload["dedicated_config"] != "pass":
+        raise ValueError(f"{artifact_id}:dedicated_config_not_verified")
+    if payload["hardware_isolation"] != "pass":
+        raise ValueError(f"{artifact_id}:hardware_isolation_not_verified")
+
+    expected_state = payload["expected_state"]
+    observed_state = payload["observed_state"]
+    observed_as_expected = payload["observed_as_expected"]
+    reason_codes = payload["reason_codes"]
+    if expected_state not in {"ready", "unavailable"}:
+        raise ValueError(f"{artifact_id}:unsupported_expected_state")
+    if observed_state not in {"ready", "unavailable"}:
+        raise ValueError(f"{artifact_id}:unsupported_observed_state")
+    if observed_as_expected is not True:
+        raise ValueError(f"{artifact_id}:control_not_observed_as_expected")
+    if not isinstance(reason_codes, list) or any(
+        not isinstance(code, str) or code not in WINDOWSERVER_REASON_CODES
+        for code in reason_codes
+    ):
+        raise ValueError(f"{artifact_id}:unsupported_reason_codes")
+    if len(reason_codes) != len(set(reason_codes)) or reason_codes != sorted(reason_codes):
+        raise ValueError(f"{artifact_id}:reason_codes_not_canonical")
+    if set(reason_codes) & WINDOWSERVER_IDENTITY_FAILURE_REASONS:
+        raise ValueError(f"{artifact_id}:hardware_isolation_is_contradictory")
+    unavailable_reasons = set(reason_codes) & WINDOWSERVER_UNAVAILABLE_REASONS
+    if expected_state == "ready":
+        if observed_state != "ready" or unavailable_reasons:
+            raise ValueError(f"{artifact_id}:ready_control_is_contradictory")
+    elif observed_state != "unavailable" or not unavailable_reasons:
+        raise ValueError(f"{artifact_id}:unavailable_control_is_contradictory")
+
+    return {
+        "schema_version": 1,
+        "probe": payload["probe"],
+        "dedicated_config": "pass",
+        "hardware_isolation": "pass",
+        "expected_state": expected_state,
+        "observed_state": observed_state,
+        "observed_as_expected": True,
+        "reason_codes": reason_codes,
+    }
+
+
+def _windowserver_cleanup_projection(content: str) -> dict[str, Any]:
+    artifact_id = WINDOWSERVER_CLEANUP_RECEIPT_ID
+    payload = _receipt_object(content, artifact_id)
+    required = {
+        "schema_version",
+        "cleanup_status",
+        "profile_absent",
+        "process_absent",
+        "tcc_mutation",
+    }
+    if set(payload) != required:
+        raise ValueError(f"{artifact_id}:fields_do_not_match_contract")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+        raise ValueError(f"{artifact_id}:unsupported_schema_version")
+    if payload["cleanup_status"] != "pass":
+        raise ValueError(f"{artifact_id}:cleanup_not_verified")
+    if payload["profile_absent"] is not True:
+        raise ValueError(f"{artifact_id}:profile_cleanup_not_verified")
+    if payload["process_absent"] is not True:
+        raise ValueError(f"{artifact_id}:process_cleanup_not_verified")
+    if payload["tcc_mutation"] != "not_performed":
+        raise ValueError(f"{artifact_id}:tcc_mutation_boundary_not_verified")
+    return {
+        "schema_version": 1,
+        "cleanup_status": "pass",
+        "profile_absent": True,
+        "process_absent": True,
+        "tcc_mutation": "not_performed",
+    }
+
+
+def _structured_evidence(artifact_id: str, content: str) -> dict[str, Any] | None:
+    if artifact_id == WINDOWSERVER_READINESS_RECEIPT_ID:
+        return _windowserver_readiness_projection(content)
+    if artifact_id == WINDOWSERVER_CLEANUP_RECEIPT_ID:
+        return _windowserver_cleanup_projection(content)
+    return None
+
+
 def _validate_metadata(
     *,
     commit_sha: str,
@@ -117,6 +253,15 @@ def sanitize_bundle(
     )
     artifacts: list[dict[str, Any]] = []
     blocked = bool(errors)
+    artifact_ids = {str(item.get("id") or f"artifact-{index}") for index, item in enumerate(inputs)}
+    windowserver_receipt_ids = {
+        WINDOWSERVER_READINESS_RECEIPT_ID,
+        WINDOWSERVER_CLEANUP_RECEIPT_ID,
+    }
+    if artifact_ids & windowserver_receipt_ids:
+        for missing_id in sorted(windowserver_receipt_ids - artifact_ids):
+            blocked = True
+            errors.append(f"{missing_id}:missing_receipt")
 
     for index, item in enumerate(inputs):
         artifact_id = str(item.get("id") or f"artifact-{index}")
@@ -147,6 +292,12 @@ def sanitize_bundle(
 
         counts = _marker_counts(content)
         markers = sorted(counts)
+        structured_evidence = None
+        try:
+            structured_evidence = _structured_evidence(artifact_id, content)
+        except ValueError as exc:
+            blocked = True
+            errors.append(str(exc))
         artifact_name = f"{artifact_id}.sanitized.json"
         sanitized_record = {
             "id": artifact_id,
@@ -167,6 +318,8 @@ def sanitize_bundle(
             "runner_label": runner_label,
             "cleanup_status": cleanup_status,
         }
+        if structured_evidence is not None:
+            sanitized_record["structured_evidence"] = structured_evidence
         (output_dir / artifact_name).write_text(
             json.dumps(sanitized_record, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
