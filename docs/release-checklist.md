@@ -32,8 +32,10 @@
 - [ ] Trusted public export verification used a signed source binding
   (`MAEKON_REQUIRE_PUBLIC_EXPORT_PROVENANCE_SIGNATURE=1` with
   `MAEKON_UPDATE_PUBLIC_KEY`) or an equivalent GitHub artifact attestation
-  from `Maekon Public Export Source Attestation` before treating the manifest
-  `ssot.source_sha` as authoritative. The receipt records the exact parent
+  from the public repository's `Maekon Public Export Source Attestation`
+  before treating the manifest `ssot.source_sha` as authoritative. The
+  protected public workflow uses the read-only Maekon Release App token to
+  verify the exact private parent source. The receipt records the exact parent
   SSOT SHA, exact public commit SHA, workflow run URL, and attestation URL.
 <!-- release-check-id: RC-AUTO-008 -->
 - [ ] Public branch `CI` was manually dispatched for the exported branch when the change affects Rust, CI, release scripts, or packaged artifacts; all `Build (${{ matrix.target }})` rows are green
