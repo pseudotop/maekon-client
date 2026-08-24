@@ -4,22 +4,22 @@
 
 이 문서는 Maekon 릴리즈 바이너리를 터미널에서 설치하는 방법을 제공합니다.
 
-> 현재 공개 바이너리 릴리즈는 prerelease로 게시된 `v0.0.1-rc.9`입니다.
-> GitHub의 `latest` stable 다운로드 URL은 첫 stable 릴리즈 전까지 사용할 수
-> 없으므로, 현재 prerelease 설치는 버전을 명시적으로 고정해야 합니다.
+> 이 source snapshot의 prerelease 대상은 `v0.0.1-rc.10`입니다. 같은 GitHub
+> Release에 자산이 게시된 뒤에만 아래 버전 고정 명령을 실행하세요. GitHub의
+> `latest` stable 다운로드 URL은 첫 stable 릴리즈 전까지 사용할 수 없습니다.
 
 호환성 메모: 릴리즈 파일명, 설치 스크립트명, `MAEKON_*` 환경 변수,
 `maekon` CLI 명령은 설치 프로그램, 업데이터, 기존 사용자 호환성을 위해
 현재 이름을 의도적으로 유지합니다.
 
-## 현재 prerelease 설치
+## 릴리즈 후보 설치 (게시 후)
 
 ### macOS / Linux
 
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.9 bash /tmp/maekon-install.sh --require-signature
+MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
 ```
 
 ### Windows (PowerShell)
@@ -29,7 +29,7 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.9 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
 ```
 
 ## 최신 stable 설치
@@ -60,7 +60,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -RequireSignature
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.9 bash /tmp/maekon-install.sh --require-signature
+MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
 ```
 
 ### Windows
@@ -70,7 +70,7 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.9 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
 ```
 
 ## 무결성 검증
@@ -145,11 +145,11 @@ powershell -ExecutionPolicy Bypass -File $tmp
 이미 저장소를 clone한 경우:
 
 ```bash
-MAEKON_VERSION=v0.0.1-rc.9 ./scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.10 ./scripts/install.sh
 ./scripts/uninstall.sh
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.9
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.10
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
 ```

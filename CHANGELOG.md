@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.10] - 2026-08-24
+
+### Added
+
+- A debug-only macOS permission watch records privacy-safe screen-capture
+  suppression and recovery transitions without persisting captured frames. The
+  runtime evidence still requires an eligible isolated macOS host.
+- Release governance now keeps the previous-RC updater observation as an
+  explicit post-publish receipt instead of pretending it can pass before the
+  new prerelease exists.
+
+### Changed
+
+- The release-decision manifest covers every canonical checklist item and
+  distinguishes pre-publish gates from the one post-publish updater check.
+- Public README and installer examples are prepared for the rc.10 snapshot so
+  the source tag, documentation, and submitted demo can share one version.
+
+### Fixed
+
+- CI cache keys and restore paths are bound more tightly to reviewed source and
+  dependency inputs, reducing stale or cross-context cache reuse.
+- The public wordmark artwork is centered in its SVG canvas across light and
+  dark themes.
+
+### Security
+
+- Supply-chain audit and publisher-trust records were refreshed, and release
+  checks now reject stale decision evidence and mismatched updater receipts.
+
 ## [0.0.1-rc.9] - 2026-08-18
 
 ### Fixed

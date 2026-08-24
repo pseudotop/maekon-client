@@ -4,22 +4,23 @@
 
 This guide provides terminal-first installation for Maekon release binaries.
 
-> The current public binary release is `v0.0.1-rc.9`, published as a
-> prerelease. GitHub's `latest` stable download URL is not available until the
-> first stable release, so current prerelease installs must pin the version.
+> This source snapshot targets prerelease `v0.0.1-rc.10`. Use the pinned
+> commands only after the matching GitHub Release publishes its artifacts.
+> GitHub's `latest` stable download URL is unavailable until the first stable
+> release.
 
 Compatibility note: release filenames, install script names, `MAEKON_*`
 environment variables, and the `maekon` CLI command intentionally keep their
 current names for installer, updater, and existing-user compatibility.
 
-## Current Prerelease Install
+## Release Candidate Install (after publication)
 
 ### macOS / Linux
 
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.9 bash /tmp/maekon-install.sh --require-signature
+MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
 ```
 
 ### Windows (PowerShell)
@@ -29,7 +30,7 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.9 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
 ```
 
 ## Latest Stable Install
@@ -60,7 +61,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -RequireSignature
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.9 bash /tmp/maekon-install.sh --require-signature
+MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
 ```
 
 ### Windows
@@ -70,7 +71,7 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.9 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
 ```
 
 ## Integrity Verification
@@ -145,11 +146,11 @@ powershell -ExecutionPolicy Bypass -File $tmp
 If you already cloned this repository:
 
 ```bash
-MAEKON_VERSION=v0.0.1-rc.9 ./scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.10 ./scripts/install.sh
 ./scripts/uninstall.sh
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.9
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.10
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
 ```
