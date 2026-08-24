@@ -62,7 +62,7 @@ ADR 번호는 이 레지스트리 안에서만 의미가 있으며 전역 ONESHI
 | [033](./ADR-033-memory-vault-mirror.ko.md) | Memory Vault Mirror — 사용자 소유 로컬 마크다운 표면 | Accepted | `maekon-core` consent/config/port, `maekon-analysis` writer, `maekon-storage` vault_mirror_state, erase 오케스트레이터(`src-tauri`, `maekon-web`) |
 
 | [034](./ADR-034-http-core-extraction.ko.md) | `maekon-http-core` — 어댑터 아래의 공용 아웃바운드 HTTP 기반 | Proposed | 신규 crate `maekon-http-core`, 소비자가 되는 `maekon-network`, 향후 `maekon-integration` |
-| [035](./ADR-035-release-pipeline-determinism.ko.md) | 릴리스 파이프라인 결정성 — 비싼 단계 이전에 판정한다 | Draft | 릴리스 체크리스트와 게이트, release-decision 증거, 툴체인 결정성, 공개 export, 태그에서 자산까지의 경로 |
+| [035](./ADR-035-release-pipeline-determinism.ko.md) | 릴리스 파이프라인 결정성 — 비싼 단계 이전에 판정한다 | Accepted | 릴리스 체크리스트와 게이트, release-decision 증거, 툴체인 결정성, 공개 export, 태그에서 자산까지의 경로 |
 
 **다음 가용 ID**: `ADR-036`.
 

@@ -34,6 +34,13 @@ SAFE_PRIVACY_STATUSES = {"safe", "redacted"}
 SAFE_REDACTION_STATUSES = {"safe", "redacted"}
 HISTORY_STAGES = ("initial", "pivot", "current")
 CHECKLIST_PHASES = {"pre_publish", "post_publish"}
+OPERABILITY_ASSURANCE_MODES = {"interactive_runtime", "exact_sha_ci_substitute"}
+CI_SUBSTITUTE_SCOPE = "release_operability_only"
+CI_SUBSTITUTE_DEFERRED_CLAIMS = {
+    "macos_tcc_grant_revoke_suppression_recovery",
+    "macos_consent_byte_invariance",
+}
+CI_SUBSTITUTE_PLATFORMS = {"linux", "macos-arm64", "macos-x64", "windows"}
 
 
 def _load_json(path: Path) -> Any:
@@ -48,18 +55,24 @@ def _load_checklist_items(path: Path) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     pending: tuple[str, int] | None = None
 
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         match = CHECKLIST_ID_PATTERN.fullmatch(line)
         if match:
             if pending is not None:
-                raise ValueError(f"checklist id {pending[0]} is not attached to an item")
+                raise ValueError(
+                    f"checklist id {pending[0]} is not attached to an item"
+                )
             pending = (match.group(1), line_number)
             continue
 
         if not line.startswith("- [ ] "):
             continue
         if pending is None:
-            raise ValueError(f"checklist item at line {line_number} is missing a stable id")
+            raise ValueError(
+                f"checklist item at line {line_number} is missing a stable id"
+            )
 
         item_id, id_line = pending
         items.append(
@@ -93,12 +106,16 @@ def _registry_blockers(
     if not isinstance(registry, dict):
         return ["checklist disposition registry must be an object"]
     if registry.get("schema_version") != CHECKLIST_REGISTRY_SCHEMA_VERSION:
-        errors.append(f"checklist registry must use {CHECKLIST_REGISTRY_SCHEMA_VERSION}")
+        errors.append(
+            f"checklist registry must use {CHECKLIST_REGISTRY_SCHEMA_VERSION}"
+        )
     if registry.get("checklist_path") != "docs/release-checklist.md":
         errors.append("checklist registry path must be docs/release-checklist.md")
     default_phase = registry.get("default_phase")
     if default_phase not in CHECKLIST_PHASES:
-        errors.append("checklist registry default_phase must be pre_publish or post_publish")
+        errors.append(
+            "checklist registry default_phase must be pre_publish or post_publish"
+        )
 
     registry_items = registry.get("items")
     if not isinstance(registry_items, list):
@@ -142,7 +159,9 @@ def _registry_blockers(
             errors.append(f"{prefix} subject ref is required")
         if not isinstance(subject.get("available"), bool):
             errors.append(f"{prefix} subject availability is required")
-        elif subject.get("available") is False and not subject.get("unavailable_reason"):
+        elif subject.get("available") is False and not subject.get(
+            "unavailable_reason"
+        ):
             errors.append(f"{prefix} unavailable subject requires a reason")
         if disposition == "human" and not item.get("why"):
             errors.append(f"{prefix} human disposition requires why")
@@ -166,10 +185,17 @@ def _build_checklist_record(
     registry = _load_json(registry_path)
     registry_errors = _registry_blockers(registry, checklist_items=checklist_items)
     if registry_errors:
-        raise SystemExit("release checklist contract error: " + "; ".join(registry_errors))
+        raise SystemExit(
+            "release checklist contract error: " + "; ".join(registry_errors)
+        )
 
-    if not isinstance(results, dict) or results.get("schema_version") != CHECKLIST_RESULTS_SCHEMA_VERSION:
-        raise SystemExit(f"checklist results must use {CHECKLIST_RESULTS_SCHEMA_VERSION}")
+    if (
+        not isinstance(results, dict)
+        or results.get("schema_version") != CHECKLIST_RESULTS_SCHEMA_VERSION
+    ):
+        raise SystemExit(
+            f"checklist results must use {CHECKLIST_RESULTS_SCHEMA_VERSION}"
+        )
     result_items = results.get("items")
     if not isinstance(result_items, list):
         raise SystemExit("checklist results items must be a list")
@@ -188,7 +214,10 @@ def _build_checklist_record(
             details.append(f"unknown ids: {', '.join(unknown)}")
         if not missing and not unknown:
             details.append("result order must match the canonical checklist")
-        raise SystemExit("checklist results do not cover the canonical checklist: " + "; ".join(details))
+        raise SystemExit(
+            "checklist results do not cover the canonical checklist: "
+            + "; ".join(details)
+        )
 
     registry_by_id = {item["id"]: item for item in registry["items"]}
     combined: list[dict[str, Any]] = []
@@ -203,11 +232,17 @@ def _build_checklist_record(
             else {"pass", "blocked"}
         )
         if state not in allowed_states:
-            raise SystemExit(f"checklist result {item_id} has unsupported state: {state}")
+            raise SystemExit(
+                f"checklist result {item_id} has unsupported state: {state}"
+            )
         if not result.get("receipt"):
             raise SystemExit(f"checklist result {item_id} requires a receipt")
 
-        if registered["disposition"] == "human" and state == "pass" and not result.get("reviewer"):
+        if (
+            registered["disposition"] == "human"
+            and state == "pass"
+            and not result.get("reviewer")
+        ):
             raise SystemExit(f"human checklist result {item_id} requires a reviewer")
 
         combined.append(
@@ -218,7 +253,11 @@ def _build_checklist_record(
                 "result": {
                     "state": state,
                     "receipt": result["receipt"],
-                    **({"reviewer": result["reviewer"]} if result.get("reviewer") else {}),
+                    **(
+                        {"reviewer": result["reviewer"]}
+                        if result.get("reviewer")
+                        else {}
+                    ),
                 },
             }
         )
@@ -257,7 +296,10 @@ def _load_benchmark_report(path: Path) -> Any:
     if payload.get("schema_version") == SOURCE_REPORT_SCHEMA_VERSION:
         return payload
     inner = payload.get("report")
-    if isinstance(inner, dict) and inner.get("schema_version") == SOURCE_REPORT_SCHEMA_VERSION:
+    if (
+        isinstance(inner, dict)
+        and inner.get("schema_version") == SOURCE_REPORT_SCHEMA_VERSION
+    ):
         raise SystemExit(
             f"{path} is a wrapper, not a benchmark report: the "
             f"{SOURCE_REPORT_SCHEMA_VERSION} object is nested under its 'report' key. "
@@ -274,7 +316,12 @@ def _parse_utc(value: str) -> datetime:
 
 
 def _now_utc() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _is_sha256(value: str) -> bool:
@@ -333,7 +380,9 @@ def _report_blockers(
         evidence_artifacts = result.get("evidence_artifacts") or []
 
         if privacy_status not in SAFE_PRIVACY_STATUSES:
-            errors.append(f"privacy status is not shareable for {case_id}: {privacy_status}")
+            errors.append(
+                f"privacy status is not shareable for {case_id}: {privacy_status}"
+            )
 
         if outcome == "pass":
             if entry.get("evidence_fresh") is not True:
@@ -341,8 +390,14 @@ def _report_blockers(
             if not evidence_paths:
                 errors.append(f"pass result is missing evidence paths for {case_id}")
             if not evidence_artifacts:
-                errors.append(f"pass result is missing evidence artifacts for {case_id}")
-            if result.get("input_execution_mode") in {"noop", "dry_run_worker", "unsupported"}:
+                errors.append(
+                    f"pass result is missing evidence artifacts for {case_id}"
+                )
+            if result.get("input_execution_mode") in {
+                "noop",
+                "dry_run_worker",
+                "unsupported",
+            }:
                 errors.append(f"dispatch-only input mode cannot pass for {case_id}")
             if result.get("verification_mode") == "command_accepted":
                 errors.append(f"command_accepted alone cannot pass for {case_id}")
@@ -363,7 +418,14 @@ def _evidence_artifact_blockers(evidence_artifacts: list[dict[str, Any]]) -> lis
 
     for index, artifact in enumerate(evidence_artifacts):
         prefix = f"evidence_artifacts[{index}]"
-        for key in ("id", "path", "sha256", "privacy_status", "redaction_status", "sanitized"):
+        for key in (
+            "id",
+            "path",
+            "sha256",
+            "privacy_status",
+            "redaction_status",
+            "sanitized",
+        ):
             if key not in artifact:
                 errors.append(f"{prefix} missing {key}")
 
@@ -405,7 +467,9 @@ def _claim_blockers(claims: list[dict[str, Any]]) -> list[str]:
         else:
             required_stages = ("current",)
             if not claim.get("history_not_relevant_reason"):
-                errors.append(f"{prefix} must explain why initial/pivot history is not relevant")
+                errors.append(
+                    f"{prefix} must explain why initial/pivot history is not relevant"
+                )
 
         for stage in required_stages:
             stage_evidence = evidence.get(stage)
@@ -428,6 +492,149 @@ def _claim_blockers(claims: list[dict[str, Any]]) -> list[str]:
     return errors
 
 
+def _successful_ci_receipt_blockers(
+    receipt: Any,
+    *,
+    name: str,
+    expected_workflow: str,
+    commit_sha: str | None,
+) -> list[str]:
+    if not isinstance(receipt, dict):
+        return [f"operability_assurance {name} receipt is required"]
+
+    errors: list[str] = []
+    if receipt.get("head_sha") != commit_sha:
+        errors.append(f"operability_assurance {name} head_sha must match commit_sha")
+    if receipt.get("conclusion") != "success":
+        errors.append(f"operability_assurance {name} conclusion must be success")
+    if receipt.get("workflow") != expected_workflow:
+        errors.append(
+            f"operability_assurance {name} workflow must be {expected_workflow}"
+        )
+    run_url = receipt.get("workflow_run_url")
+    if not isinstance(run_url, str) or not run_url.startswith("https://github.com/"):
+        errors.append(f"operability_assurance {name} workflow_run_url is required")
+    return errors
+
+
+def _operability_assurance_blockers(
+    assurance: Any,
+    *,
+    commit_sha: str | None,
+    claims: list[dict[str, Any]] | None,
+) -> list[str]:
+    if not isinstance(assurance, dict):
+        return ["operability_assurance is required"]
+
+    errors: list[str] = []
+    mode = assurance.get("mode")
+    if mode not in OPERABILITY_ASSURANCE_MODES:
+        return [f"operability_assurance mode is unsupported: {mode}"]
+    if assurance.get("commit_sha") != commit_sha:
+        errors.append("operability_assurance commit_sha must match commit_sha")
+
+    if mode == "interactive_runtime":
+        if assurance.get("scope") != "interactive_runtime":
+            errors.append(
+                "interactive_runtime assurance scope must be interactive_runtime"
+            )
+        runtime_receipt = assurance.get("runtime_receipt")
+        if not isinstance(runtime_receipt, dict):
+            errors.append("interactive_runtime assurance requires runtime_receipt")
+        else:
+            if runtime_receipt.get("state") != "pass":
+                errors.append(
+                    "interactive_runtime assurance receipt state must be pass"
+                )
+            if not runtime_receipt.get("receipt"):
+                errors.append(
+                    "interactive_runtime assurance receipt reference is required"
+                )
+        if assurance.get("deferred_claims") not in ([], None):
+            errors.append(
+                "interactive_runtime assurance must not carry deferred claims"
+            )
+        return errors
+
+    if assurance.get("scope") != CI_SUBSTITUTE_SCOPE:
+        errors.append(f"exact_sha_ci_substitute scope must be {CI_SUBSTITUTE_SCOPE}")
+
+    errors.extend(
+        _successful_ci_receipt_blockers(
+            assurance.get("automatic_checks"),
+            name="automatic_checks",
+            expected_workflow="commit_checks",
+            commit_sha=commit_sha,
+        )
+    )
+    automatic_checks = assurance.get("automatic_checks")
+    if isinstance(automatic_checks, dict):
+        count = automatic_checks.get("successful_check_count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            errors.append(
+                "operability_assurance automatic_checks successful_check_count must be positive"
+            )
+
+    errors.extend(
+        _successful_ci_receipt_blockers(
+            assurance.get("release_smoke"),
+            name="release_smoke",
+            expected_workflow="Release Smoke",
+            commit_sha=commit_sha,
+        )
+    )
+    release_smoke = assurance.get("release_smoke")
+    if isinstance(release_smoke, dict):
+        platforms = release_smoke.get("platforms")
+        if not isinstance(platforms, list) or set(platforms) != CI_SUBSTITUTE_PLATFORMS:
+            errors.append(
+                "operability_assurance release_smoke platforms must contain exact 4-OS rows"
+            )
+        elif len(platforms) != len(CI_SUBSTITUTE_PLATFORMS):
+            errors.append(
+                "operability_assurance release_smoke platforms must be unique"
+            )
+
+    errors.extend(
+        _successful_ci_receipt_blockers(
+            assurance.get("integrity_gates"),
+            name="integrity_gates",
+            expected_workflow="Integrity Gates",
+            commit_sha=commit_sha,
+        )
+    )
+
+    deferred_claims = assurance.get("deferred_claims")
+    if not isinstance(deferred_claims, list):
+        errors.append("exact_sha_ci_substitute deferred_claims must be a list")
+    else:
+        deferred_ids = [
+            entry.get("id") for entry in deferred_claims if isinstance(entry, dict)
+        ]
+        if set(deferred_ids) != CI_SUBSTITUTE_DEFERRED_CLAIMS:
+            errors.append(
+                "exact_sha_ci_substitute must defer the macOS TCC and consent-byte claims"
+            )
+        if len(deferred_ids) != len(CI_SUBSTITUTE_DEFERRED_CLAIMS):
+            errors.append("exact_sha_ci_substitute deferred claims must be unique")
+        for entry in deferred_claims:
+            if not isinstance(entry, dict) or entry.get("state") != "deferred_unproven":
+                errors.append(
+                    "exact_sha_ci_substitute deferred claims must use deferred_unproven"
+                )
+
+    for claim in claims or []:
+        if (
+            isinstance(claim, dict)
+            and claim.get("claim_id") in CI_SUBSTITUTE_DEFERRED_CLAIMS
+            and claim.get("state") == "pass"
+        ):
+            errors.append(
+                f"exact_sha_ci_substitute cannot pass deferred claim {claim['claim_id']}"
+            )
+    return errors
+
+
 def _checklist_blockers(
     checklist: Any,
     *,
@@ -442,7 +649,9 @@ def _checklist_blockers(
     if checklist.get("source_path") != "docs/release-checklist.md":
         errors.append("checklist source path must be docs/release-checklist.md")
     if checklist.get("registry_schema_version") != CHECKLIST_REGISTRY_SCHEMA_VERSION:
-        errors.append(f"checklist registry must use {CHECKLIST_REGISTRY_SCHEMA_VERSION}")
+        errors.append(
+            f"checklist registry must use {CHECKLIST_REGISTRY_SCHEMA_VERSION}"
+        )
 
     try:
         canonical_items = _load_checklist_items(checklist_path)
@@ -450,7 +659,9 @@ def _checklist_blockers(
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return errors + [f"canonical checklist contract cannot be loaded: {exc}"]
 
-    errors.extend(_registry_blockers(canonical_registry, checklist_items=canonical_items))
+    errors.extend(
+        _registry_blockers(canonical_registry, checklist_items=canonical_items)
+    )
     if checklist.get("source_sha256") != _sha256_file(checklist_path):
         errors.append("checklist source hash does not match the canonical checklist")
     if checklist.get("registry_sha256") != _sha256_file(checklist_registry_path):
@@ -504,7 +715,11 @@ def _checklist_blockers(
         state_counts[state] += 1
         if not result.get("receipt"):
             errors.append(f"{prefix} receipt is required")
-        if registered.get("disposition") == "human" and state == "pass" and not result.get("reviewer"):
+        if (
+            registered.get("disposition") == "human"
+            and state == "pass"
+            and not result.get("reviewer")
+        ):
             errors.append(f"{prefix} human pass requires a reviewer")
         if registered.get("subject", {}).get("available") is False:
             reason = registered["subject"].get("unavailable_reason", "reason missing")
@@ -534,7 +749,9 @@ def _manifest_blockers(
     if manifest.get("source_report_schema_version") != SOURCE_REPORT_SCHEMA_VERSION:
         errors.append(f"source report schema must be {SOURCE_REPORT_SCHEMA_VERSION}")
     if manifest.get("evidence_policy_schema_version") != EVIDENCE_POLICY_SCHEMA_VERSION:
-        errors.append(f"evidence policy schema must be {EVIDENCE_POLICY_SCHEMA_VERSION}")
+        errors.append(
+            f"evidence policy schema must be {EVIDENCE_POLICY_SCHEMA_VERSION}"
+        )
 
     commit_sha = manifest.get("commit_sha")
     if not isinstance(commit_sha, str) or not _is_git_sha(commit_sha):
@@ -545,7 +762,11 @@ def _manifest_blockers(
         errors.append("release_tag must start with v")
 
     artifact_checksum = manifest.get("artifact_checksum")
-    if not isinstance(artifact_checksum, str) or not artifact_checksum.startswith("sha256:") or not _is_sha256(_artifact_sha(artifact_checksum)):
+    if (
+        not isinstance(artifact_checksum, str)
+        or not artifact_checksum.startswith("sha256:")
+        or not _is_sha256(_artifact_sha(artifact_checksum))
+    ):
         errors.append("artifact_checksum must be sha256:<64 lowercase hex>")
 
     generated_at = manifest.get("generated_at")
@@ -588,7 +809,11 @@ def _manifest_blockers(
         errors.append("cleanup result must be pass")
 
     issues = manifest.get("covered_issue_numbers")
-    if not isinstance(issues, list) or not issues or not all(isinstance(issue, int) for issue in issues):
+    if (
+        not isinstance(issues, list)
+        or not issues
+        or not all(isinstance(issue, int) for issue in issues)
+    ):
         errors.append("covered_issue_numbers must contain issue numbers")
 
     report = manifest.get("benchmark_report")
@@ -616,6 +841,14 @@ def _manifest_blockers(
         errors.extend(_claim_blockers(claims))
 
     errors.extend(
+        _operability_assurance_blockers(
+            manifest.get("operability_assurance"),
+            commit_sha=commit_sha if isinstance(commit_sha, str) else None,
+            claims=claims if isinstance(claims, list) else None,
+        )
+    )
+
+    errors.extend(
         _checklist_blockers(
             manifest.get("checklist"),
             checklist_path=checklist_path,
@@ -632,13 +865,17 @@ def _manifest_blockers(
     return errors
 
 
-def _derive_privacy_status(report: dict[str, Any], evidence_artifacts: list[dict[str, Any]]) -> str:
+def _derive_privacy_status(
+    report: dict[str, Any], evidence_artifacts: list[dict[str, Any]]
+) -> str:
     report_statuses = [
         ((entry.get("result") or {}).get("privacy_status"))
         for entry in report.get("results", [])
         if isinstance(entry, dict)
     ]
-    artifact_statuses = [artifact.get("privacy_status") for artifact in evidence_artifacts]
+    artifact_statuses = [
+        artifact.get("privacy_status") for artifact in evidence_artifacts
+    ]
     statuses = report_statuses + artifact_statuses
     if any(status not in SAFE_PRIVACY_STATUSES for status in statuses):
         return "rejected"
@@ -650,13 +887,19 @@ def _derive_privacy_status(report: dict[str, Any], evidence_artifacts: list[dict
 def _derive_redaction_status(evidence_artifacts: list[dict[str, Any]]) -> str:
     if any(artifact.get("sanitized") is not True for artifact in evidence_artifacts):
         return "raw"
-    if any(artifact.get("redaction_status") == "redacted" for artifact in evidence_artifacts):
+    if any(
+        artifact.get("redaction_status") == "redacted"
+        for artifact in evidence_artifacts
+    ):
         return "redacted"
     return "safe"
 
 
 def _derive_decision(errors: list[str]) -> str:
-    if any("privacy" in error or "redaction" in error or "sanitized" in error for error in errors):
+    if any(
+        "privacy" in error or "redaction" in error or "sanitized" in error
+        for error in errors
+    ):
         return "blocked_for_privacy"
     if errors:
         return "hard_block"
@@ -675,6 +918,7 @@ def build_manifest(
     runner_labels: list[str],
     evidence_artifacts: list[dict[str, Any]],
     claims: list[dict[str, Any]],
+    operability_assurance: dict[str, Any],
     checklist_results: dict[str, Any],
     covered_issue_numbers: list[int],
     cleanup_status: str,
@@ -715,6 +959,7 @@ def build_manifest(
         },
         "covered_issue_numbers": covered_issue_numbers,
         "claims": claims,
+        "operability_assurance": operability_assurance,
         "checklist": checklist,
         "release_decision": {
             "state": "pass",
@@ -772,6 +1017,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         runner_labels=args.runner_label,
         evidence_artifacts=_parse_json_arg(args.evidence_artifacts, []),
         claims=_parse_json_arg(args.claims, []),
+        operability_assurance=_parse_json_arg(args.operability_assurance, {}),
         checklist_results=_parse_json_arg(args.checklist_results, {}),
         covered_issue_numbers=[int(issue) for issue in args.issue_number],
         cleanup_status=args.cleanup_status,
@@ -821,7 +1067,9 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build or validate Maekon E19 release-decision manifests.")
+    parser = argparse.ArgumentParser(
+        description="Build or validate Maekon E19 release-decision manifests."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build = subparsers.add_parser("build")
@@ -839,9 +1087,12 @@ def _parser() -> argparse.ArgumentParser:
     # 왕복이 쌓인다 — 서명 없이 만든 태그를 되돌리던 rc.9 에서 그 왕복이 비쌌다.
     build.add_argument("--evidence-artifacts", required=True)
     build.add_argument("--claims", required=True)
+    build.add_argument("--operability-assurance", required=True)
     build.add_argument("--checklist-results", required=True)
     build.add_argument("--checklist", default=str(DEFAULT_CHECKLIST_PATH))
-    build.add_argument("--checklist-registry", default=str(DEFAULT_CHECKLIST_REGISTRY_PATH))
+    build.add_argument(
+        "--checklist-registry", default=str(DEFAULT_CHECKLIST_REGISTRY_PATH)
+    )
     build.add_argument("--issue-number", action="append", default=[])
     build.add_argument("--cleanup-status", required=True)
     build.add_argument("--cleanup-summary", required=True)
@@ -854,7 +1105,9 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument("--now")
     validate.add_argument("--max-age-seconds", type=int, default=3600)
     validate.add_argument("--checklist", default=str(DEFAULT_CHECKLIST_PATH))
-    validate.add_argument("--checklist-registry", default=str(DEFAULT_CHECKLIST_REGISTRY_PATH))
+    validate.add_argument(
+        "--checklist-registry", default=str(DEFAULT_CHECKLIST_REGISTRY_PATH)
+    )
     validate.set_defaults(func=_cmd_validate)
 
     return parser

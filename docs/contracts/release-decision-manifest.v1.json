@@ -14,6 +14,35 @@
       "labels": ["windows-latest", "desktop-smoke"]
     }
   },
+  "operability_assurance": {
+    "mode": "exact_sha_ci_substitute",
+    "scope": "release_operability_only",
+    "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "automatic_checks": {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "conclusion": "success",
+      "workflow": "commit_checks",
+      "workflow_run_url": "https://github.com/pseudotop/maekon-client/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/checks",
+      "successful_check_count": 1
+    },
+    "release_smoke": {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "conclusion": "success",
+      "workflow": "Release Smoke",
+      "workflow_run_url": "https://github.com/pseudotop/maekon-client/actions/runs/124",
+      "platforms": ["linux", "macos-arm64", "macos-x64", "windows"]
+    },
+    "integrity_gates": {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "conclusion": "success",
+      "workflow": "Integrity Gates",
+      "workflow_run_url": "https://github.com/pseudotop/maekon-client/actions/runs/125"
+    },
+    "deferred_claims": [
+      {"id": "macos_tcc_grant_revoke_suppression_recovery", "state": "deferred_unproven"},
+      {"id": "macos_consent_byte_invariance", "state": "deferred_unproven"}
+    ]
+  },
   "benchmark_report": {
     "schema_version": "automation.gui.benchmark_report.v1",
     "generated_at": "2026-06-02T10:00:00Z",
@@ -88,7 +117,7 @@
   "checklist": {
     "schema_version": "maekon.release_checklist_results.v2",
     "source_path": "docs/release-checklist.md",
-    "source_sha256": "17f8a46000be65739abc3be0a57ed901c06aec055a20a79b59f7a272d77778a9",
+    "source_sha256": "e312e4f74ad657172fdbba88ededebe8f9293a5561c389aa16be5005aaa25a68",
     "registry_schema_version": "maekon.release_checklist_dispositions.v2",
     "registry_sha256": "d64fac5bde1fd50a10d59d56cb85eecb6f177d2f4638287122c31979a3208a91",
     "item_count": 69,

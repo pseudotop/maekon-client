@@ -30,12 +30,32 @@ Every manifest records:
 - top-level `privacy_status` and `redaction_status`
 - cleanup result
 - covered issue numbers
+- an `operability_assurance` record that chooses either isolated interactive
+  runtime proof or the exact-SHA CI substitute described below
 - the complete canonical checklist result set, bound to the checklist and
   disposition-registry SHA-256 digests
 - `release_decision.state`
 
 Supported decision states are `pass`, `optional`, `soft_block`, `hard_block`,
 and `blocked_for_privacy`.
+
+## Operability assurance modes
+
+`operability_assurance.mode` is required and is deliberately narrower than a
+general evidence override:
+
+- `interactive_runtime` records a passing isolated-runtime receipt.
+- `exact_sha_ci_substitute` authorizes release-operability decisions from CI
+  when the automatic checks, `Release Smoke`, and `Integrity Gates` receipts
+  all report `success` for the manifest `commit_sha`. `Release Smoke` must
+  contain the unique `linux`, `macos-arm64`, `macos-x64`, and `windows` rows.
+
+The CI substitute has the fixed scope `release_operability_only`. It does not
+prove macOS TCC grant/revoke behavior or consent-record byte invariance. Those
+two claims must remain present as `deferred_unproven`; a release-critical claim
+with either reserved claim id cannot be marked `pass` in this mode. The
+post-publish updater receipt is also independent and remains governed by
+`RC-MANUAL-006`.
 
 ## History-First mapping
 
@@ -81,6 +101,23 @@ mock updater test does not replace that observation.
 
 ## Fail-closed evidence gates
 
+### Freshness clocks
+
+The one-hour (`3600` second) acceptance window is an authorization lifetime, not
+the runtime of the desktop smoke. `generated_at` is stamped when the manifest is
+built, after the report, commit, artifact checksum, checklist results, and
+privacy evidence have been bound into one decision. The full hour is therefore
+available for validation, signing, and tag publication instead of being consumed
+by the approximately 36-minute hosted smoke that precedes the decision.
+
+The window remains finite because an otherwise replayable decision can decay
+when a runner image changes, a dependency is yanked, or a new security advisory
+arrives. Commit and artifact identity prevent evidence from being applied to a
+different build; the one-hour decision lifetime prevents an accepted manifest
+from becoming an indefinite authorization for that build. The embedded benchmark
+timestamp and per-result `evidence_fresh` flag remain independently fail-closed,
+so stamping a new manifest cannot turn stale source evidence into fresh evidence.
+
 The validator rejects release acceptance when any of these are true:
 
 - benchmark results are empty
@@ -92,6 +129,11 @@ The validator rejects release acceptance when any of these are true:
 - console or artifact evidence is not sanitized
 - privacy/redaction status is not shareable
 - cleanup did not pass
+- operability assurance is missing, references a different commit, or contains
+  a failed/missing automatic-check, four-OS Release Smoke, or Integrity Gates
+  receipt
+- the CI substitute omits either deferred macOS TCC claim or attempts to mark
+  one as passed
 - checklist coverage is incomplete or ambiguous
 - a pre-publish checklist result is not passing
 - a checklist result is blocked or its registered subject is unavailable
@@ -108,6 +150,7 @@ Build with checklist results:
 
 ```bash
 python scripts/release_decision_manifest.py build \
+  --operability-assurance <operability-assurance.json> \
   --checklist-results <checklist-results.json> \
   <other-required-release-arguments>
 ```

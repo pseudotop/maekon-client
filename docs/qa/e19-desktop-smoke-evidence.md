@@ -11,6 +11,14 @@ No default PR workflow depends on interactive desktop state. E19 desktop smoke
 is explicit, workflow_dispatch-only, and release-auditable until a later issue
 promotes a subset to blocking CI.
 
+For rc release operability, the release-decision contract also accepts the
+explicit `exact_sha_ci_substitute` mode. It requires successful automatic
+checks, all four `Release Smoke` build rows, and `Integrity Gates` on one exact
+public commit SHA. This mode is not interactive macOS permission evidence: TCC
+grant/revoke/suppression/recovery and consent-byte invariance remain
+`deferred_unproven`, and the post-publish updater observation remains a separate
+gate.
+
 ## Decision States
 
 Release managers must record one of these states in the release-decision
@@ -96,6 +104,10 @@ Promotion criteria for any blocking subset:
 Missing runner inventory produces `blocked` or `manual_required`, not pass.
 Missing desktop permissions are `blocked` when release-critical and
 `soft_block` when the row is optional or exploratory.
+
+Selecting the exact-SHA CI substitute changes the release decision scope rather
+than rewriting these runtime states: it permits an operability decision while
+preserving the missing interactive claims as deferred and unproven.
 
 Do not reopen E14/E17 platform parity work from this matrix unless a new
 release-critical gap is found. Platform expansion stays tied to shipped release

@@ -3365,6 +3365,133 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.heapless]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.8.0"
+notes = """
+VD-05.7 full audit — heapless 0.8.0 (26 runtime .rs files, 12,276 lines).
+
+Fixed-capacity `no_std` collections. No C sources; a 92-line build.rs. The
+exemption carried `category:expert-concurrency-unsafe`, and most of what earned
+that label turns out not to compile here.
+
+## Reachability
+
+`pub mod pool` is `#[cfg(any(arm_llsc, target_arch = "x86"))]`. `arm_llsc` is a
+custom cfg that build.rs sets from a compile probe, and build.rs:31 reads
+
+    // AArch64 instruction set contains `clrex` but not `ldrex` or `strex`; the
+    // probe will succeed when we already know to deny this target from LLSC.
+    if !target.starts_with("aarch64") {
+
+so aarch64 skips the probe entirely, and on x86_64 the probe — ARM `ldrex`/`strex`
+inline asm — cannot compile. `target_arch = "x86"` is 32-bit, not our target. Both
+shipped architectures therefore exclude the pool module: 44 unsafe sites across
+`pool/{boxed,arc,object}.rs` and `pool/treiber{,/cas,/llsc}.rs`, which is where the
+Treiber-stack CAS and LL/SC code lives. 182 sites total, 138 compiled.
+
+Method note: a raw scan counts `unsafe fn asm()` inside build.rs, but that line is
+inside `const ARM_LLSC_PROBE: &str = r#"..."#` — it is probe *source text*, not code
+build.rs executes. Counting a string literal as code would have made build.rs look
+like it runs unsafe.
+
+## spsc (21 sites) — the concurrency claim, and it holds
+
+`Queue<T, N>` is `{ head: AtomicUsize, tail: AtomicUsize, buffer: [UnsafeCell<MaybeUninit<T>>; N] }`.
+Four things had to line up and all do.
+
+Roles are disjoint by construction: `split(&mut self)` takes `&mut self`, so the
+borrow checker permits exactly one `Producer` and one `Consumer` per queue.
+
+Sharing is prevented at the type level: the crate writes
+`unsafe impl Send for Producer/Consumer where T: Send` and does **not** implement
+`Sync` for either, so a handle can move to another thread but cannot be shared —
+which is what keeps "single producer, single consumer" true. `Queue` itself is not
+`Sync` either, since `UnsafeCell` is not, so a shared `&Queue` cannot yield a second
+producer.
+
+Memory ordering is the textbook SPSC discipline: each side loads its **own** index
+`Relaxed` (it is the only writer of that index), loads the **other** side's index
+`Acquire`, and publishes its own with `Release`. The producer's item write
+happens-before its `tail.store(Release)`, and the consumer's `tail.load(Acquire)`
+synchronises with it, so the item is visible before it is read; the head index
+carries the same relationship in the other direction for slot reuse.
+
+Indices stay in range: `increment(val) = (val + 1) % N`, both indices start at 0 in
+`new()`, and every store goes through `increment`, so `get_unchecked` always sees
+[0, N-1] against a length-N buffer. `N > 1` is enforced at compile time —
+`new()` calls `crate::sealed::greater_than_1::<N>()`, so `% 0` and the degenerate
+one-slot ring are compile errors rather than runtime hazards.
+
+## The collections
+
+The shape is uniform: `[MaybeUninit<T>; N]` plus a length, with the invariant that
+`[0, len)` is initialized. The `*_unchecked` variants are `pub unsafe fn` with
+stated contracts (`push_unchecked`: "assumes the vec is not full";
+`pop_unchecked`: "assumes the vec to have at least one element"), each carrying a
+`debug_assert` as an aid rather than a guarantee, with the obligation correctly on
+the caller. `set_len` is likewise `pub unsafe fn`. Safe wrappers do the bounds
+check and delegate.
+
+Rather than read 117 sites, the crate was swept for the shape that actually fails:
+a **safe** fn performing `get_unchecked`/`set_len`/`assume_init`/`ptr::*` with no
+guard between the function head and the call. That found 15 sites, and each was
+resolved:
+
+  - `sorted_linked_list.rs` (6) — see below.
+  - `indexmap.rs:814,867` — the index comes from a successful `self.find(key)`, so
+    it names an existing entry.
+  - `indexmap.rs:247,346` — probe indices, bounded by the power-of-two mask of the
+    index table.
+  - `binary_heap.rs:514` — the `Hole` guard's `Drop`, writing back at the hole
+    position it was constructed with.
+  - `histbuf.rs:182` — `from_raw_parts(data.as_ptr(), self.len())`. The history
+    buffer fills 0,1,…,N-1 before wrapping, so the first `len()` elements are
+    exactly the initialized ones; the doc states the order is unspecified, which is
+    the weaker claim it actually makes.
+  - `vec.rs:726,751` — `set_len(0)` in `retain_mut` and `Drop`, and 0 is always a
+    valid length.
+
+## sorted_linked_list (26 sites) — the invariant traced to its source
+
+`node_at`/`node_at_mut` are private helpers doing `list.get_unchecked(index)`, and
+their safety comment says only "the entire `self.list` is initialized in `new`".
+That justifies reading an initialized value; it does **not** justify the index being
+in range, so the bound had to be found elsewhere.
+
+It is real. `SortedLinkedListIndex` is constructed exclusively through
+`unsafe fn new_unchecked`, and every such construction traces back to the free list
+built in `new()`: node `i` gets `next = i + 1` for i in [0, N-2], the loop condition
+being `while free < N - 1`. Node N-1 is never touched by the loop — and that is
+correct rather than an omission, because `const UNINIT` initializes `next` to
+`none()` while leaving only `val` as `MaybeUninit`. So the chain is
+0 → 1 → … → N-1 → none, every index handed out is below N, and `N == 0` is handled
+by an explicit early return that sets `free` to `none()`. A compile-time
+`smaller_than::<N, MAX>` additionally prevents the index type (u8/u16/usize) from
+overflowing.
+
+That last point is worth recording as a near miss in the audit rather than in the
+crate: the loop stopping at `N - 1` looked like an off-by-one leaving the final
+node's `next` uninitialized, which would have been a read of uninitialized memory
+when the last free slot was consumed. `UNINIT` is what makes it correct, and only
+reading that constant resolves it.
+
+## Powerful imports
+
+None. No filesystem, process, network, or environment access; no `extern "C"`,
+`#[link]`, or libc. The build script's only job is the LL/SC compile probe
+described above.
+
+## Scope statement
+
+Verified in depth: the pool exclusion, all of spsc, the `unsafe fn` contract
+discipline in vec, the sorted_linked_list free-list invariant end to end, and each
+of the 15 sites the sweep flagged. The remaining sites in `deque`, `indexmap`,
+`binary_heap`, `string` and `mpmc` follow the same fixed-capacity pattern —
+`*_unchecked` behind `unsafe fn`, safe wrappers checking — and were classified
+rather than individually re-derived."""
+
 [[audits.heck]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -9720,6 +9847,91 @@ Risk note: same transitive glib 0.18.5 / RUSTSEC-2024-0429 as webkit2gtk above.
 RUSTSEC verification: zero advisories directly against webkit2gtk-sys 2.0.2.
 License: MIT. Maintainer: Tauri programme within The Commons Conservancy.
 """
+
+[[audits.webkit6]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.6.1"
+notes = """
+VD-05.7 full audit — webkit6 0.6.1 (82 runtime .rs files, 22,714 lines).
+
+Safe Rust bindings for WebKitGTK 6, reached through tauri / tauri-runtime-wry /
+wry, so it compiles on the Linux target this project ships. No build script, no C
+sources of its own.
+
+## What the 1,428 unsafe sites actually are
+
+Two layers, and the split matters for what this audit can honestly claim.
+
+The C ABI is **not declared here**. `webkit6-sys` is a separate crate holding the
+`extern "C"` function declarations, and it is already audited in this repository
+(present in audits.toml, absent from the exemption list). The 29 files in
+`webkit6/src/auto/` that contain `extern "C"` declare *Rust* signal and async
+trampolines that C calls back into — not C functions.
+
+Everything under `src/auto/` is machine-generated. Each file opens with
+
+    // This file was generated by gir (https://github.com/gtk-rs/gir)
+    // from gir-files (https://github.com/gtk-rs/gir-files)
+    // from webkit-gir-files
+    // DO NOT EDIT
+
+and the unsafe within it is the standard glib-rs shape, counted rather than
+assumed: 282 direct `ffi::webkit_*` calls, 308 `self.to_glib_none()` receiver
+conversions, ~423 `from_glib*` result conversions split across the ownership
+variants (`from_glib`, `from_glib_none`, `from_glib_full`), 202 boxed-closure
+setups feeding 199 `connect_raw` signal registrations, and 49 `unsafe impl` /
+`unsafe fn from_value` pairs implementing glib's `StaticType`/`FromValue` traits.
+
+That uniformity is the point. Verifying 1,400 generated call sites individually
+would not add information — the correctness of the mapping is a property of gir
+and the gir XML, not of choices made in this crate. What an audit at this level can
+do is confirm the code is generated, confirm the generated shape is the expected
+one, and then read whatever deviates from it.
+
+## The hand-written surface
+
+Two files sit outside `auto/`: `lib.rs` and `website_data_manager.rs`, together
+holding four `unsafe` blocks and two `unsafe extern "C"` trampolines
+(`clear_trampoline`, `remove_trampoline`). Both trampolines follow the gio async
+pattern, and the ownership handoff is correct in both directions:
+
+  - Setup boxes the callback (`Box_::new`) and hands ownership to C exactly once
+    via `Box_::into_raw(user_data) as *mut _`.
+  - The trampoline takes it back exactly once with
+    `Box_::from_raw(user_data as *mut _)`, invokes it, and lets the box drop —
+    so the allocation is freed once. `P: FnOnce` makes the single invocation a
+    type-level fact rather than a convention.
+  - The error path uses `from_glib_full(error)` on the `GError` out-parameter,
+    which matches gio's transfer-full convention for `*_finish` functions;
+    `from_glib_none` there would leak, and not converting would leak the same way.
+  - `error` is initialized to `ptr::null_mut()` and tested with `is_null()` before
+    conversion, so the success path never converts a null pointer.
+
+The residual is a leak, not unsoundness: if the async operation never completes,
+the boxed closure is never reclaimed. That is inherent to the gio callback contract
+and is how every gtk-rs binding handles it.
+
+## Powerful imports
+
+`libc` appears as a dependency for C type aliases. No filesystem, process, network,
+or environment access originates in this crate — it is a binding layer, and the
+capabilities it exposes (a web view, cookie and website-data management) belong to
+WebKitGTK, gated by whatever the embedding application does with them.
+
+## Scope statement
+
+Verified: that `src/auto/` is generated and carries the DO-NOT-EDIT marker; that
+the generated unsafe is the standard glib-rs pattern, by counting each form rather
+than sampling; that the C ABI declarations live in the separately-audited
+`webkit6-sys`; and both hand-written trampolines, including the `into_raw`/
+`from_raw` pairing and the `from_glib_full` ownership match.
+
+Not verified, and stated plainly: the correspondence between each generated
+`ffi::webkit_*` call and the real WebKitGTK C signature. That correspondence is
+produced by gir from the gir XML and is the same trust this project already extends
+by auditing `webkit6-sys`. A reviewer who wants that link checked independently
+should treat this crate as still exempt."""
 
 [[audits.webkit6-sys]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"

@@ -62,7 +62,7 @@ client workspace.
 | [033](./ADR-033-memory-vault-mirror.md) | Memory Vault Mirror — User-Owned Local Markdown Surface | Accepted | `maekon-core` consent/config/port, `maekon-analysis` writer, `maekon-storage` vault_mirror_state, erase orchestrators (`src-tauri`, `maekon-web`) |
 
 | [034](./ADR-034-http-core-extraction.md) | `maekon-http-core` — Shared Outbound-HTTP Substrate Below the Adapters | Proposed | new crate `maekon-http-core`, `maekon-network` as consumer, future `maekon-integration` |
-| [035](./ADR-035-release-pipeline-determinism.md) | Release Pipeline Determinism — Decide Before the Expensive Step | Draft | release checklist and gates, release-decision evidence, toolchain determinism, public export, tag-to-assets path |
+| [035](./ADR-035-release-pipeline-determinism.md) | Release Pipeline Determinism — Decide Before the Expensive Step | Accepted | release checklist and gates, release-decision evidence, toolchain determinism, public export, tag-to-assets path |
 
 **Next available ID**: `ADR-036`.
 

@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The release-decision manifest covers every canonical checklist item and
   distinguishes pre-publish gates from the one post-publish updater check.
+- Release operability may use an exact-SHA CI substitute only when automatic
+  checks, the four-OS Release Smoke matrix, and Integrity Gates are green;
+  macOS TCC revocation and consent-byte claims remain explicitly unproven.
 - Public README and installer examples are prepared for the rc.10 snapshot so
   the source tag, documentation, and submitted demo can share one version.
 
