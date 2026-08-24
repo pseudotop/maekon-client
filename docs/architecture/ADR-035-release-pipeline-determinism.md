@@ -2,11 +2,33 @@
 
 # ADR-035: The release pipeline decides in one place, and the public repository is never where we learn something is broken
 
-**Status**: Draft — 2026-08-21
+**Status**: Accepted — 2026-08-24
 **Date**: 2026-08-21
 **Scope**: release checklist and its gates; release-decision evidence; toolchain determinism; the export that regenerates the public repository; the tag-to-assets path; the handoff to the updater — reversal, rollout stage, credential lifetime
 **Related**: ADR-005 (Tauri governance), `docs/guides/public-private-ci-split.md`, `docs/guides/hybrid-import-workflow.md`, `docs/release-checklist.md`, `docs/contracts/release-decision-manifest.md`
 **Issue**: #11330
+
+---
+
+## Implementation record
+
+Acceptance fixes the architectural direction; it does not relabel unfinished
+migration work as release evidence. The current source was re-measured on
+2026-08-24:
+
+| Decision | State | Current enforcement or remaining boundary |
+| --- | --- | --- |
+| D1 verification parity | Partial | The stable canary mechanically matches the three public clippy invocations. Full parent-PR counterparts for all 15 public required checks are not yet present. |
+| D2 identity and freshness | Implemented | The manifest binds commit SHA and artifact checksum, and its authorization clock starts at manifest build. The contract documents why the one-hour decision window remains. |
+| D3 checklist dispositions | Implemented | #11467 / PR #11472 assign all **69 current** stable checklist IDs a machine, evidence, or human disposition, including the post-publish updater item. |
+| D4 deterministic toolchain | Partial | #11324 added MSRV and scheduled stable-canary coverage. The exact build-toolchain pin remains owned by #11299. |
+| D5 export promotion | Implemented | `update-public-repo-clone.sh` continues an existing export branch, binds provenance to its actual parent, and refuses public-base or branch divergence. Its regression test includes both descendant and injected-divergence controls. |
+| D6 single release entry point | Partial | #11256 added the signing ability probe and signed-tag path. Manifest production is still a separate operator input, so the final composition remains future migration work. |
+| D7 post-publish updater lifecycle | Implemented | The 69-item registry keeps updater detection pending before publication and the independent post-publish receipt binds the observation to the exact tag and commit. |
+
+Rows marked partial are not evidence that the corresponding release property is
+complete. They preserve the migration boundary without keeping this decision in
+Draft indefinitely.
 
 ---
 

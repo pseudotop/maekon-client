@@ -80,15 +80,6 @@ follow-up: Re-review the aaudio/alsa `unsafe` additions and the WASAPI windows-c
   pin before promotion beyond routine public export. category:public-dependabot-major
 """
 
-[[exemptions.heapless]]
-version = "0.8.0"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
-review-by: 2026-10-16
-follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:expert-concurrency-unsafe
-"""
-
 [[exemptions.jni-macros]]
 version = "0.22.4"
 criteria = "safe-to-deploy"
@@ -220,15 +211,6 @@ reason: #6605 public-dependabot-ssot (Dependabot queue resolved through parent S
 review-by: 2026-12-31
 follow-up: Complete targeted diff audit or replace with explicit publisher trust before promoting this dependency group beyond routine public export. category:public-dependabot-ssot
 refreshed: 2026-07-24 #8685 rc.7 lockfile drift — version pin 2.25.3->2.26.0, disposition unchanged
-"""
-
-[[exemptions.webkit6]]
-version = "0.6.1"
-criteria = "safe-to-deploy"
-notes = """
-reason: e31-upgrade-baseline (GTK4/WebKitGTK 6 migration dependency without manual audit)
-review-by: 2026-10-16
-follow-up: E31 post-migration supply-chain hand audit; local patched upstream crates remain audit-as-crates-io=false. category:e31-upgrade-baseline
 """
 
 [[exemptions.whisper-rs-sys]]

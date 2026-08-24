@@ -32,7 +32,9 @@
 - [ ] Trusted public export verification used a signed source binding
   (`MAEKON_REQUIRE_PUBLIC_EXPORT_PROVENANCE_SIGNATURE=1` with
   `MAEKON_UPDATE_PUBLIC_KEY`) or an equivalent GitHub artifact attestation
-  before treating the manifest `ssot.source_sha` as authoritative
+  from `Maekon Public Export Source Attestation` before treating the manifest
+  `ssot.source_sha` as authoritative. The receipt records the exact parent
+  SSOT SHA, exact public commit SHA, workflow run URL, and attestation URL.
 <!-- release-check-id: RC-AUTO-008 -->
 - [ ] Public branch `CI` was manually dispatched for the exported branch when the change affects Rust, CI, release scripts, or packaged artifacts; all `Build (${{ matrix.target }})` rows are green
 <!-- release-check-id: RC-AUTO-009 -->
@@ -121,7 +123,10 @@
 - [ ] E19 desktop smoke release-decision manifest is generated and accepted
   before final sign-off; it must include History-First evidence mapping for
   every release-critical claim and must reject missing, stale, incomplete, or
-  privacy-blocked evidence.
+  privacy-blocked evidence. When `exact_sha_ci_substitute` is selected, the
+  manifest must bind automatic checks, all four Release Smoke rows, and
+  Integrity Gates to the exact public commit while keeping macOS TCC
+  grant/revoke behavior and consent-byte invariance `deferred_unproven`.
 
 ## Test Layers Verification
 <!-- release-check-id: RC-TEST-001 -->
@@ -149,7 +154,8 @@
 <!-- release-check-id: RC-SOURCE-006 -->
 - [ ] Unsigned public export provenance was treated as advisory only; source
   SHA trust came from a verified Ed25519 `source_binding.signature` or GitHub
-  artifact attestation
+  artifact attestation whose protected workflow recomputed the client subtree
+  and exported snapshot from exact immutable commits
 <!-- release-check-id: RC-SOURCE-007 -->
 - [ ] Public export PR was opened by the Maekon GitHub App/bot via `public-export-pr.yml` or `update-public-repo-clone.sh --open-pr`, not by the maintainer user who must approve it
 <!-- release-check-id: RC-SOURCE-008 -->

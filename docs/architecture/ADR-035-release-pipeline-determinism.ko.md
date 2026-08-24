@@ -2,11 +2,31 @@
 
 # ADR-035: 릴리스 파이프라인은 한 곳에서 판정하고, 공개 저장소는 무언가 깨졌음을 배우는 자리가 아니다
 
-**Status**: Draft — 2026-08-21
+**Status**: Accepted — 2026-08-24
 **Date**: 2026-08-21
 **Scope**: 릴리스 체크리스트와 그 게이트, release-decision 증거, 툴체인 결정성, 공개 저장소를 재생성하는 export, 태그에서 자산까지의 경로
 **Related**: ADR-005 (Tauri governance), `docs/guides/public-private-ci-split.md`, `docs/guides/hybrid-import-workflow.md`, `docs/release-checklist.md`, `docs/contracts/release-decision-manifest.md`
 **Issue**: #11330
+
+---
+
+## 구현 기록
+
+수락은 아키텍처 방향을 확정할 뿐, 끝나지 않은 마이그레이션을 릴리스 증거로 바꾸지 않는다.
+2026-08-24 현재 소스를 다시 측정한 결과는 다음과 같다.
+
+| 결정 | 상태 | 현재 강제 장치 또는 남은 경계 |
+| --- | --- | --- |
+| D1 검증 동등성 | 부분 | stable canary는 공개 clippy 호출 3개와 기계적으로 일치한다. 공개 required check 15개 전부의 부모 PR 대응 레인은 아직 없다. |
+| D2 정체성·신선도 | 구현 | manifest가 commit SHA와 artifact checksum에 결속되고 승인 시계는 manifest build에서 시작한다. 1시간 판정 창을 유지하는 이유는 계약 문서에 기록한다. |
+| D3 체크리스트 disposition | 구현 | #11467 / PR #11472가 **현재 69개** 안정 ID 전부에 machine, evidence, human disposition을 부여하며 post-publish updater 항목도 포함한다. |
+| D4 결정적 툴체인 | 부분 | #11324가 MSRV와 예약 stable-canary 검증을 추가했다. 정확한 빌드 툴체인 핀은 #11299가 계속 소유한다. |
+| D5 export 승격 | 구현 | `update-public-repo-clone.sh`가 기존 export 브랜치를 이어 쓰고 provenance를 실제 부모에 결속하며 공개 base·브랜치 divergence를 거부한다. 회귀 테스트는 자손 양성 대조와 divergence 이식 대조를 모두 포함한다. |
+| D6 단일 릴리스 진입점 | 부분 | #11256이 서명 능력 probe와 서명 태그 경로를 추가했다. manifest 생성은 여전히 별도 운영자 입력이므로 최종 조합은 후속 마이그레이션이다. |
+| D7 발행 후 updater lifecycle | 구현 | 69개 등록부는 발행 전 updater 감지를 pending으로 보존하고 독립 post-publish receipt가 관측을 exact tag·commit에 결속한다. |
+
+부분으로 표시한 행은 해당 릴리스 속성이 완료됐다는 증거가 아니다. 결정을 무기한 Draft로
+두지 않으면서 마이그레이션 경계를 보존한다.
 
 ---
 
