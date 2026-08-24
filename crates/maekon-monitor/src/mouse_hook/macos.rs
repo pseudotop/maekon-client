@@ -17,6 +17,7 @@
 //! tap), and macOS supports multiple simultaneous listen-only taps without
 //! issue. This also keeps the already-tested keyboard tap code untouched.
 
+use crate::hook_lifecycle::run_macos_loop_until_stopped;
 use crate::input_activity::InputActivityCollector;
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::{
@@ -44,6 +45,9 @@ const DOUBLE_CLICK_STATE_THRESHOLD: i64 = 2;
 /// calls `CFRunLoopStop` through this slot to wake the loop on idle sessions
 /// where no mouse event ever fires the tap callback. `CFRunLoopStop` is
 /// thread-safe.
+// The changed-line mutation lane runs on Linux, where this macOS adapter is
+// cfg-elided. Its event-tap orchestration is exercised by macOS CI instead.
+#[mutants::skip]
 pub fn run_event_tap(
     collector: Arc<InputActivityCollector>,
     running: Arc<AtomicBool>,
@@ -153,21 +157,7 @@ pub fn run_event_tap(
 
     info!("CGEventTap (mouse) active -- passive mouse observer running");
 
-    // Startup-race guard: identical to key_hook::macos -- stop() sets
-    // `running = false` BEFORE locking this slot, while we check `running`
-    // AFTER publishing the loop, all under the same lock.
-    let should_run = if let Ok(mut guard) = run_loop.lock() {
-        *guard = Some(current_loop);
-        running.load(Ordering::SeqCst)
-    } else {
-        running.load(Ordering::SeqCst)
-    };
-    if should_run {
-        CFRunLoop::run_current();
-    }
-    if let Ok(mut guard) = run_loop.lock() {
-        *guard = None;
-    }
+    run_macos_loop_until_stopped(running, run_loop, current_loop);
 
     // Break the Rc cycle before returning (see key_hook::macos for the full
     // rationale) -- otherwise the CGEventTap (and its mach port) leaks.

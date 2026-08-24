@@ -4699,6 +4699,7 @@ dependencies = [
  "core-graphics",
  "criterion",
  "maekon-core",
+ "mutants",
  "serde",
  "serial_test",
  "sysinfo",
