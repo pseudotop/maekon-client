@@ -273,22 +273,14 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
+      - name: Verify update signing keypair
+        run: python3 scripts/verify-update-signing-keypair.py
+
       - name: Download notarized final bytes
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: maekon-macos-notarized-assets-${{ needs.notarize-macos-assets.outputs.release_tag }}
           path: dist
-
-      - name: Validate release signing secret
-        shell: bash
-        run: |
-          set -euo pipefail
-          for key in UPDATE_SIGNING_PRIVATE_KEY_B64 MAEKON_UPDATE_PUBLIC_KEY; do
-            if [[ -z "${!key:-}" ]]; then
-              echo "Missing required secret: $key" >&2
-              exit 1
-            fi
-          done
 
       - name: Generate final notarized sidecars
         shell: bash
