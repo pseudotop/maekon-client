@@ -117,6 +117,20 @@ jobs:
             exit 1
           fi
 
+      - name: Verify public export provenance current base
+        if: ${{ github.event_name == 'pull_request' && (startsWith(github.head_ref, 'codex/public-export-') || startsWith(github.head_ref, 'release/public-export-')) }}
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          recorded_base="$(jq -er '.public_target.base_sha' .maekon-public-export-provenance.json)"
+          branch_base="$(git merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA")"
+          if [[ "$recorded_base" != "$PR_BASE_SHA" || "$branch_base" != "$PR_BASE_SHA" ]]; then
+            echo "::error::public export provenance base ${recorded_base} and branch base ${branch_base} must both match current PR base ${PR_BASE_SHA}. Regenerate from current public main; stale branch ancestry will break after squash merge."
+            exit 1
+          fi
+
       - id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
