@@ -59,7 +59,9 @@
 <!-- release-check-id: RC-AUTO-012 -->
 - [ ] `MAEKON_RELEASE_DECISION_MANIFEST=<manifest.json> ./scripts/pre-release-check.sh <VERSION>`
   passes from the exact commit to be tagged; the manifest `release_tag`,
-  `commit_sha`, and `release_decision.state=pass` must match the release.
+  `commit_sha`, and `release_decision.state=pass` must match the release. This
+  publish-boundary receipt may be pending only in the bootstrap manifest used
+  to obtain the first exact-SHA validation receipt; recollect it before tagging.
 <!-- release-check-id: RC-AUTO-013 -->
 - [ ] Required public repository Actions secrets for the intended release scope are configured
 <!-- release-check-id: RC-AUTO-014 -->
@@ -128,7 +130,9 @@
   privacy-blocked evidence. When `exact_sha_ci_substitute` is selected, the
   manifest must bind automatic checks, all four Release Smoke rows, and
   Integrity Gates to the exact public commit while keeping macOS TCC
-  grant/revoke behavior and consent-byte invariance `deferred_unproven`.
+  grant/revoke behavior and consent-byte invariance `deferred_unproven`. This
+  self-validation receipt follows the same bootstrap/recollection boundary as
+  `RC-AUTO-012`.
 
 ## Test Layers Verification
 <!-- release-check-id: RC-TEST-001 -->
@@ -176,6 +180,10 @@
 - [ ] Parent source SHA and public export SHA are recorded in the release notes
 
 ## Artifact Integrity
+
+Every item in this section is post-publish evidence. It remains explicit
+`pending` in the accepted pre-tag authorization and is recollected from the
+exact tag, release, and final published bytes.
 <!-- release-check-id: RC-ARTIFACT-001 -->
 - [ ] GitHub Release exists under `pseudotop/maekon-client`
 <!-- release-check-id: RC-ARTIFACT-002 -->

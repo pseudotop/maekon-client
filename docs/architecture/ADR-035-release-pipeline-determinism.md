@@ -390,4 +390,15 @@ Ordered so that each step is worth landing on its own.
 
 ## Amendments
 
-None yet.
+### 2026-08-25 — explicit publication boundaries
+
+The initial D3/D7 registry override marked only updater detection as
+`post_publish`. A release rehearsal then exposed two additional cycles: the
+pre-tag manifest required receipts for its own validation, and it required a
+signed tag, GitHub Release, and finalized assets before those objects could
+exist. The registry now distinguishes `pre_publish`, `publish_boundary`, and
+`post_publish`. Only the first phase is a hard prerequisite for authorization;
+the latter two remain explicit pending until their irreversible boundary
+produces exact tag- and commit-bound receipts. This is a lifecycle correction,
+not a relaxation: no post-publication claim is converted into pre-publication
+proof.

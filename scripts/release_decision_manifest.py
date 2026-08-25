@@ -36,7 +36,8 @@ DECISION_STATES = {
 SAFE_PRIVACY_STATUSES = {"safe", "redacted"}
 SAFE_REDACTION_STATUSES = {"safe", "redacted"}
 HISTORY_STAGES = ("initial", "pivot", "current")
-CHECKLIST_PHASES = {"pre_publish", "post_publish"}
+CHECKLIST_PHASES = {"pre_publish", "publish_boundary", "post_publish"}
+CHECKLIST_PENDING_PHASES = {"publish_boundary", "post_publish"}
 OPERABILITY_ASSURANCE_MODES = {"interactive_runtime", "exact_sha_ci_substitute"}
 CI_SUBSTITUTE_SCOPE = "release_operability_only"
 CI_SUBSTITUTE_DEFERRED_CLAIMS = {
@@ -124,7 +125,8 @@ def _registry_blockers(
     default_phase = registry.get("default_phase")
     if default_phase not in CHECKLIST_PHASES:
         errors.append(
-            "checklist registry default_phase must be pre_publish or post_publish"
+            "checklist registry default_phase must be pre_publish, "
+            "publish_boundary, or post_publish"
         )
 
     registry_items = registry.get("items")
@@ -248,7 +250,9 @@ def _collected_result(
             raise SystemExit(f"human receipt {item_id} requires an actual reviewer")
         if reviewer.strip().lower() in PLACEHOLDER_REVIEWERS:
             raise SystemExit(f"human receipt {item_id} reviewer is a placeholder")
-    elif state != "pass" and not (phase == "post_publish" and state == "pending"):
+    elif state != "pass" and not (
+        phase in CHECKLIST_PENDING_PHASES and state == "pending"
+    ):
         raise SystemExit(f"receipt {item_id} is not release-eligible: {state}")
 
     receipt = item.get("receipt")
@@ -442,7 +446,7 @@ def _build_checklist_record(
         state = result.get("state")
         allowed_states = (
             {"pass", "blocked", "pending"}
-            if phase == "post_publish"
+            if phase in CHECKLIST_PENDING_PHASES
             else {"pass", "blocked"}
         )
         if state not in allowed_states:
@@ -995,7 +999,7 @@ def _checklist_blockers(
         if registered.get("subject", {}).get("available") is False:
             reason = registered["subject"].get("unavailable_reason", "reason missing")
             errors.append(f"checklist subject unavailable for {item_id}: {reason}")
-        if state == "pending" and phase == "post_publish":
+        if state == "pending" and phase in CHECKLIST_PENDING_PHASES:
             continue
         if state != "pass":
             errors.append(f"checklist result blocks release for {item_id}: {state}")
