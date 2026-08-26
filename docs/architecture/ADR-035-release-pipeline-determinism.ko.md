@@ -335,4 +335,13 @@ secret·서명·비공개 검증을 유지보수자 쪽에 둔다. 자동 미러
 
 ## Amendments
 
-아직 없음.
+### 2026-08-25 — 명시적인 게시 경계
+
+초기 D3/D7 레지스트리는 updater detection만 `post_publish`로 재정의했다.
+릴리스 리허설에서 두 순환이 추가로 드러났다. 태그 전 manifest가 자기 자신의 검증
+영수증을 요구했고, signed tag·GitHub Release·최종 asset이 생기기 전에 그 증거를
+요구했다. 이제 레지스트리는 `pre_publish`, `publish_boundary`, `post_publish`을
+구분한다. 승인 전 필수 통과는 첫 단계뿐이며, 나머지 두 단계는 해당 비가역 경계가
+정확한 tag·commit 결속 영수증을 만들 때까지 명시적인 pending으로 남는다. 이는
+라이프사이클 정합성 수정이지 검증 완화가 아니다. 게시 후 claim을 게시 전 증거로
+바꾸지 않는다.

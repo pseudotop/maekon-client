@@ -113,17 +113,29 @@ it cannot synthesize, default, or reuse the four maintainer decisions. The
 collector rejects missing or duplicate IDs, placeholder URIs or reviewers,
 subject/disposition drift, future timestamps, and receipt commit/tag mismatch.
 It emits all 69 results once in canonical order under
-`maekon.release_checklist_collector.v1`. A pre-publish item must pass; only the
-registered post-publish item may remain pending.
+`maekon.release_checklist_collector.v1`. A `pre_publish` item must pass. A
+`publish_boundary` or `post_publish` item remains explicit `pending` until the
+operation that can produce its receipt has occurred.
 
 The validator compares the embedded source and registry hashes to the checked
 out canonical files. Missing, duplicate, unknown, or reordered IDs fail closed.
 An unavailable subject is recorded as such in the registry and blocks release;
 it cannot be converted into a human checkbox or a passing result. Registry v2
-also separates `pre_publish` from `post_publish`; its explicit `default_phase`
-applies to entries without an override. Only a `post_publish` item may
-be `pending` in an accepted pre-tag manifest, and it remains visible in the
-embedded checklist summary. `RC-MANUAL-006` is closed later by the independent
+separates three lifecycle phases; its explicit `default_phase` applies to
+entries without an override:
+
+- `pre_publish`: evidence exists before release authorization and must pass.
+- `publish_boundary`: the receipt is created by manifest validation, signed-tag
+  publication, or the canonical publish script. It may be pending in the
+  bootstrap pre-tag manifest and is recollected after that boundary completes.
+- `post_publish`: the receipt depends on a GitHub Release or published assets.
+  It remains pending until the release workflow and follow-up gates finish.
+
+This split prevents the manifest from demanding proof of a tag or asset before
+either can exist. Pending boundary and post-publish entries remain visible in
+the embedded checklist summary; an accepted pre-tag decision is authorization
+to publish, not evidence that publication is operationally complete.
+`RC-MANUAL-006` is closed later by the independent
 [`post-publish-updater-receipt`](./post-publish-updater-receipt.md) contract; a
 mock updater test does not replace that observation.
 
@@ -165,7 +177,7 @@ The validator rejects release acceptance when any of these are true:
 - checklist coverage is incomplete or ambiguous
 - a pre-publish checklist result is not passing
 - a checklist result is blocked or its registered subject is unavailable
-- a pending checklist result is not registered as `post_publish`
+- a pending checklist result is registered as `pre_publish`
 - the manifest is older than the configured freshness window
 
 Use:

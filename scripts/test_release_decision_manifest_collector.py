@@ -21,6 +21,19 @@ COMMIT_SHA = "0123456789abcdef0123456789abcdef01234567"
 RELEASE_TAG = "v0.0.1-rc.10"
 OBSERVED_AT = "2026-08-24T13:00:00Z"
 NOW = "2026-08-24T13:01:00Z"
+PUBLISH_BOUNDARY_IDS = {
+    "RC-AUTO-012",
+    "RC-MANUAL-008",
+    "RC-SOURCE-012",
+    "RC-SOURCE-013",
+    "RC-SIGNOFF-002",
+    "RC-SIGNOFF-004",
+}
+POST_PUBLISH_IDS = {
+    "RC-MANUAL-006",
+    *(f"RC-ARTIFACT-{index:03d}" for index in range(1, 13)),
+    "RC-SIGNOFF-003",
+}
 
 
 class ReleaseDecisionManifestCollectorTests(unittest.TestCase):
@@ -113,6 +126,46 @@ class ReleaseDecisionManifestCollectorTests(unittest.TestCase):
         )
         self.assertEqual(record["item_count"], 69)
         self.assertEqual(record["collection"]["commit_sha"], COMMIT_SHA)
+
+    def test_registry_separates_authorization_from_irreversible_receipts(self) -> None:
+        phases = {
+            item["id"]: item.get("phase", self.registry["default_phase"])
+            for item in self.registry["items"]
+        }
+
+        self.assertEqual(
+            {item_id for item_id, phase in phases.items() if phase == "publish_boundary"},
+            PUBLISH_BOUNDARY_IDS,
+        )
+        self.assertEqual(
+            {item_id for item_id, phase in phases.items() if phase == "post_publish"},
+            POST_PUBLISH_IDS,
+        )
+        self.assertEqual(
+            phases["RC-SOURCE-012"],
+            "publish_boundary",
+            "a signed-tag verification receipt cannot exist before tag publication",
+        )
+        self.assertEqual(
+            phases["RC-ARTIFACT-001"],
+            "post_publish",
+            "a public GitHub Release receipt cannot exist before publication",
+        )
+
+    def test_rejects_pending_pre_publish_receipt(self) -> None:
+        mutated = copy.deepcopy(self.receipt_index)
+        item = next(entry for entry in mutated["items"] if entry["id"] == "RC-AUTO-001")
+        item["state"] = "pending"
+
+        with self.assertRaisesRegex(SystemExit, "is not release-eligible: pending"):
+            self._collect(receipt_index=mutated)
+
+    def test_accepts_pending_publish_boundary_and_post_publish_receipts(self) -> None:
+        result = self._collect()
+        states = {item["id"]: item["state"] for item in result["items"]}
+
+        for item_id in PUBLISH_BOUNDARY_IDS | POST_PUBLISH_IDS:
+            self.assertEqual(states[item_id], "pending")
 
     def test_rejects_missing_machine_or_evidence_receipt(self) -> None:
         mutated = copy.deepcopy(self.receipt_index)
