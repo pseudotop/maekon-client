@@ -84,22 +84,6 @@ fn passive_tracking_surface_hidden_when_capture_not_effectively_permitted() {
     );
 }
 
-/// #8094: the macOS native recording border visibility decision requires the
-/// effective capture gate (in addition to the indicator toggle, pause, and CUA
-/// safe mode). Pure decision → testable on every platform.
-#[test]
-fn native_recording_border_requires_effective_capture_gate() {
-    use super::native_recording_border_visible;
-    // Effective gate closed → never show, regardless of the other flags.
-    assert!(!native_recording_border_visible(false, true, false, false));
-    // All conditions satisfied → show.
-    assert!(native_recording_border_visible(true, true, false, false));
-    // Indicator hidden / paused / CUA safe mode each independently veto.
-    assert!(!native_recording_border_visible(true, false, false, false));
-    assert!(!native_recording_border_visible(true, true, true, false));
-    assert!(!native_recording_border_visible(true, true, false, true));
-}
-
 #[test]
 fn tracking_border_window_specs_do_not_create_fullscreen_capture_targets() {
     let layout = overlay_monitor_layout_from_parts(0, 0, 1920, 1080, 1.0);
@@ -280,26 +264,114 @@ fn pointer_context_hidden_payload_carries_no_coordinates() {
 #[test]
 fn passive_overlay_window_hides_when_no_surface_is_active() {
     assert_eq!(
-        passive_overlay_window_policy(false, false, false),
+        passive_overlay_window_policy(false, false),
         PassiveOverlayWindowPolicy::Hidden,
     );
     assert_eq!(
-        passive_overlay_window_policy(false, true, true),
+        passive_overlay_window_policy(false, true),
         PassiveOverlayWindowPolicy::Hidden,
         "CUA safe mode must not leave the passive full-screen compositor active",
     );
 }
 
 #[test]
-fn passive_overlay_window_remains_for_coaching_or_effective_capture() {
+fn passive_overlay_window_exists_only_for_visible_coaching() {
     assert_eq!(
-        passive_overlay_window_policy(true, false, true),
+        passive_overlay_window_policy(true, false),
         PassiveOverlayWindowPolicy::FullScreenClickThrough,
         "coaching remains visible even when capture is unavailable",
     );
     assert_eq!(
-        passive_overlay_window_policy(false, true, false),
-        PassiveOverlayWindowPolicy::FullScreenClickThrough,
+        passive_overlay_window_policy(false, false),
+        PassiveOverlayWindowPolicy::Hidden,
+        "no visible coaching must not create a full-screen capture source",
+    );
+    assert_eq!(
+        passive_overlay_window_policy(true, true),
+        PassiveOverlayWindowPolicy::Hidden,
+        "CUA safe mode must suppress even visible coaching",
+    );
+}
+
+#[test]
+fn macos_pointer_context_does_not_create_a_fullscreen_overlay() {
+    assert!(!pointer_context_overlay_supported("macos"));
+    assert!(pointer_context_overlay_supported("windows"));
+    assert!(pointer_context_overlay_supported("linux"));
+}
+
+#[test]
+fn pointer_context_overlay_action_fails_closed_on_macos() {
+    assert_eq!(
+        pointer_context_overlay_action("macos", false),
+        PointerContextOverlayAction::Suppress
+    );
+    assert_eq!(
+        pointer_context_overlay_action("macos", true),
+        PointerContextOverlayAction::Suppress
+    );
+}
+
+#[test]
+fn pointer_context_overlay_action_preserves_non_macos_updates() {
+    assert_eq!(
+        pointer_context_overlay_action("windows", false),
+        PointerContextOverlayAction::EmitOnly
+    );
+    assert_eq!(
+        pointer_context_overlay_action("windows", true),
+        PointerContextOverlayAction::ShowAndEmit
+    );
+    assert_eq!(
+        pointer_context_overlay_action("linux", true),
+        PointerContextOverlayAction::ShowAndEmit
+    );
+}
+
+#[test]
+fn macos_setup_does_not_create_a_display_sized_native_border_window() {
+    let platform_setup = include_str!("../setup/platform.rs");
+    let window_setup = include_str!("../setup/windows.rs");
+    let app_library = include_str!("../lib.rs");
+    assert!(
+        !platform_setup.contains("NativeBorderIndicator::new"),
+        "macOS must not recreate the display-sized NSWindow capture source",
+    );
+    assert!(
+        !app_library.contains("pub mod native_border;"),
+        "the removed native-border runtime must not be registered again",
+    );
+    assert!(
+        !window_setup.contains("overlay.ensure_window()"),
+        "startup must not pre-create a hidden display-sized WebView that ScreenCaptureKit can enumerate",
+    );
+}
+
+#[test]
+fn macos_tracking_panel_fails_closed_when_capture_exclusion_is_unavailable() {
+    let window_source = include_str!("window.rs");
+    assert!(
+        window_source.contains("setSharingType(NSWindowSharingType::None)"),
+        "the tracking panel must opt out of cross-process window capture on macOS",
+    );
+    assert!(
+        window_source.contains("sharingType() != NSWindowSharingType::None"),
+        "the policy must fail closed unless the native readback confirms capture exclusion",
+    );
+    assert!(
+        window_source.contains("configure_tracking_panel_capture_policy(&panel)"),
+        "the native capture policy must be applied to the newly built tracking panel",
+    );
+    assert!(
+        window_source.contains("failed to destroy unsafe tracking panel"),
+        "a panel without enforceable capture exclusion must be destroyed, not shown",
+    );
+    assert_eq!(
+        window_source
+            .matches("setSharingType(NSWindowSharingType::None)")
+            .count(),
+        1,
+        "capture exclusion must stay scoped to the tracking panel; the main window remains recordable",
     );
 }
 

@@ -14,6 +14,8 @@
 #                                `server` = 로그인/서버 전송. `grpc` 는 server 를 함의.
 #   MAEKON_DEV_BUNDLE_SKIP_BUILD 1 이면 빌드를 건너뛰고 기존 산출물을 서명·검증만 한다.
 #   MAEKON_DEV_CODESIGN_IDENTITY 로컬 서명 아이덴티티(미지정 시 ad-hoc `-`).
+#   MAEKON_DEV_QC_FLAVOR         `qc-*`/`tc-*` 격리 프로필. 바이너리에 고정되어
+#                                LaunchServices 실행도 `maekon-dev` 를 재사용하지 않는다.
 #
 # 산출물은 마지막에 `verify-bundle-capabilities.sh` 로 **바이너리를 직접 읽어**
 # 능력을 보고한다. 요청한 feature 와 산출물이 어긋나면 실패한다 — 이 스크립트가
@@ -25,6 +27,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_PATH="$ROOT_DIR/target/debug/bundle/macos/Maekon Dev.app"
 ENTITLEMENTS="$ROOT_DIR/src-tauri/assets/maekon.entitlements"
 SIGN_IDENTITY="${MAEKON_DEV_CODESIGN_IDENTITY:--}"
+QC_FLAVOR="${MAEKON_DEV_QC_FLAVOR:-}"
 # 공백을 쉼표로 정규화해 cargo 가 받는 단일 feature 목록 토큰으로 만든다.
 BUNDLE_FEATURES="$(printf '%s' "${MAEKON_DEV_BUNDLE_FEATURES:-}" | tr -s ' ,' ',,' | sed 's/^,//; s/,$//')"
 
@@ -33,9 +36,28 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+if [[ -n "${MAEKON_BUILD_APP_FLAVOR+x}" ]]; then
+  echo "error: MAEKON_BUILD_APP_FLAVOR is internal; set MAEKON_DEV_QC_FLAVOR instead." >&2
+  exit 1
+fi
+
+if [[ -n "$QC_FLAVOR" ]]; then
+  if [[ "${MAEKON_DEV_BUNDLE_SKIP_BUILD:-0}" == "1" ]]; then
+    echo "error: an isolated QC flavor requires a fresh build; skip-build cannot prove the embedded flavor." >&2
+    exit 1
+  fi
+  "$SCRIPT_DIR/preflight-macos-dev-keychain.sh" --flavor "$QC_FLAVOR"
+fi
+
 if [[ "${MAEKON_DEV_BUNDLE_SKIP_BUILD:-0}" != "1" ]]; then
   (
     cd "$ROOT_DIR/src-tauri"
+    if [[ -n "$QC_FLAVOR" ]]; then
+      export MAEKON_BUILD_APP_FLAVOR="$QC_FLAVOR"
+      echo "Embedding isolated app flavor: $QC_FLAVOR"
+    else
+      unset MAEKON_BUILD_APP_FLAVOR
+    fi
     # `--features` 는 요청이 있을 때만 붙인다. 인자를 붙이지 않는 경로가 곧
     # default(로그인 없음) 빌드이므로, 옵트인은 구조적으로 보장된다.
     if [[ -n "$BUNDLE_FEATURES" ]]; then
@@ -81,6 +103,13 @@ echo "Bundle identifier: $BUNDLE_ID"
 echo "Display name: $DISPLAY_NAME"
 echo "Code signature: ${SIGNATURE_KIND:-unknown}"
 echo "CDHash: ${CDHASH:-unknown}"
+if [[ "${MAEKON_DEV_BUNDLE_SKIP_BUILD:-0}" == "1" ]]; then
+  echo "Embedded app flavor: unverified (existing artifact; not rebuilt)"
+  echo "Keychain service: unverified"
+else
+  echo "Embedded app flavor: ${QC_FLAVOR:-dev}"
+  echo "Keychain service: maekon-${QC_FLAVOR:-dev}"
+fi
 
 # 산출물 자기보고 (#9659). 기대치는 위의 cargo 호출을 구동한 것과 **같은**
 # `$BUNDLE_FEATURES` 에서 유도된다. 누군가 위에서 `--features` 전달을 지우면
@@ -97,6 +126,11 @@ echo "Re-check this artifact any time: ./scripts/verify-bundle-capabilities.sh \
 echo "Launch for native QC: open -n \"$APP_PATH\""
 echo "QC note: quit any installed release Maekon app before launch so macOS does not surface the release identity."
 echo "TCC diagnostic: ./scripts/diagnose-macos-dev-tcc.sh"
+
+if [[ -n "$QC_FLAVOR" ]]; then
+  echo "QC isolation: this build uses maekon-$QC_FLAVOR and cannot reuse maekon-dev secrets."
+  echo "Runtime receipt: MAEKON_DEBUG_RUNTIME_SMOKE_CLI=1 MAEKON_DEBUG_RUNTIME_SMOKE_OUTPUT=/tmp/maekon-qc-runtime.json \"$APP_PATH/Contents/MacOS/maekon\" debug-runtime-smoke"
+fi
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   echo "warning: ad-hoc signing uses a cdhash-based requirement; macOS TCC permissions may need to be granted again after rebuilds." >&2

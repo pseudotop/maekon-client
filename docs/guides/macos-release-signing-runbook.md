@@ -120,11 +120,17 @@ Release Guard also verifies that the current downloadable macOS DMG/PKG bytes ma
 
 ```bash
 file src-tauri/icons/icon.icns
-codesign --verify --deep --strict --verbose=2 dist/Maekon.app
+./scripts/verify-macos-app-bundle.sh dist/Maekon.app
 spctl --assess --type exec --verbose=4 dist/Maekon.app
 spctl --assess --type open --verbose=4 dist/maekon-macos-universal.dmg
 spctl --assess --type install --verbose=4 dist/maekon-macos-universal.pkg
 ```
+
+Release-candidate SemVer strings stay in `CFBundleShortVersionString`. The
+machine build field must be derived with `scripts/macos-bundle-version.py`
+(for example, `0.0.1-rc.10` becomes `0.0.1fc10`) before signing. The verifier
+also rejects signatures whose `Info.plist` is not bound, whose entitlements
+blob cannot be decoded, or whose architecture-specific signatures fail.
 
 ## Related
 

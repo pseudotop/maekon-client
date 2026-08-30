@@ -766,6 +766,19 @@ version = "0.6.0"
 when = "2025-11-16"
 trusted-publisher = "github:JohnTitor/mach2"
 
+[[publisher.moxcms]]
+version = "0.8.1"
+when = "2026-03-07"
+user-id = 266802
+user-login = "awxkee"
+user-name = "Radzivon Bartoshyk"
+
+[[publisher.ndarray]]
+version = "0.17.2"
+when = "2026-01-10"
+user-id = 303992
+user-login = "akern40"
+
 [[publisher.notify]]
 version = "8.1.0"
 when = "2025-07-03"
@@ -913,6 +926,13 @@ user-id = 36629
 user-login = "madsmtm"
 user-name = "Mads Marquart"
 
+[[publisher.objc2-open-directory]]
+version = "0.3.2"
+when = "2025-10-04"
+user-id = 36629
+user-login = "madsmtm"
+user-name = "Mads Marquart"
+
 [[publisher.objc2-security]]
 version = "0.3.2"
 when = "2025-10-04"
@@ -1024,6 +1044,13 @@ when = "2025-08-19"
 user-id = 3618
 user-login = "dtolnay"
 user-name = "David Tolnay"
+
+[[publisher.pxfm]]
+version = "0.1.28"
+when = "2026-03-01"
+user-id = 266802
+user-login = "awxkee"
+user-name = "Radzivon Bartoshyk"
 
 [[publisher.rcgen]]
 version = "0.14.9"
@@ -1438,6 +1465,13 @@ user-id = 131438
 user-login = "wravery"
 user-name = "Bill Avery"
 
+[[publisher.winapi]]
+version = "0.3.9"
+when = "2020-06-26"
+user-id = 63
+user-login = "retep998"
+user-name = "Peter Atashian"
+
 [[publisher.winapi-util]]
 version = "0.1.11"
 when = "2025-09-07"
@@ -1815,6 +1849,13 @@ when = "2026-08-13"
 user-id = 128408
 user-login = "sffc"
 user-name = "Shane F. Carr"
+
+[[publisher.xcb]]
+version = "1.7.0"
+when = "2026-01-03"
+user-id = 1888
+user-login = "rtbo"
+user-name = "Remi Thebault"
 
 [[publisher.yoke]]
 version = "0.8.3"

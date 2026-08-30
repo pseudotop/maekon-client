@@ -20,8 +20,6 @@ use types::{
 };
 
 use std::sync::atomic::Ordering;
-#[cfg(target_os = "macos")]
-use tauri::Manager;
 use tauri::{command, AppHandle, Emitter, Runtime, State};
 use tracing::debug;
 
@@ -167,11 +165,6 @@ pub async fn toggle_capture_pause(
     }
     crate::magic_overlay::sync_passive_tracking_surface(&app, new_paused, indicator_visible);
 
-    #[cfg(target_os = "macos")]
-    if let Some(border) = app.try_state::<crate::native_border::NativeBorderState>() {
-        border.0.set_paused(new_paused);
-    }
-
     // Privacy: re-gate any running VAD listener at once so the Privacy page /
     // tracking-panel pause button tears down the mic immediately (not after the
     // ≤2 s backstop tick), AND remember/auto-rearm VAD across the pause toggle.
@@ -199,24 +192,6 @@ pub async fn set_indicator_visible(
         debug!("sync_tray_state failed: {e}");
     }
     crate::magic_overlay::sync_passive_tracking_surface(&app, paused, visible);
-
-    #[cfg(target_os = "macos")]
-    if let Some(border) = app.try_state::<crate::native_border::NativeBorderState>() {
-        // #8094: the native recording border must reflect the EFFECTIVE capture
-        // gate, not just the raw indicator toggle — a fresh no-consent profile
-        // must not render it even with `visible == true`.
-        let effective = crate::magic_overlay::effective_capture_permitted(&state, paused);
-        if crate::magic_overlay::native_recording_border_visible(
-            effective,
-            visible,
-            paused,
-            crate::app_runtime_launch::cua_safe_mode_enabled(),
-        ) {
-            border.0.show();
-        } else {
-            border.0.hide();
-        }
-    }
 
     Ok(())
 }

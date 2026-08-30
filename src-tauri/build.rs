@@ -153,6 +153,26 @@ const APP_COMMANDS: &[&str] = &[
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-env-changed=MAEKON_BUILD_APP_FLAVOR");
+    if let Ok(flavor) = std::env::var("MAEKON_BUILD_APP_FLAVOR") {
+        let suffix = flavor
+            .strip_prefix("qc-")
+            .or_else(|| flavor.strip_prefix("tc-"));
+        let valid = suffix.is_some_and(|suffix| {
+            (3..=64).contains(&suffix.len())
+                && suffix
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        });
+        if !valid {
+            return Err(format!(
+                "MAEKON_BUILD_APP_FLAVOR must be an isolated qc-* or tc-* flavor, got: {flavor}"
+            )
+            .into());
+        }
+        println!("cargo:rustc-env=MAEKON_BUILD_APP_FLAVOR={flavor}");
+    }
+
     let build_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     println!("cargo:rustc-env=BUILD_DATE={build_date}");
 

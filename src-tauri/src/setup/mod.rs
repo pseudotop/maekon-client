@@ -379,6 +379,11 @@ mod tests {
                 "prod CSP img-src must allow local frame image origin {origin}"
             );
         }
+
+        assert!(
+            img_src.contains(&"blob:".to_string()),
+            "prod CSP img-src must allow authenticated frame blob previews"
+        );
     }
 
     #[test]
@@ -393,6 +398,10 @@ mod tests {
         assert!(
             csp_directive_tokens(&dev_csp, "script-src").contains(&"'unsafe-eval'".to_string()),
             "dev CSP may allow unsafe-eval for Vite/dev tooling only"
+        );
+        assert!(
+            csp_directive_tokens(&dev_csp, "img-src").contains(&"blob:".to_string()),
+            "dev CSP img-src must allow authenticated frame blob previews"
         );
     }
 

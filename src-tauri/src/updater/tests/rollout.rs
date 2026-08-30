@@ -248,10 +248,10 @@ fn parse_rollout_malformed_fails_closed() {
 async fn update_check_respects_rollout_exclusion() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"tag_name":"v99.0.0","name":"Excluded","body":"<!-- rollout:0 -->","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}"#)
+        .with_body(r#"[{"tag_name":"v99.0.0","name":"Excluded","body":"<!-- rollout:0 -->","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}]"#)
         .create_async()
         .await;
     let result = Updater::new(test_config())
@@ -268,10 +268,10 @@ async fn update_check_respects_rollout_exclusion() {
 async fn update_check_without_installation_id_is_excluded() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"tag_name":"v99.0.0","name":"100%","body":"new features","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}"#)
+        .with_body(r#"[{"tag_name":"v99.0.0","name":"100%","body":"new features","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}]"#)
         .create_async()
         .await;
     let mut config = test_config();

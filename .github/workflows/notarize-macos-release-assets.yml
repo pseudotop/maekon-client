@@ -189,6 +189,11 @@ jobs:
             -nobrowse \
             -readonly \
             -mountpoint "$DMG_MOUNTPOINT" >/dev/null
+          VERSION="${RELEASE_TAG#v}"
+          ./scripts/verify-macos-app-bundle.sh \
+            --expected-short-version "$VERSION" \
+            --expected-build-version "$(python3 scripts/macos-bundle-version.py "$VERSION")" \
+            "$DMG_MOUNTPOINT/Maekon.app"
           spctl --assess --type execute --verbose=4 "$DMG_MOUNTPOINT/Maekon.app"
           cleanup_dmg_mount
           trap - EXIT

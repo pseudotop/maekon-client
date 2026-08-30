@@ -40,6 +40,63 @@ fn write_self_healthy(dir: &Path, version: &str) {
 }
 
 #[test]
+fn macos_app_executable_uses_mutable_data_dir_for_health_state() {
+    let root = tempdir().unwrap();
+    let app_bundle = root.path().join("Maekon Dev.app");
+    let current_exe = app_bundle.join("Contents/MacOS/maekon");
+    let app_data_dir = root.path().join("profile/data");
+
+    let state_dir = resolve_health_state_dir(&current_exe, Some(&app_data_dir)).unwrap();
+
+    assert_eq!(state_dir, app_data_dir.join(HEALTH_STATE_DIR_NAME));
+    assert!(
+        !state_dir.starts_with(&app_bundle),
+        "mutable updater state must never be placed inside a signed app bundle"
+    );
+}
+
+#[test]
+fn macos_app_executable_without_data_dir_fails_closed() {
+    let current_exe = Path::new("/Applications/Maekon.app/Contents/MacOS/maekon");
+    let error = resolve_health_state_dir(current_exe, None).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
+fn loose_binary_keeps_adjacent_health_state_layout() {
+    let current_exe = Path::new("/opt/maekon/bin/maekon");
+    let state_dir = resolve_health_state_dir(current_exe, None).unwrap();
+
+    assert_eq!(state_dir, Path::new("/opt/maekon/bin"));
+}
+
+#[test]
+fn macos_app_detector_rejects_near_miss_directory_layouts() {
+    assert!(!is_macos_app_executable(Path::new(
+        "/Applications/Maekon.app/NotContents/MacOS/maekon"
+    )));
+    assert!(!is_macos_app_executable(Path::new(
+        "/Applications/Maekon.app/Contents/NotMacOS/maekon"
+    )));
+}
+
+#[test]
+fn health_probe_uses_versioned_state_file_names() {
+    let dir = tempdir().unwrap();
+    let probe = HealthProbe::new(dir.path().to_path_buf(), "0.5.0".into());
+
+    assert_eq!(
+        probe.legacy_boot_count_path(),
+        dir.path().join(".boot_count_0.5.0")
+    );
+    assert_eq!(
+        probe.self_healthy_path(),
+        dir.path().join(".self_healthy_0.5.0")
+    );
+}
+
+#[test]
 fn check_startup_no_pending_install_is_normal() {
     let dir = tempdir().unwrap();
     let probe = HealthProbe::new(dir.path().to_path_buf(), "0.5.0".into());
@@ -192,6 +249,51 @@ async fn spawn_healthy_writer_sets_marker_after_injected_short_delay() {
     assert!(backup.exists(), "canonical backup should remain");
 }
 
+#[test]
+fn healthy_writer_cleans_executable_backups_when_state_is_elsewhere() {
+    let state_dir = tempdir().unwrap();
+    let install_dir = tempdir().unwrap();
+    let keep_backup = install_dir.path().join("maekon.rollback.keep");
+    let stale_backup = install_dir.path().join("maekon.rollback.stale");
+    std::fs::write(&keep_backup, b"keep").unwrap();
+    std::fs::write(&stale_backup, b"stale").unwrap();
+    write_pending(
+        state_dir.path(),
+        "0.5.0",
+        &Utc::now().to_rfc3339(),
+        "0.4.39",
+        &keep_backup,
+    );
+
+    write_self_healthy_and_cleanup(state_dir.path(), install_dir.path(), "0.5.0").unwrap();
+
+    assert!(
+        keep_backup.exists(),
+        "canonical rollback backup must remain"
+    );
+    assert!(
+        !stale_backup.exists(),
+        "stale sibling backup must be removed"
+    );
+    assert!(state_dir.path().join(".self_healthy_0.5.0").exists());
+}
+
+#[test]
+fn healthy_writer_cleans_stale_backups_without_pending_marker() {
+    let state_dir = tempdir().unwrap();
+    let install_dir = tempdir().unwrap();
+    let stale_backup = install_dir.path().join("maekon.rollback.stale");
+    std::fs::write(&stale_backup, b"stale").unwrap();
+
+    write_self_healthy_and_cleanup(state_dir.path(), install_dir.path(), "0.5.0").unwrap();
+
+    assert!(state_dir.path().join(".self_healthy_0.5.0").exists());
+    assert!(
+        !stale_backup.exists(),
+        "historical backup cleanup must remain active when probe state moves"
+    );
+}
+
 /// Regression test for the v0.4.40-rc.1 macOS launch panic
 /// ("there is no reactor running") when the Tauri `setup` callback
 /// invokes `spawn_healthy_writer` synchronously before the tokio runtime
@@ -257,7 +359,7 @@ fn healthy_writer_cleanup_sweeps_foreign_version_state_files() {
 
     std::fs::write(dir.path().join("unrelated.txt"), "keep me").unwrap();
 
-    write_self_healthy_and_cleanup(dir.path(), current_version).unwrap();
+    write_self_healthy_and_cleanup(dir.path(), dir.path(), current_version).unwrap();
 
     assert!(dir.path().join(".self_healthy_0.5.0").exists());
     assert!(!dir.path().join(".install_pending_0.5.0").exists());

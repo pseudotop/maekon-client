@@ -21,4 +21,9 @@ allow-expect-in-tests = true
 # a required status check on public main, so every open PR was blocked.
 #
 # Keep this in step with `rust-version` in the workspace Cargo.toml.
-msrv = "1.88.0"
+# That sentence did not survive contact with reality: #11347 raised
+# `rust-version` to 1.95.0 the very next day (2026-08-22) and this line did not
+# follow, so every clippy run warned "MSRV in clippy.toml and Cargo.toml
+# differ" for six days. The equality is now machine-checked
+# (tests/scripts/test_maekon_msrv_alignment.py) instead of comment-enforced.
+msrv = "1.95.0"

@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<WixLocalization Culture='en-US' Codepage='1252'
+    xmlns='http://schemas.microsoft.com/wix/2006/localization'>
+    <String Id='PackageDescription'>Maekon Local-First Work Agent</String>
+    <String Id='DowngradeErrorMessage'>A newer version of [ProductName] is already installed. Setup will now exit.</String>
+    <String Id='DiskPrompt'>Maekon Installation</String>
+    <String Id='ShortcutDescription'>Local-First Work Agent</String>
+    <String Id='MainProgramDescription'>Maekon Local-First Work Agent.</String>
+    <String Id='ShortcutsFeatureTitle'>Shortcuts</String>
+</WixLocalization>

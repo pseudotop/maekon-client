@@ -7,8 +7,11 @@ pub(crate) fn prepare(app: &App) {
         crate::app_runtime_launch::cua_safe_mode_enabled(),
     );
 
-    // CUA-safe sessions keep only the main WebView alive at startup. Auxiliary
-    // surfaces are created lazily when a test explicitly requests them.
+    // CUA-safe sessions keep only the main WebView alive at startup. Normal
+    // sessions may show the bounded tracking panel, but the display-sized
+    // MagicOverlay must remain absent until actual overlay content requests it.
+    // A hidden pre-created WebView is still enumerated by ScreenCaptureKit on
+    // macOS and selecting it produces a full-screen black frame (#11647).
     if precreate_auxiliary_webviews {
         if let Some(state) = app_handle.try_state::<crate::runtime_state::AppState>() {
             let indicator_visible = state
@@ -18,17 +21,6 @@ pub(crate) fn prepare(app: &App) {
                 crate::magic_overlay::set_tracking_panel_visible(&app_handle, indicator_visible)
             {
                 debug!("tracking panel startup reconcile failed: {e}");
-            }
-        }
-
-        // Pre-create MagicOverlay for normal sessions so asynchronous overlay
-        // events have a ready listener. CUA-safe sessions create it only for
-        // explicit overlay checks and tear it down again when idle.
-        if let Some(state) = app_handle.try_state::<crate::runtime_state::AppState>() {
-            if let Some(ref overlay) = state.magic_overlay {
-                if let Err(e) = overlay.ensure_window() {
-                    debug!("ensure_window failed: {e}");
-                }
             }
         }
     }

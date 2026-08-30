@@ -84,12 +84,6 @@ fn register_capture_shortcut(app: &App) {
                             // VAD across the pause toggle. Shared helper so every
                             // capture-pause site routes through the same path.
                             crate::commands::audio::on_capture_pause_toggled(&handle, new_paused);
-                            #[cfg(target_os = "macos")]
-                            if let Some(border) =
-                                handle.try_state::<crate::native_border::NativeBorderState>()
-                            {
-                                border.0.set_paused(new_paused);
-                            }
                         }
                     });
                 }

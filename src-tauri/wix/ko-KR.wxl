@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<WixLocalization Culture='ko-KR' Codepage='949'
+    xmlns='http://schemas.microsoft.com/wix/2006/localization'>
+    <String Id='PackageDescription'>Maekon 로컬 우선 업무 에이전트</String>
+    <String Id='DowngradeErrorMessage'>[ProductName]의 최신 버전이 이미 설치되어 있습니다. 설치를 종료합니다.</String>
+    <String Id='DiskPrompt'>Maekon 설치</String>
+    <String Id='ShortcutDescription'>로컬 우선 업무 에이전트</String>
+    <String Id='MainProgramDescription'>Maekon 로컬 우선 업무 에이전트입니다.</String>
+    <String Id='ShortcutsFeatureTitle'>바로 가기</String>
+</WixLocalization>

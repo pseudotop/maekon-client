@@ -194,11 +194,11 @@ fn should_check_returns_true_when_no_last_check() {
 async fn check_for_updates_with_mock_api_up_to_date() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(format!(
-            r#"{{"tag_name":"v{}","name":"Current","body":"","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
+            r#"[{{"tag_name":"v{}","name":"Current","body":"","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}]"#,
             CURRENT_VERSION
         ))
         .create_async()
@@ -229,11 +229,11 @@ async fn check_for_updates_with_mock_api_available() {
     )))]
     let asset_name = "maekon-unknown.tar.gz";
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(format!(
-            r#"{{"tag_name":"v{}","name":"New","body":"<!-- rollout:100 -->","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
+            r#"[{{"tag_name":"v{}","name":"New","body":"<!-- rollout:100 -->","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}]"#,
             newer_version, asset_name, asset_name
         ))
         .create_async()
@@ -256,10 +256,10 @@ async fn check_for_updates_with_mock_api_available() {
 }
 
 #[tokio::test]
-async fn check_for_updates_api_error() {
+async fn release_list_404_stays_error() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(404)
         .with_body("Not Found")
         .create_async()
@@ -268,31 +268,24 @@ async fn check_for_updates_api_error() {
     let result = updater.check_for_updates_with_base_url(&server.url()).await;
     mock.assert_async().await;
 
-    // #11332: a 404 from `/releases/latest` is not a failure — that endpoint
-    // excludes prereleases, so a repository that has only shipped release
-    // candidates answers 404 to every stable-channel check. This test used to
-    // assert ParseResponse here, which encoded the behaviour that left the
-    // DEFAULT configuration in a permanent error state.
-    match result {
-        Err(UpdateError::NoPublishedRelease { channel }) => {
-            assert_eq!(
-                channel, "stable",
-                "channel name should identify the empty channel"
-            );
-        }
-        other => panic!("expected NoPublishedRelease, got {other:?}"),
-    }
+    // #11616: RC builds resolve the default channel to pre-release and use the
+    // all-releases endpoint. GitHub represents an empty list as 200 with an
+    // empty array, so a 404 here must remain a hard error.
+    assert!(
+        matches!(result, Err(UpdateError::ParseResponse(_))),
+        "a 404 from the releases-list endpoint must stay a hard error, got {result:?}"
+    );
 }
 
 #[tokio::test]
-async fn prerelease_filtered_when_disabled() {
+async fn stable_release_from_list_is_supported_for_rc_build() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(format!(
-            r#"{{"tag_name":"v{}","name":"Stable","body":"","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
+            r#"[{{"tag_name":"v{}","name":"Stable","body":"","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}]"#,
             CURRENT_VERSION
         ))
         .create_async()
@@ -300,6 +293,10 @@ async fn prerelease_filtered_when_disabled() {
     let mut config = test_config();
     config.include_prerelease = false;
     let updater = Updater::new(config);
+    assert_eq!(
+        updater.config.effective_channel(),
+        UpdateChannel::PreRelease
+    );
     let result = updater.check_for_updates_with_base_url(&server.url()).await;
     mock.assert_async().await;
     assert!(matches!(result, Ok(UpdateCheckResult::UpToDate { .. })));
@@ -371,11 +368,11 @@ async fn check_for_updates_rejects_release_below_min_allowed_version() {
     )))]
     let asset_name = "maekon-unknown.tar.gz";
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(format!(
-            r#"{{"tag_name":"v99.0.0","name":"New","body":"<!-- rollout:100 -->","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
+            r#"[{{"tag_name":"v99.0.0","name":"New","body":"<!-- rollout:100 -->","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}]"#,
             asset_name, asset_name
         ))
         .create_async()
@@ -396,11 +393,11 @@ async fn check_for_updates_rejects_release_below_min_allowed_version() {
 async fn check_for_updates_holds_release_above_max_allowed_version() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
-            r#"{"tag_name":"v99.0.0","name":"New","body":"","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}"#,
+            r#"[{"tag_name":"v99.0.0","name":"New","body":"","prerelease":false,"assets":[],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}]"#,
         )
         .create_async()
         .await;
@@ -436,11 +433,11 @@ async fn check_for_updates_offers_release_within_max_allowed_version() {
     )))]
     let asset_name = "maekon-unknown.tar.gz";
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(format!(
-            r#"{{"tag_name":"v99.0.0","name":"New","body":"<!-- rollout:100 -->","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}"#,
+            r#"[{{"tag_name":"v99.0.0","name":"New","body":"<!-- rollout:100 -->","prerelease":false,"assets":[{{"name":"{}","browser_download_url":"https://example.com/{}","size":10000,"content_type":"application/octet-stream"}}],"html_url":"https://github.com/test","published_at":"2024-01-01T00:00:00Z"}}]"#,
             asset_name, asset_name
         ))
         .create_async()
@@ -456,14 +453,14 @@ async fn check_for_updates_offers_release_within_max_allowed_version() {
     );
 }
 
-// #11332: the negative half of the 404 change. Without this, the test above
-// would pass just as well if EVERY status collapsed into NoPublishedRelease —
-// which would hide a real outage behind an idle-looking updater.
+// #11616: negative control for the releases-list error contract. Without this,
+// the 404 test could pass even if every non-success status were handled
+// identically, hiding an upstream outage behind incomplete error coverage.
 #[tokio::test]
-async fn other_stable_channel_failures_stay_errors() {
+async fn other_release_list_failures_stay_errors() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/releases/latest")
+        .mock("GET", "/repos/test-owner/test-repo/releases?per_page=1")
         .with_status(500)
         .with_body("upstream exploded")
         .create_async()

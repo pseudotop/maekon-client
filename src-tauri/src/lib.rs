@@ -96,7 +96,6 @@ pub mod macos_integration;
 pub mod magic_overlay;
 pub mod magic_overlay_driver;
 pub mod memory_profiler;
-pub mod native_border;
 pub mod notification_manager;
 pub mod oauth_provider_registry;
 pub mod platform_accessibility;
@@ -131,6 +130,7 @@ pub mod setup;
 pub mod shortcut_registry;
 pub mod skill_loader;
 pub mod skill_pack_resolver;
+mod startup_logging;
 // Cfg-free formatting for a startup failure the user can act on (#10985), so
 // the message is unit-tested here rather than only observable by crashing.
 pub mod startup_failure;
@@ -181,6 +181,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
+#[cfg(debug_assertions)]
+mod runtime_flavor;
 
 // Re-export all debug-only symbols from the `cli` module so they can be referenced
 // directly in the current crate namespace.
@@ -192,16 +194,6 @@ const OFFLINE_MODE_ENV: &str = "MAEKON_OFFLINE_MODE";
 const DEBUG_RUNTIME_SMOKE_ENV: &str = "MAEKON_DEBUG_RUNTIME_SMOKE_CLI";
 #[cfg(debug_assertions)]
 const DEBUG_RUNTIME_SMOKE_OUTPUT_ENV: &str = "MAEKON_DEBUG_RUNTIME_SMOKE_OUTPUT";
-
-fn configure_runtime_flavor() {
-    #[cfg(debug_assertions)]
-    {
-        // Keep local debug clients from opening the release install's data directory.
-        if std::env::var_os("MAEKON_APP_FLAVOR").is_none() {
-            std::env::set_var("MAEKON_APP_FLAVOR", "dev");
-        }
-    }
-}
 
 pub(crate) fn offline_mode_enabled() -> bool {
     let env_value = std::env::var(OFFLINE_MODE_ENV).ok();
@@ -605,20 +597,12 @@ fn run_debug_runtime_smoke_cli_command(app_handle: &tauri::AppHandle) -> i32 {
     }
 }
 
-/// Wrapper for `tracing_appender::non_blocking::WorkerGuard`.
-///
-/// Stored as Tauri managed state so it is dropped (and flushed) when the
-/// app exits rather than leaked.  The inner field is intentionally never
-/// read — its purpose is to keep the guard alive for the duration of the
-/// process.
-#[allow(dead_code)]
-pub(crate) struct LogWorkerGuard(tracing_appender::non_blocking::WorkerGuard);
-
 /// Composition-root entry point invoked by the thin `src/main.rs` binary
 /// shim. Builds the Tauri app (DI wiring, IPC command registration, tray,
 /// window lifecycle) and runs it to completion.
 pub fn run() {
-    configure_runtime_flavor();
+    #[cfg(debug_assertions)]
+    runtime_flavor::configure();
 
     // `--version` / `-V` CLI handler. Build date and git SHA are embedded by
     // build.rs at compile time, so this exits before starting the webview.
@@ -846,30 +830,31 @@ pub fn run() {
         EnvFilter::new("maekon=info,maekon_app=info,maekon_core=info,maekon_monitor=info,maekon_vision=info,maekon_storage=info,maekon_network=info,maekon_suggestion=info")
     });
 
-    // Console layer — writes to stderr (same as previous fmt() subscriber).
     let console_layer = tracing_subscriber::fmt::layer().with_ansi(true);
 
-    // File layer — daily rolling log files in {data_dir}/logs/.
-    // WorkerGuard MUST outlive the subscriber; we store it in Tauri state.
     let log_dir = maekon_core::config_manager::ConfigManager::data_dir()
         .map(|d| d.join("logs"))
         .unwrap_or_else(|_| std::path::PathBuf::from("logs"));
 
-    std::fs::create_dir_all(&log_dir).ok();
-
-    // Cleanup old log files before creating new appender
     let deleted = log_retention::cleanup_old_logs(&log_dir, log_retention::DEFAULT_MAX_AGE_DAYS);
     if deleted > 0 {
         // Cannot use tracing yet — subscriber not initialized.
         eprintln!("[maekon] startup log cleanup: deleted {deleted} old log file(s)");
     }
 
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "maekon.log");
-    let (non_blocking, worker_guard) = tracing_appender::non_blocking(file_appender);
-
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_ansi(false)
-        .with_writer(non_blocking);
+    let (file_layer, worker_guard, file_logging_error) =
+        match startup_logging::try_file_log_writer(&log_dir) {
+            Ok((non_blocking, worker_guard)) => (
+                Some(
+                    tracing_subscriber::fmt::layer()
+                        .with_ansi(false)
+                        .with_writer(non_blocking),
+                ),
+                Some(worker_guard),
+                None,
+            ),
+            Err(error) => (None, None, Some(error)),
+        };
 
     // Telemetry layer + handle. ConfigManager does not exist yet at this
     // point (it is built during bootstrap below), so we seed with an explicit
@@ -899,7 +884,14 @@ pub fn run() {
         .with(file_layer)
         .init();
 
-    info!(log_dir = %log_dir.display(), "persistent file logging initialized");
+    if let Some(error) = file_logging_error {
+        warn!(
+            error = %error,
+            "persistent file logging unavailable; continuing without file logging"
+        );
+    } else {
+        info!(log_dir = %log_dir.display(), "persistent file logging initialized");
+    }
 
     // CLI pre-dispatch: handle "auth" subcommand before Tauri boot
     let args: Vec<String> = std::env::args().collect();
@@ -1011,7 +1003,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .manage(LogWorkerGuard(worker_guard))
+        .manage(startup_logging::LogWorkerGuard(worker_guard))
         .manage(telemetry_handle)
         // OOS-TBD-N15-UI-EXPOSURE (2026-05-05): TokenManagerState used by the
         // logout_all_sessions Tauri command. Registered ONCE here as an empty

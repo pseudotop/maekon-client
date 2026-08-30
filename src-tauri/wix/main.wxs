@@ -1,34 +1,40 @@
-<?xml version='1.0' encoding='windows-1252'?>
+<?xml version='1.0' encoding='utf-8'?>
 <!--
   Maekon Windows Installer (WiX v3)
   사용: cargo wix (cargo-wix 설치 필요)
 -->
+<?ifndef InstallerLanguage ?>
+    <?define InstallerLanguage = "1033" ?>
+<?endif ?>
+<?ifndef InstallerCodepage ?>
+    <?define InstallerCodepage = "1252" ?>
+<?endif ?>
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
     <Product
         Id='*'
         Name='Maekon'
         UpgradeCode='E8F3D2A1-5B4C-4D6E-9F8A-1C2B3D4E5F6A'
         Manufacturer='Maekon Team'
-        Language='1033'
-        Codepage='1252'
+        Language='$(var.InstallerLanguage)'
+        Codepage='$(var.InstallerCodepage)'
         Version='$(var.Version)'>
 
         <Package Id='*'
             Keywords='Installer'
-            Description='Maekon Local-First Work Agent'
+            Description='!(loc.PackageDescription)'
             Manufacturer='Maekon Team'
             InstallerVersion='450'
-            Languages='1033'
+            Languages='$(var.InstallerLanguage)'
             Compressed='yes'
             InstallScope='perUser'
-            SummaryCodepage='1252'/>
+            SummaryCodepage='$(var.InstallerCodepage)'/>
 
         <MajorUpgrade
             Schedule='afterInstallInitialize'
-            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+            DowngradeErrorMessage='!(loc.DowngradeErrorMessage)'/>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
-        <Property Id='DiskPrompt' Value='Maekon Installation'/>
+        <Property Id='DiskPrompt' Value='!(loc.DiskPrompt)'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='LocalAppDataFolder' Name='AppData'>
@@ -70,7 +76,7 @@
                     <Component Id='ApplicationShortcut' Guid='*'>
                         <Shortcut Id='ApplicationStartMenuShortcut'
                             Name='Maekon'
-                            Description='Local-First Work Agent'
+                            Description='!(loc.ShortcutDescription)'
                             Target='[APPLICATIONFOLDER]maekon.exe'
                             WorkingDirectory='APPLICATIONFOLDER'/>
                         <RemoveFolder Id='CleanUpShortCut' On='uninstall'/>
@@ -88,7 +94,7 @@
         <Feature
             Id='MainProgram'
             Title='Maekon'
-            Description='Maekon Local-First Work Agent.'
+            Description='!(loc.MainProgramDescription)'
             Level='1'
             ConfigurableDirectory='APPLICATIONFOLDER'
             AllowAdvertise='no'
@@ -99,7 +105,7 @@
 
             <Feature
                 Id='ShortcutsFeature'
-                Title='Shortcuts'
+                Title='!(loc.ShortcutsFeatureTitle)'
                 Level='1'>
                 <ComponentRef Id='ApplicationShortcut'/>
             </Feature>
@@ -111,8 +117,44 @@
         <Property Id='ARPPRODUCTICON' Value='ProductIcon'/>
         <Icon Id='ProductIcon' SourceFile='icons\icon.ico'/>
 
-        <UI>
-            <UIRef Id='WixUI_FeatureTree'/>
+        <!--
+          WiXUI_FeatureTree의 공식 대화상자 흐름을 유지하되 Windows 10/11의
+          기본 UI 글꼴인 Segoe UI를 사용한다. WixUI_FeatureTree를 UIRef로
+          참조하면 확장 라이브러리의 Tahoma 8pt TextStyle이 고정된다.
+        -->
+        <UI Id='MaekonUI_FeatureTree'>
+            <TextStyle Id='WixUI_Font_Normal' FaceName='Segoe UI' Size='9'/>
+            <TextStyle Id='WixUI_Font_Bigger' FaceName='Segoe UI' Size='12'/>
+            <TextStyle Id='WixUI_Font_Title' FaceName='Segoe UI' Size='10' Bold='yes'/>
+
+            <Property Id='DefaultUIFont' Value='WixUI_Font_Normal'/>
+            <Property Id='WixUI_Mode' Value='FeatureTree'/>
+            <DialogRef Id='ErrorDlg'/>
+            <DialogRef Id='FatalError'/>
+            <DialogRef Id='FilesInUse'/>
+            <DialogRef Id='MsiRMFilesInUse'/>
+            <DialogRef Id='PrepareDlg'/>
+            <DialogRef Id='ProgressDlg'/>
+            <DialogRef Id='ResumeDlg'/>
+            <DialogRef Id='UserExit'/>
+
+            <Publish Dialog='ExitDialog' Control='Finish' Event='EndDialog' Value='Return' Order='999'>1</Publish>
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='LicenseAgreementDlg'>NOT Installed</Publish>
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='VerifyReadyDlg'>Installed AND PATCH</Publish>
+            <Publish Dialog='LicenseAgreementDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg'>1</Publish>
+            <Publish Dialog='LicenseAgreementDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg'>LicenseAccepted = "1"</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='MaintenanceTypeDlg' Order='1'>Installed</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='LicenseAgreementDlg' Order='2'>NOT Installed</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Next' Event='NewDialog' Value='VerifyReadyDlg'>1</Publish>
+            <Publish Dialog='VerifyReadyDlg' Control='Back' Event='NewDialog' Value='CustomizeDlg' Order='1'>NOT Installed OR WixUI_InstallMode = "Change"</Publish>
+            <Publish Dialog='VerifyReadyDlg' Control='Back' Event='NewDialog' Value='MaintenanceTypeDlg' Order='2'>Installed AND NOT PATCH</Publish>
+            <Publish Dialog='VerifyReadyDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='3'>Installed AND PATCH</Publish>
+            <Publish Dialog='MaintenanceWelcomeDlg' Control='Next' Event='NewDialog' Value='MaintenanceTypeDlg'>1</Publish>
+            <Publish Dialog='MaintenanceTypeDlg' Control='ChangeButton' Event='NewDialog' Value='CustomizeDlg'>1</Publish>
+            <Publish Dialog='MaintenanceTypeDlg' Control='RepairButton' Event='NewDialog' Value='VerifyReadyDlg'>1</Publish>
+            <Publish Dialog='MaintenanceTypeDlg' Control='RemoveButton' Event='NewDialog' Value='VerifyReadyDlg'>1</Publish>
+            <Publish Dialog='MaintenanceTypeDlg' Control='Back' Event='NewDialog' Value='MaintenanceWelcomeDlg'>1</Publish>
+            <UIRef Id='WixUI_Common'/>
         </UI>
 
         <WixVariable Id='WixUILicenseRtf' Value='wix\license.rtf'/>

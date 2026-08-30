@@ -236,6 +236,22 @@ Required for public RC release:
 - `UPDATE_SIGNING_PRIVATE_KEY_B64`
 - `MAEKON_UPDATE_PUBLIC_KEY`
 
+Prepared for Windows Authenticode activation, but intentionally unset until a legal-entity
+Public Trust identity and certificate profile exist:
+
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+- `AZURE_CLIENT_ID`
+- `WINDOWS_ARTIFACT_SIGNING_ENDPOINT`
+- `WINDOWS_ARTIFACT_SIGNING_ACCOUNT`
+- `WINDOWS_ARTIFACT_SIGNING_PROFILE`
+
+These are OIDC/resource identifiers, not a PFX or private key. After the non-publishing
+rehearsal in `docs/security/windows-authenticode-runbook.md` passes, a reviewed activation PR
+must add the protected signing job and set the policy's exact `publisher_subject` and
+`enforcement_state: active` together. The release environment must never store a Windows signing
+private key or certificate password.
+
 Required before stable promotion:
 
 - `MAEKON_RELEASE_APP_CLIENT_ID`
