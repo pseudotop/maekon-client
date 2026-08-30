@@ -1235,6 +1235,12 @@ Build-script helper for defining cfg aliases. Pure-Rust. No unsafe code.
 No active RustSec advisories.
 """
 
+[[audits.chacha20]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.10.0 -> 0.10.2"
+notes = "Issue #11655 delta audit. Reviewed the 0.10.0 -> 0.10.2 source delta: the SSE2 counter-state refactor replaces an SSE4.1-only extraction with a bounded 16-byte state-row store; the NEON backend expands bounded parallel block processing from four to eight blocks with matching arrays and counter progression; RNG word-position and public alias changes add no ambient filesystem, network, or process capabilities. Upstream all-feature unit, KAT, RNG, and documentation tests passed on aarch64 macOS. The x86_64 Apple target was not installed locally, so x86 execution remains covered by CI rather than this local receipt."
+
 [[audits.chrono]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -2594,6 +2600,15 @@ Neither finding is reachable through untrusted input, which is why this audit st
 certifies safe-to-deploy — but both are genuine UB if the NULL case occurs, and
 both deserve an upstream report. A reviewer who reads safe-to-deploy as "no UB
 reachable under any system state" should overrule this and keep the exemption.
+
+Upstream status (checked 2026-08-27, enigo-rs/enigo main, #11511): both findings
+are already fixed on main by a rewrite that post-dates 0.6.1. Finding 1: the
+TISCopy* path is now `layout_from_source`, which None-returns on a NULL input
+source, real-checks `layout_data.is_null()` on every level, and only CFReleases
+a non-null pointer. Finding 2: `ns_event_cg_event` is now a safe fn returning
+`Option<Retained<CGEvent>>` via the objc2 binding's `CGEvent()`. No upstream
+report needed; input for the next-version audit — when bumping past 0.6.1,
+verify these two shapes landed in the released tarball and drop this paragraph.
 
 ## Windows (8 sites)
 
@@ -5309,6 +5324,14 @@ Proc-macro crate companion to num_enum. Compile-time only. No unsafe code.
 No active RustSec advisories.
 """
 
+[[audits.numkong]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "7.6.0"
+notes = """
+AUDIT SCOPE: full crate version; all targets and features reviewed. #11509 VD-05.7a full audit — numkong 7.6.0. License: Apache-2.0. The crate is packaged from ashvardanian/NumKong itself (path_in_vcs empty): all 309 packaged files are byte-identical to the repository at commit 48cbd21d (0 differing; 260 repo-only files trimmed; positive control: a 1-byte mutation is flagged), pinning package==repository — the C kernel surface (c/ 6,848 + include/ 146,135 lines) is the upstream project's own code at that commit. Rust surface (28,248 lines, 537 unsafe tokens) was classified mechanically and then read by class: 224 sites are guarded kernel dispatches (slice-derived ptr+len passed to nk_* extern kernels after length/shape equality checks, or trait impls forwarding under written # Safety contracts — the multi-line dots/angulars/euclideans/hammings/jaccards/maxsim/reduce families); 3 are type-position declarations; the remaining 310 are the crate's own container layer (Vector/Tensor/PackedMatrix/MaxSimPackedMatrix, views/spans/iterators, nibble/bit proxies), read in full: the unsafe Allocator trait documents its contract and Global handles zero-size with dangling pointers; constructors use checked Layout and return AllocationFailed on failure; Drop guards emptiness, pairs drop_in_place with deallocate under the allocation layout; every public accessor routes through Result-returning resolve/offset helpers (bounds-checked), unchecked accessors are proper unsafe fn with contracts, view/span offsets come from validated layout helpers, and thread-parallel row partitions are clamped. One recorded defect, an upstream-report candidate and input for the next-version audit: Index/IndexMut on sub-byte element types (u4x2, i4x2, u1x8) rejects misuse only via debug_assert_eq!, so in release builds an index in values..dims passes the resolve(dims) bounds check and yields a reference past the allocation; not reachable in this tree — maekon consumes numkong exclusively as usearch's C dependency (DEP_NUMKONG_INCLUDE plus the static library per usearch build.rs), so the Rust container layer is not on any dependency path here. build.rs (485 lines): cc over in-package sources with per-arch ISA-floor flags; no process execution beyond cc, no network, no out-of-package paths.
+"""
+
 [[audits.oid-registry]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5349,6 +5372,14 @@ who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
 delta = "6.0.0 -> 6.5.1"
 notes = "The one new unsafe is `Syntax::python()`, `unsafe { transmute(&onig_sys::OnigSyntaxPython) }`. That was checked rather than accepted by analogy: `Syntax` is declared `#[repr(transparent)]` over a single `onig_sys::OnigSyntaxType` field, so transmuting a reference to the inner type into a reference to the wrapper is sound. It is also not a new pattern — the file already contains sixteen transmutes of exactly this shape for `asis`, `perl` and the other syntaxes, and this adds a seventeenth for a static that onig_sys exposes. `operators()` is refactored to go through a new `operators_bits()` and `from_bits_truncate`, which discards unknown bits rather than failing. Scope recorded: the regex engine itself is C and lives in onig_sys, a separate crate with its own audit requirement; this entry covers the Rust wrapper only."
+
+[[audits.onig_sys]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "69.9.1"
+notes = """
+AUDIT SCOPE: full crate version; all targets and features reviewed. #11509 VD-05.7a full audit — onig_sys 69.9.1. License: MIT. A -sys wrapper around vendored oniguruma: the oniguruma/ tree (178 files, 103,206 C lines) is a byte-identical, unpatched copy of kkos/oniguruma at submodule commit 94877ac5 (6.9.10), verified file-by-file against the upstream tarball (0 differing, 0 missing, 0 trimmed; positive control: a 1-byte mutation of the upstream copy is flagged by the same comparator). The C verdict therefore transfers to upstream oniguruma 6.9.10 at that commit. Rust surface: src/ffi.rs is rust-bindgen output (marker present) — all 23 unsafe tokens are type-position unsafe extern fn declarations in callback struct fields; zero unsafe blocks in runtime code (the one remaining unsafe lives inside a #[test]). src/lib.rs is a 29-line re-export shim. build.rs (262 lines) drives cc over the vendored tree with optional pkg-config system-lib probing; no process execution beyond the cc/pkg-config toolchain crates, no network, no out-of-package paths. Reached via onig.
+"""
 
 [[audits.opaque-debug]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -6300,6 +6331,25 @@ supplies the path. No network, process spawning, environment access, `extern "C"
 Dependency surface unchanged: zero added, removed or version-changed across
 normal, build, dev and target-gated sections. Neither version has a build script.
 """
+
+[[audits.quick-xml]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.39.2 -> 0.42.0"
+notes = """
+Delta audit 0.39.2 -> 0.42.0 for the dependabot bump (PR #11201).
+Crate: quick-xml. License: MIT. Delta is self-contained in the crate:
+no build.rs, no proc macros, no new dependencies (Cargo.toml delta is only
+edition 2021->2024, rust-version 1.56->1.86, version). Added lines: 5,171 —
+0 unsafe, 0 process/network/fs/env access, 0 macro_rules, no opaque hex or
+base64 constant blobs. Substance is XML 1.0/1.1 attribute-value normalization
+(new normalize_attribute_value family in escape.rs), parser module split
+(src/parser/{comment,dtd,element,pi}.rs), serde de/se reorganization, and two
+hardening additions: TooManyNestedEntities (entity expansion nesting cap) and
+TooDeeplyNested with an explicit de.max_depth recursion limit in the
+deserializer. Both limits reduce billion-laughs-style resource abuse; no
+external entity resolution was introduced. Reviewed via
+`cargo vet diff quick-xml 0.39.2 0.42.0 --mode=local` (13,450 diff lines)."""
 
 [[audits.quinn]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -8120,6 +8170,14 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.sqlite-wasm-rs]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.5.2"
+notes = """
+AUDIT SCOPE: full crate version; all targets and features reviewed. #11509 VD-05.7a full audit — sqlite-wasm-rs 0.5.2. License: MIT OR Apache-2.0. Reachability first: the crate enters this graph only through rusqlite's optional dependency gated on cfg(all(target_family = "wasm", target_os = "unknown")) — it is not compiled into any shipped target (CI targets: windows-msvc, linux-gnu, apple-darwin x2). The vendored C decomposes into four provenance-verified surfaces: (1) sqlite3/ is byte-identical to the official sqlite.org amalgamation 3.51.2 (3/3 files); (2) sqlite3mc/ is byte-identical to the utelle/SQLite3MultipleCiphers v2.2.7 release amalgamation (2/2); (3) shim/printf/ is byte-identical to eyalroz/printf at commit 29744601b9, pinned by git-blob-hash equality on both files; (4) shim/musl/ is emscripten-lineage musl fragments that match neither musl 1.2.5 nor emscripten df69e2cc byte-for-byte, so the full 1,739-line adaptation patch was read instead: branch trims to the wasm 113-bit long-double branch (retained logic byte-matches musl's own corresponding branch), __builtin_sqrt/__builtin_trunc substitutions, _Thread_local errno, emscripten's rewritten strtox (read: bounded scanning, saturating overflow handling, no OOB), include-path/weak_alias/hidden trims, and alltypes.h is emscripten's generated variant — no memory-unsafety introduced anywhere in the patch set. Hand-written Rust read in full: src/shim.rs (383 lines) implements the renamed libc surface from wasm-shim.h — a header-stored-size allocator with null-checked malloc, single-buffer localtime matching the C contract, and getentropy via crypto.getRandomValues with a WASI ENOTSUP error path. Recorded defects, none blocking and all behind the unreachable target gate: free/realloc lack NULL guards (SQLite's sqlite3_free checks NULL before dispatching, and the vendored musl/printf fragments never call free), calloc's multiply is unchecked (OOM class), and randomness falls back to non-cryptographic Math.random() when crypto.getRandomValues is unavailable — an exotic-environment weakening that would matter to sqlite3mc salt generation if wasm ever shipped. src/bindings/: two pregenerated bindgen files (markers present), mod.rs carries the canonical SQLITE_TRANSIENT transmute(-1) and zeroed-vtab Default idioms, error.rs is a safe error-code map. build.rs (261 lines): cc over the vendored C, bindgen feature using raw_line replacement declarations, and sqlite3_load_extension stubbed to return SQLITE_ERROR (hardening); no process/network/out-of-package access.
+"""
+
 [[audits.stable_deref_trait]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -8551,7 +8609,10 @@ Recorded defect, not blocking: `write_one_digit`'s doc says "`buf` must be at
 least `offset` bytes long" while it writes one byte *at* `offset`, so the stated
 contract is one byte short. `write_two_digits` above it correctly says
 `offset + 2`. Both in-tree callers satisfy the stronger requirement, so this is a
-documentation bug, not a live one. Worth an upstream report.
+documentation bug, not a live one. Reported upstream (2026-08-27, #11511):
+https://github.com/time-rs/time/issues/806 — includes the one-line fix and offers
+it as a PR. Input for the next-version audit: when bumping past 0.3.51, check
+whether the corrected doc landed and drop this pointer.
 
 ## timestamp.rs (28) — new module
 
@@ -9499,6 +9560,14 @@ criteria = "safe-to-deploy"
 version = "2.1.3"
 notes = "Whole crate read, and all three unsafe blocks were checked rather than taken on the comments. Each is a `str::from_utf8_unchecked`, and each is sound. In `encode_into`, `ascii_len` is produced by `take_while` over the unreserved set `[0-9A-Za-z-._~]`, so the `safe` slice it splits off is ASCII by construction. The percent-escape triple is built as `[b'%', to_hex_digit(byte >> 4), to_hex_digit(byte & 15)]`; both arguments are at most 15 so `to_hex_digit` returns a digit or `A`-`F`, again ASCII. The third block, in `encode`, converts the whole input, and is only reached when `encode_into` returned true, which happens only on the first iteration when `ascii_len >= data.len()` — that is, when the entire input is in the unreserved set. Note that `to_hex_digit`'s second match arm is written `10..=255` and would overflow for a large argument, but it is a private function and both call sites mask to 4 bits. Decoding is safe code throughout and returns Cow, borrowing when nothing was escaped. No unsafe outside these three, no capabilities, no build script."
 
+[[audits.usearch]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "2.26.0"
+notes = """
+AUDIT SCOPE: full crate version; all targets and features reviewed. #11509 VD-05.7a full audit — usearch 2.26.0. License: Apache-2.0. The crate is packaged from unum-cloud/USearch itself (path_in_vcs empty): all 9 packaged files are byte-identical to the repository at tag commit cc23bbaf (0 differing; 166 repo-only files trimmed; positive control fired), which pins package==repository — the C++ HNSW core (include/, 11,794 lines) is the upstream project's own v2.26.0 code, not third-party vendoring, and the verdict on it transfers to the upstream project at that release. Rust surface read in full (rust/lib.rs, 2,796 lines, 35 unsafe tokens): 8 slice reinterpretations between #[repr(transparent)] newtypes (b1x8/u8, f16/i16 — same size and alignment, every bit pattern valid); cxx unsafe extern "C++" bridge declarations; synchronous filtered-search trampolines whose stack-closure pointers cannot outlive the call; change_metric stores Box::into_raw and Drop pairs each variant with Box::from_raw; Send/Sync impls rest on USearch's documented internal synchronization plus Send+Sync bounds on stored metric closures; view_from_buffer is correctly pub unsafe with an explicit use-after-free example in its docs. rust/lib.cpp (503 lines) is cxx glue compiled by build.rs via cxx_build over in-package sources only — no Command, no network, no out-of-package paths (the numkong feature consumes only DEP_NUMKONG_INCLUDE and link metadata). Reached via maekon-analysis.
+"""
+
 [[audits.utf8-zero]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -10051,6 +10120,20 @@ The remaining shape is CStr::from_ptr over strings the library owns, converted t
 
 Scope: the whisper.cpp implementation in whisper-rs-sys is not covered here."""
 
+[[audits.whisper-rs-sys]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.15.0"
+notes = """
+AUDIT SCOPE: full crate version; all targets and features reviewed. #11509 VD-05.7a full audit — whisper-rs-sys 0.15.0. License: Unlicense. The whisper.cpp/ tree (778 files, 192,684 C/C++ lines) is a byte-identical, unpatched copy of ggerganov/whisper.cpp at submodule commit 2eeeba56, resolved from the crate's .cargo_vcs_info (tazz4843/whisper-rs@7558e1b7 on codeberg, path sys/) through the recorded submodule pointer and verified file-by-file (0 differing; 645 upstream-only files are trimming; positive control fired). The C/C++ verdict transfers to upstream whisper.cpp at that commit. Rust surface: src/bindings.rs (5,964 lines) is rust-bindgen output (marker present) — all 803 unsafe tokens are bindgen's standard bitfield-unit accessors, bitfield transmutes, and type-position/extern declarations; src/lib.rs is 5 lines. build.rs (395 lines) copies the vendored tree into OUT_DIR and drives cmake over that copy (build.rs:106-181), so the executed build system is the byte-verified upstream one; GPU feature flags only add cmake defines; no network, no out-of-package sources. Reached via whisper-rs.
+"""
+
+[[audits.widestring]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "1.2.1"
+notes = "AUDIT SCOPE: full crate version; all targets and features reviewed. #11596 VD-05.7d full audit — widestring 1.2.1. License: MIT OR Apache-2.0. Pure-Rust wide-string (UTF-16/UTF-32/UCS) library, no build.rs, no proc macros. Danger surface is zero: no network, no process, no fs, no env access anywhere in src. All 306 unsafe lines fall into three idiomatic classes, each verified in context: (1) *_unchecked constructors called only after validate_utf16_vec/validate_utf32_vec or after replacement-char repair constructs validity; (2) documented unsafe FFI entry points (from_ptr/from_ptr_str) with null asserts and NUL-terminator scans, safety contracts spelled out for callers; (3) one mem::transmute Vec<char> -> Vec<u32> (identical layout, the well-known idiom, self-annotated with a TODO for Vec::into_raw_parts). platform/windows.rs is 10 lines of OsStr/OsString wide conversions. No dependencies beyond core/alloc/std feature gates. No obfuscated constants."
+
 [[audits.winapi-i686-pc-windows-gnu]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -10475,6 +10558,12 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.xcap]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.9.6"
+notes = "AUDIT SCOPE: full crate version; all targets and features reviewed. #11596 VD-05.7d full audit — xcap 0.9.6. License: Apache-2.0. Screen-capture library used directly by maekon-monitor; audited as a full read because the crate's whole purpose is a powerful capability (screen contents). Verdict basis: captured pixel data flows only to the caller (return values / mpsc channel) — zero network, zero process spawn, zero fs writes in src (the only fs ops are reading and deleting the temporary screenshot files the XDG desktop portal itself produced; file:// scheme is enforced in safe_uri_to_path). Platform surfaces read in full: macOS (CoreGraphics CGWindowListCreateImage + AVCaptureSession recorder; unsafe blocks are standard CV pixel-buffer lock/base-address patterns with lengths from CVPixelBufferGetBytesPerRow/DataSize and null checks, lock/unlock paired via scopeguard), Windows (D3D11 staging-texture Map with RowPitch-corrected copies; VerQueryValueW version-resource reads with OS-provided lengths), Linux (X11 via xcb, Wayland via consent-mediated org.freedesktop.portal Screenshot over zbus + pipewire/libwayshot), OHOS (OH_AVScreenCapture). build.rs (95 lines, read in full) only adds NDK link-search paths for the ohos target and exits immediately elsewhere. One env read: DISPLAY on Linux. No obfuscated constants, no proc macros, dependencies are ecosystem standards (objc2*, windows, xcb, zbus, pipewire, image)."
+
 [[audits.xkbcommon]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -10827,6 +10916,14 @@ The pattern is uniform and the safety argument is the same each time: a Rust sli
 The part that carries the real weight is that output lengths come back from the C library and are then used to mark bytes initialised. Those are checked for error status before use, so a failed operation cannot advance a buffer -- but a successful call reporting a length larger than the buffer it was given would not be caught here, and this audit does not rule that out. It rests on zstd honouring the sizes it was handed, which is the same trust boundary every -sys wrapper has.
 
 Scope: the C implementation in zstd-sys is not covered by this entry."""
+
+[[audits.zstd-sys]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "2.0.16+zstd.1.5.7"
+notes = """
+AUDIT SCOPE: full crate version; all targets and features reviewed. #11509 VD-05.7a full audit — zstd-sys 2.0.16+zstd.1.5.7. License: MIT OR Apache-2.0. The zstd/ tree (95 files, 80,084 C lines) is a byte-identical, unpatched copy of facebook/zstd at submodule commit f8745da6 (v1.5.7), verified file-by-file against the upstream tarball (0 differing; the 542 upstream-only files are trimming — tests, contrib, programs; positive control fired). The C verdict transfers to upstream zstd 1.5.7. Rust surface: three pregenerated bindgen files (markers present; 8 unsafe tokens, all type-position callback declarations) plus src/wasm_shim.rs — the only hand-written unsafe (8 sites), compiled only under cfg(target_arch = "wasm32") and read in full: a header-stored-size malloc/calloc/free and qsort/memcmp/memcpy/memmove/memset forwards under C caller contracts. Two recorded defects, neither blocking: the shim allocator does not null-check before writing its size header (an OOM-path write through null on wasm), and shim free lacks a free(NULL) guard — but every zstd-internal call routes through ZSTD_customFree, which checks ptr!=NULL before dispatching (verified in lib/common/allocations.h), and the shim is not compiled on any shipped target. calloc's nmemb*size multiply is unchecked (same OOM class). build.rs (301 lines): cc over the vendored tree, pkg-config probing, optional bindgen; no process/network/out-of-package access. Reached via zstd-safe -> zstd.
+"""
 
 [[audits.zune-core]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -11803,12 +11900,26 @@ start = "2025-11-16"
 end = "2027-08-22"
 notes = """Publish share: 1 of 6 published versions carries trustpub_data from this repository, and it is 0.6.0 — the version this tree needs. An earlier note in this initiative recorded that this signature had published "0 of 6" versions and skipped it on that basis; that count was taken from `published_by` logins, which Trusted Publishing releases do not populate, so it was wrong. The signature published exactly the version that matters. Exposure: boundary — the crate declares macOS Mach kernel FFI signatures, where a wrong declaration is memory corruption by itself. Why an audit was not performed: the 0.4.2 to 0.6.0 delta adds 25 hand-written `extern` blocks of Mach declarations, and verifying those against XNU headers is not something this review can do; that is precisely the surface that makes the crate boundary-class. Why this entry names a signature rather than a person: releases made through crates.io Trusted Publishing carry no `published_by` login, so trusting the human maintainer does not cover them. Measured 2026-08-22 — after trusting the human publisher for this crate the exemption remained, and the crate's recent versions report `published_by = null` with `trustpub_data` naming the repository below. Trusting the signature is what covers those releases, and it is also the stronger claim: an OIDC-issued release is bound to a specific repository and CI run and cannot come from a leaked personal token. Window basis: start is the signature's first publication, per cargo-vet's default. Approval: this entry lands by pull request under the ONESHIM Contributors identity, which policy section 5 records as the approval mechanism. It does not cite the #3908 owner-approved identity review, because this identity was not part of it."""
 
+[[trusted.moxcms]]
+criteria = "safe-to-deploy"
+user-id = 266802 # Radzivon Bartoshyk (awxkee)
+start = "2025-02-26"
+end = "2027-08-27"
+notes = "#11281 VD-05.7 Tier 3-c publisher-trust. Publish share: awxkee shipped 35 of 35 published versions (100%); no versions predate publisher records, so the denominator needs no correction. Window basis: start is the publisher's first publication, per cargo-vet's default; there is no earlier owner. Corroboration: no registry in our import set trusts this publisher (cargo vet suggest, 2026-08-27; positive control in the same run: rib is reported trusted for jni-macros, so the absence is a real absence). Sole crates.io owner; the source repository is github.com/awxkee/moxcms — the publisher is the repository owner, which ties the identity directly. Release process: trustpub_data is null on all 35 versions (checked 2026-08-27). Exposure: general rather than boundary — in-process ICC/color-profile parsing and pixel conversion (reached via image); a malformed profile is an application-level parse bug, not code execution or key material on its own. Audit was not economical at 43,581 lines of SIMD-heavy conversion code. Approval: lands by pull request under the ONESHIM Contributors identity (policy section 5); owner approval for this identity recorded in #11281 (2026-08-27 owner decision). Not part of the #3908 identity review."
+
 [[trusted.muda]]
 criteria = "safe-to-deploy"
 user-id = 95389 # tauri (tauri-bot)
 start = "2022-12-06"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): Tauri (tauri-apps org) official release automation — tauri/wry/tao/muda and plugins. Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
+
+[[trusted.ndarray]]
+criteria = "safe-to-deploy"
+user-id = 303992 # akern40
+start = "2025-10-14"
+end = "2027-08-27"
+notes = "#11281 VD-05.7 Tier 3-c publisher-trust (2026-08-27 owner decision after deep research — the identity concern behind the earlier residual lean is resolved by the findings below). Publish share: akern40 shipped 3 of 15 publisher-recorded versions (20%); the remainder are bluss (10) and jturner314 (2), both fellow crates.io owners, and 78 versions predate publisher records — successive maintainers divide the share by construction, per policy section 3(a). akern40 shipped the entire 0.17.x line, which is the line in this tree. Window basis: start is akern40's first publication (0.17.0, 2025-10-14); every bluss and jturner314 release predates it and falls outside the window. Corroboration: no registry in our import set covers ndarray (imports.lock holds no records; positive control in the same suggest run: rib/jni-macros). The stronger tie is structural: akern40 is a listed crates.io co-owner — co-ownership is granted only by an existing owner, which records the previous maintainers' endorsement — and the 0.17.2 release tag dereferences to commit 2cf23d6a (chore: Release), authored by akern40 on 2026-01-10, the same day crates.io recorded the publish; 62 repository contributions, active through 2026-06. Release process: trustpub_data is null on all versions. Exposure: general — an n-dimensional array library reached via ort and fastembed; wrong arithmetic is an application bug, not code execution or key material on its own. Audit was not economical at 34,425 lines of numeric kernels. Approval: lands by pull request under the ONESHIM Contributors identity (policy section 5); owner approval recorded in #11281 (2026-08-27). Not part of the #3908 identity review."
 
 [[trusted.notify]]
 criteria = "safe-to-deploy"
@@ -11957,6 +12068,13 @@ start = "2025-01-28"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved, specific identity): objc2 project — Apple/Foundation/AppKit/UIKit FFI bindings, largely generated from Apple SDK headers; the de-facto Rust Apple-FFI ecosystem. Line-by-line audit of generated FFI bindings is neither feasible nor meaningful; trusting the publisher per cargo-vet's trust mechanism."
 
+[[trusted.objc2-open-directory]]
+criteria = "safe-to-deploy"
+user-id = 36629 # Mads Marquart (madsmtm)
+start = "2024-12-15"
+end = "2027-05-29"
+notes = "#11281 VD-05.7 Tier 3-c publisher-trust (extends the owner-approved #3908 Phase 2 madsmtm identity, same generated-bindings rationale): objc2 project — Apple/Foundation FFI bindings, largely generated from Apple SDK headers; the de-facto Rust Apple-FFI ecosystem. objc2-open-directory is a sibling of the already-trusted objc2-* family (app-kit, audio-toolbox, core-audio, ...), reached via sysinfo 0.39 -> maekon-monitor/maekon-app. Line-by-line audit of generated FFI bindings is neither feasible nor meaningful; trusting the publisher per cargo-vet's trust mechanism."
+
 [[trusted.objc2-security]]
 criteria = "safe-to-deploy"
 user-id = 36629 # Mads Marquart (madsmtm)
@@ -12082,6 +12200,13 @@ user-id = 3618 # David Tolnay (dtolnay)
 start = "2022-01-04"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): David Tolnay — prolific Rust core ecosystem maintainer (cxx family). Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.pxfm]]
+criteria = "safe-to-deploy"
+user-id = 266802 # Radzivon Bartoshyk (awxkee)
+start = "2025-06-22"
+end = "2027-08-27"
+notes = "#11281 VD-05.7 Tier 3-c publisher-trust, same identity as moxcms (which depends on this crate — pxfm is its math backend). Publish share: awxkee shipped 31 of 31 published versions (100%); no versions predate publisher records. Window basis: start is the publisher's first publication, per cargo-vet's default; there is no earlier owner. Corroboration: no registry in our import set trusts this publisher (cargo vet suggest, 2026-08-27; positive control in the same run: rib for jni-macros). Sole crates.io owner; source repository github.com/awxkee/pxfm — publisher is the repository owner. Release process: trustpub_data is null on all 31 versions (checked 2026-08-27). Exposure: general — pure floating-point math function implementations; wrong output is a numerical bug, not code execution or key material on its own. Audit was not economical at 103,295 lines. Approval: lands by pull request under the ONESHIM Contributors identity (policy section 5); owner approval for this identity recorded in #11281 (2026-08-27 owner decision). Not part of the #3908 identity review."
 
 [[trusted.rcgen]]
 criteria = "safe-to-deploy"
@@ -12573,6 +12698,13 @@ start = "2020-06-29"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.winapi]]
+criteria = "safe-to-deploy"
+user-id = 63 # Peter Atashian (retep998)
+start = "2019-04-03"
+end = "2027-08-27"
+notes = "#11281 VD-05.7 Tier 3-c publisher-trust (2026-08-27 owner decision after deep research; supersedes the earlier legitimate-residual proposal). Publish share: retep998 shipped 3 of 3 publisher-recorded versions (100%); 48 versions predate crates.io publisher records, so the corrected denominator is 3, and 0.3.9 — the version in this tree — is one of the recorded three (published 2020-06-26; the earlier note saying dormant since 2019 was off by a year). Window basis: start is the publisher's first recorded publication; pre-record releases fall outside the window. Sole crates.io owner. Corroboration: no registry in the cargo-vet ecosystem covers winapi at all — the official registry list equals our ten imports and imports.lock holds no winapi records (checked 2026-08-27; positive control in the same suggest run: the rib/jni-macros NOTE). Identity tie: the crates.io account is the GitHub account owning retep998/winapi-rs, the crate's repository. Release process: trustpub_data is null on all versions. Dormancy, measured: last publish 2020-06-26, last repository push 2024-04-27, not archived — the risk surface is frozen, and a trust window over a dormant publisher covers exactly the released versions and no future ones. Exposure: boundary — the crate is the FFI declaration surface for Win32, the same family as libc and mach2, where a wrong declaration is memory corruption by itself; this note is therefore also the owner exception policy section 4 requires. Why an audit was not performed: 181,323 lines of machine-transcribed API declarations cannot be meaningfully verified line-by-line against Windows SDK headers — the mach2 entry records the same judgment for the same surface class. What was checked instead: the identity tie, the 100% corrected share, the frozen release surface, and reachability (Windows is a shipped CI target, reached via ntapi, socks, dlopen2, page_size). Approval: lands by pull request under the ONESHIM Contributors identity (policy section 5); owner approval recorded in #11281 (2026-08-27). Not part of the #3908 identity review."
+
 [[trusted.winapi-util]]
 criteria = "safe-to-deploy"
 user-id = 189 # Andrew Gallant (BurntSushi)
@@ -12754,6 +12886,13 @@ user-id = 95389 # tauri (tauri-bot)
 start = "2021-03-11"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): Tauri (tauri-apps org) official release automation — tauri/wry/tao/muda and plugins. Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
+
+[[trusted.xcb]]
+criteria = "safe-to-deploy"
+user-id = 1888 # Remi Thebault (rtbo)
+start = "2019-11-12"
+end = "2027-08-27"
+notes = "#11281 VD-05.7 Tier 3-c publisher-trust. Publish share: rtbo shipped 21 of 21 publisher-recorded versions (100%); 17 versions (0.4.0 and earlier, 2016..2019) predate crates.io publisher records, so the corrected denominator is 21. Window basis: start is the publisher's first recorded publication, per cargo-vet's default; the pre-record releases fall outside the window, and repository history attributes them to the same author. Corroboration: no registry in our import set trusts this publisher (cargo vet suggest, 2026-08-27; positive control in the same run: rib for jni-macros). Sole crates.io owner. Repository tie is direct: tag v1.7.0 in rust-x-bindings/rust-xcb points at commit 7b4580fe, rtbo's own release merge (rtbo/release-1.7.0, 2026-01-03), and rtbo is the repository's dominant author with 601 contributions — 18x the second contributor. Release process: trustpub_data is null on all 38 versions (checked 2026-08-27). Exposure: boundary-leaning — the crate carries the FFI declarations for libxcb, where a wrong declaration is memory corruption by itself; this note is therefore also the owner exception policy section 4 requires. Why an audit was not performed: of 43,130 lines, the bulk is machine-generated X11 protocol code (produced by the rust-xcb generator from the XML protocol definitions), which line-by-line reading cannot meaningfully verify — the h2 entry records the same judgment for a framing state machine. What was checked instead: the identity tie above, the 100% corrected publish share, and reachability — xcb enters this tree only through xcap's Linux screen-capture path. Approval: lands by pull request under the ONESHIM Contributors identity (policy section 5); owner approval for this identity recorded in #11281 (2026-08-27 owner decision). Not part of the #3908 identity review."
 
 [[trusted.y4m]]
 criteria = "safe-to-deploy"

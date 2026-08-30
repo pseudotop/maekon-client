@@ -12,7 +12,7 @@ use std::path::Path;
 
 use icu_normalizer::ComposingNormalizerBorrowed;
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
-use quick_xml::{Reader, Writer};
+use quick_xml::{Reader, Writer, XmlVersion};
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use zip::write::SimpleFileOptions;
@@ -230,9 +230,9 @@ fn workbook_sheet_names(workbook_xml: &[u8]) -> Result<Vec<String>, XlsxWriterEr
     loop {
         match reader.read_event_into(&mut buffer)? {
             Event::Empty(start) | Event::Start(start)
-                if local_name(start.name().as_ref()) == b"sheet" =>
+                if local_name(start.name().as_ref()) == "sheet" =>
             {
-                let name = attribute_value(&reader, &start, b"name")?
+                let name = attribute_value(&start, "name")?
                     .ok_or_else(|| XlsxWriterError::Malformed("sheet has no name".to_owned()))?;
                 names.push(name);
             }
@@ -258,11 +258,11 @@ fn workbook_defined_names(workbook_xml: &[u8]) -> Result<String, XlsxWriterError
     let events = parse_xml_events(workbook_xml, WORKBOOK_PART)?;
     let Some(start) = events
         .iter()
-        .position(|event| is_start(event, b"definedNames"))
+        .position(|event| is_start(event, "definedNames"))
     else {
         return Ok(String::new());
     };
-    let end = matching_end(&events, start, b"definedNames")?;
+    let end = matching_end(&events, start, "definedNames")?;
     let mut writer = Writer::new(Vec::new());
     for event in &events[start..=end] {
         writer.write_event(event.clone())?;
@@ -286,13 +286,13 @@ fn worksheet_structure<'a>(
     let mut index = 0;
     while index < events.len() {
         match &events[index] {
-            Event::Start(start) if local_name(start.name().as_ref()) == b"c" => {
-                let coordinate = event_attribute(start, b"r")?.ok_or_else(|| {
+            Event::Start(start) if local_name(start.name().as_ref()) == "c" => {
+                let coordinate = event_attribute(start, "r")?.ok_or_else(|| {
                     XlsxWriterError::Malformed("cell has no r attribute".to_owned())
                 })?;
                 let (column, row) = parse_cell_reference(&coordinate)?;
                 max_column = max_column.max(column);
-                let end = matching_end(&events, index, b"c")?;
+                let end = matching_end(&events, index, "c")?;
                 if row == 1 {
                     header_cells.insert(
                         column,
@@ -302,8 +302,8 @@ fn worksheet_structure<'a>(
                 index = end + 1;
                 continue;
             }
-            Event::Empty(start) if local_name(start.name().as_ref()) == b"c" => {
-                let coordinate = event_attribute(start, b"r")?.ok_or_else(|| {
+            Event::Empty(start) if local_name(start.name().as_ref()) == "c" => {
+                let coordinate = event_attribute(start, "r")?.ok_or_else(|| {
                     XlsxWriterError::Malformed("cell has no r attribute".to_owned())
                 })?;
                 let (column, row) = parse_cell_reference(&coordinate)?;
@@ -313,17 +313,16 @@ fn worksheet_structure<'a>(
                 }
             }
             Event::Empty(start) | Event::Start(start)
-                if local_name(start.name().as_ref()) == b"col" =>
+                if local_name(start.name().as_ref()) == "col" =>
             {
                 let mut attributes = BTreeMap::new();
                 for attribute in start.attributes().with_checks(false) {
                     let attribute = attribute.map_err(|error| {
                         XlsxWriterError::Malformed(format!("invalid column attribute: {error}"))
                     })?;
-                    let key =
-                        String::from_utf8_lossy(local_name(attribute.key.as_ref())).into_owned();
+                    let key = local_name(attribute.key.as_ref()).to_owned();
                     let value = attribute
-                        .unescape_value()
+                        .normalized_value(XmlVersion::Explicit1_0)
                         .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?
                         .into_owned();
                     attributes.insert(key, value);
@@ -331,9 +330,9 @@ fn worksheet_structure<'a>(
                 columns.push(attributes);
             }
             Event::Empty(start) | Event::Start(start)
-                if local_name(start.name().as_ref()) == b"mergeCell" =>
+                if local_name(start.name().as_ref()) == "mergeCell" =>
             {
-                if let Some(reference) = event_attribute(start, b"ref")? {
+                if let Some(reference) = event_attribute(start, "ref")? {
                     for coordinate in reference.split(':') {
                         let (column, _) = parse_cell_reference(coordinate)?;
                         max_column = max_column.max(column);
@@ -342,9 +341,9 @@ fn worksheet_structure<'a>(
                 }
             }
             Event::Empty(start) | Event::Start(start)
-                if local_name(start.name().as_ref()) == b"pane" =>
+                if local_name(start.name().as_ref()) == "pane" =>
             {
-                freeze_panes = event_attribute(start, b"topLeftCell")?;
+                freeze_panes = event_attribute(start, "topLeftCell")?;
             }
             _ => {}
         }
@@ -488,11 +487,11 @@ fn resolve_worksheet_part(
     loop {
         match reader.read_event_into(&mut buffer)? {
             Event::Empty(start) | Event::Start(start)
-                if local_name(start.name().as_ref()) == b"sheet" =>
+                if local_name(start.name().as_ref()) == "sheet" =>
             {
-                let name = attribute_value(&reader, &start, b"name")?;
+                let name = attribute_value(&start, "name")?;
                 if name.as_deref().map(nfc).as_deref() == Some(wanted.as_str()) {
-                    relationship_id = attribute_value(&reader, &start, b"id")?;
+                    relationship_id = attribute_value(&start, "id")?;
                     break;
                 }
             }
@@ -514,18 +513,18 @@ fn resolve_worksheet_part(
     loop {
         match reader.read_event_into(&mut buffer)? {
             Event::Empty(start) | Event::Start(start)
-                if local_name(start.name().as_ref()) == b"Relationship" =>
+                if local_name(start.name().as_ref()) == "Relationship" =>
             {
-                let id = attribute_value(&reader, &start, b"Id")?;
+                let id = attribute_value(&start, "Id")?;
                 if id.as_deref() == Some(relationship_id.as_str()) {
-                    if attribute_value(&reader, &start, b"TargetMode")?
+                    if attribute_value(&start, "TargetMode")?
                         .is_some_and(|mode| mode.eq_ignore_ascii_case("external"))
                     {
                         return Err(XlsxWriterError::UnsafeWorkbookPart(format!(
                             "external worksheet relationship {relationship_id}"
                         )));
                     }
-                    let target = attribute_value(&reader, &start, b"Target")?.ok_or_else(|| {
+                    let target = attribute_value(&start, "Target")?.ok_or_else(|| {
                         XlsxWriterError::Malformed(format!(
                             "worksheet relationship {relationship_id} has no target"
                         ))
@@ -569,9 +568,9 @@ fn parse_shared_strings(xml: &[u8]) -> Result<Vec<String>, XlsxWriterError> {
     let mut values = Vec::new();
     let mut index = 0;
     while index < events.len() {
-        if is_start(&events[index], b"si") {
-            let end = matching_end(&events, index, b"si")?;
-            values.push(text_nodes(&events[index + 1..end], b"t")?);
+        if is_start(&events[index], "si") {
+            let end = matching_end(&events, index, "si")?;
+            values.push(text_nodes(&events[index + 1..end], "t")?);
             index = end + 1;
         } else {
             index += 1;
@@ -593,12 +592,12 @@ fn detect_header_drift(
     let mut index = 0;
     while index < events.len() {
         match &events[index] {
-            Event::Start(start) if local_name(start.name().as_ref()) == b"c" => {
-                let coordinate = event_attribute(start, b"r")?.ok_or_else(|| {
+            Event::Start(start) if local_name(start.name().as_ref()) == "c" => {
+                let coordinate = event_attribute(start, "r")?.ok_or_else(|| {
                     XlsxWriterError::Malformed("cell has no r attribute".to_owned())
                 })?;
                 let (_, row) = parse_cell_reference(&coordinate)?;
-                let end = matching_end(&events, index, b"c")?;
+                let end = matching_end(&events, index, "c")?;
                 if row == 1 {
                     cells.insert(
                         coordinate,
@@ -607,8 +606,8 @@ fn detect_header_drift(
                 }
                 index = end + 1;
             }
-            Event::Empty(start) if local_name(start.name().as_ref()) == b"c" => {
-                let coordinate = event_attribute(start, b"r")?.ok_or_else(|| {
+            Event::Empty(start) if local_name(start.name().as_ref()) == "c" => {
+                let coordinate = event_attribute(start, "r")?.ok_or_else(|| {
                     XlsxWriterError::Malformed("cell has no r attribute".to_owned())
                 })?;
                 let (_, row) = parse_cell_reference(&coordinate)?;
@@ -648,11 +647,11 @@ fn cell_text(
     body: &[Event<'static>],
     shared_strings: &[String],
 ) -> Result<String, XlsxWriterError> {
-    let cell_type = event_attribute(start, b"t")?.unwrap_or_default();
+    let cell_type = event_attribute(start, "t")?.unwrap_or_default();
     if cell_type == "inlineStr" {
-        return text_nodes(body, b"t");
+        return text_nodes(body, "t");
     }
-    let raw = text_nodes(body, b"v")?;
+    let raw = text_nodes(body, "v")?;
     if cell_type == "s" {
         let index = raw.parse::<usize>().map_err(|_| {
             XlsxWriterError::Malformed(format!("shared string index is invalid: {raw}"))
@@ -664,7 +663,7 @@ fn cell_text(
     Ok(raw)
 }
 
-fn text_nodes(events: &[Event<'static>], target: &[u8]) -> Result<String, XlsxWriterError> {
+fn text_nodes(events: &[Event<'static>], target: &str) -> Result<String, XlsxWriterError> {
     let mut depth = 0_u32;
     let mut value = String::new();
     for event in events {
@@ -674,18 +673,10 @@ fn text_nodes(events: &[Event<'static>], target: &[u8]) -> Result<String, XlsxWr
                 depth = depth.saturating_sub(1);
             }
             Event::Text(text) if depth > 0 => {
-                value.push_str(
-                    &text
-                        .decode()
-                        .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?,
-                );
+                value.push_str(text.as_ref());
             }
             Event::CData(text) if depth > 0 => {
-                value.push_str(
-                    &text
-                        .decode()
-                        .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?,
-                );
+                value.push_str(text.as_ref());
             }
             Event::GeneralRef(reference) if depth > 0 => append_reference(&mut value, reference)?,
             _ => {}
@@ -705,10 +696,8 @@ fn append_reference(
         value.push(character);
         return Ok(());
     }
-    let entity = reference
-        .decode()
-        .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
-    let resolved = quick_xml::escape::resolve_predefined_entity(&entity)
+    let entity = reference.as_ref();
+    let resolved = quick_xml::escape::resolve_predefined_entity(entity)
         .ok_or_else(|| XlsxWriterError::UnsupportedXml(format!("unknown XML entity: {entity}")))?;
     value.push_str(resolved);
     Ok(())
@@ -776,9 +765,9 @@ fn patch_worksheet(xml: &[u8], mut updates: ValidatedUpdates) -> Result<Vec<u8>,
     let events = parse_xml_events(xml, "worksheet")?;
     let sheet_data_start = events
         .iter()
-        .position(|event| is_start(event, b"sheetData"))
+        .position(|event| is_start(event, "sheetData"))
         .ok_or_else(|| XlsxWriterError::Malformed("worksheet has no sheetData".to_owned()))?;
-    let sheet_data_end = matching_end(&events, sheet_data_start, b"sheetData")?;
+    let sheet_data_end = matching_end(&events, sheet_data_start, "sheetData")?;
 
     let mut output = Vec::with_capacity(events.len() + updates.len() * 4);
     output.extend(events[..=sheet_data_start].iter().cloned());
@@ -786,13 +775,13 @@ fn patch_worksheet(xml: &[u8], mut updates: ValidatedUpdates) -> Result<Vec<u8>,
     let mut previous_row = 0_u32;
     while index < sheet_data_end {
         match &events[index] {
-            Event::Start(start) if local_name(start.name().as_ref()) == b"row" => {
-                let row = required_u32_attribute(start, b"r", "row")?;
+            Event::Start(start) if local_name(start.name().as_ref()) == "row" => {
+                let row = required_u32_attribute(start, "r", "row")?;
                 if row <= previous_row {
                     return Err(XlsxWriterError::NonCanonicalWorksheetOrder);
                 }
                 append_missing_rows_before(&mut output, &mut updates, row)?;
-                let end = matching_end(&events, index, b"row")?;
+                let end = matching_end(&events, index, "row")?;
                 if let Some(row_updates) = updates.remove(&row) {
                     output.extend(patch_row(&events[index..=end], row, row_updates)?);
                 } else {
@@ -801,8 +790,8 @@ fn patch_worksheet(xml: &[u8], mut updates: ValidatedUpdates) -> Result<Vec<u8>,
                 previous_row = row;
                 index = end + 1;
             }
-            Event::Empty(start) if local_name(start.name().as_ref()) == b"row" => {
-                let row = required_u32_attribute(start, b"r", "row")?;
+            Event::Empty(start) if local_name(start.name().as_ref()) == "row" => {
+                let row = required_u32_attribute(start, "r", "row")?;
                 if row <= previous_row {
                     return Err(XlsxWriterError::NonCanonicalWorksheetOrder);
                 }
@@ -856,13 +845,13 @@ fn patch_row(
             "row does not start with Start".to_owned(),
         ));
     };
-    let mut output = vec![clone_start_without(start, b"spans")?];
+    let mut output = vec![clone_start_without(start, "spans")?];
     let mut index = 1;
     let mut previous_column = 0_u32;
     while index + 1 < events.len() {
         match &events[index] {
-            Event::Start(cell) if local_name(cell.name().as_ref()) == b"c" => {
-                let coordinate = event_attribute(cell, b"r")?.ok_or_else(|| {
+            Event::Start(cell) if local_name(cell.name().as_ref()) == "c" => {
+                let coordinate = event_attribute(cell, "r")?.ok_or_else(|| {
                     XlsxWriterError::Malformed("cell has no r attribute".to_owned())
                 })?;
                 let (column, cell_row) = parse_cell_reference(&coordinate)?;
@@ -870,7 +859,7 @@ fn patch_row(
                     return Err(XlsxWriterError::NonCanonicalWorksheetOrder);
                 }
                 append_missing_cells_before(&mut output, &mut updates, column, None)?;
-                let end = matching_end(events, index, b"c")?;
+                let end = matching_end(events, index, "c")?;
                 if let Some(update) = updates.remove(&column) {
                     output.extend(replacement_cell_events(Some(cell), &update)?);
                 } else {
@@ -879,8 +868,8 @@ fn patch_row(
                 previous_column = column;
                 index = end + 1;
             }
-            Event::Empty(cell) if local_name(cell.name().as_ref()) == b"c" => {
-                let coordinate = event_attribute(cell, b"r")?.ok_or_else(|| {
+            Event::Empty(cell) if local_name(cell.name().as_ref()) == "c" => {
+                let coordinate = event_attribute(cell, "r")?.ok_or_else(|| {
                     XlsxWriterError::Malformed("cell has no r attribute".to_owned())
                 })?;
                 let (column, cell_row) = parse_cell_reference(&coordinate)?;
@@ -953,13 +942,11 @@ fn replacement_cell_events(
             let attribute =
                 attribute.map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
             let key = attribute.key.as_ref();
-            if local_name(key) == b"r" || local_name(key) == b"t" {
+            if local_name(key) == "r" || local_name(key) == "t" {
                 continue;
             }
-            let key = std::str::from_utf8(key)
-                .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
             let value = attribute
-                .unescape_value()
+                .normalized_value(XmlVersion::Explicit1_0)
                 .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
             cell.push_attribute((key, value.as_ref()));
         }
@@ -1068,7 +1055,7 @@ fn secure_reader(xml: &[u8]) -> Reader<Cursor<&[u8]>> {
 fn matching_end(
     events: &[Event<'static>],
     start_index: usize,
-    name: &[u8],
+    name: &str,
 ) -> Result<usize, XlsxWriterError> {
     let mut depth = 0_u32;
     for (index, event) in events.iter().enumerate().skip(start_index) {
@@ -1084,30 +1071,25 @@ fn matching_end(
         }
     }
     Err(XlsxWriterError::Malformed(format!(
-        "missing end tag: {}",
-        String::from_utf8_lossy(name)
+        "missing end tag: {name}"
     )))
 }
 
-fn is_start(event: &Event<'_>, name: &[u8]) -> bool {
+fn is_start(event: &Event<'_>, name: &str) -> bool {
     matches!(event, Event::Start(start) if local_name(start.name().as_ref()) == name)
 }
 
-fn local_name(name: &[u8]) -> &[u8] {
-    name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
+fn local_name(name: &str) -> &str {
+    name.rsplit(':').next().unwrap_or(name)
 }
 
-fn attribute_value(
-    reader: &Reader<Cursor<&[u8]>>,
-    start: &BytesStart<'_>,
-    key: &[u8],
-) -> Result<Option<String>, XlsxWriterError> {
+fn attribute_value(start: &BytesStart<'_>, key: &str) -> Result<Option<String>, XlsxWriterError> {
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
         if local_name(attribute.key.as_ref()) == key {
             return Ok(Some(
                 attribute
-                    .decode_and_unescape_value(reader.decoder())
+                    .normalized_value(XmlVersion::Explicit1_0)
                     .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?
                     .into_owned(),
             ));
@@ -1116,13 +1098,13 @@ fn attribute_value(
     Ok(None)
 }
 
-fn event_attribute(start: &BytesStart<'_>, key: &[u8]) -> Result<Option<String>, XlsxWriterError> {
+fn event_attribute(start: &BytesStart<'_>, key: &str) -> Result<Option<String>, XlsxWriterError> {
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
         if local_name(attribute.key.as_ref()) == key {
             return Ok(Some(
                 attribute
-                    .unescape_value()
+                    .normalized_value(XmlVersion::Explicit1_0)
                     .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?
                     .into_owned(),
             ));
@@ -1133,7 +1115,7 @@ fn event_attribute(start: &BytesStart<'_>, key: &[u8]) -> Result<Option<String>,
 
 fn required_u32_attribute(
     start: &BytesStart<'_>,
-    key: &[u8],
+    key: &str,
     element: &str,
 ) -> Result<u32, XlsxWriterError> {
     let value = event_attribute(start, key)?
@@ -1145,21 +1127,19 @@ fn required_u32_attribute(
 
 fn clone_start_without(
     start: &BytesStart<'_>,
-    omitted: &[u8],
+    omitted: &str,
 ) -> Result<Event<'static>, XlsxWriterError> {
     let qualified_name = start.name();
-    let name = std::str::from_utf8(qualified_name.as_ref())
-        .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
+    let name = qualified_name.as_ref();
     let mut clone = BytesStart::new(name);
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
         if local_name(attribute.key.as_ref()) == omitted {
             continue;
         }
-        let key = std::str::from_utf8(attribute.key.as_ref())
-            .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
+        let key = attribute.key.as_ref();
         let value = attribute
-            .unescape_value()
+            .normalized_value(XmlVersion::Explicit1_0)
             .map_err(|error| XlsxWriterError::Malformed(error.to_string()))?;
         clone.push_attribute((key, value.as_ref()));
     }
@@ -1323,6 +1303,17 @@ mod tests {
                 expected: "작업명".to_owned(),
             },
         ]
+    }
+
+    #[test]
+    fn text_nodes_reads_only_text_and_cdata_inside_the_target() {
+        let events = parse_xml_events(
+            b"<root>outside<![CDATA[outside-cdata]]><t>inside<![CDATA[inside-cdata]]></t>tail<![CDATA[tail-cdata]]></root>",
+            "text-nodes-test",
+        )
+        .unwrap();
+
+        assert_eq!(text_nodes(&events, "t").unwrap(), "insideinside-cdata");
     }
 
     #[test]

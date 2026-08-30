@@ -161,6 +161,42 @@ pub(super) fn show_overlay_window<R: Runtime>(window: &WebviewWindow<R>) -> Resu
         .map_err(|error| format!("window show failed: {error}"))
 }
 
+#[cfg(target_os = "macos")]
+fn configure_tracking_panel_capture_policy<R: Runtime>(
+    panel: &WebviewWindow<R>,
+) -> Result<(), String> {
+    use objc2_app_kit::{NSView, NSWindowSharingType};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = panel
+        .window_handle()
+        .map_err(|error| format!("tracking panel native handle unavailable: {error}"))?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return Err("tracking panel did not expose an AppKit window handle".to_string());
+    };
+
+    // SAFETY: `appkit.ns_view` is the non-null `NSView*` published by
+    // raw-window-handle for this live WebView. The synchronous borrow is used
+    // only to reach its owning NSWindow and is not retained after this call.
+    let ns_view = unsafe { &*(appkit.ns_view.as_ptr() as *const NSView) };
+    let ns_window = ns_view
+        .window()
+        .ok_or_else(|| "tracking panel AppKit window unavailable".to_string())?;
+
+    ns_window.setSharingType(NSWindowSharingType::None);
+    if ns_window.sharingType() != NSWindowSharingType::None {
+        return Err("tracking panel capture exclusion was not applied".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_tracking_panel_capture_policy<R: Runtime>(
+    _panel: &WebviewWindow<R>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 pub(super) fn sync_tracking_border_windows(
     app_handle: &AppHandle,
     visible: bool,
@@ -267,7 +303,7 @@ pub fn create_tracking_panel<R: Runtime>(app_handle: &AppHandle<R>) -> Result<()
     #[cfg(not(target_os = "macos"))]
     let y = logical_height - panel_height - 80.0;
 
-    WebviewWindowBuilder::new(
+    let panel = WebviewWindowBuilder::new(
         app_handle,
         "tracking-panel",
         WebviewUrl::App("tracking-panel.html".into()),
@@ -287,7 +323,16 @@ pub fn create_tracking_panel<R: Runtime>(app_handle: &AppHandle<R>) -> Result<()
     .build()
     .map_err(|e| format!("panel build: {e}"))?;
 
-    info!("Tracking panel window created");
+    if let Err(error) = configure_tracking_panel_capture_policy(&panel) {
+        if let Err(destroy_error) = panel.destroy() {
+            return Err(format!(
+                "{error}; failed to destroy unsafe tracking panel: {destroy_error}"
+            ));
+        }
+        return Err(error);
+    }
+
+    info!("Tracking panel window created with platform capture policy");
     Ok(())
 }
 

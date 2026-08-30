@@ -13,7 +13,10 @@ use std::path::PathBuf;
 
 use maekon_web::update_control::UpdateControl;
 
-use crate::updater::{HealthProbe, RollbackReason, StartupAction, Updater, CURRENT_VERSION};
+use crate::updater::{
+    health_probe::health_state_dir_for_executable, HealthProbe, RollbackReason, StartupAction,
+    Updater, CURRENT_VERSION,
+};
 
 /// Execute the startup health probe + spawn the rolled-back-notification scan.
 ///
@@ -41,20 +44,32 @@ pub(crate) fn execute_startup_probe(
             return None;
         }
     };
-    let install_dir = match current_exe.parent().map(std::path::Path::to_path_buf) {
+    let state_dir = match health_state_dir_for_executable(&current_exe) {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::warn!("health probe skipped: mutable state directory unavailable: {e}");
+            return None;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&state_dir) {
+        tracing::warn!("health probe skipped: failed to create mutable state directory: {e}");
+        return None;
+    }
+
+    // Fire-and-forget: consume `.rolled_back_notification_<version>` markers
+    // written by the previous (failing) binary. The scan must run AFTER
+    // `update_control` exists (it's the consumer of set_rolled_back).
+    spawn_rolled_back_scan(handle, state_dir.clone(), update_control);
+
+    let backup_dir = match current_exe.parent().map(std::path::Path::to_path_buf) {
         Some(dir) => dir,
         None => {
             tracing::warn!("health probe skipped: current_exe has no parent");
             return None;
         }
     };
-
-    // Fire-and-forget: consume `.rolled_back_notification_<version>` markers
-    // written by the previous (failing) binary. The scan must run AFTER
-    // `update_control` exists (it's the consumer of set_rolled_back).
-    spawn_rolled_back_scan(handle, install_dir.clone(), update_control);
-
-    let probe = HealthProbe::new(install_dir, CURRENT_VERSION.to_string());
+    let probe =
+        HealthProbe::new(state_dir, CURRENT_VERSION.to_string()).with_backup_dir(backup_dir);
     match probe.check_startup_state() {
         StartupAction::Normal => {
             tracing::debug!("health probe: Normal — proceeding with startup");
@@ -112,13 +127,13 @@ pub(crate) fn execute_startup_probe(
 /// re-render a stale banner.
 fn spawn_rolled_back_scan(
     handle: &tokio::runtime::Handle,
-    install_dir: PathBuf,
+    state_dir: PathBuf,
     update_control: UpdateControl,
 ) {
     handle.spawn(async move {
         let entries = match tokio::task::spawn_blocking({
-            let install_dir = install_dir.clone();
-            move || std::fs::read_dir(&install_dir)
+            let state_dir = state_dir.clone();
+            move || std::fs::read_dir(&state_dir)
         })
         .await
         {
@@ -126,7 +141,7 @@ fn spawn_rolled_back_scan(
             Ok(Err(e)) => {
                 tracing::warn!(
                     "rolled_back_notification scan failed ({:?}): {e}",
-                    install_dir
+                    state_dir
                 );
                 return;
             }
@@ -198,12 +213,27 @@ pub(crate) fn mark_clean_shutdown() {
             return;
         }
     };
-    let Some(install_dir) = current_exe.parent().map(std::path::Path::to_path_buf) else {
-        tracing::warn!("health probe clean-shutdown skipped: current_exe has no parent");
-        return;
+    let state_dir = match health_state_dir_for_executable(&current_exe) {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::warn!("health probe clean-shutdown skipped: mutable state unavailable: {e}");
+            return;
+        }
     };
+    if let Err(e) = std::fs::create_dir_all(&state_dir) {
+        tracing::warn!("health probe clean-shutdown skipped: state directory unavailable: {e}");
+        return;
+    }
 
-    let probe = HealthProbe::new(install_dir, CURRENT_VERSION.to_string());
+    let backup_dir = match current_exe.parent().map(std::path::Path::to_path_buf) {
+        Some(dir) => dir,
+        None => {
+            tracing::warn!("health probe clean-shutdown skipped: current_exe has no parent");
+            return;
+        }
+    };
+    let probe =
+        HealthProbe::new(state_dir, CURRENT_VERSION.to_string()).with_backup_dir(backup_dir);
     if let Err(e) = probe.mark_clean_shutdown() {
         tracing::warn!("health probe clean-shutdown marker failed: {e}");
     }

@@ -57,6 +57,12 @@ jobs:
         uses: ./.github/actions/rust-cache
         with:
           key: integrity-gates
+          # #11369: 저장하지 않는다. 실측 11회에서 **어떤 job 도 자기 키를
+          # 복원한 적이 없고**, 실제 공유는 restore-key `<OS>-rust-` 폴백으로
+          # 이미 일어난다. 그런데 저장은 호출처마다 따로 해서 10 GiB 예산을
+          # 서로 밀어냈다 — `Linux-rust-ci-test` 축출이 그 증상이었다.
+          # 복원은 그대로 두므로 이 job 이 받는 것은 달라지지 않는다.
+          save: "false"
 
       - name: Install tooling
         run: |

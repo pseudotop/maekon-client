@@ -117,7 +117,7 @@ Este repositorio es una **exportación de instantáneas verificadas** de la fuen
 - **Automatización Gobernada por Políticas**: Encauza acciones aprobadas mediante políticas, aislamiento en sandbox y auditoría
 - **Funciones de Servidor Conectado (Vista Previa / Opt-in)**: Los candidatos revisables para la siguiente acción y la sincronización de retroalimentación están disponibles para validación escalonada y no son la ruta autónoma predeterminada
 - **Bandeja del Sistema**: Se ejecuta en segundo plano con acceso rápido
-- **Actualización Automática**: Actualizaciones automáticas basadas en GitHub Releases
+- **Actualización Automática**: Actualizaciones automáticas basadas en GitHub Releases — durante la fase pre-1.0, las actualizaciones se publican en el canal pre-release y las instalaciones predeterminadas lo siguen; el canal estable se abrirá con la primera versión estable
 - **Multiplataforma**: Compatible con macOS, Windows y Linux
 
 ### Panel Web Local (http://localhost:10090)

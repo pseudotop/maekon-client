@@ -1,0 +1,57 @@
+{
+  "schema_version": "maekon.windows-authenticode-policy.v1",
+  "enforcement_state": "prepared_not_active",
+  "provider": "azure-artifact-signing",
+  "trust_model": "public-trust",
+  "publisher_subject": null,
+  "activation_blocker": "A verified legal-entity identity and Public Trust certificate profile are not available yet.",
+  "github": {
+    "repository": "pseudotop/maekon-client",
+    "environment": "release-signing",
+    "oidc_subject": "repo:pseudotop/maekon-client:environment:release-signing"
+  },
+  "activation_variables": [
+    "AZURE_TENANT_ID",
+    "AZURE_SUBSCRIPTION_ID",
+    "AZURE_CLIENT_ID",
+    "WINDOWS_ARTIFACT_SIGNING_ENDPOINT",
+    "WINDOWS_ARTIFACT_SIGNING_ACCOUNT",
+    "WINDOWS_ARTIFACT_SIGNING_PROFILE"
+  ],
+  "activation_source_changes": [
+    "add a Windows signing job bound to the release-signing environment",
+    "set publisher_subject to the exact validated certificate subject",
+    "set enforcement_state to active only after the non-publishing rehearsal passes"
+  ],
+  "required_artifacts": [
+    {
+      "stage": "before-packaging",
+      "pattern": "maekon.exe"
+    },
+    {
+      "stage": "before-packaging",
+      "pattern": "maekon-sandbox-worker.exe"
+    },
+    {
+      "stage": "after-packaging",
+      "pattern": "maekon-app-ko-KR-*.msi"
+    },
+    {
+      "stage": "after-packaging",
+      "pattern": "maekon-app-en-US-*.msi"
+    },
+    {
+      "stage": "after-packaging",
+      "pattern": "*-setup.exe"
+    }
+  ],
+  "final_byte_order": [
+    "sign embedded executables",
+    "build ZIP, MSI, and NSIS from signed executables",
+    "sign MSI and NSIS installers",
+    "verify Authenticode publisher and RFC 3161 timestamp",
+    "generate SHA-256 checksums",
+    "generate Ed25519 updater signatures",
+    "attest and publish"
+  ]
+}

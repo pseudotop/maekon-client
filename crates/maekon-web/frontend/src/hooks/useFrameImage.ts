@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { authenticateCaptureHistory } from '../api/reauth'
-import { resolveImageUrl, withResolvedLocalAuthHeaders } from '../utils/api-base'
+import { resolveFrameImageRequestUrl, resolveImageUrl, withResolvedLocalAuthHeaders } from '../utils/api-base'
 import { IS_TAURI } from '../utils/platform'
 
 export type FrameImageReason = 'reauth' | 'deleted' | 'missing' | 'load_failure' | 'network' | 'unknown'
@@ -84,7 +84,7 @@ export function useFrameImage(imageUrl: string | null | undefined): FrameImageSt
   }, [])
 
   const runFetch = useCallback(async () => {
-    if (!rawUrl) {
+    if (!imageUrl) {
       setReason('missing')
       setPhase('error')
       return
@@ -93,7 +93,18 @@ export function useFrameImage(imageUrl: string | null | undefined): FrameImageSt
     setPhase('loading')
     setReason(null)
     try {
-      const res = await fetch(rawUrl, await withResolvedLocalAuthHeaders({ method: 'GET' }))
+      // #11648: resolve the live local-API port at request time. The frame-list
+      // request already follows this async path; using the synchronous raw
+      // image URL here could pin thumbnails to another coexisting Maekon
+      // identity on the default listener.
+      const requestUrl = await resolveFrameImageRequestUrl(imageUrl)
+      if (attempt !== attemptRef.current || !mountedRef.current) return
+      if (!requestUrl) {
+        setReason('missing')
+        setPhase('error')
+        return
+      }
+      const res = await fetch(requestUrl, await withResolvedLocalAuthHeaders({ method: 'GET' }))
       if (attempt !== attemptRef.current || !mountedRef.current) return
       if (res.ok) {
         const blob = await res.blob()
@@ -112,7 +123,7 @@ export function useFrameImage(imageUrl: string | null | undefined): FrameImageSt
       setReason('network')
       setPhase('error')
     }
-  }, [rawUrl, revoke])
+  }, [imageUrl, revoke])
 
   // Reset when the target frame changes. Tauri fetches immediately (raw `<img>`
   // would 401 cross-origin); browser starts on the same-origin raw fast path.

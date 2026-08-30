@@ -2,6 +2,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASSETS_DIR="${MAEKON_SMOKE_INSTALLERS_DIR:-smoke-installers}"
 DMG_NAME="${MAEKON_SMOKE_DMG_NAME:-maekon-macos-universal.dmg}"
 PKG_NAME="${MAEKON_SMOKE_PKG_NAME:-maekon-macos-universal.pkg}"
@@ -327,6 +328,7 @@ DMG_SIDECAR_PATH="$DMG_APP_PATH/Contents/MacOS/maekon-sandbox-worker"
 info "Validating binary from mounted DMG"
 validate_binary_format "$DMG_BINARY_PATH"
 validate_binary_format "$DMG_SIDECAR_PATH"
+"$SCRIPT_DIR/verify-macos-app-bundle.sh" "$DMG_APP_PATH"
 run_gui_bootstrap_smoke "$DMG_BINARY_PATH" "dmg"
 
 info "Installing PKG"
@@ -342,6 +344,7 @@ info "Detected installed app at $APP_INSTALL_PATH"
 info "Validating binary from PKG installation"
 validate_binary_format "$APP_BINARY_PATH"
 validate_binary_format "$APP_SIDECAR_PATH"
+"$SCRIPT_DIR/verify-macos-app-bundle.sh" "$APP_INSTALL_PATH"
 run_gui_bootstrap_smoke "$APP_BINARY_PATH" "pkg"
 
 info "macOS installer smoke completed"

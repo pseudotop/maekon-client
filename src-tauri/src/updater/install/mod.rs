@@ -9,7 +9,7 @@ mod verification;
 
 use std::path::{Path, PathBuf};
 
-use super::{UpdateError, Updater};
+use super::{health_probe::health_state_dir_for_executable, UpdateError, Updater};
 // #6941: re-export the capped aux-body reader + cap so the releases-JSON fetch in
 // updater/mod.rs shares the same OOM guard as the .sig/.sha256 reads here.
 pub(crate) use download::{read_body_capped_update, MAX_AUX_UPDATE_BYTES};
@@ -58,6 +58,23 @@ impl Updater {
     {
         tracing::info!("Starting update installation: {:?}", downloaded_path);
 
+        let health_state_dir = new_version
+            .map(|_| {
+                health_state_dir_for_executable(current_exe).map_err(|error| {
+                    UpdateError::Install(format!(
+                        "Failed to resolve updater health state directory: {error}"
+                    ))
+                })
+            })
+            .transpose()?;
+        if let Some(state_dir) = &health_state_dir {
+            std::fs::create_dir_all(state_dir).map_err(|error| {
+                UpdateError::Install(format!(
+                    "Failed to create updater health state directory: {error}"
+                ))
+            })?;
+        }
+
         let backup_path = Self::backup_path_for(current_exe)?;
         std::fs::copy(current_exe, &backup_path)?;
 
@@ -83,13 +100,11 @@ impl Updater {
         // Task 6 D11: write .install_pending_{NEW_VERSION} immediately after
         // replace_binary succeeds and BEFORE restart_app.
         if let Some(new_ver) = new_version {
-            let current_exe_parent = current_exe.parent().ok_or_else(|| {
-                UpdateError::Install(
-                    "current_exe has no parent directory for install_pending".to_string(),
-                )
+            let state_dir = health_state_dir.as_deref().ok_or_else(|| {
+                UpdateError::Install("updater health state directory missing".to_string())
             })?;
             if let Err(e) = Self::write_install_pending(
-                current_exe_parent,
+                state_dir,
                 new_ver,
                 super::CURRENT_VERSION,
                 &backup_path,
@@ -144,14 +159,14 @@ impl Updater {
         }
     }
 
-    /// Write `.install_pending_{NEW_VERSION}` JSON marker in the install directory.
+    /// Write `.install_pending_{NEW_VERSION}` JSON marker in mutable probe state.
     pub(super) fn write_install_pending(
-        install_dir: &Path,
+        state_dir: &Path,
         new_version: &str,
         previous_version: &str,
         backup_path: &Path,
     ) -> Result<(), UpdateError> {
-        let marker_path = install_dir.join(format!(".install_pending_{new_version}"));
+        let marker_path = state_dir.join(format!(".install_pending_{new_version}"));
         let payload = serde_json::json!({
             "installed_at": chrono::Utc::now().to_rfc3339(),
             "previous_version": previous_version,
@@ -287,18 +302,26 @@ impl Updater {
         rollback_event(&info);
 
         // Version-scoped notification file for the restored binary's next boot.
-        if let Some(install_dir) = current_exe_path.parent() {
-            let notif_path = install_dir.join(format!(".rolled_back_notification_{to_version}"));
-            match serde_json::to_vec(&info) {
-                Ok(bytes) => {
-                    if let Err(e) = std::fs::write(&notif_path, bytes) {
-                        tracing::warn!("rolled_back_notification write failed (non-fatal): {e}");
+        match health_state_dir_for_executable(current_exe_path) {
+            Ok(state_dir) => {
+                let _ = std::fs::create_dir_all(&state_dir);
+                let notif_path = state_dir.join(format!(".rolled_back_notification_{to_version}"));
+                match serde_json::to_vec(&info) {
+                    Ok(bytes) => {
+                        if let Err(e) = std::fs::write(&notif_path, bytes) {
+                            tracing::warn!(
+                                "rolled_back_notification write failed (non-fatal): {e}"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("rolled_back_notification serialize failed (non-fatal): {e}")
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("rolled_back_notification serialize failed (non-fatal): {e}")
-                }
             }
+            Err(e) => tracing::warn!(
+                "rolled_back_notification state directory unavailable (non-fatal): {e}"
+            ),
         }
 
         #[cfg(unix)]

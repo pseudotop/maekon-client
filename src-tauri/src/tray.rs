@@ -686,9 +686,43 @@ pub fn simulate_tray_action<R: Runtime>(
     })
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum TrayMenuAction {
+    ToggleCapture,
+    ToggleIndicator,
+    Show,
+    Settings,
+    Automation,
+    RunPreset,
+    ApproveUpdate,
+    DeferUpdate,
+    Quit,
+    #[default]
+    Unknown,
+}
+
+fn classify_tray_menu_action(_id: &str) -> TrayMenuAction {
+    match _id {
+        "toggle-capture" => TrayMenuAction::ToggleCapture,
+        "toggle-indicator" => TrayMenuAction::ToggleIndicator,
+        "show" => TrayMenuAction::Show,
+        "settings" => TrayMenuAction::Settings,
+        "automation" => TrayMenuAction::Automation,
+        "run-preset" => TrayMenuAction::RunPreset,
+        "approve_update" => TrayMenuAction::ApproveUpdate,
+        "defer_update" => TrayMenuAction::DeferUpdate,
+        "quit" => TrayMenuAction::Quit,
+        _ => TrayMenuAction::Unknown,
+    }
+}
+
+// The classifier is mutation-tested independently. This dispatcher owns Tauri
+// window, event, audio, and process-exit side effects whose real contract is
+// exercised by tray integration and physical runtime checks.
+#[mutants::skip]
 fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bool {
-    match id {
-        "toggle-capture" => {
+    match classify_tray_menu_action(id) {
+        TrayMenuAction::ToggleCapture => {
             if let Some(state) = app.try_state::<crate::runtime_state::AppState>() {
                 if !crate::magic_overlay::effective_capture_permitted(&state, false) {
                     debug!("tray: toggle-capture ignored because capture is unavailable");
@@ -710,10 +744,6 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
                     new_paused,
                     indicator_visible,
                 );
-                #[cfg(target_os = "macos")]
-                if let Some(border) = app.try_state::<crate::native_border::NativeBorderState>() {
-                    border.0.set_paused(new_paused);
-                }
                 // Privacy: re-gate any running VAD listener at once so the tray
                 // pause tears down the mic immediately (not after the ≤2 s
                 // backstop tick), AND remember/auto-rearm VAD across the pause
@@ -722,7 +752,7 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
             }
             true
         }
-        "toggle-indicator" => {
+        TrayMenuAction::ToggleIndicator => {
             if let Some(state) = app.try_state::<crate::runtime_state::AppState>() {
                 let was_visible = state
                     .indicator_visible
@@ -739,18 +769,10 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
                     debug!("sync_tray_state failed: {e}");
                 }
                 crate::magic_overlay::sync_passive_tracking_surface(app, paused, new_visible);
-                #[cfg(target_os = "macos")]
-                if let Some(border) = app.try_state::<crate::native_border::NativeBorderState>() {
-                    if new_visible && !crate::app_runtime_launch::cua_safe_mode_enabled() {
-                        border.0.show();
-                    } else {
-                        border.0.hide();
-                    }
-                }
             }
             true
         }
-        "show" => {
+        TrayMenuAction::Show => {
             if let Some(w) = app.get_webview_window("main") {
                 if w.is_visible().unwrap_or(false) {
                     w.hide().unwrap_or_default();
@@ -768,25 +790,25 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
         // listener — the indirection added nothing beyond a React Query
         // invalidation the target routes did not even consume. Unified so
         // new tray entries only need a path, not a bespoke event name.
-        "settings" => {
+        TrayMenuAction::Settings => {
             focus_main_window(app);
             app.emit_to("main", "navigate", "/settings")
                 .unwrap_or_default();
             true
         }
-        "automation" => {
+        TrayMenuAction::Automation => {
             focus_main_window(app);
             app.emit_to("main", "navigate", "/settings/ai-automation")
                 .unwrap_or_default();
             true
         }
-        "run-preset" => {
+        TrayMenuAction::RunPreset => {
             focus_main_window(app);
             app.emit_to("main", "navigate", "/automation")
                 .unwrap_or_default();
             true
         }
-        "approve_update" => {
+        TrayMenuAction::ApproveUpdate => {
             if current_tray_update_actions(app).approve_enabled {
                 focus_main_window(app);
                 if let Some(state) = app.try_state::<crate::runtime_state::AppState>() {
@@ -802,7 +824,7 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
             }
             true
         }
-        "defer_update" => {
+        TrayMenuAction::DeferUpdate => {
             if current_tray_update_actions(app).defer_enabled {
                 focus_main_window(app);
                 if let Some(state) = app.try_state::<crate::runtime_state::AppState>() {
@@ -818,17 +840,37 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
             }
             true
         }
-        "quit" => {
+        TrayMenuAction::Quit => {
             request_tray_quit(app);
             true
         }
-        _ => false,
+        TrayMenuAction::Unknown => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_menu_action_classifier_covers_runtime_actions() {
+        let cases = [
+            ("toggle-capture", TrayMenuAction::ToggleCapture),
+            ("toggle-indicator", TrayMenuAction::ToggleIndicator),
+            ("show", TrayMenuAction::Show),
+            ("settings", TrayMenuAction::Settings),
+            ("automation", TrayMenuAction::Automation),
+            ("run-preset", TrayMenuAction::RunPreset),
+            ("approve_update", TrayMenuAction::ApproveUpdate),
+            ("defer_update", TrayMenuAction::DeferUpdate),
+            ("quit", TrayMenuAction::Quit),
+            ("unknown", TrayMenuAction::Unknown),
+        ];
+
+        for (id, expected) in cases {
+            assert_eq!(classify_tray_menu_action(id), expected, "id={id}");
+        }
+    }
 
     #[test]
     fn disconnected_services_use_local_mode_status() {

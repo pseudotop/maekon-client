@@ -151,7 +151,7 @@ This repository is a **vetted snapshot export** of Maekon's internal source of t
 - **Policy-Gated Automation**: Routes approved actions through policy checks, sandbox isolation, and audit logging
 - **Connected Server Features (Preview / Opt-in)**: Real-time suggestions and feedback sync are available for staged validation and are not the default standalone path
 - **System Tray**: Runs in the background with quick access
-- **Auto-Update**: Automatic updates based on GitHub Releases
+- **Auto-Update**: Automatic updates based on GitHub Releases — while Maekon is pre-1.0, updates ship on the pre-release channel and default installs follow it; a dedicated stable channel opens with the first stable release
 - **Cross-Platform**: Supports macOS, Windows, and Linux
 
 ### Local Web Dashboard (http://localhost:10090)
@@ -282,9 +282,30 @@ installable bundle that can sign in — a demo machine, connected-mode QC —
 # Login-capable debug bundle
 MAEKON_DEV_BUNDLE_FEATURES=server ./scripts/build-macos-dev-bundle.sh
 
+# Login-capable demo/QC bundle with a fresh profile and Keychain service
+MAEKON_DEV_BUNDLE_FEATURES=server \
+  MAEKON_DEV_QC_FLAVOR=qc-demo-20260827-a1 \
+  ./scripts/build-macos-dev-bundle.sh
+
 # Default bundle — no sign-in compiled in (unchanged behaviour)
 ./scripts/build-macos-dev-bundle.sh
 ```
+
+Use a fresh `qc-*` or `tc-*` value for every rebuilt demo/QC artifact. The
+build script first runs `preflight-macos-dev-keychain.sh` in read-only mode,
+then embeds that flavor into the debug binary. The embedded value wins over
+the process environment, including a normal LaunchServices `open -n` start,
+so the app resolves a profile and Keychain service such as
+`maekon-qc-demo-20260827-a1` instead of the shared `maekon-dev` namespace.
+The preflight fails if the target profile already exists; it never queries,
+approves, deletes, or changes a Keychain item. Choose another fresh flavor
+instead of removing old state.
+
+After building, launch the reported `.app` with `open -n`. Screen Recording
+and Accessibility remain separate human TCC grants. For a sanitized
+same-build machine-readable receipt, run the exact `Runtime receipt:` command
+printed by the build script and confirm its `appFlavor` matches the embedded
+QC flavor.
 
 The script reports what it actually produced, and fails if the artifact does
 not match the features you asked for:
@@ -429,7 +450,7 @@ build with `--features server`. The server URL is configured under
 
 The `maekon` segment is the app directory name. It gains a suffix when
 `MAEKON_APP_FLAVOR` is set — and **debug builds set `MAEKON_APP_FLAVOR=dev`
-themselves** (`src-tauri/src/lib.rs`, `configure_runtime_flavor`) so a locally
+themselves** (`src-tauri/src/runtime_flavor.rs`) so a locally
 built client never opens the released app's profile. A debug build on macOS
 therefore reads `~/Library/Application Support/maekon-dev/config.json`.
 

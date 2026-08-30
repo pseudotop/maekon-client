@@ -143,11 +143,17 @@ For stable tags, the pipeline also verifies:
 |----------|--------|----------|
 | macOS (Apple Silicon) | `aarch64-apple-darwin` | `.dmg` (notarized) |
 | macOS (Intel) | `x86_64-apple-darwin` | `.dmg` (notarized) |
-| Windows | `x86_64-pc-windows-msvc` | `.msi` (signed) |
+| Windows | `x86_64-pc-windows-msvc` | localized `.msi` (`ko-KR`, `en-US`; SHA-256 + provenance, Authenticode pending) |
 | Linux (Debian) | `x86_64-unknown-linux-gnu` | `.deb` |
 | Linux (RPM) | `x86_64-unknown-linux-gnu` | `.rpm` |
 
 macOS `.dmg` files are notarized via Apple's notarization service using the workflow defined in [`.github/workflows/notarize-macos-release-assets.yml`](../../.github/workflows/notarize-macos-release-assets.yml). Gatekeeper will allow installation without warnings.
+
+Windows MSI artifacts are currently unsigned. The release publishes separate Korean and English
+installers with SHA-256 checksums and provenance; Authenticode activation remains dependent on the
+release engineering certificate owner defined by ADR-005. The prepared policy, OIDC boundary, and
+activation procedure are documented in
+[`windows-authenticode-runbook.md`](../security/windows-authenticode-runbook.md).
 
 ### GitHub Release
 

@@ -55,6 +55,35 @@ describe('api-base', () => {
     expect(getResolvedWebPort()).toBe(10092)
   })
 
+  it('waits for the live Tauri port before resolving a frame-image request', async () => {
+    const testWindow = window as Window &
+      typeof globalThis & {
+        __TAURI_INTERNALS__?: unknown
+      }
+    testWindow.__TAURI_INTERNALS__ = {
+      invoke: (...args: unknown[]) => mockInvoke(...args),
+    }
+
+    let releasePort!: () => void
+    const portReady = new Promise<void>((resolve) => {
+      releasePort = resolve
+    })
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_web_port') {
+        await portReady
+        return 10091
+      }
+      if (cmd === 'get_local_auth_token') return ''
+      throw new Error(`unexpected invoke: ${cmd}`)
+    })
+
+    const { resolveFrameImageRequestUrl } = await import('./api-base')
+    const pending = resolveFrameImageRequestUrl('/api/frames/42/image')
+
+    releasePort()
+    await expect(pending).resolves.toBe('http://127.0.0.1:10091/api/frames/42/image')
+  })
+
   it('keeps relative API paths outside Tauri', async () => {
     const { resolveApiUrl } = await import('./api-base')
 

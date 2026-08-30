@@ -1,4 +1,6 @@
 // Storage/integrity/notification/update/telemetry config — data lifecycle and system-state management
+// OOS-TBD: ADR-013 file split — five config sections share this file (908 lines,
+// baselined in adr013_loc_baseline.json); split by section when it next grows.
 use crate::error::CoreError;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -356,12 +358,45 @@ impl Default for UpdateConfig {
 impl UpdateConfig {
     /// Resolve the effective channel, migrating legacy `include_prerelease`
     /// if `channel` is still at its default.
+    ///
+    /// Pre-1.0 resolution (#11453, owner decision 2026-08-27): while the running
+    /// build is itself a pre-release (its version carries a semver `-` tag), a
+    /// `Stable` selection resolves to `PreRelease`. The stable channel has never
+    /// published anything such a build could update to, so leaving the default
+    /// there means default installs silently never update. The rule retires
+    /// itself: the first stable build carries no pre-release tag, so configs
+    /// that recorded `stable` converge back to the real stable channel without
+    /// any config rewrite or migration step.
     pub fn effective_channel(&self) -> UpdateChannel {
-        if self.channel == UpdateChannel::Stable && self.include_prerelease {
-            UpdateChannel::PreRelease
-        } else {
-            self.channel
+        Self::resolve_channel(
+            self.channel,
+            self.include_prerelease,
+            Self::version_is_prerelease(env!("CARGO_PKG_VERSION")),
+        )
+    }
+
+    /// Pure resolution rule behind [`Self::effective_channel`], separated so the
+    /// build-version dimension is testable on any checkout.
+    fn resolve_channel(
+        channel: UpdateChannel,
+        legacy_include_prerelease: bool,
+        build_is_prerelease: bool,
+    ) -> UpdateChannel {
+        if channel == UpdateChannel::Stable && legacy_include_prerelease {
+            return UpdateChannel::PreRelease;
         }
+        if channel == UpdateChannel::Stable && build_is_prerelease {
+            return UpdateChannel::PreRelease;
+        }
+        channel
+    }
+
+    /// Whether `version` carries a semver pre-release tag. The workspace version
+    /// is shared, so the compile-time crate version passed at the call site
+    /// equals the app version (`0.0.1-rc.N` while pre-1.0). Parameterized so
+    /// both answers are testable on any checkout.
+    fn version_is_prerelease(version: &str) -> bool {
+        version.contains('-')
     }
 }
 
@@ -696,6 +731,85 @@ mod tests {
         config
             .validate_integrity_policy()
             .expect("serde-defaulted UpdateConfig must validate");
+    }
+
+    // ── #11453: pre-1.0 channel resolution ─────────────────────────
+
+    #[test]
+    fn stable_channel_resolves_to_prerelease_on_prerelease_builds() {
+        assert_eq!(
+            UpdateConfig::resolve_channel(UpdateChannel::Stable, false, true),
+            UpdateChannel::PreRelease,
+            "a pre-release build with the default Stable channel must follow \
+             the pre-release channel, or default installs never see an update"
+        );
+    }
+
+    #[test]
+    fn stable_channel_stays_stable_on_stable_builds() {
+        assert_eq!(
+            UpdateConfig::resolve_channel(UpdateChannel::Stable, false, false),
+            UpdateChannel::Stable,
+            "the pre-1.0 resolution must retire itself on the first stable build"
+        );
+    }
+
+    #[test]
+    fn explicit_channel_choices_are_never_overridden() {
+        for build_is_prerelease in [false, true] {
+            assert_eq!(
+                UpdateConfig::resolve_channel(
+                    UpdateChannel::PreRelease,
+                    false,
+                    build_is_prerelease
+                ),
+                UpdateChannel::PreRelease,
+            );
+            assert_eq!(
+                UpdateConfig::resolve_channel(UpdateChannel::Nightly, false, build_is_prerelease),
+                UpdateChannel::Nightly,
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_include_prerelease_still_migrates() {
+        assert_eq!(
+            UpdateConfig::resolve_channel(UpdateChannel::Stable, true, false),
+            UpdateChannel::PreRelease,
+        );
+    }
+
+    #[test]
+    fn version_prerelease_detection_answers_both_ways() {
+        // Both directions on any checkout — this is what lets mutation testing
+        // kill `-> true`/`-> false` replacements regardless of build flavor.
+        assert!(UpdateConfig::version_is_prerelease("0.0.1-rc.10"));
+        assert!(!UpdateConfig::version_is_prerelease("1.0.0"));
+        // Build metadata (`+`) is not a pre-release tag.
+        assert!(!UpdateConfig::version_is_prerelease("1.0.0+build5"));
+    }
+
+    #[test]
+    fn effective_channel_honors_explicit_nightly_choice() {
+        let config = UpdateConfig {
+            channel: UpdateChannel::Nightly,
+            ..UpdateConfig::default()
+        };
+        assert_eq!(config.effective_channel(), UpdateChannel::Nightly);
+    }
+
+    #[test]
+    fn effective_channel_matches_build_flavor_of_this_checkout() {
+        // env!(CARGO_PKG_VERSION) is a compile-time constant, so this test pins
+        // the resolution to the actual build flavor of the current checkout.
+        let config = UpdateConfig::default();
+        let expected = if env!("CARGO_PKG_VERSION").contains('-') {
+            UpdateChannel::PreRelease
+        } else {
+            UpdateChannel::Stable
+        };
+        assert_eq!(config.effective_channel(), expected);
     }
 
     #[test]

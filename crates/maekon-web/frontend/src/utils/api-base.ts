@@ -93,6 +93,19 @@ export function resolveImageUrl(url: string | null | undefined): string | null {
   return `http://127.0.0.1:${resolvedPort}${url}`
 }
 
+/**
+ * Resolve a frame-image URL for an authenticated fetch.
+ *
+ * Unlike the synchronous raw-`<img>` helper above, Tauri callers must await
+ * the live Axum port. Maekon and Maekon Dev can run side by side, so pinning a
+ * request to the default port before `get_web_port` resolves can target the
+ * other app identity and make every Timeline thumbnail unavailable (#11648).
+ */
+export async function resolveFrameImageRequestUrl(url: string | null | undefined): Promise<string | null> {
+  if (!url) return null
+  return resolveApiUrl(url)
+}
+
 // ── E20-41 (#4833): per-session local-API auth token ────────────────────────
 // The internal /api requires this token (X-Local-Auth header for fetch, or the
 // maekon_local_auth cookie for EventSource/SSE which cannot set headers). The

@@ -385,6 +385,46 @@ fn installers_copy_and_smoke_check_sandbox_worker_sidecar() {
 }
 
 #[test]
+fn macos_release_verifies_final_app_bundles_and_uses_apple_build_versions() {
+    let root = repo_root();
+    let release = fs::read_to_string(root.join(".github/workflows/release.yml"))
+        .expect("release workflow is readable");
+    let notarize =
+        fs::read_to_string(root.join(".github/workflows/notarize-macos-release-assets.yml"))
+            .expect("notarization workflow is readable");
+    let installer_smoke = fs::read_to_string(root.join("scripts/release-installer-smoke-macos.sh"))
+        .expect("macOS installer smoke script is readable");
+    let verifier = fs::read_to_string(root.join("scripts/verify-macos-app-bundle.sh"))
+        .expect("macOS app bundle verifier is readable");
+
+    assert!(
+        release.contains("BUNDLE_BUILD_VERSION=\"$(python3 scripts/macos-bundle-version.py"),
+        "release packaging should convert SemVer prereleases into Apple-compatible build versions"
+    );
+    assert!(
+        release.matches("./scripts/verify-macos-app-bundle.sh").count() >= 2,
+        "release packaging should verify both the signed staging app and the app copied into the DMG"
+    );
+    assert!(
+        notarize.contains("./scripts/verify-macos-app-bundle.sh"),
+        "notarization should re-verify the app inside the final stapled DMG"
+    );
+    assert!(
+        installer_smoke
+            .matches("$SCRIPT_DIR/verify-macos-app-bundle.sh")
+            .count()
+            >= 2,
+        "installer smoke should verify app signatures from both DMG and PKG paths"
+    );
+    assert!(
+        verifier.contains("Info.plist=not bound")
+            && verifier.contains("invalid entitlements blob")
+            && verifier.contains("--arch"),
+        "bundle verifier should reject the three rc.10 failure signals"
+    );
+}
+
+#[test]
 fn pkg_builder_supports_unsigned_builds_with_strict_shell_options() {
     let root = repo_root();
     let script = fs::read_to_string(root.join("src-tauri/pkg/build-pkg.sh"))

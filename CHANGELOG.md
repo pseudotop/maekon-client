@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- macOS startup now continues with console and telemetry logging when the user
+  log directory cannot be created or opened, instead of panicking before the
+  desktop window appears.
+- macOS release packaging now uses an Apple-compatible build version, signs
+  nested code before sealing the app, and rejects installers when the final
+  DMG or PKG app has an unbound `Info.plist`, malformed entitlements, or an
+  invalid architecture-specific signature.
+
 ## [0.0.1-rc.10] - 2026-08-24
 
 ### Added

@@ -51,13 +51,50 @@ pub(crate) enum PassiveOverlayWindowPolicy {
 
 pub(crate) fn passive_overlay_window_policy(
     coaching_visible: bool,
-    effective_capture_permitted: bool,
     cua_safe_mode: bool,
 ) -> PassiveOverlayWindowPolicy {
-    if coaching_visible || (effective_capture_permitted && !cua_safe_mode) {
+    // #11647: capture permission alone must never keep a display-sized,
+    // transparent WebView alive. ScreenCaptureKit exposes that auxiliary
+    // window as ordinary shareable content, so selecting it produces a black
+    // frame instead of the desktop. Only actual overlay content may require
+    // this surface; the tray, tracking panel, and main-window status continue
+    // to communicate passive capture state.
+    if coaching_visible && !cua_safe_mode {
         PassiveOverlayWindowPolicy::FullScreenClickThrough
     } else {
         PassiveOverlayWindowPolicy::Hidden
+    }
+}
+
+/// Whether a display-sized pointer-context overlay is safe on this platform.
+///
+/// macOS ScreenCaptureKit treats a transparent full-display NSWindow as a
+/// normal shareable window. Maekon therefore keeps pointer context in its
+/// captured event data on macOS without projecting it through an auxiliary
+/// full-screen GUI surface (#11647).
+pub(crate) fn pointer_context_overlay_supported(_target_os: &str) -> bool {
+    _target_os != "macos"
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PointerContextOverlayAction {
+    #[default]
+    Suppress,
+    EmitOnly,
+    ShowAndEmit,
+}
+
+fn pointer_context_overlay_action(
+    _target_os: &str,
+    _pointer_context_enabled: bool,
+) -> PointerContextOverlayAction {
+    match (
+        pointer_context_overlay_supported(_target_os),
+        _pointer_context_enabled,
+    ) {
+        (false, _) => PointerContextOverlayAction::Suppress,
+        (true, false) => PointerContextOverlayAction::EmitOnly,
+        (true, true) => PointerContextOverlayAction::ShowAndEmit,
     }
 }
 
@@ -95,25 +132,6 @@ pub(crate) fn current_passive_tracking_surface_policy(
         indicator_visible,
         capture_paused,
     )
-}
-
-/// #8094: the macOS native recording border may show ONLY when capture is
-/// effectively permitted, the indicator is visible, capture is not paused, and
-/// CUA safe mode is off. Pure so it is unit-testable on every platform (the
-/// `#[cfg(target_os = "macos")]` call sites that consume it are not).
-// All non-test callers (commands/capture_status, setup/platform,
-// reconcile_capture_indicator below) are `#[cfg(target_os = "macos")]`-gated,
-// so on other platforms the lib build sees no user — mirror the
-// `native_border::mod.rs` pattern to keep the fn cross-platform-testable
-// without tripping the deny(dead_code) CI build on Linux/Windows.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn native_recording_border_visible(
-    effective_capture_permitted: bool,
-    indicator_visible: bool,
-    capture_paused: bool,
-    cua_safe_mode: bool,
-) -> bool {
-    effective_capture_permitted && indicator_visible && !capture_paused && !cua_safe_mode
 }
 
 /// Reads the EFFECTIVE capture-permitted gate (the same `capture_permitted_now`
@@ -155,8 +173,8 @@ pub(crate) fn sync_passive_tracking_surface<R: Runtime>(
     }
 }
 
-/// #8094: reconcile BOTH recording-indicator surfaces (Windows passive thin-
-/// border + macOS native border) to the live effective capture gate.
+/// #8094: reconcile the capture-compatible passive border surface to the live
+/// effective capture gate.
 ///
 /// Call after any transition that can change the effective gate WITHOUT already
 /// syncing the border — notably a consent grant/revoke, which opens or closes
@@ -171,24 +189,8 @@ pub(crate) fn reconcile_capture_indicator(app: &AppHandle) {
     };
     let paused = state.capture_paused.load(Ordering::Relaxed);
     let indicator_visible = state.indicator_visible.load(Ordering::Relaxed);
-    // Windows passive border (effective gate computed inside).
+    // Capture-compatible passive border (effective gate computed inside).
     sync_passive_tracking_surface(app, paused, indicator_visible);
-    // macOS native border.
-    #[cfg(target_os = "macos")]
-    if let Some(border) = app.try_state::<crate::native_border::NativeBorderState>() {
-        let effective = effective_capture_permitted(&state, paused);
-        border.0.set_paused(paused);
-        if native_recording_border_visible(
-            effective,
-            indicator_visible,
-            paused,
-            crate::app_runtime_launch::cua_safe_mode_enabled(),
-        ) {
-            border.0.show();
-        } else {
-            border.0.hide();
-        }
-    }
 }
 
 // ── #7076: least-privilege event scoping ────────────────────────────────
@@ -579,22 +581,11 @@ impl MagicOverlayHandle {
     ///   1. Automation Confirm — full-screen interactive (modal backdrop)
     ///   2. Detection — full-screen interactive (inspection mode)
     ///   3. Suggestions Panel — compact right-edge strip interactive
-    ///   4. Passive capture/coaching — full-screen click-through
+    ///   4. Visible coaching — full-screen click-through
     ///   5. Idle — hidden
     fn apply_window_layout(&self, state: &OverlayState) {
-        let effective_capture = self
-            .app_handle
-            .try_state::<crate::runtime_state::AppState>()
-            .map(|app_state| {
-                let paused = app_state
-                    .capture_paused
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                effective_capture_permitted(&app_state, paused)
-            })
-            .unwrap_or(false);
         let passive_policy = passive_overlay_window_policy(
             state.visible,
-            effective_capture,
             crate::app_runtime_launch::cua_safe_mode_enabled(),
         );
         let window_required = state.automation_confirm_active
@@ -863,16 +854,24 @@ impl MagicOverlayHandle {
         );
     }
 
+    // OS-window creation and Tauri event delivery are covered by the physical
+    // ScreenCaptureKit receipt. Mutation-test the pure action policy above;
+    // synthetic Tauri mutations cannot prove source enumeration behavior.
+    #[mutants::skip]
     pub fn emit_pointer_context(&self, payload: OverlayPointerContextPayload) {
-        if payload.enabled {
-            if let Err(e) = self.ensure_window() {
-                debug!("ensure_window failed for pointer context: {e}");
-            } else if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
-                let _ = window.set_ignore_cursor_events(true);
-                if let Err(e) = show_overlay_window(&window) {
-                    debug!("pointer context window show failed: {e}");
+        match pointer_context_overlay_action(std::env::consts::OS, payload.enabled) {
+            PointerContextOverlayAction::Suppress => return,
+            PointerContextOverlayAction::ShowAndEmit => {
+                if let Err(e) = self.ensure_window() {
+                    debug!("ensure_window failed for pointer context: {e}");
+                } else if let Some(window) = self.app_handle.get_webview_window(OVERLAY_LABEL) {
+                    let _ = window.set_ignore_cursor_events(true);
+                    if let Err(e) = show_overlay_window(&window) {
+                        debug!("pointer context window show failed: {e}");
+                    }
                 }
             }
+            PointerContextOverlayAction::EmitOnly => {}
         }
 
         // Pointer coordinates are screen-content-derived data. Keep them in

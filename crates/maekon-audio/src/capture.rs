@@ -764,7 +764,7 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Cor
     }
     let params = SincInterpolationParameters {
         sinc_len: 256,
-        f_cutoff: 0.95,
+        f_cutoff: Some(0.95),
         interpolation: SincInterpolationType::Linear,
         oversampling_factor: 256,
         window: WindowFunction::BlackmanHarris2,
@@ -798,7 +798,7 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Cor
                 message: format!("resample input adapter: {e}"),
             })?;
         let mut resampled = resampler
-            .process(&input_adapter, 0, None)
+            .process(&input_adapter, None)
             .map_err(|e| CoreError::AudioCapture {
                 code: maekon_core::error_codes::AudioCode::CaptureFailed,
                 message: format!("resample: {e}"),
@@ -825,7 +825,7 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Cor
                 }
             })?;
         let mut resampled = resampler
-            .process(&input_adapter, 0, None)
+            .process(&input_adapter, None)
             .map_err(|e| CoreError::AudioCapture {
                 code: maekon_core::error_codes::AudioCode::CaptureFailed,
                 message: format!("resample tail: {e}"),

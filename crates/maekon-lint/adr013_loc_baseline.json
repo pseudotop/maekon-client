@@ -19,6 +19,7 @@
   "crates/maekon-core/src/config/managed.rs": 1402,
   "crates/maekon-core/src/config/sections/analysis.rs": 1178,
   "crates/maekon-core/src/config/sections/privacy.rs": 1052,
+  "crates/maekon-core/src/config/sections/storage.rs": 956,
   "crates/maekon-core/src/config_manager/tests.rs": 1519,
   "crates/maekon-core/src/consent.rs": 1906,
   "crates/maekon-core/src/ivf_index.rs": 1309,

@@ -762,6 +762,7 @@ jobs:
             Write-Error "Missing WiX license file: src-tauri/wix/license.rtf"
             exit 1
           }
+          python scripts/verify_wix_installer_assets.py
 
       # ── MSI 인스톨러 (Windows only) ──
       - name: Install cargo-wix
@@ -783,8 +784,14 @@ jobs:
       - name: Build MSI installer
         if: runner.os == 'Windows'
         shell: bash
-        working-directory: src-tauri
-        run: ../scripts/cargo-cache.sh wix -p maekon-app --nocapture --target ${{ matrix.target }} --no-build --target-bin-dir ../target/${{ matrix.target }}/release
+        run: bash ./scripts/build-localized-msi.sh "${{ matrix.target }}" "../target/${{ matrix.target }}/release" all
+
+      - name: Verify localized MSI wizard metadata
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msiFiles = @(Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)
+          ./scripts/verify-localized-msi-metadata.ps1 -MsiPath $msiFiles.FullName
 
       - name: Build NSIS setup installer
         if: runner.os == 'Windows'
@@ -856,14 +863,21 @@ jobs:
           Expand-Archive -LiteralPath "dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}" -DestinationPath $zipRoot
           node scripts/verify-windows-runtime-closure.mjs --payload-root $zipRoot --dependency-tool $dumpbin.FullName
 
-          $msi = Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (!$msi) { throw "No MSI file found for runtime closure verification" }
-          $msiRoot = Join-Path $env:RUNNER_TEMP "maekon-msi-runtime-closure"
-          Remove-Item -LiteralPath $msiRoot -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Path $msiRoot -Force | Out-Null
-          & msiexec.exe /a $msi.FullName /qn "TARGETDIR=$msiRoot"
-          if ($LASTEXITCODE -ne 0) { throw "MSI administrative extraction failed with exit $LASTEXITCODE" }
-          node scripts/verify-windows-runtime-closure.mjs --payload-root $msiRoot --dependency-tool $dumpbin.FullName
+          $msiFiles = @(Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)
+          if ($msiFiles.Count -ne 2) { throw "Expected exactly two localized MSI files, found $($msiFiles.Count)" }
+          foreach ($locale in @("en-US", "ko-KR")) {
+            if (@($msiFiles | Where-Object { $_.Name -like "*-$locale-*" }).Count -ne 1) {
+              throw "Expected exactly one $locale MSI file"
+            }
+          }
+          foreach ($msi in $msiFiles) {
+            $msiRoot = Join-Path $env:RUNNER_TEMP "maekon-msi-runtime-closure-$($msi.BaseName)"
+            Remove-Item -LiteralPath $msiRoot -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $msiRoot -Force | Out-Null
+            & msiexec.exe /a $msi.FullName /qn "TARGETDIR=$msiRoot"
+            if ($LASTEXITCODE -ne 0) { throw "MSI administrative extraction failed for $($msi.Name) with exit $LASTEXITCODE" }
+            node scripts/verify-windows-runtime-closure.mjs --payload-root $msiRoot --dependency-tool $dumpbin.FullName
+          }
 
           $setup = Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis","src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (!$setup) { throw "No NSIS setup file found for runtime closure verification" }
@@ -873,6 +887,34 @@ jobs:
           & 7z.exe x "-o$nsisRoot" -y $setup.FullName
           if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed with exit $LASTEXITCODE" }
           node scripts/verify-windows-runtime-closure.mjs --payload-root $nsisRoot --dependency-tool $dumpbin.FullName
+
+      - name: Record Windows Authenticode policy state
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $policy = Get-Content -LiteralPath "supply-chain/windows-authenticode-policy.json" -Raw | ConvertFrom-Json
+          $mode = switch ($policy.enforcement_state) {
+            "prepared_not_active" { "Report" }
+            "active" { "Required" }
+            default { throw "Unknown Authenticode enforcement state: $($policy.enforcement_state)" }
+          }
+          $msiFiles = @(Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue)
+          $setupFiles = @(Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis","src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue)
+          $artifacts = @(
+            "target/${{ matrix.target }}/release/maekon.exe",
+            "target/${{ matrix.target }}/release/maekon-sandbox-worker.exe"
+          ) + $msiFiles.FullName + $setupFiles.FullName
+          $verification = @{
+            Path = $artifacts
+            Mode = $mode
+            ExpectedPublisherSubject = [string] $policy.publisher_subject
+            ReceiptPath = "dist/windows-authenticode-receipt.json"
+          }
+          if ($mode -eq "Required") {
+            $verification.RequireTimestamp = $true
+            $verification.RequireSignTool = $true
+          }
+          ./scripts/verify-windows-authenticode.ps1 @verification
 
       - name: Generate checksums
         if: runner.os != 'Windows'
@@ -894,6 +936,7 @@ jobs:
           path: |
             dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}
             dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}.sha256
+            dist/windows-authenticode-receipt.json
           if-no-files-found: error
 
       - name: Verify MSI version
@@ -908,16 +951,23 @@ jobs:
           # (MAJOR.MINOR.PATCH.BUILD). So `0.0.1-rc.1` becomes `0.0.1.1` in
           # the MSI filename. Build the expected pattern accordingly.
           $expectedMsiPattern = $expectedVersion -replace '-rc\.', '.'
-          $msiFile = Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $msiFile) { Write-Error "No MSI file found"; exit 1 }
-          $msiName = $msiFile.Name
-          Write-Host "MSI file: $msiName, expected pattern: $expectedMsiPattern"
+          $msiFiles = @(Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)
+          if ($msiFiles.Count -ne 2) { Write-Error "Expected exactly two localized MSI files, found $($msiFiles.Count)"; exit 1 }
           $escapedPattern = [regex]::Escape($expectedMsiPattern)
-          if ($msiName -notmatch $escapedPattern) {
-            Write-Error "MSI version mismatch: file=$msiName expected pattern=$expectedMsiPattern"
-            exit 1
+          foreach ($locale in @("en-US", "ko-KR")) {
+            $localized = @($msiFiles | Where-Object { $_.Name -like "*-$locale-*" })
+            if ($localized.Count -ne 1) {
+              Write-Error "Expected exactly one $locale MSI file"
+              exit 1
+            }
+            $msiName = $localized[0].Name
+            Write-Host "MSI file: $msiName, expected pattern: $expectedMsiPattern"
+            if ($msiName -notmatch $escapedPattern) {
+              Write-Error "MSI version mismatch: file=$msiName expected pattern=$expectedMsiPattern"
+              exit 1
+            }
           }
-          Write-Host "MSI version check passed"
+          Write-Host "Localized MSI version checks passed"
 
       - name: Verify DEB version
         if: runner.os == 'Linux'
@@ -1186,6 +1236,7 @@ jobs:
         shell: bash
         run: |
           VERSION="${TAG_REF#v}"
+          BUNDLE_BUILD_VERSION="$(python3 scripts/macos-bundle-version.py "$VERSION")"
           APP_BUNDLE="dist/Maekon.app"
           mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
           cp binaries/maekon "$APP_BUNDLE/Contents/MacOS/maekon"
@@ -1205,7 +1256,7 @@ jobs:
             <key>CFBundleIdentifier</key>
             <string>com.maekon.app</string>
             <key>CFBundleVersion</key>
-            <string>${VERSION}</string>
+            <string>${BUNDLE_BUILD_VERSION}</string>
             <key>CFBundleShortVersionString</key>
             <string>${VERSION}</string>
             <key>CFBundleExecutable</key>
@@ -1239,28 +1290,50 @@ jobs:
           </dict>
           </plist>
           EOF
+          python3 scripts/macos_tcc_usage_descriptions.py merge \
+            --canonical src-tauri/assets/Info.plist \
+            --target "$APP_BUNDLE/Contents/Info.plist"
 
       - name: Verify macOS app bundle version
         shell: bash
         run: |
           EXPECTED_VERSION="${TAG_REF#v}"
+          EXPECTED_BUILD_VERSION="$(python3 scripts/macos-bundle-version.py "$EXPECTED_VERSION")"
           BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" dist/Maekon.app/Contents/Info.plist)
+          BUNDLE_BUILD_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" dist/Maekon.app/Contents/Info.plist)
           echo "Expected: $EXPECTED_VERSION"
           echo "Bundle:   $BUNDLE_VERSION"
+          echo "Expected build: $EXPECTED_BUILD_VERSION"
+          echo "Bundle build:   $BUNDLE_BUILD_VERSION"
           if [ "$BUNDLE_VERSION" != "$EXPECTED_VERSION" ]; then
             echo "::error::macOS bundle version mismatch: got $BUNDLE_VERSION, expected $EXPECTED_VERSION"
+            exit 1
+          fi
+          if [ "$BUNDLE_BUILD_VERSION" != "$EXPECTED_BUILD_VERSION" ]; then
+            echo "::error::macOS bundle build version mismatch: got $BUNDLE_BUILD_VERSION, expected $EXPECTED_BUILD_VERSION"
             exit 1
           fi
 
       - name: Sign and verify macOS app bundle
         shell: bash
         run: |
-          codesign --force --deep --options runtime --timestamp \
+          # Sign nested code first, then seal the outer bundle. `--deep` signing
+          # can hide which component received which signature and let a later
+          # packaging copy expose a broken main bundle.
+          codesign --force --options runtime --timestamp \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$MACOS_APP_SIGNING_IDENTITY_RESOLVED" \
+            dist/Maekon.app/Contents/MacOS/maekon-sandbox-worker
+          codesign --force --options runtime --timestamp \
             --entitlements src-tauri/assets/maekon.entitlements \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$MACOS_APP_SIGNING_IDENTITY_RESOLVED" \
             dist/Maekon.app
-          codesign --verify --deep --strict --verbose=2 dist/Maekon.app
+          VERSION="${TAG_REF#v}"
+          ./scripts/verify-macos-app-bundle.sh \
+            --expected-short-version "$VERSION" \
+            --expected-build-version "$(python3 scripts/macos-bundle-version.py "$VERSION")" \
+            dist/Maekon.app
 
       - name: Install create-dmg
         run: brew install create-dmg
@@ -1284,14 +1357,40 @@ jobs:
             dist/maekon-macos-universal.dmg \
             dist/Maekon.app
 
+      - name: Verify signed app inside macOS DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_REF#v}"
+          DMG_MOUNTPOINT="$(mktemp -d "$RUNNER_TEMP/maekon-release-dmg.XXXXXX")"
+          cleanup_dmg_mount() {
+            hdiutil detach "$DMG_MOUNTPOINT" >/dev/null 2>&1 || true
+            rmdir "$DMG_MOUNTPOINT" >/dev/null 2>&1 || true
+          }
+          trap cleanup_dmg_mount EXIT
+          hdiutil attach dist/maekon-macos-universal.dmg \
+            -nobrowse \
+            -readonly \
+            -mountpoint "$DMG_MOUNTPOINT" >/dev/null
+          ./scripts/verify-macos-app-bundle.sh \
+            --expected-short-version "$VERSION" \
+            --expected-build-version "$(python3 scripts/macos-bundle-version.py "$VERSION")" \
+            "$DMG_MOUNTPOINT/Maekon.app"
+          python3 scripts/macos_tcc_usage_descriptions.py verify \
+            --canonical src-tauri/assets/Info.plist \
+            --target "$DMG_MOUNTPOINT/Maekon.app/Contents/Info.plist"
+          cleanup_dmg_mount
+          trap - EXIT
+
       - name: Create and sign PKG installer
         run: |
           VERSION="${TAG_REF#v}"
+          BUNDLE_BUILD_VERSION="$(python3 scripts/macos-bundle-version.py "$VERSION")"
           UNSIGNED_PKG_TMP="dist/maekon-macos-universal-pkgbuild-unsigned.pkg"
           pkgbuild \
             --component dist/Maekon.app \
             --identifier com.maekon.app \
-            --version "$VERSION" \
+            --version "$BUNDLE_BUILD_VERSION" \
             --install-location /Applications \
             "$UNSIGNED_PKG_TMP"
           productsign \
@@ -1301,6 +1400,26 @@ jobs:
             dist/maekon-macos-universal.pkg
           pkgutil --check-signature dist/maekon-macos-universal.pkg
           rm -f "$UNSIGNED_PKG_TMP"
+
+      - name: Verify TCC usage descriptions in PKG-installed app
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_INSTALL_PATH="/Applications/Maekon.app"
+          if [[ -e "$APP_INSTALL_PATH" ]]; then
+            echo "Refusing to replace a pre-existing app on the release runner: $APP_INSTALL_PATH" >&2
+            exit 1
+          fi
+          cleanup_installed_app() {
+            sudo rm -rf "$APP_INSTALL_PATH"
+          }
+          trap cleanup_installed_app EXIT
+          sudo installer -pkg dist/maekon-macos-universal.pkg -target /
+          python3 scripts/macos_tcc_usage_descriptions.py verify \
+            --canonical src-tauri/assets/Info.plist \
+            --target "$APP_INSTALL_PATH/Contents/Info.plist"
+          cleanup_installed_app
+          trap - EXIT
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -1780,7 +1899,8 @@ jobs:
           | macOS | Universal | \`maekon-macos-universal.tar.gz\` | Binary |
           | macOS | Apple Silicon | \`maekon-macos-arm64.tar.gz\` | Binary |
           | macOS | Intel | \`maekon-macos-x64.tar.gz\` | Binary |
-          | Windows | x64 | \`maekon-*.msi\` | MSI Installer |
+          | Windows | x64 | \`maekon-app-ko-KR-*.msi\` | MSI Installer (한국어) |
+          | Windows | x64 | \`maekon-app-en-US-*.msi\` | MSI Installer (English) |
           | Windows | x64 | \`maekon-windows-x64.zip\` | Binary |
           | Linux | x64 | \`maekon-*.deb\` | DEB Package |
           | Linux | x64 | \`maekon-linux-x64.tar.gz\` | Binary |

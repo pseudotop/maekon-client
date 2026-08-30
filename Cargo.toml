@@ -225,7 +225,7 @@ anyhow = "1"
 
 # 오디오 캡처 + STT
 cpal = "0.18"
-rubato = "3.0"
+rubato = "5.0"
 whisper-rs = "0.16"
 
 # 비동기 trait (dyn Trait + async fn 지원)
@@ -269,7 +269,7 @@ hex = "0.4"
 
 # LAN Sync (Phase 3b-2)
 rcgen = "0.14"
-mdns-sd = "0.20"
+mdns-sd = "0.21"
 axum-server = "0.8"
 rustls-pki-types = "1"
 
@@ -322,7 +322,7 @@ bsdiff = "0.2"
 self-replace = "1.5"
 tar = "0.4.46"
 zip = "8"
-quick-xml = "=0.39.2"
+quick-xml = "=0.42.0"
 
 # 웹 프레임워크 (Axum)
 axum = { version = "0.8", features = ["macros"] }
@@ -344,19 +344,10 @@ core-graphics = "0.25"
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-core-foundation = "0.3"
-objc2-core-graphics = { version = "0.3", features = ["CGPath", "CGColor", "CGColorSpace"] }
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication", "NSRunningApplication",
     "NSWindow", "NSView", "NSColor", "NSScreen",
     "NSGraphics", "NSResponder", "NSImage",
-] }
-objc2-quartz-core = { version = "0.3", features = [
-    "CALayer", "CAShapeLayer",
-    "CAAnimation",
-    "CAMediaTiming",
-    "CAMediaTimingFunction",
-    "objc2-core-foundation",
-    "objc2-core-graphics",
 ] }
 objc2-user-notifications = "0.3"
 

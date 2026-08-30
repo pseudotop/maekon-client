@@ -29,7 +29,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' http://127.0.0.1:10090 http://127.0.0.1:10091 http://127.0.0.1:10092 http://127.0.0.1:10093 http://127.0.0.1:10094 http://127.0.0.1:10095 http://127.0.0.1:10096 http://127.0.0.1:10097 http://127.0.0.1:10098 http://127.0.0.1:10099; connect-src 'self' http://127.0.0.1:10090 http://127.0.0.1:10091 http://127.0.0.1:10092 http://127.0.0.1:10093 http://127.0.0.1:10094 http://127.0.0.1:10095 http://127.0.0.1:10096 http://127.0.0.1:10097 http://127.0.0.1:10098 http://127.0.0.1:10099; object-src 'none'; base-uri 'self'",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: http://127.0.0.1:10090 http://127.0.0.1:10091 http://127.0.0.1:10092 http://127.0.0.1:10093 http://127.0.0.1:10094 http://127.0.0.1:10095 http://127.0.0.1:10096 http://127.0.0.1:10097 http://127.0.0.1:10098 http://127.0.0.1:10099; connect-src 'self' http://127.0.0.1:10090 http://127.0.0.1:10091 http://127.0.0.1:10092 http://127.0.0.1:10093 http://127.0.0.1:10094 http://127.0.0.1:10095 http://127.0.0.1:10096 http://127.0.0.1:10097 http://127.0.0.1:10098 http://127.0.0.1:10099; object-src 'none'; base-uri 'self'",
       "dangerousDisableAssetCspModification": false
     }
   },

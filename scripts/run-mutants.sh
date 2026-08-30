@@ -39,15 +39,20 @@ set -euo pipefail
 # leaves them missing/malformed, which fails via the checks above. The raw exit
 # code is still recorded in the receipt for triage.
 
-CRATE="maekon-core"
+# #11635: crates are collected, not last-wins. The receipt below records this
+# list verbatim, so what was scored and what the receipt claims cannot diverge.
+CRATES=()
 SCORE_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --score-only) SCORE_ONLY=1 ;;
     -*) echo "unknown option: $arg" >&2; exit 2 ;;
-    *) CRATE="$arg" ;;
+    *) CRATES+=("$arg") ;;
   esac
 done
+# A bare invocation keeps scoring maekon-core — the #10003 release target.
+if [ "${#CRATES[@]}" -eq 0 ]; then CRATES=("maekon-core"); fi
+CRATE_LABEL="${CRATES[*]}"
 
 OUT_DIR="${MUTANTS_OUT_DIR:-mutants.out}"
 MIN_SCORE="${MUTANTS_MIN_SCORE:-70}"
@@ -90,11 +95,14 @@ if [ "$SCORE_ONLY" -eq 0 ]; then
     exit 2
   fi
 
-  echo "=== cargo-mutants: $CRATE (threshold ${MIN_SCORE}%) ==="
+  echo "=== cargo-mutants: $CRATE_LABEL (threshold ${MIN_SCORE}%) ==="
+  # `-p` is repeated per crate; cargo-mutants does not accept a single "a b".
+  crate_args=()
+  for crate in "${CRATES[@]}"; do crate_args+=(-p "$crate"); done
   # Intentionally not `|| true`: the code is captured, reported and recorded,
   # but the pass/fail decision is made from the outcome files below.
   set +e
-  cargo mutants -p "$CRATE" --timeout 120
+  cargo mutants "${crate_args[@]}" --timeout 120
   mutants_exit=$?
   set -e
   echo "cargo-mutants exit code: ${mutants_exit}"
@@ -140,8 +148,20 @@ echo "Mutation score: ${score}% (${caught}/${viable} viable caught, ${missed} mi
 
 if [ -n "$RECEIPT" ]; then
   mkdir -p "$(dirname "$RECEIPT")"
-  printf '{"crate":"%s","score":%d,"threshold":%d,"caught":%d,"missed":%d,"timeout":%d,"unviable":%d,"viable":%d,"total":%d,"cargo_mutants_exit":%d}\n' \
-    "$CRATE" "$score" "$MIN_SCORE" "$caught" "$missed" "$timeout" "$unviable" "$viable" "$total" "$mutants_exit" \
+  # #11635: the receipt must name what was actually scored. A dispatch over
+  # maekon-automation+maekon-network used to be stamped "maekon-core" (run
+  # 33146994661), and the release checklist (#10003) reads this field as the
+  # core score's provenance. One crate stays a plain string so existing
+  # readers keep working; several become a JSON list.
+  if [ "${#CRATES[@]}" -eq 1 ]; then
+    crate_json="\"${CRATES[0]}\""
+  else
+    crate_json="["
+    for crate in "${CRATES[@]}"; do crate_json+="\"$crate\","; done
+    crate_json="${crate_json%,}]"
+  fi
+  printf '{"crate":%s,"score":%d,"threshold":%d,"caught":%d,"missed":%d,"timeout":%d,"unviable":%d,"viable":%d,"total":%d,"cargo_mutants_exit":%d}\n' \
+    "$crate_json" "$score" "$MIN_SCORE" "$caught" "$missed" "$timeout" "$unviable" "$viable" "$total" "$mutants_exit" \
     > "$RECEIPT"
   echo "receipt: $RECEIPT"
 fi
