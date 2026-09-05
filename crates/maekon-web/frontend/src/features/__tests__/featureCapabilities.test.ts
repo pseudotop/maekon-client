@@ -89,7 +89,7 @@ describe('featureCapabilities helpers', () => {
           availability: 'partially_available',
           provider_cli_discovery: {
             candidate_name: 'claude',
-            executable_path: 'C:/Tools/Claude Code/bin/claude.exe',
+            executable_hint: 'claude.exe',
             version_status: 'not_checked',
             dependency_status: 'stale_process_env',
             status_reason: 'claude_code_git_bash_path_requires_restart',

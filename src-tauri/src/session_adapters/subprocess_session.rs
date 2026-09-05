@@ -1348,29 +1348,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gemini_session_result_includes_usage_for_budget() {
+    async fn gemini_first_turn_produces_exactly_one_terminal_assistant_response_with_usage() {
         let temp_dir = tempdir().expect("tempdir");
         let executable_path = write_fake_gemini_session_cli(temp_dir.path());
         let session = gemini_session_with_executable(executable_path);
         let mut stream = session
-            .send_message(&basic_session_message("budget me"))
+            .send_message(&basic_session_message("Reply with READY."))
             .await
             .expect("fake Gemini session should start");
 
-        let item = stream
-            .next()
-            .await
-            .expect("stream should yield result")
-            .expect("result should not error");
-
-        match item {
-            OutboundMessage::Result { usage, .. } => {
-                let usage = usage.expect("Gemini session must not bypass token budget");
-                assert!(usage.input_tokens > 0);
-                assert!(usage.output_tokens > 0);
+        let mut terminal_responses = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("fake subprocess stream should not error") {
+                OutboundMessage::Result {
+                    content,
+                    done: true,
+                    usage,
+                } => {
+                    let usage = usage.expect("Gemini session must not bypass token budget");
+                    assert!(usage.input_tokens > 0);
+                    assert!(usage.output_tokens > 0);
+                    terminal_responses.push(content);
+                }
+                OutboundMessage::Text { .. } => {}
+                other => panic!("unexpected message: {other:?}"),
             }
-            other => panic!("unexpected message: {other:?}"),
         }
+
+        assert_eq!(terminal_responses.len(), 1);
+        assert!(terminal_responses[0].contains("Reply with READY."));
     }
 
     #[test]

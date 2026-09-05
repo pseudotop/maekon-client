@@ -308,9 +308,24 @@ impl Scheduler {
         // Clone the LLM summarizer Arc (if present) before the adaptive trigger
         // state is moved into the monitor loop. The aggregation loop uses this to
         // generate LLM narratives for daily digests.
-        let llm_summarizer_for_digest = adaptive_trigger_state
-            .as_ref()
-            .and_then(|ts| ts.llm_summarizer.clone());
+        let (
+            llm_summarizer_for_digest,
+            llm_summary_provider_class_for_digest,
+            llm_summary_unavailable_reason_for_digest,
+        ) = adaptive_trigger_state.as_ref().map_or(
+            (
+                None,
+                None,
+                Some(maekon_core::models::ai_summary::AiSummaryFailureReason::PipelineDisabled),
+            ),
+            |ts| {
+                (
+                    ts.llm_summarizer.clone(),
+                    ts.llm_summary_provider_class,
+                    ts.llm_summary_unavailable_reason,
+                )
+            },
+        );
 
         // Construct GUI pipeline state if enabled + consented
         if let Some(ref mut ts) = adaptive_trigger_state {
@@ -465,6 +480,8 @@ impl Scheduler {
         reg!("aggregation", move |rx| self.spawn_aggregation_loop(
             aggregation,
             llm_summarizer_for_digest.clone(),
+            llm_summary_provider_class_for_digest,
+            llm_summary_unavailable_reason_for_digest,
             rx
         ));
 

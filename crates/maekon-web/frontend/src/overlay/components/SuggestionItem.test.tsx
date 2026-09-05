@@ -52,6 +52,15 @@ describe('SuggestionItem action binding (#7917 / ADR-027)', () => {
     invokeMock.mockReset()
   })
 
+  it('renders localized producer and exact creation-time provenance', () => {
+    render(<SuggestionItem item={makeSuggestion({ source: 'local' })} onAction={vi.fn()} />)
+
+    const timestamp = screen.getByTestId('suggestion-created-at')
+    expect(timestamp).toHaveAttribute('datetime', '2026-07-08T10:30:00Z')
+    expect(timestamp.textContent).not.toBe('')
+    expect(timestamp.parentElement).toHaveTextContent('suggestions.sourceLocal')
+  })
+
   it('renders no Run button and keeps the lock badge when the DTO carries no action', () => {
     render(<SuggestionItem item={makeSuggestion()} onAction={vi.fn()} />)
 

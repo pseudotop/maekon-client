@@ -32,6 +32,7 @@ impl SqliteStorage {
         timeline_json: &str,
         statistics_json: &str,
         generated_at_str: &str,
+        ai_narrative_status_json: &str,
     ) -> Result<DailyDigest, CoreError> {
         let date = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").map_err(|e| {
             CoreError::Storage {
@@ -57,6 +58,7 @@ impl SqliteStorage {
         let generated_at = chrono::DateTime::parse_from_rfc3339(generated_at_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
+        let ai_narrative = serde_json::from_str(ai_narrative_status_json).unwrap_or_default();
 
         Ok(DailyDigest {
             date,
@@ -64,6 +66,8 @@ impl SqliteStorage {
             timeline,
             statistics,
             generated_at,
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative,
         })
     }
 }

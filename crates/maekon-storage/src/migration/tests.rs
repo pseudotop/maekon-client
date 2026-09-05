@@ -4,6 +4,47 @@ use super::*;
 use rusqlite::Connection;
 
 #[test]
+fn upgrade_from_exact_v56_preserves_rows_and_defaults_summary_provenance() {
+    let conn = Connection::open_in_memory().unwrap();
+    run_migrations_to(&conn, 56).unwrap();
+    conn.execute(
+        "INSERT INTO activity_segments
+         (id, start_time, end_time, duration_secs, trigger_reason, dominant_category,
+          hlc_wall_ms, hlc_counter, origin_device_id)
+         VALUES ('legacy-segment', '2026-09-02T00:00:00Z', '2026-09-02T00:01:00Z',
+                 60, 'timer', 'Development', 1, 0, 'legacy-device')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO daily_digests (date, timeline_json, statistics_json, generated_at)
+         VALUES ('2026-09-02', '[]', '{}', '2026-09-02T23:59:00Z')",
+        [],
+    )
+    .unwrap();
+
+    run_migrations_to(&conn, 57).unwrap();
+
+    let segment_status: String = conn
+        .query_row(
+            "SELECT llm_summary_status_json FROM activity_segments WHERE id='legacy-segment'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let narrative_status: String = conn
+        .query_row(
+            "SELECT ai_narrative_status_json FROM daily_digests WHERE date='2026-09-02'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(segment_status, "{}");
+    assert_eq!(narrative_status, "{}");
+    assert_eq!(get_version(&conn).unwrap(), 57);
+}
+
+#[test]
 fn upgrade_from_exact_v53_runs_v54_repair_before_v55() {
     let conn = Connection::open_in_memory().unwrap();
     run_migrations_to(&conn, 53).unwrap();

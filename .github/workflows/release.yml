@@ -551,7 +551,11 @@ jobs:
             target: aarch64-apple-darwin
             artifact_name: maekon-macos-arm64
             asset_ext: tar.gz
-          - os: macos-14
+          # #11595: `macos-14` 는 Apple Silicon 이다. x86_64 를 그 위에서 만들면
+          # 크로스빌드가 되어 배포 슬라이스가 Intel 에서 한 번도 실행되지 않는다
+          # (Rosetta 는 AVX 를 지원하지 않아 whisper/GGML 의 x86 SIMD 경로가 영영
+          # 안 돈다). `macos-15-intel` 은 실제 Intel hosted 러너다 — 되돌리지 말 것.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact_name: maekon-macos-x64
             asset_ext: tar.gz

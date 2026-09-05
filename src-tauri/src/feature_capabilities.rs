@@ -70,6 +70,10 @@ pub struct FeatureCapability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FeatureCapabilitySnapshot {
     pub features: Vec<FeatureCapability>,
+    /// #11735: privacy-safe AI capability readiness derived from the same
+    /// bounded provider probes as this snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_readiness: Option<maekon_core::ai_readiness::AiReadinessSnapshot>,
     /// COMPILE-capability flag (#7600): whether this binary was built with the
     /// `audio` cargo feature. `maekon-audio` (cpal capture + Whisper STT) is
     /// compiled OUT of the shipped `grpc,windows-sandbox` release build, so
@@ -222,6 +226,7 @@ async fn build_feature_capability_snapshot_with_probes(
                 platform_capability_flags();
             return FeatureCapabilitySnapshot {
                 features: Vec::new(),
+                ai_readiness: None,
                 audio_compiled: cfg!(feature = "audio"),
                 ocr_available,
                 power_status_available,
@@ -257,6 +262,7 @@ async fn build_feature_capability_snapshot_with_probes(
         platform_capability_flags();
     FeatureCapabilitySnapshot {
         features,
+        ai_readiness: None,
         audio_compiled: cfg!(feature = "audio"),
         ocr_available,
         power_status_available,
@@ -1406,6 +1412,7 @@ mod tests {
                     candidate_name: "codex".to_string(),
                     executable_path: "C:\\Users\\alice\\AppData\\Local\\Programs\\Codex\\codex.exe"
                         .to_string(),
+                    executable_hint: "codex.exe".to_string(),
                     version_status:
                         crate::subprocess_provider::SubprocessCliVersionStatus::NotChecked,
                     dependency_status: SubprocessCliDependencyStatus::Ready,
@@ -1420,6 +1427,7 @@ mod tests {
                 setup_docs_url: None,
                 configuration_env_vars: vec![],
             }],
+            ai_readiness: None,
             audio_compiled: false,
             ocr_available: false,
             power_status_available: false,
@@ -1431,6 +1439,10 @@ mod tests {
         let diagnostics = provider_cli_diagnostics_from_snapshot(&snapshot);
 
         assert_eq!(diagnostics.len(), 1);
+        let serialized = serde_json::to_string(&snapshot).expect("serialize capability snapshot");
+        assert!(!serialized.contains("alice"));
+        assert!(!serialized.contains("executable_path"));
+        assert!(serialized.contains("\"executable_hint\":\"codex.exe\""));
         assert_eq!(
             diagnostics[0].surface_id,
             "provider_surface.openai.subprocess_cli"

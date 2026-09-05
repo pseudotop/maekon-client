@@ -30,6 +30,7 @@
 //! # maekon-core
 
 pub mod ai_model_lifecycle_policy;
+pub mod ai_readiness;
 pub mod app_registry;
 pub mod backoff;
 pub mod binary_quantizer;

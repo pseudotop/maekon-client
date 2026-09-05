@@ -1851,6 +1851,78 @@
     "reauthDescription": "OAuth 세션이 만료되었습니다. 다시 연결해 주세요.",
     "switchToCli": "{{surface}}로 대신 사용"
   },
+  "aiReadiness": {
+    "readyTitle": "AI 기능을 사용할 수 있습니다",
+    "blockedTitle": "AI 설정이 필요합니다",
+    "capability": {
+      "chatSubprocess": "AI 채팅 · 구독 CLI",
+      "chatHttpApi": "AI 채팅 · provider API",
+      "chatLocalLlm": "AI 채팅 · 로컬 모델",
+      "ocrCapture": "OCR 캡처",
+      "ocrSuggestionAnalysis": "OCR 기반 AI 제안",
+      "segmentSummary": "AI 구간 요약",
+      "dailyNarrative": "AI 일일 내러티브"
+    },
+    "reason": {
+      "ready": "사용 가능",
+      "compiled_capability_missing": "이 빌드에 필요한 기능이 포함되어 있지 않습니다.",
+      "runtime_flag_disabled": "필요한 기능이 꺼져 있습니다.",
+      "consent_required": "필요한 개인정보 동의가 허용되지 않았습니다.",
+      "access_mode_mismatch": "선택한 AI 접근 방식과 provider 경로가 맞지 않습니다.",
+      "endpoint_or_profile_required": "provider endpoint 또는 profile을 선택하세요.",
+      "provider_not_detected": "선택한 provider를 찾지 못했습니다.",
+      "provider_auth_required": "provider 인증이 필요합니다.",
+      "provider_auth_unverified": "provider 인증이 확인되지 않았습니다.",
+      "provider_invocation_unavailable": "provider를 호출할 수 없습니다.",
+      "provider_invocation_unverified": "provider 호출 가능 여부가 확인되지 않았습니다.",
+      "model_unavailable": "선택한 모델을 사용할 수 없습니다.",
+      "model_availability_unverified": "모델 사용 가능 여부가 확인되지 않았습니다.",
+      "hot_rewire_required": "실행 중인 AI 서비스를 다시 연결하려면 설정을 다시 적용하세요.",
+      "restart_required": "이 설정을 적용하려면 Maekon을 다시 시작하세요.",
+      "privacy_gate_unavailable": "privacy gate를 사용할 수 없습니다.",
+      "egress_gate_unavailable": "외부 데이터 정책 gate를 사용할 수 없습니다.",
+      "budget_gate_unavailable": "AI 사용 예산 gate를 사용할 수 없습니다.",
+      "audit_gate_unavailable": "AI audit gate를 사용할 수 없습니다."
+    },
+    "action": {
+      "none": "필요한 조치 없음",
+      "openAiSettings": "AI 설정 열기",
+      "openPrivacyConsent": "개인정보 동의 확인",
+      "enableFeature": "필요한 기능 켜기",
+      "installProvider": "지원되는 provider 설치",
+      "authenticateProvider": "provider 로그인",
+      "verifyProviderInvocation": "provider 호출 가능 여부 확인",
+      "selectModel": "모델 선택 및 확인",
+      "applyHotRewire": "설정을 다시 적용해 AI 재배선",
+      "restartApp": "설정을 적용하려면 Maekon 재시작",
+      "reviewPrivacy": "privacy gate 확인",
+      "reviewEgress": "외부 데이터 정책 확인",
+      "reviewBudget": "AI 사용 예산 확인",
+      "reviewAudit": "audit gate 확인"
+    }
+  },
+  "summaryProvenance": {
+    "digest": { "heuristic": "규칙 기반 다이제스트" },
+    "aiSegmentSummary": "AI 세그먼트 요약",
+    "aiSegmentUnavailable": "AI 세그먼트 요약 사용 불가",
+    "aiDailyNarrative": "AI 일일 내러티브",
+    "dailyNarrativeUnavailable": "AI 일일 내러티브 사용 불가",
+    "provider": {
+      "loopback": "이 기기의 루프백 모델",
+      "subprocess": "구독형 CLI 서브프로세스",
+      "external_api": "외부 제공자 API",
+      "unknown": "제공자 종류 확인 불가"
+    },
+    "failure": {
+      "pipeline_disabled": "이 항목을 처리할 때 AI 요약 파이프라인이 꺼져 있었습니다.",
+      "below_minimum_duration": "이 세그먼트는 설정된 AI 요약 최소 시간보다 짧았습니다.",
+      "provider_unavailable": "호환되는 요약 제공자를 사용할 수 없었습니다.",
+      "provider_failed": "제공자가 요약을 생성하지 못했습니다. 제공자 오류 본문은 저장하지 않았습니다.",
+      "invalid_response": "제공자 응답을 유효한 AI 요약으로 승인할 수 없었습니다.",
+      "capacity_limited": "세그먼트 종료 시 요약 큐가 가득 찼습니다.",
+      "not_generated": "AI 내러티브가 생성되지 않았지만 규칙 기반 다이제스트는 계속 제공됩니다."
+    }
+  },
   "featureCapability": {
     "preferredPath": "권장 경로",
     "setupTitle": "설정 필요",
@@ -2391,11 +2463,11 @@
   "onboarding": {
     "step3Search": "본 모든 것을 검색",
     "aiFeatures": {
-      "optInHint": "선택 사항: 로컬 임베딩, AI 시맨틱 검색, AI 일일 다이제스트 내러티브를 켭니다. 모든 처리는 온디바이스에서 수행되며 Maekon을 재시작하면 적용됩니다.",
-      "enableButton": "AI 기능 켜기",
+      "optInHint": "선택 사항: 계층 메모리, 임베딩, 의미 검색, AI 요약 설정을 준비합니다. 처리는 AI 설정에 따라 루프백, 구독형 CLI 또는 외부 API에서 이루어질 수 있습니다. 별도의 패턴 학습 동의와 재시작이 필요합니다.",
+      "enableButton": "AI 기능 준비",
       "enabling": "켜는 중…",
-      "enabled": "AI 기능이 켜졌습니다",
-      "enabledNote": "재시작 후 로컬 임베딩, 시맨틱 검색, AI 일일 다이제스트 내러티브가 활성화됩니다.",
+      "prepared": "AI 설정이 저장되었습니다",
+      "preparedNote": "설정 저장만으로 준비가 완료되지는 않습니다. 아래 제공자 및 별도 패턴 학습 동의 요건을 완료한 뒤 Maekon을 재시작하세요.",
       "error": "AI 기능을 켜지 못했습니다: {{error}}"
     },
     "step1Title": "Maekon에 오신 것을 환영합니다",
@@ -2495,6 +2567,11 @@
     "create_failed_title": "세션을 만들 수 없습니다",
     "create_failed": "AI 세션을 만들지 못했습니다.",
     "provider_not_configured": "{{provider}}이(가) 설정되지 않았습니다. 설정 → AI & 자동화에서 자격 증명을 추가한 뒤 다시 시도하세요.",
+    "no_ready_provider": "사용 가능한 AI provider 없음",
+    "provider_unavailable": "Provider를 사용할 수 없음",
+    "local_runtime_unavailable": "Ollama에 연결할 수 없습니다. Ollama를 시작하고 설정된 endpoint를 확인한 뒤 다시 시도하세요.",
+    "local_runtime_invalid": "설정된 로컬 endpoint가 Ollama가 아닙니다. Ollama endpoint에서만 로컬 LLM을 선택하세요.",
+    "local_model_missing": "선택한 Ollama 모델이 설치되지 않았습니다. 사용 가능한 모델을 설치하거나 선택한 뒤 다시 시도하세요.",
     "load_failed_title": "세션을 불러올 수 없습니다",
     "load_failed": "AI 세션을 불러오지 못했습니다.",
     "refresh_failed": "AI 세션 목록을 새로고침하지 못했습니다.",
@@ -2651,6 +2728,38 @@
     "closePanelLabel": "제안 패널 닫기",
     "badgeNew": "새",
     "historyLoadError": "기록을 불러올 수 없습니다.",
+    "localAnalysis": {
+      "status": {
+        "generated": "로컬 제안을 생성했습니다",
+        "no_candidate": "로컬 제안 후보가 없습니다",
+        "throttled": "로컬 분석이 대기 중입니다",
+        "provider_offline": "로컬 분석 제공자를 사용할 수 없습니다",
+        "policy_blocked": "로컬 분석이 비활성화되어 있습니다",
+        "consent_required": "로컬 분석 동의가 필요합니다"
+      },
+      "reason": {
+        "generated": "로컬 제안을 생성했습니다",
+        "no_valid_candidate": "유효한 로컬 제안 후보가 없습니다",
+        "not_admitted": "로컬 후보가 검토 필터를 통과하지 못했습니다",
+        "no_input": "분석할 로컬 활동이 없습니다",
+        "context_unchanged": "로컬 컨텍스트가 변경되지 않았습니다",
+        "analysis_throttled": "다음 로컬 분석 가능 시각까지 대기 중입니다",
+        "provider_unavailable": "선택한 로컬 분석 제공자를 사용할 수 없습니다",
+        "analysis_disabled": "로컬 활동 제안 생성이 비활성화되어 있습니다",
+        "capture_policy_blocked": "캡처 정책이 로컬 분석을 차단했습니다",
+        "suggestion_queue_unavailable": "로컬 제안 검토 대기열을 사용할 수 없습니다",
+        "consent_required": "로컬 분석 동의가 필요합니다",
+        "provider_consent_required": "분석 제공자 동의가 필요합니다",
+        "provider_policy_blocked": "정책이 분석 제공자를 차단했습니다"
+      },
+      "producer": {
+        "periodic": "주기 분석",
+        "app_switch": "앱 전환 분석"
+      },
+      "provenance": "{{source}} · {{producer}} · {{time}}",
+      "counts": "{{candidateCount}}개 생성 · 검토 대기 {{queueCount}}개",
+      "timeUnavailable": "시간 정보 없음"
+    },
     "badgeLabel": "새 제안 {{count}}개"
   },
   "suggestionStats": {
@@ -2953,24 +3062,24 @@
   },
   "advancedTab": {
     "aiFeaturesMaster": "AI 기능 켜기",
-    "aiFeaturesMasterDescription": "로컬 임베딩, AI 시맨틱 검색, AI 일일 다이제스트 내러티브를 한 번에 켭니다. 모든 처리는 온디바이스에서 수행됩니다. Maekon을 재시작하면 적용됩니다.",
+    "aiFeaturesMasterDescription": "계층 메모리, 임베딩, 의미 검색, AI 요약 설정을 함께 준비합니다. 패턴 학습 동의는 자동으로 부여하지 않습니다. 처리 위치는 선택한 제공자를 따르며, 모든 준비 상태를 통과한 뒤 Maekon을 재시작해야 합니다.",
     "llmSummary": "AI 일일 다이제스트 내러티브",
-    "llmSummaryDescription": "온디바이스 LLM으로 하루를 자연어로 요약합니다(임베딩 필요). 재시작 후 적용됩니다.",
+    "llmSummaryDescription": "선택한 LLM 제공자로 세그먼트 요약과 일일 내러티브를 생성합니다(계층 메모리와 임베딩 필요). 각 결과에 처리 위치가 표시됩니다. 재시작 후 적용됩니다.",
     "maxConcurrentSessions": "최대 동시 세션 수",
     "idleTimeoutSeconds": "유휴 시간 제한(초)",
     "sessionTimeoutSeconds": "세션 시간 제한(초)",
     "maxRetries": "최대 재시도 횟수",
     "maxHistoryTurns": "최대 대화 기록 횟수",
     "healthCheckIntervalSeconds": "상태 점검 간격(초)",
-    "enableSuggestions": "제안 사용",
-    "enableSuggestionsDescription": "활동을 기반으로 AI 기반 제안을 받습니다",
+    "enableSuggestions": "서버 제안 받기",
+    "enableSuggestionsDescription": "로그인한 ONESHIM 서버 스트림에서 제안을 받습니다",
     "showBorder": "테두리 표시",
     "showBorderDescription": "모니터링 중일 때 화면 주위에 색상 테두리를 표시합니다",
     "showPanel": "패널 표시",
     "showPanelDescription": "추적 상태 패널을 표시합니다",
     "borderOpacity": "테두리 불투명도(0.0 - 1.0)",
-    "enableAnalysis": "분석 사용",
-    "enableAnalysisDescription": "활동 구간에 대해 LLM 분석을 실행합니다",
+    "enableAnalysis": "로컬 활동 제안 생성",
+    "enableAnalysisDescription": "동의한 로컬 활동과 OCR 문맥을 선택한 LLM 제공자로 분석합니다",
     "analysisIntervalSeconds": "분석 간격(초)",
     "minConfidence": "최소 신뢰도(0.0 - 1.0)",
     "maxSuggestions": "최대 제안 수",

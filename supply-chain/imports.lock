@@ -55,13 +55,6 @@ user-id = 5563
 user-login = "marshallpierce"
 user-name = "Marshall Pierce"
 
-[[publisher.blake2]]
-version = "0.10.6"
-when = "2022-12-16"
-user-id = 5059
-user-login = "newpavlov"
-user-name = "Artyom Pavlov"
-
 [[publisher.brotli]]
 version = "8.0.2"
 when = "2025-08-16"

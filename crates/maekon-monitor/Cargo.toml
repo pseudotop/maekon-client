@@ -33,7 +33,7 @@ core-graphics = { workspace = true }
 # orchestration is cfg-elided and every whole-function replacement is therefore
 # equivalent. This inert marker keeps those unmeasurable functions out of that
 # lane; deterministic macOS lifecycle tests cover their behavior instead.
-mutants = "=0.0.3"
+mutants = "=0.0.4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true }

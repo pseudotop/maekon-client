@@ -56,6 +56,10 @@ pub(crate) struct AdaptiveTriggerState {
 
     // --- LLM/embedding pipeline ---
     pub(crate) llm_summarizer: Option<Arc<maekon_analysis::LlmSegmentSummarizer>>,
+    pub(crate) llm_summary_provider_class:
+        Option<maekon_core::models::ai_summary::AiSummaryProviderClass>,
+    pub(crate) llm_summary_unavailable_reason:
+        Option<maekon_core::models::ai_summary::AiSummaryFailureReason>,
     pub(crate) embedding_pipeline: Option<Arc<maekon_analysis::EmbeddingPipeline>>,
 
     // --- Full-text (keyword) search indexing (#8051) ---

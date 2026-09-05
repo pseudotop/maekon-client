@@ -19,16 +19,17 @@
  * pinning the exact words is the point.
  */
 
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../__tests__/helpers/render-helpers'
-import type { ConsentSnapshot } from '../../api/contracts'
+import type { AiReadinessReasonCode, ConsentSnapshot, FeatureCapabilitySnapshot } from '../../api/contracts'
 import AdvancedTab from './AdvancedTab'
 import { makeDefaultFormData } from './stories-utils'
 
 const mockUseSettingsFormContext = vi.hoisted(() => vi.fn())
 const mockGetConsent = vi.hoisted(() => vi.fn())
+const mockUseAiReadinessSnapshot = vi.hoisted(() => vi.fn())
 
 vi.mock('../settings/SettingsFormContext', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../settings/SettingsFormContext')>()
@@ -43,6 +44,53 @@ vi.mock('../../api/client', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../../api/client')>()
   return { ...mod, getConsent: () => mockGetConsent() }
 })
+
+vi.mock('../../hooks/useAiReadinessSnapshot', () => ({
+  useAiReadinessSnapshot: () => mockUseAiReadinessSnapshot(),
+}))
+
+function ocrReadinessSnapshot(
+  reasonCode: AiReadinessReasonCode,
+  action: 'enable_feature' | 'open_ai_settings',
+): FeatureCapabilitySnapshot {
+  return {
+    features: [],
+    ai_readiness: {
+      contract_version: 1,
+      capabilities: [
+        {
+          capability_id: 'ocr.suggestion_analysis',
+          status: 'blocked',
+          reason_code: reasonCode,
+          action,
+          action_copy_key:
+            action === 'enable_feature' ? 'aiReadiness.action.enableFeature' : 'aiReadiness.action.openAiSettings',
+          dimensions: {
+            compiled_capability: true,
+            selected_access_mode: 'provider_api_key',
+            access_mode_compatible: reasonCode !== 'access_mode_mismatch',
+            endpoint_or_profile_configured: false,
+            provider_detection: 'detected',
+            provider_auth: 'ready',
+            provider_invocation: 'ready',
+            model_availability: 'not_required',
+            runtime_flag_enabled: reasonCode !== 'runtime_flag_disabled',
+            consent: [
+              { field: 'ocr_processing', granted: true },
+              { field: 'activity_pattern_learning', granted: true },
+            ],
+            apply_requirement: 'hot_rewire',
+            apply_pending: false,
+            privacy_gate: 'enforced_at_invocation',
+            egress_gate: 'enforced_at_invocation',
+            budget_gate: 'enforced_at_invocation',
+            audit_gate: 'enforced_at_invocation',
+          },
+        },
+      ],
+    },
+  }
+}
 
 function consentSnapshot(patternLearning: boolean): ConsentSnapshot {
   return {
@@ -72,16 +120,74 @@ function consentSnapshot(patternLearning: boolean): ConsentSnapshot {
 function renderWithTieredMemory(enabled: boolean) {
   const formData = makeDefaultFormData()
   formData.analysis.tiered_memory_enabled = enabled
+  const setFormData = vi.fn()
   mockUseSettingsFormContext.mockReturnValue({
-    form: { formData, setFormData: vi.fn(), handleRootChange: vi.fn() },
+    form: { formData, setFormData, handleRootChange: vi.fn() },
   })
   renderWithProviders(<AdvancedTab />)
+  return { formData, setFormData }
 }
 
 describe('AdvancedTab tiered-memory disclosure (#9687)', () => {
   beforeEach(() => {
     mockUseSettingsFormContext.mockReset()
     mockGetConsent.mockReset()
+    mockUseAiReadinessSnapshot.mockReset()
+    mockUseAiReadinessSnapshot.mockReturnValue(undefined)
+  })
+
+  it('labels server SSE and OCR-derived analysis as separate producers', async () => {
+    mockGetConsent.mockResolvedValue(consentSnapshot(true))
+    renderWithTieredMemory(false)
+
+    expect(await screen.findByText('Receive server suggestions')).toBeInTheDocument()
+    expect(screen.getByText('Generate local activity suggestions')).toBeInTheDocument()
+    expect(screen.getByText(/signed-in ONESHIM server stream/i)).toBeInTheDocument()
+    expect(screen.getByText(/consented local activity and OCR context/i)).toBeInTheDocument()
+  })
+
+  it('prepares all four summary prerequisites without granting consent', async () => {
+    mockGetConsent.mockResolvedValue(consentSnapshot(false))
+    const { formData, setFormData } = renderWithTieredMemory(false)
+    formData.analysis.enabled = false
+    formData.analysis.embedding_enabled = false
+    formData.analysis.llm_summary_enabled = false
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /^Enable AI features/ }))
+
+    const updater = setFormData.mock.calls.at(-1)?.[0]
+    expect(typeof updater).toBe('function')
+    const updated = updater(formData)
+    expect(updated.analysis).toMatchObject({
+      enabled: true,
+      tiered_memory_enabled: true,
+      embedding_enabled: true,
+      llm_summary_enabled: true,
+    })
+    expect(updated).not.toHaveProperty('consent')
+  })
+
+  it('shows the backend-owned analysis-disabled blocker and setup action', async () => {
+    mockGetConsent.mockResolvedValue(consentSnapshot(true))
+    mockUseAiReadinessSnapshot.mockReturnValue(ocrReadinessSnapshot('runtime_flag_disabled', 'enable_feature'))
+    renderWithTieredMemory(false)
+
+    const blocker = document.querySelector('li[data-reason-code="runtime_flag_disabled"]')
+    expect(blocker).not.toBeNull()
+    expect(screen.getByRole('link', { name: /enable the required feature/i })).toHaveAttribute(
+      'href',
+      '/settings/ai-automation',
+    )
+  })
+
+  it('shows provider access-mode mismatch separately from disabled analysis', async () => {
+    mockGetConsent.mockResolvedValue(consentSnapshot(true))
+    mockUseAiReadinessSnapshot.mockReturnValue(ocrReadinessSnapshot('access_mode_mismatch', 'open_ai_settings'))
+    renderWithTieredMemory(false)
+
+    expect(document.querySelector('li[data-reason-code="access_mode_mismatch"]')).not.toBeNull()
+    expect(document.querySelector('li[data-reason-code="runtime_flag_disabled"]')).toBeNull()
+    expect(screen.getByRole('link', { name: /open ai settings/i })).toHaveAttribute('href', '/settings/ai-automation')
   })
 
   it('shows neither notice when the consent cannot be read at all', async () => {

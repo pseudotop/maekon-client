@@ -264,7 +264,7 @@ gethostname = "1.1"
 
 # Sync encryption (Phase 3b — shared by maekon-storage + maekon-network)
 aes-gcm = "0.11"
-argon2 = "0.5"
+argon2 = "0.6"
 hex = "0.4"
 
 # LAN Sync (Phase 3b-2)

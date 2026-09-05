@@ -193,23 +193,23 @@ pub(crate) fn resolve_local_llm_target(
 #[cfg_attr(not(feature = "analysis"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NegotiationOutcome {
-    /// The requested model was found in the installed list (exact or tag-
-    /// stripped match).  No change was made.
+    /// The requested model was found exactly in the installed list. No change
+    /// was made.
     ExactMatch,
     /// The requested model was not installed; a model from the same name
     /// family was selected instead.  `used` is the family member chosen.
     FamilyFallback { used: String },
     /// The requested model is not installed and no family member was found.
-    /// The original model is preserved with a warning.  `available` carries
-    /// the full installed list for log / UI purposes.
+    /// Session creation must fail before user content can be submitted.
+    /// `available` carries the installed list for diagnostics only.
     NotInstalled { available: Vec<String> },
-    /// The installed-model list was unavailable (`None`).  Negotiation was
-    /// skipped; the original model is preserved unchanged.
+    /// The installed-model list was unavailable (`None`). Session creation
+    /// must fail because model availability cannot be proven.
     ListUnavailable,
     /// The caller supplied `explicit: true`, meaning the user explicitly named
-    /// this model in `SessionConfig.model`.  Negotiation is skipped out of
-    /// respect for the user's choice; a warn is still emitted when the model
-    /// is not installed.
+    /// this model in `SessionConfig.model` and it was verified installed.
+    /// Explicit selection prevents family fallback but never bypasses the
+    /// installed-model check.
     ExplicitOverride,
 }
 
@@ -219,7 +219,8 @@ pub(crate) enum NegotiationOutcome {
 /// * `requested` — the model name resolved through the default-chain (may
 ///   include a tag, e.g. `"qwen3:8b"`).
 /// * `explicit` — `true` when `SessionConfig.model` was `Some` (user
-///   explicitly named the model).  Negotiation is skipped.
+///   explicitly named the model). Exact installation is required and family
+///   fallback is disabled.
 /// * `installed` — the list returned by `list_installed_models`, or `None`
 ///   when the API was unreachable.
 ///
@@ -242,26 +243,33 @@ pub(crate) fn negotiate_local_llm_model(
     explicit: bool,
     installed: Option<&[String]>,
 ) -> (String, NegotiationOutcome) {
-    // User explicitly named the model — respect it, no negotiation.
-    if explicit {
-        return (requested.to_string(), NegotiationOutcome::ExplicitOverride);
-    }
-
     let Some(installed) = installed else {
         return (requested.to_string(), NegotiationOutcome::ListUnavailable);
     };
 
     // Exact match: the requested model is installed as-is.
     if installed.iter().any(|m| m == requested) {
-        return (requested.to_string(), NegotiationOutcome::ExactMatch);
+        return (
+            requested.to_string(),
+            if explicit {
+                NegotiationOutcome::ExplicitOverride
+            } else {
+                NegotiationOutcome::ExactMatch
+            },
+        );
     }
 
-    // Tag-stripped match: "qwen3" matches "qwen3:latest", "qwen3:8b", etc.
-    // and "qwen3:8b" (requested) should match "qwen3:8b" (already covered
-    // above) OR "qwen3" without tag.
     let requested_base = requested.split(':').next().unwrap_or(requested);
-    if installed.iter().any(|m| m.as_str() == requested_base) {
-        return (requested.to_string(), NegotiationOutcome::ExactMatch);
+
+    // An explicit model never silently changes to another tag or family
+    // member. Missing explicit models take the same fail-fast path below.
+    if explicit {
+        return (
+            requested.to_string(),
+            NegotiationOutcome::NotInstalled {
+                available: installed.to_vec(),
+            },
+        );
     }
 
     // Family fallback: find any installed model with the same base name.
@@ -997,8 +1005,9 @@ impl SessionManagerImpl {
         // ── Step 1: Ollama identity probe (C3 #5732 FLAG-2) ──────────────────
         //
         // GET {base}/api/version to confirm the endpoint is an Ollama daemon.
-        // Bounded to 2 s; fail-open — session creation proceeds on every result.
-        // One-time cost per session creation call.
+        // Bounded to 2 s and fail-closed. A session is admitted only after the
+        // endpoint identity and model are proven, before any user content can
+        // be submitted. This probe never invokes a model or spends tokens.
         let probe_timeout = std::time::Duration::from_secs(2);
         let probe = maekon_network::ollama_discovery::probe_ollama(&base_url, probe_timeout).await;
         match &probe {
@@ -1012,17 +1021,24 @@ impl SessionManagerImpl {
             maekon_network::ollama_discovery::OllamaProbe::NotOllama => {
                 warn!(
                     base_url = %base_url,
-                    "endpoint responds but does not look like Ollama — native /api/chat will \
-                     likely fail; LM Studio/vLLM users should use the HTTP API chat path instead \
-                     (SessionTransport::HttpApi with an OpenAI-compatible surface)"
+                    "Local LLM endpoint is reachable but is not an Ollama daemon"
                 );
+                return Err(CoreError::Config {
+                    code: maekon_core::error_codes::ConfigCode::Invalid,
+                    message: "Configured Local LLM endpoint is not an Ollama daemon; use the HTTP API transport for OpenAI-compatible servers"
+                        .to_string(),
+                });
             }
             maekon_network::ollama_discovery::OllamaProbe::Unreachable => {
                 warn!(
                     base_url = %base_url,
-                    "Ollama daemon appears unreachable — is `ollama serve` running? \
-                     Session will be created; errors will surface on first message."
+                    "Ollama daemon is unreachable; refusing to create a doomed session"
                 );
+                return Err(CoreError::ServiceUnavailable {
+                    code: maekon_core::error_codes::ServiceCode::Unavailable,
+                    message: "Ollama daemon is unreachable; start Ollama and verify the configured Local LLM endpoint"
+                        .to_string(),
+                });
             }
         }
 
@@ -1030,51 +1046,47 @@ impl SessionManagerImpl {
         //
         // Only when the probe confirmed Ollama: fetch the installed model list
         // and negotiate the best available model within the same family.
-        // Skipped for non-Ollama / unreachable endpoints (fail-open).
-        let final_model = if matches!(
-            probe,
-            maekon_network::ollama_discovery::OllamaProbe::Ollama { .. }
-        ) {
-            let installed =
-                maekon_network::ollama_discovery::list_installed_models(&base_url, probe_timeout)
-                    .await;
-            let (negotiated, outcome) =
-                negotiate_local_llm_model(&resolved_model, explicit_model, installed.as_deref());
-            match &outcome {
-                NegotiationOutcome::ExactMatch => {
-                    info!(model = %negotiated, "Ollama model verified installed");
-                }
-                NegotiationOutcome::FamilyFallback { used } => {
-                    info!(
-                        requested = %resolved_model,
-                        selected = %used,
-                        "requested Ollama model not installed; using installed family member"
-                    );
-                }
-                NegotiationOutcome::NotInstalled { available } => {
-                    warn!(
-                        model = %negotiated,
-                        available = ?available,
-                        "model is not installed — run `ollama pull {}`; \
-                         session will fail on first message",
-                        negotiated
-                    );
-                }
-                NegotiationOutcome::ListUnavailable => {
-                    info!(
-                        model = %negotiated,
-                        "could not fetch installed model list; proceeding with resolved model"
-                    );
-                }
-                NegotiationOutcome::ExplicitOverride => {
-                    // User explicitly chose; log only when not installed.
-                    // The NotInstalled arm below handles that.
-                }
+        let installed =
+            maekon_network::ollama_discovery::list_installed_models(&base_url, probe_timeout).await;
+        let (final_model, outcome) =
+            negotiate_local_llm_model(&resolved_model, explicit_model, installed.as_deref());
+        match &outcome {
+            NegotiationOutcome::ExactMatch => {
+                info!(model = %final_model, "Ollama model verified installed");
             }
-            negotiated
-        } else {
-            resolved_model
-        };
+            NegotiationOutcome::FamilyFallback { used } => {
+                info!(
+                    requested = %resolved_model,
+                    selected = %used,
+                    "requested Ollama model not installed; using installed family member"
+                );
+            }
+            NegotiationOutcome::NotInstalled { available } => {
+                warn!(
+                    model = %final_model,
+                    available = ?available,
+                    "Ollama model is not installed; refusing to create a doomed session"
+                );
+                return Err(CoreError::NotFound {
+                    code: maekon_core::error_codes::NotFoundCode::ResourceMissing,
+                    resource_type: "ollama_model".to_string(),
+                    id: format!(
+                        "model `{0}` not pulled (hint: try `ollama pull {0}`)",
+                        final_model
+                    ),
+                });
+            }
+            NegotiationOutcome::ListUnavailable => {
+                return Err(CoreError::ServiceUnavailable {
+                    code: maekon_core::error_codes::ServiceCode::Unavailable,
+                    message: "Ollama model catalog is unavailable; retry after the daemon is ready"
+                        .to_string(),
+                });
+            }
+            NegotiationOutcome::ExplicitOverride => {
+                info!(model = %final_model, "explicit Ollama model verified installed");
+            }
+        }
 
         let session_id = uuid::Uuid::new_v4().to_string();
 
@@ -1161,12 +1173,16 @@ mod tests {
     }
 
     #[test]
-    fn negotiate_tag_stripped_match_returns_exact_match() {
-        // "qwen3" (no tag) installed; requested is "qwen3" — base-name match.
-        let installed = vec!["qwen3".to_string()];
+    fn negotiate_untagged_request_uses_the_installed_family_member() {
+        let installed = vec!["qwen3:latest".to_string()];
         let (model, outcome) = negotiate_local_llm_model("qwen3", false, Some(&installed));
-        assert_eq!(model, "qwen3");
-        assert_eq!(outcome, NegotiationOutcome::ExactMatch);
+        assert_eq!(model, "qwen3:latest");
+        assert_eq!(
+            outcome,
+            NegotiationOutcome::FamilyFallback {
+                used: "qwen3:latest".to_string()
+            }
+        );
     }
 
     #[test]
@@ -1197,12 +1213,32 @@ mod tests {
     }
 
     #[test]
-    fn negotiate_explicit_override_skips_negotiation() {
-        // Even if qwen3:8b is not installed, explicit=true → no change.
-        let installed = vec!["llama3:latest".to_string()];
+    fn negotiate_explicit_override_requires_an_installed_exact_model() {
+        let installed = vec!["qwen3:8b".to_string(), "llama3:latest".to_string()];
         let (model, outcome) = negotiate_local_llm_model("qwen3:8b", true, Some(&installed));
         assert_eq!(model, "qwen3:8b");
         assert_eq!(outcome, NegotiationOutcome::ExplicitOverride);
+    }
+
+    #[test]
+    fn negotiate_missing_explicit_override_is_not_installed() {
+        let installed = vec!["llama3:latest".to_string()];
+        let (model, outcome) = negotiate_local_llm_model("qwen3:8b", true, Some(&installed));
+        assert_eq!(model, "qwen3:8b");
+        assert_eq!(
+            outcome,
+            NegotiationOutcome::NotInstalled {
+                available: installed
+            }
+        );
+    }
+
+    #[test]
+    fn negotiate_explicit_tag_does_not_accept_a_different_installed_tag() {
+        let installed = vec!["qwen3:latest".to_string()];
+        let (model, outcome) = negotiate_local_llm_model("qwen3:8b", true, Some(&installed));
+        assert_eq!(model, "qwen3:8b");
+        assert!(matches!(outcome, NegotiationOutcome::NotInstalled { .. }));
     }
 
     #[test]

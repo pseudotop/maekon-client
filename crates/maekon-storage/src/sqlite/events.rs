@@ -508,6 +508,37 @@ impl StorageService for SqliteStorage {
         .map_err(Into::into)
     }
 
+    async fn update_segment_ai_summary(
+        &self,
+        segment_id: &str,
+        artifact: &maekon_core::models::ai_summary::AiSummaryArtifact,
+    ) -> Result<(), CoreError> {
+        let id = segment_id.to_string();
+        let artifact = artifact.clone();
+        let status_json = serde_json::to_string(&artifact).map_err(|e| CoreError::Storage {
+            code: maekon_core::error_codes::StorageCode::Failed,
+            message: format!("Failed to serialize AI summary status: {e}"),
+        })?;
+        let clock = self.clock.clone();
+        self.with_conn(move |conn| {
+            let h = clock
+                .next(conn)
+                .map_err(|e| StorageError::Internal(format!("hlc stamp: {e}")))?;
+            conn.execute(
+                "UPDATE activity_segments SET llm_summary = ?1,
+                 llm_summary_status_json = ?2, hlc_wall_ms = ?4,
+                 hlc_counter = ?5 WHERE id = ?3",
+                rusqlite::params![artifact.text, status_json, id, h.wall_ms, h.counter],
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!("Failed to update segment AI summary: {e}"))
+            })?;
+            Ok(())
+        })
+        .await
+        .map_err(Into::into)
+    }
+
     async fn save_suggestion(&self, suggestion: &Suggestion) -> Result<(), CoreError> {
         let suggestion = suggestion.clone();
         let clock = self.clock.clone();
@@ -550,6 +581,10 @@ impl StorageService for SqliteStorage {
         .map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+#[path = "events_ai_summary_tests.rs"]
+mod ai_summary_tests;
 
 #[cfg(test)]
 mod tests {
@@ -766,91 +801,6 @@ mod tests {
             kept,
             Some("regime-saved".to_string()),
             "a valid reference must be preserved, not blanked"
-        );
-    }
-
-    #[tokio::test]
-    async fn save_activity_segment_round_trips_enriches_and_is_idempotent() {
-        use maekon_core::models::tiered_memory::{SegmentSummary, TriggerReason};
-        use std::collections::HashMap;
-
-        let storage = SqliteStorage::open_in_memory(30).expect("open_in_memory failed");
-        let now = Utc::now();
-        let summary = SegmentSummary {
-            segment_id: "seg-test-1".to_string(),
-            start_time: now - Duration::minutes(30),
-            end_time: now,
-            duration_secs: 1800,
-            // #9735: the FK (regime_id -> regimes.id) IS enforced, so a NULL
-            // regime_id is the only value that is unconditionally safe. A
-            // dangling one is degraded to NULL by the writer — see the
-            // dedicated test below.
-            regime_id: None,
-            trigger_reason: TriggerReason::ScoreLow,
-            event_count: 42,
-            app_breakdown: HashMap::from([("VSCode".to_string(), 1200u64)]),
-            category_breakdown: HashMap::from([("coding".to_string(), 1200u64)]),
-            context_switch_count: 3,
-            dominant_category: "coding".to_string(),
-            avg_importance: 0.7,
-            patterns_detected: vec![],
-            content_activities: vec![],
-            container: None,
-            llm_summary: None,
-        };
-
-        storage
-            .save_activity_segment(&summary)
-            .await
-            .expect("save_activity_segment must succeed with a None regime_id");
-
-        // Round-trip via the SAME query the digest/timeline surfaces use.
-        let from = now - Duration::hours(1);
-        let to = now + Duration::hours(1);
-        let rows = storage
-            .list_segments_between(from, to)
-            .expect("list_segments_between failed");
-        assert_eq!(rows.len(), 1, "the locally-saved segment must be readable");
-        let row = &rows[0];
-        assert_eq!(row.segment_id, "seg-test-1");
-        assert_eq!(row.duration_secs, 1800);
-        assert_eq!(row.dominant_category, "coding");
-        assert_eq!(row.event_count, 42);
-        assert_eq!(row.trigger_reason, TriggerReason::ScoreLow);
-        assert_eq!(row.app_breakdown.get("VSCode"), Some(&1200u64));
-
-        // The LLM-summary UPDATE was a silent 0-row no-op before a producer
-        // existed; now it must enrich THIS row.
-        storage
-            .update_segment_llm_summary("seg-test-1", "focused on auth module")
-            .await
-            .expect("update_segment_llm_summary failed");
-        let enriched = storage
-            .list_segments_between(from, to)
-            .expect("re-read failed");
-        assert_eq!(
-            enriched[0].llm_summary.as_deref(),
-            Some("focused on auth module"),
-            "update_segment_llm_summary must enrich the row that the producer inserted"
-        );
-
-        // Idempotent: a segment-close retry must not duplicate or clobber.
-        storage
-            .save_activity_segment(&summary)
-            .await
-            .expect("idempotent re-save");
-        let after = storage
-            .list_segments_between(from, to)
-            .expect("re-read failed");
-        assert_eq!(
-            after.len(),
-            1,
-            "INSERT OR IGNORE must not duplicate on the id PK"
-        );
-        assert_eq!(
-            after[0].llm_summary.as_deref(),
-            Some("focused on auth module"),
-            "OR IGNORE must keep the existing enriched row"
         );
     }
 }

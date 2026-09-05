@@ -1,8 +1,18 @@
 import { ChevronDown, Download, FileText, Loader2, MessageSquarePlus, RefreshCw, Search } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { AiReadinessNotice } from '../../components/AiReadinessNotice'
 import { Alert, Button, EmptyState, Input } from '../../components/ui'
+import {
+  aiCapabilityReadiness,
+  CHAT_CAPABILITY_IDS,
+  canCreateChatSession,
+  chatCapabilityForTransport,
+  chatProviderIdentity,
+  recommendedChatTransport,
+} from '../../features/aiReadiness'
 import { defaultSurfaceModel } from '../../features/providerSurfaces'
+import { useAiReadinessSnapshot } from '../../hooks/useAiReadinessSnapshot'
 import { addToast } from '../../hooks/useToast'
 import { SessionTurnControl } from '../../overlay/components/SessionTurnControl'
 import { colors, iconSize, interaction, motion, radius, typography } from '../../styles/tokens'
@@ -24,6 +34,7 @@ import { errorMessage, ipc, now, parseDataUrl, parseOptionalJsonValue, parseOpti
 
 export default function Chat() {
   const { t } = useTranslation()
+  const aiReadinessSnapshot = useAiReadinessSnapshot()
   const isHistorical = useCallback((s: { state: string }) => s.state === 'terminated', [])
 
   // ---- Session setup (provider catalog, surfaces, sessions list) ----
@@ -45,7 +56,8 @@ export default function Chat() {
     return params.get('sid')
   })
   const [input, setInput] = useState('')
-  const [transport, setTransport] = useState<Transport>('subprocess')
+  const [transport, setTransport] = useState<Transport | null>(null)
+  const transportManuallySelected = useRef(false)
   const [creating, setCreating] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [systemPrompt, setSystemPrompt] = useState('')
@@ -101,6 +113,12 @@ export default function Chat() {
   const parsedTools = useMemo(() => parseOptionalToolDefinitions(toolsJson), [toolsJson])
   const parsedResponseFormat = useMemo(() => parseOptionalJsonValue(responseFormatJson), [responseFormatJson])
   const payloadInvalid = parsedTools.error || parsedResponseFormat.error
+  const hasHttpSurface = selectedHttpSurface !== null
+  const chatCapabilityId = transport ? chatCapabilityForTransport(transport) : null
+  const selectedReadiness = chatCapabilityId ? aiCapabilityReadiness(aiReadinessSnapshot, chatCapabilityId) : null
+  const providerIdentity = chatProviderIdentity(aiReadinessSnapshot, transport, selectedHttpSurface?.display_name)
+  const createReady = transport ? canCreateChatSession(aiReadinessSnapshot, transport, hasHttpSurface) : false
+  const createDisabled = creating || !transport || !createReady
   const messagePayloadCount = useMemo(() => {
     let count = 0
     if (messageContext) count += 1
@@ -112,6 +130,17 @@ export default function Chat() {
   useEffect(() => {
     if (payloadInvalid) setShowMessagePayload(true)
   }, [payloadInvalid])
+
+  useEffect(() => {
+    if (transportManuallySelected.current || activeId || !aiReadinessSnapshot) return
+    setTransport(recommendedChatTransport(aiReadinessSnapshot, hasHttpSurface))
+  }, [activeId, aiReadinessSnapshot, hasHttpSurface])
+
+  const handleTransportChange = useCallback((nextTransport: Transport) => {
+    transportManuallySelected.current = true
+    setTransport(nextTransport)
+    setCreateError(null)
+  }, [])
 
   // Task 7: Listen for auto-extracted suggestions from AI responses
   useEffect(() => {
@@ -154,9 +183,9 @@ export default function Chat() {
   })
 
   const handleCreate = useCallback(() => {
-    if (creating) return
+    if (createDisabled) return
     handleCreateInner(setCreating, setCreateError)
-  }, [creating, handleCreateInner])
+  }, [createDisabled, handleCreateInner])
 
   const handleRename = useCallback(
     async (id: string, title: string) => {
@@ -192,7 +221,6 @@ export default function Chat() {
   const MAX_VISIBLE_MESSAGES = 500
   const isTruncated = messages.length > MAX_VISIBLE_MESSAGES
   const visibleMessages = isTruncated ? messages.slice(-MAX_VISIBLE_MESSAGES) : messages
-  const createDisabled = creating || (transport === 'http_api' && !selectedHttpSurface)
   const activeSession = sessions.find((s) => s.session_id === activeId)
   const isReadOnly = activeSession ? isHistorical(activeSession) : false
 
@@ -300,14 +328,15 @@ export default function Chat() {
   ])
 
   const sendDisabled = (!input.trim() && attachments.length === 0) || sending || payloadInvalid || isReadOnly
-
   return (
     <div className="flex h-full min-h-0">
       <ChatSidebar
         sessions={sessions}
         activeId={activeId}
         transport={transport}
-        setTransport={setTransport}
+        setTransport={handleTransportChange}
+        readiness={selectedReadiness}
+        providerIdentity={providerIdentity}
         httpApiSurfaces={httpApiSurfaces}
         selectedHttpSurface={selectedHttpSurface}
         setHttpSurfaceId={setHttpSurfaceId}
@@ -329,6 +358,13 @@ export default function Chat() {
 
       {/* Main area */}
       <div className="flex min-w-0 flex-1 flex-col bg-surface-sunken">
+        <AiReadinessNotice
+          snapshot={aiReadinessSnapshot}
+          capabilityIds={chatCapabilityId ? [chatCapabilityId] : CHAT_CAPABILITY_IDS}
+          showReady
+          compact
+          className="m-3 mb-0"
+        />
         {!activeId ? (
           <div className="flex flex-1 flex-col items-center justify-center">
             <EmptyState
@@ -338,6 +374,7 @@ export default function Chat() {
               action={{
                 label: creating ? t('common.loading') : t('emptyState.chat.action'),
                 onClick: handleCreate,
+                disabled: createDisabled,
               }}
             />
             {createError && (

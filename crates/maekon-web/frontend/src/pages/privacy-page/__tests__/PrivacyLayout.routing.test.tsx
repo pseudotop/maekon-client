@@ -1,11 +1,20 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
-import { Route, Routes } from 'react-router-dom'
+import { Route, Routes, useOutletContext } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../../__tests__/helpers/render-helpers'
-import type { StorageStats } from '../../../api/contracts'
+import type { BackupArchive, RestoreResult, StorageStats } from '../../../api/contracts'
 import DataSection from '../DataSection'
-import PrivacyLayout from '../PrivacyLayout'
+import PrivacyLayout, { type PrivacyContext } from '../PrivacyLayout'
+
+const mocks = vi.hoisted(() => ({
+  invalidateReadiness: vi.fn(),
+  restoreBackup: vi.fn(),
+}))
+
+vi.mock('../../../hooks/useAiReadinessSnapshot', () => ({
+  invalidateAiReadinessSnapshotCache: mocks.invalidateReadiness,
+}))
 
 vi.mock('../ConsentToggleSection', () => ({
   default: ({ onConsentChanged }: { onConsentChanged?: () => void }) => (
@@ -30,8 +39,18 @@ vi.mock('../../../api/client', async (importOriginal) => {
   return {
     ...actual,
     fetchStorageStats: vi.fn(async () => stats),
+    restoreBackup: mocks.restoreBackup,
   }
 })
+
+function RestoreHarness() {
+  const { restoreMutation } = useOutletContext<PrivacyContext>()
+  return (
+    <button type="button" onClick={() => restoreMutation.mutate({} as BackupArchive)}>
+      restore settings
+    </button>
+  )
+}
 
 function renderPrivacyRoute(initialEntry: string) {
   const getCaptureStatusSpy = vi.fn(() => ({
@@ -52,6 +71,7 @@ function renderPrivacyRoute(initialEntry: string) {
       <Route path="/privacy" element={<PrivacyLayout />}>
         <Route path="data" element={<DataSection />} />
         <Route path="egress" element={<div data-testid="egress-route-content" />} />
+        <Route path="restore" element={<RestoreHarness />} />
       </Route>
     </Routes>,
     { routerProps: { initialEntries: [initialEntry] } },
@@ -61,6 +81,8 @@ function renderPrivacyRoute(initialEntry: string) {
 
 afterEach(() => {
   clearMocks()
+  mocks.invalidateReadiness.mockReset()
+  mocks.restoreBackup.mockReset()
 })
 
 describe('PrivacyLayout routed content placement', () => {
@@ -85,5 +107,20 @@ describe('PrivacyLayout routed content placement', () => {
     fireEvent.click(consentControls)
 
     await waitFor(() => expect(getCaptureStatusSpy).toHaveBeenCalledTimes(2))
+  })
+
+  it('invalidates AI readiness after a settings restore succeeds', async () => {
+    const result: RestoreResult = {
+      success: true,
+      restored: { settings: true, tags: 0, frame_tags: 0, events: 0, frames: 0 },
+      errors: [],
+    }
+    mocks.restoreBackup.mockResolvedValue(result)
+    renderPrivacyRoute('/privacy/restore')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'restore settings' }))
+
+    await waitFor(() => expect(mocks.restoreBackup).toHaveBeenCalledOnce())
+    expect(mocks.invalidateReadiness).toHaveBeenCalledOnce()
   })
 })

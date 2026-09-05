@@ -1070,7 +1070,13 @@ mod tests {
             regime_manager_arc,
         );
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-        let handle = scheduler.spawn_aggregation_loop(aggregation_interval, None, shutdown_rx);
+        let handle = scheduler.spawn_aggregation_loop(
+            aggregation_interval,
+            None,
+            None,
+            Some(maekon_core::models::ai_summary::AiSummaryFailureReason::PipelineDisabled),
+            shutdown_rx,
+        );
 
         wait_for_count(&regime_storage.save_all_calls, 1).await;
         assert_eq!(

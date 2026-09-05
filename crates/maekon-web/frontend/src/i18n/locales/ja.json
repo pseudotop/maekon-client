@@ -2164,6 +2164,78 @@
     "reauthDescription": "OAuthセッションが期限切れです。再接続してください。",
     "switchToCli": "代わりに{{surface}}を使用"
   },
+  "aiReadiness": {
+    "readyTitle": "AI 機能を利用できます",
+    "blockedTitle": "AI の設定が必要です",
+    "capability": {
+      "chatSubprocess": "AI チャット・サブスクリプション CLI",
+      "chatHttpApi": "AI チャット・プロバイダー API",
+      "chatLocalLlm": "AI チャット・ローカルモデル",
+      "ocrCapture": "OCR キャプチャ",
+      "ocrSuggestionAnalysis": "OCR 由来の AI 提案",
+      "segmentSummary": "AI セグメント要約",
+      "dailyNarrative": "AI デイリーナラティブ"
+    },
+    "reason": {
+      "ready": "利用可能",
+      "compiled_capability_missing": "このビルドには必要な機能が含まれていません。",
+      "runtime_flag_disabled": "必要な機能が無効です。",
+      "consent_required": "必要なプライバシー同意が許可されていません。",
+      "access_mode_mismatch": "選択した AI アクセスモードがこのプロバイダー経路と一致しません。",
+      "endpoint_or_profile_required": "プロバイダーのエンドポイントまたはプロファイルを選択してください。",
+      "provider_not_detected": "選択したプロバイダーを検出できませんでした。",
+      "provider_auth_required": "プロバイダーの認証が必要です。",
+      "provider_auth_unverified": "プロバイダーの認証が確認されていません。",
+      "provider_invocation_unavailable": "プロバイダーを呼び出せません。",
+      "provider_invocation_unverified": "プロバイダーの呼び出し可否が確認されていません。",
+      "model_unavailable": "選択したモデルを利用できません。",
+      "model_availability_unverified": "モデルの利用可否が確認されていません。",
+      "hot_rewire_required": "実行中の AI サービスを再接続するため設定を再適用してください。",
+      "restart_required": "この設定を適用するには Maekon を再起動してください。",
+      "privacy_gate_unavailable": "プライバシーゲートを利用できません。",
+      "egress_gate_unavailable": "外部データポリシーゲートを利用できません。",
+      "budget_gate_unavailable": "AI 利用予算ゲートを利用できません。",
+      "audit_gate_unavailable": "AI 監査ゲートを利用できません。"
+    },
+    "action": {
+      "none": "操作は不要です",
+      "openAiSettings": "AI設定を開く",
+      "openPrivacyConsent": "プライバシー同意を確認",
+      "enableFeature": "必要な機能を有効化",
+      "installProvider": "対応プロバイダーをインストール",
+      "authenticateProvider": "プロバイダーにサインイン",
+      "verifyProviderInvocation": "プロバイダー呼び出しを確認",
+      "selectModel": "モデルを選択して確認",
+      "applyHotRewire": "設定を再適用してAIを再接続",
+      "restartApp": "設定を適用するためMaekonを再起動",
+      "reviewPrivacy": "プライバシーゲートを確認",
+      "reviewEgress": "外部データポリシーを確認",
+      "reviewBudget": "AI利用予算を確認",
+      "reviewAudit": "監査ゲートを確認"
+    }
+  },
+  "summaryProvenance": {
+    "digest": { "heuristic": "ルールベースのダイジェスト" },
+    "aiSegmentSummary": "AIセグメント要約",
+    "aiSegmentUnavailable": "AIセグメント要約は利用できません",
+    "aiDailyNarrative": "AI日次ナラティブ",
+    "dailyNarrativeUnavailable": "AI日次ナラティブは利用できません",
+    "provider": {
+      "loopback": "このデバイスのループバックモデル",
+      "subprocess": "サブスクリプションCLI",
+      "external_api": "外部プロバイダーAPI",
+      "unknown": "プロバイダー種別不明"
+    },
+    "failure": {
+      "pipeline_disabled": "処理時にAI要約パイプラインが無効でした。",
+      "below_minimum_duration": "設定された最小時間より短いセグメントです。",
+      "provider_unavailable": "互換性のある要約プロバイダーを利用できません。",
+      "provider_failed": "プロバイダーが要約を生成できませんでした。",
+      "invalid_response": "プロバイダーの応答を有効なAI要約として受理できませんでした。",
+      "capacity_limited": "要約キューが上限に達していました。",
+      "not_generated": "AIナラティブは生成されませんでしたが、ルールベースのダイジェストは利用できます。"
+    }
+  },
   "featureCapability": {
     "preferredPath": "推奨パス",
     "setupTitle": "セットアップが必要です",
@@ -2391,11 +2463,11 @@
   "onboarding": {
     "step3Search": "見たものすべてを検索",
     "aiFeatures": {
-      "optInHint": "任意: ローカル埋め込み、AIセマンティック検索、AI日次ダイジェストのナラティブを有効化します。すべてオンデバイスで処理され、Maekonを再起動すると反映されます。",
-      "enableButton": "AI機能を有効化",
+      "optInHint": "任意: 階層メモリ、埋め込み、セマンティック検索、AI要約の設定を準備します。処理先はAI設定に応じてループバック、サブスクリプションCLI、外部APIのいずれかになります。別途パターン学習への同意と再起動が必要です。",
+      "enableButton": "AI機能を準備",
       "enabling": "有効化中…",
-      "enabled": "AI機能が有効になりました",
-      "enabledNote": "再起動後にローカル埋め込み、セマンティック検索、AI日次ダイジェストのナラティブが有効になります。",
+      "prepared": "AI設定を保存しました",
+      "preparedNote": "設定の保存だけでは準備完了ではありません。プロバイダーと別途パターン学習同意の要件を満たし、Maekonを再起動してください。",
       "error": "AI機能を有効化できませんでした: {{error}}"
     },
     "step1Title": "Maekonへようこそ",
@@ -2518,6 +2590,11 @@
     "create_failed_title": "セッションを作成できません",
     "create_failed": "AIセッションの作成に失敗しました。",
     "provider_not_configured": "{{provider}} は設定されていません。設定 → AI と自動化で認証情報を追加してから、もう一度お試しください。",
+    "no_ready_provider": "利用可能なAIプロバイダーがありません",
+    "provider_unavailable": "プロバイダーを利用できません",
+    "local_runtime_unavailable": "Ollamaに接続できません。Ollamaを起動し、設定済みのエンドポイントを確認してから、もう一度お試しください。",
+    "local_runtime_invalid": "設定されたローカルエンドポイントはOllamaではありません。OllamaエンドポイントでのみローカルLLMを選択してください。",
+    "local_model_missing": "選択したOllamaモデルがインストールされていません。利用可能なモデルをインストールまたは選択してから、もう一度お試しください。",
     "load_failed_title": "セッションを読み込めません",
     "load_failed": "AIセッションの読み込みに失敗しました。",
     "refresh_failed": "AIセッションの更新に失敗しました。",
@@ -2651,6 +2728,38 @@
     "closePanelLabel": "提案パネルを閉じる",
     "badgeNew": "新着",
     "historyLoadError": "履歴を読み込めませんでした。",
+    "localAnalysis": {
+      "status": {
+        "generated": "ローカル提案を生成しました",
+        "no_candidate": "ローカル候補が見つかりませんでした",
+        "throttled": "ローカル分析は待機中です",
+        "provider_offline": "ローカル分析プロバイダーを利用できません",
+        "policy_blocked": "ローカル分析は無効です",
+        "consent_required": "ローカル分析への同意が必要です"
+      },
+      "reason": {
+        "generated": "ローカル提案を生成しました",
+        "no_valid_candidate": "有効なローカル候補が見つかりませんでした",
+        "not_admitted": "ローカル候補はレビューフィルターを通過しませんでした",
+        "no_input": "分析できるローカルアクティビティがありません",
+        "context_unchanged": "ローカルコンテキストに変更はありません",
+        "analysis_throttled": "次のローカル分析が可能になるまで待機中です",
+        "provider_unavailable": "選択したローカル分析プロバイダーを利用できません",
+        "analysis_disabled": "ローカルアクティビティ提案の生成は無効です",
+        "capture_policy_blocked": "キャプチャポリシーによりローカル分析がブロックされています",
+        "suggestion_queue_unavailable": "ローカル提案レビューキューを利用できません",
+        "consent_required": "ローカル分析への同意が必要です",
+        "provider_consent_required": "分析プロバイダーへの同意が必要です",
+        "provider_policy_blocked": "ポリシーにより分析プロバイダーがブロックされています"
+      },
+      "producer": {
+        "periodic": "定期分析",
+        "app_switch": "アプリ切替分析"
+      },
+      "provenance": "{{source}}・{{producer}}・{{time}}",
+      "counts": "{{candidateCount}}件生成 · レビュー中{{queueCount}}件",
+      "timeUnavailable": "時刻情報なし"
+    },
     "badgeLabel": "新しい提案 {{count}}件"
   },
   "suggestionStats": {
@@ -2953,24 +3062,24 @@
   },
   "advancedTab": {
     "aiFeaturesMaster": "AI機能を有効化",
-    "aiFeaturesMasterDescription": "ローカル埋め込み、AIセマンティック検索、AI日次ダイジェストのナラティブを一度に有効化します。すべてオンデバイスで処理されます。Maekonを再起動すると反映されます。",
+    "aiFeaturesMasterDescription": "階層メモリ、埋め込み、セマンティック検索、AI要約の設定をまとめて準備します。パターン学習の同意は自動付与しません。処理場所は選択したプロバイダーに従います。",
     "llmSummary": "AI日次ダイジェストのナラティブ",
-    "llmSummaryDescription": "オンデバイスLLMで1日を自然言語で要約します（埋め込みが必要）。再起動後に反映されます。",
+    "llmSummaryDescription": "選択したLLMプロバイダーでセグメント要約と日次ナラティブを生成します（階層メモリと埋め込みが必要）。各結果に処理場所を表示します。",
     "maxConcurrentSessions": "最大同時セッション数",
     "idleTimeoutSeconds": "アイドルタイムアウト（秒）",
     "sessionTimeoutSeconds": "セッションタイムアウト（秒）",
     "maxRetries": "最大リトライ回数",
     "maxHistoryTurns": "最大履歴ターン数",
     "healthCheckIntervalSeconds": "ヘルスチェック間隔（秒）",
-    "enableSuggestions": "提案を有効にする",
-    "enableSuggestionsDescription": "アクティビティに基づいてAIによる提案を受け取ります",
+    "enableSuggestions": "サーバー提案を受信",
+    "enableSuggestionsDescription": "サインイン中のONESHIMサーバーストリームから提案を受信します",
     "showBorder": "枠線を表示",
     "showBorderDescription": "モニタリング中に画面の周囲に色付きの枠線を表示します",
     "showPanel": "パネルを表示",
     "showPanelDescription": "トラッキング状態パネルを表示します",
     "borderOpacity": "枠線の不透明度（0.0 - 1.0）",
-    "enableAnalysis": "分析を有効にする",
-    "enableAnalysisDescription": "アクティビティセグメントに対してLLM分析を実行します",
+    "enableAnalysis": "ローカル活動の提案を生成",
+    "enableAnalysisDescription": "同意済みのローカル活動とOCRコンテキストを選択したLLMプロバイダーで分析します",
     "analysisIntervalSeconds": "分析間隔（秒）",
     "minConfidence": "最小信頼度（0.0 - 1.0）",
     "maxSuggestions": "最大提案数",

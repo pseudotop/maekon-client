@@ -76,6 +76,53 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.aes-gcm]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.11.0 -> 0.11.1"
+notes = """
+#11730 delta audit — aes-gcm 0.11.0 -> 0.11.1. License: Apache-2.0 OR MIT.
+Delta read in full: 5 files, +43/-19 (CHANGELOG, Cargo.toml, Cargo.toml.orig, README, src/lib.rs).
+
+Publisher note: 0.11.0 was published by user-id 267 (tarcieri), who this file already
+trusts via [[trusted.aes-gcm]]. 0.11.1 was published by `github:RustCrypto/AEADs`, a team
+account outside that trust entry, so the existing publisher trust does not carry over.
+This is a delta audit, not a trust extension.
+
+Non-code changes: CHANGELOG adds the 0.11.1 entry and retroactively reorganises the 0.11.0
+entries; README reorders badges. Neither carries meaning.
+
+Manifest changes:
+- `subtle` (v2) removed, `ctutils` (v0.4) added.
+- New optional feature `zeroize = ["dep:zeroize", "aes?/zeroize", "ghash/zeroize"]`.
+
+src/lib.rs has exactly two changes:
+
+1. The AEAD authentication-tag comparison switches its constant-time helper:
+   `use subtle::ConstantTimeEq;` -> `use ctutils::CtEq;`. The call site is unchanged
+   (`expected_tag[..TagSize::to_usize()].ct_eq(tag).into()`). This is the one
+   security-relevant line in the delta.
+2. A `#[cfg(feature = "zeroize")]` marker impl `ZeroizeOnDrop for AesGcm` with an empty
+   body; clearing is delegated to member drops (`Aes`, `Polyval`).
+
+Reachability measured, not assumed:
+- `ctutils 0.4.2` is already in this lockfile (pulled by other crates) and already carries
+  a safe-to-deploy audit in this file, so the swap introduces no unvetted crate. `subtle`
+  remains in the graph for other consumers.
+- The `zeroize` feature is NOT enabled for aes-gcm in this workspace: `cargo tree -i
+  aes-gcm -e features` shows only `default` -> `aes` from maekon-network / maekon-storage,
+  with zero `zeroize` occurrences. The new marker impl is therefore cfg-gated out of every
+  shipped target.
+
+Limitation recorded honestly: the existing `ctutils` audit is a capability and
+memory-safety check (no unsafe, no build script, no syscalls), not a timing analysis. The
+constant-time property of the tag comparison rests on RustCrypto's upstream authorship
+exactly as it did for `subtle` before this delta; this audit does not independently verify
+constant-time execution of either crate.
+
+No unsafe added, no build script, no new process/network/filesystem surface, no API
+removal."""
+
 [[audits.ahash]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -273,6 +320,38 @@ Reviewed against vendored registry source (whole crate; tests/benches/examples
 excluded). 2 unsafe: an `#[target_feature(enable="avx2")]` SIMD compression fn and its gated call site. AVX2 intrinsics, dispatched only when the feature is available (RustCrypto standard runtime detection). Sound; no memory-unsafety outside the gated SIMD path.
 No process/network/Command syscalls, no native (cc/cmake/bindgen) compilation.
 safe-to-deploy. Scope: per-crate unsafe-block + capability review.
+"""
+
+[[audits.argon2]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.6.0"
+notes = """
+#11848 exact-version full-source audit for PR #11840. License: MIT OR Apache-2.0;
+Rust 2024, MSRV 1.85, and no build script. Reviewed every Rust source file plus
+the crate feature graph (default alloc/getrandom/password-hash; optional kdf,
+parallel, rand_core, and zeroize). No process, filesystem, network, shell, FFI,
+or build-time execution capability was found.
+AUDIT SCOPE: full crate version; all targets and features reviewed.
+
+The unsafe surface is confined to three reviewed clusters. The custom zeroed
+Block allocator validates a non-zero array Layout, checks allocation failure,
+builds a slice with the same pointer/length, and deallocates exactly that Layout
+once. The parallel memory view holds a bounded non-null Block slice; Params
+enforces p_cost >= 1 and memory >= 8*p_cost, the outer pass/slice loops are
+serial synchronization boundaries, one view is created per lane, and runtime
+guards reject same-slice cross-lane reads and all out-of-segment writes. The AVX2
+compression call remains guarded by runtime cpufeatures detection. These
+invariants cover the unsafe Send/Sync and raw-pointer dereferences; no unguarded
+pointer escape was found.
+
+Exact crate tests passed on Windows for --all-features --all-targets: 6 unit,
+25 KAT, and 15 PHC tests (14 upstream ignored reference/oversize cases), with
+zero failures. --no-default-features also compiled and ran its zero-test targets.
+The KAT set covers Argon2d/i/id, versions 0x10/0x13, parallel lanes, wrong
+password, and different salt. Scope is memory safety, capability safety, PHC
+compatibility, and bundled algorithm vectors for this version; it is not an
+independent cryptographic proof.
 """
 
 [[audits.arrayvec]]
@@ -950,6 +1029,30 @@ and no process/network/Command syscalls in crate source. Pure safe-Rust →
 no memory-unsafety and no build-time or runtime code-execution / exfiltration
 vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
+"""
+
+[[audits.blake2]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.11.0"
+notes = """
+#11848 exact-version full-source audit for PR #11840. License: MIT OR Apache-2.0;
+Rust 2024, MSRV 1.85, and no build script. Reviewed all Rust source files and
+all alloc/reset/size_opt/zeroize features. No process, filesystem, network,
+shell, FFI, or build-time execution capability was found.
+AUDIT SCOPE: full crate version; all targets and features reviewed.
+
+The sole unsafe block converts an immutable reference to a repr(C) vector of
+four fully initialized u32/u64 fields into a byte slice of exactly size_of(Self).
+Those homogeneous fields introduce no uninitialized padding; the returned slice
+cannot outlive or mutate the vector. Compression, parameter sizing, keyed/unkeyed
+initialization, reset, and zeroization paths otherwise use safe bounded slices.
+Exact all-feature stable tests passed: 4 MAC, 1 BLAKE2b KAT, 3 personalization,
+and 2 keyed-API unkeyed-mode tests (10/10, zero failures); Argon2's all-feature
+suite additionally exercised BLAKE2b across 40 passing KAT/PHC cases. The
+upstream benchmark target alone requires nightly #![feature(test)] and was
+therefore excluded from the stable test run. Scope is memory/capability safety
+and bundled vectors for this version, not an independent cryptographic proof.
 """
 
 [[audits.block-buffer]]
@@ -2948,6 +3051,64 @@ Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch2.out + deny-batch2.out).
 """
 
+[[audits.flate2]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "1.1.9 -> 1.1.10"
+notes = """
+#11730 delta audit — flate2 1.1.9 -> 1.1.10. License: MIT OR Apache-2.0.
+Delta: 27 files, +794/-271 (counted here as +720/-263 excluding headers). This is the
+`no_std` release; the breadth is mostly a mechanical import migration, so the delta was
+decomposed before reading.
+
+Not taken on trust: cargo-vet suggests `cargo vet trust flate2 Byron` because Mozilla
+trusts that publisher. A publisher-trust precedent elsewhere is not evidence about this
+delta, so this is a read audit instead.
+
+Shape, measured:
+- +117/-82 of the diff is `use std::...` -> `use core::...` / `alloc::...` / `crate::...`.
+- `unsafe` is +1/-1 and `MaybeUninit` +3/-3, and both are the same migration: the single
+  changed `unsafe` line is `std::ffi::CStr::from_ptr` -> `core::ffi::CStr::from_ptr`
+  inside an already-existing block. No new `unsafe` operation, no new raw-pointer site.
+- No process, network, filesystem, env, asm or extern-C token appears on any added line
+  beyond that path rename.
+
+What `no_std` actually does here (src/lib.rs 124-141):
+
+    #![no_std]
+    #[cfg(not(flate2_unstable_nightly_alloc_io))] extern crate std;
+    #[cfg(flate2_unstable_nightly_alloc_io)]      use {alloc::io, core::error};
+    #[cfg(not(flate2_unstable_nightly_alloc_io))] use std::{error, io};
+
+`flate2_unstable_nightly_alloc_io` is a `--cfg` flag requiring nightly `feature(alloc_io)`,
+not a Cargo feature. It is not set anywhere in this workspace (no `.cargo` config, no
+rustflags carrying it), so `crate::io` resolves to `std::io` exactly as before. The
+`#![no_std]` attribute is nominal for our build; std is linked back in unconditionally.
+
+Backend reachability, measured rather than assumed:
+- Enabled features for flate2 here are `default`, `rust_backend`, `runtime_detection`,
+  `miniz_oxide`, `zlib-rs`, `any_zlib`, `any_impl`.
+- No C backend is in the lockfile before or after: `cloudflare-zlib-sys`, `libz-sys` and
+  `libz-ng-sys` are all absent; only `zlib-rs 0.6.3` (pure Rust) and `crc32fast 1.5.0`.
+- Therefore `src/ffi/c.rs` (+18/-55) is not compiled for us. That file carries the removal
+  of the Cloudflare backend: the `cloudflare_zlib` feature is redefined from
+  `["any_c_zlib", "cloudflare-zlib-sys", "dep:crc32fast"]` to plain `["zlib"]`. This
+  removes a C dependency path; it cannot add one.
+
+Reachable API changes reviewed: `Crc` gains `new`, `reset`, `combine`, `amount`, `sum`,
+`update` (a struct move plus accessors); `GzHeader::mtime_as_datetime` changes its return
+path from `time::SystemTime` to `std::time::SystemTime` and a `mtime_as_duration` is added;
+`reset_decoder_data` and per-type `reset` methods are added for stream reuse. New test file
+`tests/zero-write.rs` (+99) is test-only. No public API is removed other than the
+`mtime_as_datetime` signature path change noted above.
+
+Direction of change: one C dependency path deleted, no new capability, no new unsafe
+operation, I/O unchanged for this workspace's configuration.
+
+Scope: capability and memory-safety oriented delta review with the import migration
+verified as mechanical. Not a line-by-line re-derivation of the gz/zlib wrappers; those
+were covered by the whole-crate 1.1.9 audit already recorded in this file."""
+
 [[audits.flume]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -4683,6 +4844,34 @@ The HashMap side has its own subtlety the crate handles deliberately: the map is
 
 Scope, stated rather than implied. This entry identifies the crate's central invariant, confirms the unsafe surface is confined to the places that maintain it, and follows the reasoning at each cluster. It does not constitute an independent re-derivation of the algorithm's correctness under all interleavings or operation orders -- that needs either a proof or a Miri run under the crate's own test suite, and no Miri run was performed for this audit."""
 
+[[audits.lru]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.18.2 -> 0.18.3"
+notes = """
+#11730 delta audit — lru 0.18.2 -> 0.18.3. License: MIT.
+Delta read in full: 4 files, +24/-6 (CHANGELOG, Cargo.toml, Cargo.toml.orig, src/lib.rs).
+Only src/lib.rs carries code.
+
+Two source changes, both reviewed line by line:
+
+1. New `LruCache::sparse(cap)` constructor — `LruCache::construct(cap, HashMap::default())`.
+   Pure addition; identical to `new()` except the backing HashMap is not pre-allocated.
+   Safe Rust, no new dependency, no I/O, no capability change.
+
+2. An `unsafe` block is REMOVED, not added: the not-full allocation path changes from
+   `unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(LruEntry::new(k, v)))) }`
+   to `NonNull::new(Box::into_raw(...)).unwrap()`. The null assumption is now checked
+   instead of asserted. Strictly safer; net unsafe-site count decreases by one.
+
+Scope: no build script, no new dependency, no process/network/filesystem surface, no API
+removal. The delta is self-contained inside the crate — it introduces no cross-crate
+invariant and no target- or feature-gated behaviour change. Publisher jeromefroe
+(crate author) per crates.io.
+
+Not a line-by-line re-review of the pre-existing 88 unsafe sites in this crate; those were
+covered by the whole-crate 0.18.2 audit already recorded in this file."""
+
 [[audits.lru-slab]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5010,6 +5199,62 @@ Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch2.out + deny-batch2.out).
 """
 
+[[audits.miniz_oxide]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.8.9 -> 0.9.1"
+notes = """
+#11730 delta audit — miniz_oxide 0.8.9 -> 0.9.1. License: MIT OR Zlib OR Apache-2.0.
+Delta: 14 files, +540/-185. Pure-Rust deflate/inflate. This is a minor release, so the
+delta was scanned on capability axes first and then read where it matters.
+
+Measured properties (not assumed):
+- `unsafe`: 0 added and 0 removed in the delta; whole-crate token count identical between
+  0.8.9 and 0.9.1 (4 in both), same 14 source files, and neither version has a build.rs.
+- Capability tokens with zero occurrences on added lines: std::process, Command, std::net,
+  TcpStream, std::fs, File::, include_str, include_bytes, env!, std::env, extern "C",
+  asm!, transmute, from_raw, as_ptr, MaybeUninit.
+- Manifest: `simd-adler32` requirement 0.3.3 -> 0.3.8 and `serde` gains
+  `default-features = false` + `alloc`; `std` feature now forwards `serde?/std`. No crate
+  enters the graph: this lockfile already pins simd-adler32 0.3.9 (satisfying >=0.3.8) both
+  before and after, and serde is optional.
+
+Decompression path (untrusted input) read line by line:
+
+1. `inflate/core.rs` — Huffman table construction is rewritten to match zlib's
+   `inftrees.c`. It now checks over-subscription at every code length
+   (`left <<= 1; left -= ts; if left < 0 -> BadTotalSymbols`) instead of only inspecting
+   the final total, and the incomplete-table rule changes from
+   `total != 65536 && (used_symbols > 1 || bt == HUFFLEN_TABLE)` to
+   `total != 65536 && (bt == HUFFLEN_TABLE || max_code_len > 1)`, with the RFC 1951 /
+   zlib rationale in the source. Net effect: malformed tables are rejected earlier and
+   the accepted set is aligned to zlib.
+
+2. New `decompress_with_limit(r, in_buf, out, out_pos, out_max, flags)`; `decompress()`
+   now delegates with `out_max = usize::MAX`, so existing callers are unchanged.
+
+3. `inflate/output_buffer.rs` — `OutputBuffer` gains a `max` field built by
+   `position.saturating_add(max_count)` and then clamped to `slice.len()`. The
+   construction cannot overflow and cannot exceed the slice. `bytes_left()` changes from
+   `slice.len() - position` to `max - position`, i.e. it can only shrink.
+
+4. The LZ77 match-copy guard changes `out_len` from `out_buf.get_ref().len()` to
+   `out_buf.bytes_left()`. Because `max <= slice.len()`, the new threshold is less than
+   or equal to the old one for every position, so the bulk `apply_match` fast path is
+   entered on a strict subset of the previously allowed cases; everything else falls back
+   to the bounds-checked `WriteLenBytesToEnd` byte-wise path. The distance guard on the
+   line above still uses `get_ref().len()` and is unchanged. The direction of this change
+   is conservative — it cannot admit a bulk copy the old code rejected.
+
+Compression side (deflate/core.rs +303/-82 and friends) is API surface for the new 0.9
+features plus the stored-block and zlib-header refactors; it introduces no unsafe, no new
+dependency, and no new capability per the scan above, and it does not parse untrusted
+input the way the inflate path does.
+
+Scope: capability and memory-safety oriented delta review with line-by-line reading of the
+decompression changes. Not a line-by-line re-derivation of the whole deflate encoder; that
+was covered by the whole-crate 0.8.9 audit already recorded in this file."""
+
 [[audits.mio]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5058,6 +5303,24 @@ who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
 version = "0.0.3"
 notes = "#8685 full-crate audit. Dependency-free proc macro with one inert `skip` attribute that returns its input token stream unchanged. No unsafe code, build script, filesystem/network/process access, generated runtime behavior, or transitive dependencies. License: MIT."
+
+[[audits.mutants]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.0.3 -> 0.0.4"
+notes = """
+#11729. AUDIT SCOPE: full crate version; all targets and features reviewed.
+Reviewed the exact crates.io source resolved by the locked checksum. The normalized
+manifest exposes one proc-macro library target, zero features and dependencies, no
+build script, and no auto-discovered binaries, examples, tests, or benches. The entire
+executable source remains one inert `skip` attribute that returns its input token
+stream unchanged. The 0.0.3 to 0.0.4 delta only moves changelog text to NEWS.md and
+adds Cargo-generated manifest metadata and a dependency-free lockfile; it does not add
+or change executable behavior. Both all-feature/all-target `cargo check` and `cargo test`
+pass against the registry source. No unsafe code,
+FFI, filesystem, network, process, environment, generated runtime behavior, or target-
+specific code is present. License: MIT.
+"""
 
 [[audits.native-tls]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -5572,6 +5835,26 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.password-hash]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.6.1"
+notes = """
+#11848 exact-version full-source audit for PR #11840. License: MIT OR Apache-2.0;
+Rust 2024, MSRV 1.85, no build script, and crate-level forbid(unsafe_code).
+Reviewed both Rust source files and all features (alloc, getrandom, rand_core,
+phc). The crate only defines typed hashing/verifying traits, maps errors, and
+generates a fixed 16-byte salt through getrandom or a caller-supplied
+TryCryptoRng. No process, filesystem, network, shell, FFI, or other execution
+capability exists. The PHC representation moved to the separately audited phc
+crate; error translation is exhaustive except for the intentional non-exhaustive
+fallback to Internal. Exact --all-features --all-targets tests passed (1/1),
+including successful and rejected-password verifier paths. Scope is complete
+source/capability review and trait behavior, not an independent audit of RNG
+implementations supplied by dependencies.
+AUDIT SCOPE: full crate version; all targets and features reviewed.
+"""
+
 [[audits.paste]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5615,6 +5898,12 @@ criteria = "safe-to-deploy"
 version = "3.0.6"
 notes = "Phase 6 #3908 batch8: pem reviewed; PEM framing/base64 parser/encoder only, crate denies unsafe_code, supports no_std+alloc, and performs no filesystem/network/process access or cryptographic primitive implementation."
 
+[[audits.pem]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "3.0.6 -> 4.0.0"
+notes = "AUDIT SCOPE: delta 3.0.6 -> 4.0.0; all targets and features reviewed. #11730 (delta newly surfaced by the regenerated dependabot group #11821). Zero source changes: the delta touches only .github/workflows/ci.yml, Cargo.toml and Cargo.toml.orig, and src/ is byte-identical. The real changes are (1) MSRV 1.60.0 -> 1.71.0, (2) base64 ^0.22 -> ^0.23, and (3) a dev-only criterion bump 0.3 -> 0.8. The major version bump is semver propagation from base64 types appearing in pem's public API, not a change in pem's own logic. Because the delta does not close inside the crate, the base64 axis was checked separately rather than assumed: the new lockfile resolves base64 0.23.1, which our own audits.toml does NOT cover (0.13.1 / 0.21.7 / 0.22.1 only); it is covered by [[trusted.base64]] (user-id 5563, marshallpierce, 2019-10-25 to 2027-08-18, owner-approved under #9374), and imports.lock records the same user-id publishing 0.23.1 on 2026-08-04, inside that window. No new unsafe, no build script, no network access."
+
 [[audits.pem-rfc7468]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5639,6 +5928,26 @@ URL percent-encoding/decoding. No unsafe code. Maintained by the url/servo team.
 Widely used by reqwest, hyper, and URL parsing crates. Actively maintained.
 Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch3.out + deny-batch3.out).
+"""
+
+[[audits.phc]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.6.1"
+notes = """
+#11848 exact-version full-source audit for PR #11840. License: Apache-2.0 OR MIT;
+Rust 2024, MSRV 1.85, no build script, and crate-level forbid(unsafe_code).
+Reviewed all eight Rust source files and the alloc/getrandom/rand_core feature
+surface. PHC parsing is bounded by fixed maximum sizes for identifiers,
+parameters, salt, and output; checked buffer growth and validated Base64/ASCII
+inputs prevent indexing or allocation surprises. Random salt helpers use
+getrandom or CryptoRng/TryCryptoRng and fixed-size initialized buffers. No
+process, filesystem, network, shell, FFI, or other execution capability exists.
+Exact --all-features --all-targets tests passed: 35 unit, 2 encoding, 7 PHC
+structure, and 2 scrypt/Argon2id vector tests (46/46, zero failures). Scope is
+complete source/capability and parser-boundary review, not an audit of external
+RNG implementations.
+AUDIT SCOPE: full crate version; all targets and features reviewed.
 """
 
 [[audits.phf]]
@@ -6727,6 +7036,12 @@ tests/benches/examples excluded). whole-crate verified: 0 `unsafe`. X.509 certif
 No process/network/Command syscalls, no inline asm!, no native (cc/cmake/bindgen)
 compilation. safe-to-deploy. Scope: per-crate unsafe-block + capability review.
 """
+
+[[audits.rcgen]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.14.9 -> 0.14.10"
+notes = "AUDIT SCOPE: delta 0.14.9 -> 0.14.10; all targets and features reviewed. #11730 (delta newly surfaced by the regenerated dependabot group #11821). All six changed source files were read; every change moves toward RFC 5280 conformance. (1) Empty CRL distribution point URIs are now rejected on both the certificate and CRL paths, blocking an encoding that violates GeneralNames ::= SEQUENCE SIZE (1..MAX) (new Error::EmptyCrlDistributionPointUris). (2) Missing-extension-block bug fix: should_write_exts omitted key_usages and crl_distribution_points, so a certificate requesting only one of them silently dropped the keyUsage or CRLDistributionPoints extension. (3) RFC 5280 5.3.1: the reasonCode extension is omitted when the reason is Unspecified. (4) RFC 5280 5.3.2: invalidityDate must be GeneralizedTime even in the 1950-2049 UTCTime range, so dt_to_generalized replaces write_dt_utc_or_generalized. (5) The RSA-PSS path was removed; the removed PKCS_RSA_PSS_SHA256 was pub(crate) rather than pub, was already commented out of SignatureAlgorithm::iter(), and its own doc comment recorded that both openssl and webpki reject the certificates it produced -- dead private code, so this is not a semver break in a patch release. (6) ML-DSA moved from the aws_lc_rs_unstable gate to aws_lc_rs (aws-lc-rs 1.18 stabilized PQDSA), with to_pkcs8 -> to_pkcs8v1. Every change ships with a test. Reachability was measured on three axes: maekon depends on rcgen with default features only (crypto, pem, ring) and enables neither aws_lc_rs nor fips, so (6) is not compiled; there are zero call sites setting key_usages and zero CRL uses, so (1)-(4) do not change current output. Since those are absence claims, a positive control was run on the same sweep: rcgen matches 11 files and CertificateParams matches 10. No new unsafe, no build script, no network access."
 
 [[audits.realfft]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -9568,6 +9883,51 @@ notes = """
 AUDIT SCOPE: full crate version; all targets and features reviewed. #11509 VD-05.7a full audit — usearch 2.26.0. License: Apache-2.0. The crate is packaged from unum-cloud/USearch itself (path_in_vcs empty): all 9 packaged files are byte-identical to the repository at tag commit cc23bbaf (0 differing; 166 repo-only files trimmed; positive control fired), which pins package==repository — the C++ HNSW core (include/, 11,794 lines) is the upstream project's own v2.26.0 code, not third-party vendoring, and the verdict on it transfers to the upstream project at that release. Rust surface read in full (rust/lib.rs, 2,796 lines, 35 unsafe tokens): 8 slice reinterpretations between #[repr(transparent)] newtypes (b1x8/u8, f16/i16 — same size and alignment, every bit pattern valid); cxx unsafe extern "C++" bridge declarations; synchronous filtered-search trampolines whose stack-closure pointers cannot outlive the call; change_metric stores Box::into_raw and Drop pairs each variant with Box::from_raw; Send/Sync impls rest on USearch's documented internal synchronization plus Send+Sync bounds on stored metric closures; view_from_buffer is correctly pub unsafe with an explicit use-after-free example in its docs. rust/lib.cpp (503 lines) is cxx glue compiled by build.rs via cxx_build over in-package sources only — no Command, no network, no out-of-package paths (the numkong feature consumes only DEP_NUMKONG_INCLUDE and link metadata). Reached via maekon-analysis.
 """
 
+[[audits.usearch]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "2.26.0 -> 2.26.1"
+notes = """
+#11730 delta audit — usearch 2.26.0 -> 2.26.1. License: Apache-2.0.
+Delta read in full: 7 files, +49/-13 (Cargo.toml, Cargo.toml.orig, README, build.rs,
+include/usearch/index.hpp, include/usearch/index_dense.hpp, rust/lib.rs).
+
+This crate compiles vendored C++ headers into the binary, so the C++ hunks were read as
+first-class code, not treated as data. All of them are bounds hardening in the index-file
+deserialisation path:
+
+1. index.hpp — version patch macro bump, plus a new guard when loading node levels:
+   `if (file.size() < first_offset.value) { reset(); return failed("File is corrupted
+   and can't fit the node levels"); }`.
+
+2. index_dense.hpp — three changes:
+   a. `try_reserve` is made monotonic: `limits.members` is raised to at least
+      `typed_->capacity()` and `vectors_lookup_.size()`, and the old assignment from
+      `slot_lookup_.capacity()` is dropped. Reducing thread limits can no longer shrink
+      member-addressed storage.
+   b. New guard `if (offset > file.size()) return failed("File is corrupted and lacks
+      matrix dimensions");`. Upstream's own comment states the motive: `file.size() -
+      offset` would otherwise underflow into a huge span. This closes an integer
+      underflow that fed an out-of-bounds span.
+   c. The vectors span size changes from an unchecked `matrix_rows * matrix_cols` to
+      `checked_mul(...)` plus a `file.size() - offset < vectors_bytes.value` bound check.
+      This closes an integer overflow that fed an out-of-bounds read.
+
+3. build.rs — one line removed: `.flag_if_supported("/MD")`. MSVC-only C runtime linkage
+   flag. No new command, no download, no file write, no new build-time capability.
+
+4. rust/lib.rs — adds one `#[test]`
+   (`reserve_uses_requested_member_capacity_and_never_shrinks`) inside `mod tests`.
+   Test-only; not part of the library surface.
+
+Direction of change: this delta removes undefined behaviour on malformed index files. It
+adds no capability, no dependency, no `unsafe`, and no process/network surface. Nothing in
+the delta is reachable as new functionality; the only behavioural difference on
+well-formed input is that `try_reserve` no longer shrinks.
+
+Not a re-review of the whole vendored C++ tree; that was covered by the full-crate 2.26.0
+audit already recorded in this file (#11509 VD-05.7a)."""
+
 [[audits.utf8-zero]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -9633,6 +9993,43 @@ Upgrading is strictly safer than staying: 1.24.0 can accept input that 1.24.1 re
 Scope: delta review of the shipping source change plus capability/static signals
 (dependencies, unsafe count, build script). Not a line-by-line audit of the whole crate.
 """
+
+[[audits.uuid]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "1.24.1 -> 1.26.0"
+notes = """
+#11730 delta audit — uuid 1.24.1 -> 1.26.0. License: Apache-2.0 OR MIT.
+Delta read in full: 6 files, +150/-14 (Cargo.toml, Cargo.toml.orig, README, src/lib.rs,
+src/external/serde_support.rs, src/timestamp.rs).
+
+Manifest: version bump only, including the matching bump of the wasm32-gated
+`uuid-rng-internal-lib` path dependency. No dependency added or removed, no feature added,
+no build script (this crate has none).
+
+Two source additions, both opt-in:
+
+1. `src/external/serde_support.rs` adds `pub mod bytes` — a serde helper that writes a
+   Uuid through `Serializer::serialize_bytes(u.as_bytes())` and reads it back through
+   `deserialize_bytes`, so byte-string-aware formats (CBOR, MessagePack) encode 16 bytes
+   instead of a 16-element integer sequence. It is reachable only when a consumer opts in
+   with `#[serde(with = "uuid::serde::bytes")]`. `src/lib.rs` re-exports it next to the
+   existing `braced/compact/hyphenated/simple/urn` modules. The module ships its own
+   `#[cfg(test)]` round-trip test.
+
+2. `src/timestamp.rs` adds `ContextV7::with_additional_precision_bits(bits)` and rewrites
+   the existing `with_additional_precision()` to delegate to it with 12. The new method
+   caps its argument with `cmp::min(bits, 12)`, matching the width of the `rand_a` field,
+   so an out-of-range request cannot widen the timestamp field beyond the v7 layout. A
+   `#[test]` covers the 10-bit case, equivalence of `with_additional_precision()` and
+   `with_additional_precision_bits(12)`, the cap at values above 12, and that 0 disables
+   the feature.
+
+Behaviour on existing call sites is unchanged: `with_additional_precision()` still yields
+12 bits, and the test asserts that equivalence directly.
+
+No `unsafe`, no new dependency, no build script, no process/network/filesystem surface, no
+API removal, no change to random-number sourcing or to the UUID layout itself."""
 
 [[audits.version-compare]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -11111,7 +11508,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.blake2]]
 criteria = "safe-to-deploy"
-user-id = 5059 # Artyom Pavlov (newpavlov)
+user-id = 5059
 start = "2019-08-25"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Artyom Pavlov). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
@@ -11475,7 +11872,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.getrandom]]
 criteria = "safe-to-deploy"
-user-id = 5059 # Artyom Pavlov (newpavlov)
+user-id = 5059
 start = "2019-06-28"
 end = "2027-08-20"
 notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."

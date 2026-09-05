@@ -34,7 +34,9 @@ done
 declare -a MISSING_EN=()
 declare -a MISSING_KO=()
 
-while IFS= read -r code; do
+while IFS= read -r code || [[ -n "$code" ]]; do
+  # #11997: Git's Windows CRLF checkout must not become part of a wire code.
+  code="${code%$'\r'}"
   [[ -z "$code" ]] && continue
   # Use jq-free grep for "code": literal-match. The JSON file has one
   # "key": "value" per line (enforced by the existing `cargo fmt` style

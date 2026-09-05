@@ -35,6 +35,7 @@ mod adaptive_trigger;
 mod analyzer;
 pub mod error;
 pub mod fallback_analysis_provider;
+mod outcome;
 
 mod assembler;
 pub mod auto_tuner;
@@ -100,6 +101,7 @@ pub use current_context::{
     LOCAL_CURRENT_SCENE_SOURCE_ID,
 };
 pub use few_shot_selector::FewShotSelector;
+pub use outcome::AnalysisRunOutcome;
 pub use param_resolver::ParamResolver;
 pub use pattern_miner::{detect_gui_patterns, GuiPattern, PatternMiner};
 pub use prompts::{FewShotExample, FewShotOutcome, PromptBuilder, ANALYSIS_SYSTEM_PROMPT};

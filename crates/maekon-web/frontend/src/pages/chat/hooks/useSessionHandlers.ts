@@ -16,7 +16,7 @@ interface UseSessionHandlersParams {
   sessions: SessionInfo[]
   setSessions: React.Dispatch<React.SetStateAction<SessionInfo[]>>
   setSessionLoadError: React.Dispatch<React.SetStateAction<string | null>>
-  transport: Transport
+  transport: Transport | null
   selectedHttpSurface: { surface_id: string; display_name: string } | null
   resolvedModel: string | undefined
   systemPrompt: string
@@ -87,6 +87,12 @@ export function useSessionHandlers({
     async (setCreating: (v: boolean) => void, setCreateError: (v: string | null) => void) => {
       setCreating(true)
       setCreateError(null)
+      if (!transport) {
+        const message = t('chat.no_ready_provider')
+        setCreateError(message)
+        setCreating(false)
+        return
+      }
       try {
         const info = await ipc<SessionInfo>('create_ai_session', {
           config: {
@@ -113,6 +119,19 @@ export function useSessionHandlers({
                 '{{provider}} is not configured. Add its credential in Settings → AI & Automation, then try again.',
             }),
           fallback: t('chat.create_failed', 'Failed to create an AI session.'),
+          transport,
+          localRuntimeUnavailableMessage: t(
+            'chat.local_runtime_unavailable',
+            'Ollama is not reachable. Start Ollama and verify the configured endpoint, then try again.',
+          ),
+          localRuntimeInvalidMessage: t(
+            'chat.local_runtime_invalid',
+            'The configured local endpoint is not Ollama. Choose Local LLM only for an Ollama endpoint.',
+          ),
+          localModelMissingMessage: t(
+            'chat.local_model_missing',
+            'The selected Ollama model is not installed. Install or select an available model, then try again.',
+          ),
         })
         setCreateError(message)
         addToast('error', message, 6000)

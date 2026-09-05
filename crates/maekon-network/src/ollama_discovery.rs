@@ -41,9 +41,8 @@ pub enum OllamaProbe {
 ///   plain OpenAI-compatible server).
 /// * `Unreachable` — TCP/DNS failure; Ollama is likely not running.
 ///
-/// The probe never panics and never returns `Err`.  It is a best-effort
-/// auxiliary signal; the caller must remain fail-open (continue session
-/// creation regardless of the result).
+/// The probe never panics and never returns `Err`. Callers decide policy from
+/// the typed result; session creation uses it as a fail-closed precondition.
 ///
 /// One-time cost per session creation; bounded by `timeout` (default 2 s).
 pub async fn probe_ollama(base_url: &str, timeout: Duration) -> OllamaProbe {
@@ -89,8 +88,8 @@ pub async fn probe_ollama(base_url: &str, timeout: Duration) -> OllamaProbe {
 /// Ollama's response (e.g. `"qwen3:8b"`, `"llama3:latest"`).  Returns `None`
 /// on any error (connection failure, non-2xx status, parse failure).
 ///
-/// The caller should treat `None` as "no information available" and skip
-/// model negotiation entirely.
+/// Session creation treats `None` as an unproven model catalog and fails
+/// closed before accepting user content.
 pub async fn list_installed_models(base_url: &str, timeout: Duration) -> Option<Vec<String>> {
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder().timeout(timeout).build().ok()?;
