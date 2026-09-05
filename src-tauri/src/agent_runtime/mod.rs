@@ -5,6 +5,7 @@ mod analysis_setup;
 // `embedding_setup::build_web_search_components`, tapping the same embedding
 // source as this scheduler ingestion path.
 pub(crate) mod embedding_setup;
+mod summary_provider_class;
 mod sync_setup;
 
 use anyhow::Result;

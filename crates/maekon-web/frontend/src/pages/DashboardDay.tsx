@@ -8,6 +8,7 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { fetchDailyDigest, fetchSummary } from '../api/client'
 import type { DailyDigestResponse, DailySummary } from '../api/contracts'
+import { AiReadinessNotice } from '../components/AiReadinessNotice'
 import CaptureProcessingStatus, { hasCapturedActivity } from '../components/CaptureProcessingStatus'
 import GuiInteractionTrack from '../components/GuiInteractionTrack'
 import InsightCard from '../components/InsightCard'
@@ -15,6 +16,7 @@ import PomodoroTimer from '../components/PomodoroTimer'
 import StatisticsPanel from '../components/StatisticsPanel'
 import TimelineView from '../components/TimelineView'
 import { Button, Card, Skeleton } from '../components/ui'
+import { useAiReadinessSnapshot } from '../hooks/useAiReadinessSnapshot'
 import { useCreateOverride, useOverrides } from '../hooks/useRecalibration'
 import { colors, iconSize, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
@@ -54,6 +56,7 @@ const DEFAULT_REGIME_OPTIONS = [
 
 export default function DashboardDay() {
   const { t } = useTranslation()
+  const aiReadinessSnapshot = useAiReadinessSnapshot()
   const [date, setDate] = useState(todayStr)
 
   const { data, isLoading, error } = useQuery<DailyDigestResponse>({
@@ -155,6 +158,13 @@ export default function DashboardDay() {
       {/* Display date */}
       <p className={cn('mb-6 text-sm', colors.text.secondary)}>{formatDisplayDate(date)}</p>
 
+      <AiReadinessNotice
+        snapshot={aiReadinessSnapshot}
+        capabilityIds={['segment_summary', 'daily_narrative']}
+        compact
+        className="mb-6"
+      />
+
       {/* Two-column layout: main content + sidebar timer */}
       <div className="flex flex-col gap-6 lg:flex-row">
         {/* Main content */}
@@ -186,7 +196,11 @@ export default function DashboardDay() {
               {data.timeline.length === 0 && hasCapturedActivity(rawSummary) && (
                 <CaptureProcessingStatus summary={rawSummary} />
               )}
-              <InsightCard insight={data.insight} />
+              <InsightCard
+                insight={data.insight}
+                digestProvenance={data.digest_provenance}
+                aiNarrative={data.ai_narrative}
+              />
               <TimelineView
                 timeline={data.timeline}
                 overrides={overrides}

@@ -273,6 +273,8 @@ async fn test_digest_web_entrypoints_do_not_block_worker() {
         timeline: vec![],
         statistics: Default::default(),
         generated_at: chrono::Utc::now(),
+        digest_provenance: "heuristic".to_string(),
+        ai_narrative: Default::default(),
     };
     let saved = tokio::time::timeout(
         Duration::from_secs(5),

@@ -1,6 +1,9 @@
 use super::*;
 use maekon_core::models::ai_session::SessionTransport;
 
+#[cfg(feature = "analysis")]
+mod local_llm_readiness;
+
 fn test_config() -> Arc<AiSessionConfig> {
     Arc::new(AiSessionConfig {
         max_concurrent_sessions: 2,
@@ -15,6 +18,36 @@ fn test_manager() -> SessionManagerImpl {
     // invariant; the bare-manager (no guard) path is exercised explicitly by
     // `decorate_session_refuses_external_session_without_guard`.
     test_manager_without_guard().with_privacy_guard(Arc::new(PassthroughGuard))
+}
+
+/// Build a manager whose local transport satisfies the same bounded Ollama
+/// preflight as production. Keep every returned guard alive for the duration of
+/// the test so lifecycle tests do not accidentally depend on a developer's
+/// machine-wide Ollama daemon or model catalog.
+macro_rules! ready_local_llm_manager {
+    ($manager:expr) => {{
+        let mut server = mockito::Server::new_async().await;
+        let version = server
+            .mock("GET", "/api/version")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"version":"0.11.0"}"#)
+            .create_async()
+            .await;
+        let models = server
+            .mock("GET", "/api/tags")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"models":[{"name":"llama3"}]}"#)
+            .create_async()
+            .await;
+        let manager =
+            ($manager).with_local_llm_target(crate::session_manager::factory::LocalLlmTarget {
+                base_url: server.url(),
+                default_model: None,
+            });
+        (manager, server, version, models)
+    }};
 }
 
 fn test_manager_without_guard() -> SessionManagerImpl {
@@ -164,68 +197,6 @@ async fn create_http_api_session_requires_surface_id() {
         err_msg.contains("surface_id is required"),
         "expected surface_id error, got: {err_msg}",
     );
-}
-
-#[tokio::test]
-async fn create_local_llm_session_succeeds() {
-    let mgr = test_manager();
-    let config = SessionConfig {
-        transport: SessionTransport::LocalLlm,
-        surface_id: None,
-        model: Some("llama3".to_string()),
-        system_prompt: Some("Be concise.".to_string()),
-        tools_enabled: false,
-        cwd: None,
-        sandbox_policy: None,
-        approval_policy: None,
-    };
-    let session = mgr
-        .create_session(config)
-        .await
-        .expect("should create LocalLlm session");
-    assert_eq!(session.provider_name(), "ollama");
-    assert!(!session.session_id().is_empty());
-
-    // Verify stored and retrievable by the same session id.
-    let retrieved = mgr
-        .get_session(session.session_id())
-        .await
-        .expect("LocalLlm session must be stored and retrievable after creation");
-    assert_eq!(
-        retrieved.session_id(),
-        session.session_id(),
-        "retrieved session id must match the created one"
-    );
-
-    let list = mgr.list_sessions().await;
-    assert_eq!(list.len(), 1);
-}
-
-/// C2 #5722: the default model MUST align with the provider-surface catalog
-/// (qwen3:8b), not the stale "llama3" literal that was hardcoded pre-C2.
-/// The wizard already writes qwen3:8b; this test pins the catalog-resolution
-/// path so a catalog update automatically propagates here.
-#[tokio::test]
-async fn create_local_llm_session_uses_default_model() {
-    let mgr = test_manager();
-    let config = SessionConfig {
-        transport: SessionTransport::LocalLlm,
-        surface_id: None,
-        model: None,
-        system_prompt: None,
-        tools_enabled: false,
-        cwd: None,
-        sandbox_policy: None,
-        approval_policy: None,
-    };
-    let session = mgr
-        .create_session(config)
-        .await
-        .expect("should create LocalLlm session");
-    let info = session.info();
-    // Catalog default for Ollama LLM surface is qwen3:8b (was: "llama3").
-    // Release note: users who pulled llama3 must also pull qwen3:8b after upgrading.
-    assert_eq!(info.model, "qwen3:8b");
 }
 
 // ── C2 #5722: resolve_local_llm_target resolver tests ─────────────────────────
@@ -468,7 +439,7 @@ async fn kill_session_removes_from_map() {
 
 #[tokio::test]
 async fn touch_session_resets_state_to_active() {
-    let mgr = test_manager();
+    let (mgr, _server, _version, _models) = ready_local_llm_manager!(test_manager());
 
     // Create a LocalLlm session (no CLI dependency).
     let config = SessionConfig {
@@ -505,7 +476,7 @@ async fn touch_session_resets_state_to_active() {
 #[tokio::test]
 async fn reap_marks_idle_then_terminates() {
     // Use a very short idle timeout (1 second from test_config).
-    let mgr = test_manager();
+    let (mgr, _server, _version, _models) = ready_local_llm_manager!(test_manager());
 
     let config = SessionConfig {
         transport: SessionTransport::LocalLlm,
@@ -574,11 +545,11 @@ async fn create_session_uses_context_assembler() {
         regime_state,
     ));
 
-    let mgr = SessionManagerImpl::new(
+    let (mgr, _server, _version, _models) = ready_local_llm_manager!(SessionManagerImpl::new(
         test_config(),
         Arc::new(crate::auditing_session::tests::MockAudit::default()),
         Some(assembler),
-    );
+    ));
 
     // Create a LocalLlm session with system_prompt = None.
     // The context assembler should inject a system prompt automatically.
@@ -628,11 +599,11 @@ async fn create_session_preserves_explicit_system_prompt() {
         regime_state,
     ));
 
-    let mgr = SessionManagerImpl::new(
+    let (mgr, _server, _version, _models) = ready_local_llm_manager!(SessionManagerImpl::new(
         test_config(),
         Arc::new(crate::auditing_session::tests::MockAudit::default()),
         Some(assembler),
-    );
+    ));
 
     // Create a LocalLlm session with an explicit system prompt.
     // The context assembler should NOT override it.
@@ -841,7 +812,7 @@ async fn recover_session_rejects_non_self_healing_backend() {
 
 #[tokio::test]
 async fn report_failure_transient_auto_recovers() {
-    let mgr = test_manager();
+    let (mgr, _server, _version, _models) = ready_local_llm_manager!(test_manager());
     let config = SessionConfig {
         transport: SessionTransport::LocalLlm,
         surface_id: None,
@@ -899,7 +870,7 @@ async fn record_success_resets_retry_count() {
 
 #[tokio::test]
 async fn report_failure_permanent_sets_failed() {
-    let mgr = test_manager();
+    let (mgr, _server, _version, _models) = ready_local_llm_manager!(test_manager());
     let config = SessionConfig {
         transport: SessionTransport::LocalLlm,
         surface_id: None,
@@ -933,11 +904,11 @@ async fn report_failure_exhausts_retries() {
         max_retries: 3,
         ..Default::default()
     });
-    let mgr = SessionManagerImpl::new(
+    let (mgr, _server, _version, _models) = ready_local_llm_manager!(SessionManagerImpl::new(
         config,
         Arc::new(crate::auditing_session::tests::MockAudit::default()),
         None,
-    );
+    ));
 
     let session_config = SessionConfig {
         transport: SessionTransport::LocalLlm,
@@ -987,11 +958,11 @@ async fn reap_enforces_absolute_timeout() {
         session_timeout_secs: 2,
         ..Default::default()
     });
-    let mgr = SessionManagerImpl::new(
+    let (mgr, _server, _version, _models) = ready_local_llm_manager!(SessionManagerImpl::new(
         config,
         Arc::new(crate::auditing_session::tests::MockAudit::default()),
         None,
-    );
+    ));
 
     let session_config = SessionConfig {
         transport: SessionTransport::LocalLlm,
@@ -1035,11 +1006,11 @@ async fn reap_absolute_timeout_with_recent_activity() {
         session_timeout_secs: 2,
         ..Default::default()
     });
-    let mgr = SessionManagerImpl::new(
+    let (mgr, _server, _version, _models) = ready_local_llm_manager!(SessionManagerImpl::new(
         config,
         Arc::new(crate::auditing_session::tests::MockAudit::default()),
         None,
-    );
+    ));
 
     let session_config = SessionConfig {
         transport: SessionTransport::LocalLlm,

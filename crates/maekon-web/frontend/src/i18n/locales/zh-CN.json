@@ -2164,6 +2164,78 @@
     "reauthDescription": "您的OAuth会话已过期。请重新连接。",
     "switchToCli": "改用 {{surface}}"
   },
+  "aiReadiness": {
+    "readyTitle": "AI 功能已就绪",
+    "blockedTitle": "需要配置 AI",
+    "capability": {
+      "chatSubprocess": "AI 聊天 · 订阅 CLI",
+      "chatHttpApi": "AI 聊天 · 提供商 API",
+      "chatLocalLlm": "AI 聊天 · 本地模型",
+      "ocrCapture": "OCR 捕获",
+      "ocrSuggestionAnalysis": "基于 OCR 的 AI 建议",
+      "segmentSummary": "AI 片段摘要",
+      "dailyNarrative": "AI 每日叙述"
+    },
+    "reason": {
+      "ready": "可用",
+      "compiled_capability_missing": "此构建未包含所需功能。",
+      "runtime_flag_disabled": "所需功能已关闭。",
+      "consent_required": "尚未授予所需的隐私同意。",
+      "access_mode_mismatch": "所选 AI 访问模式与此提供商路径不匹配。",
+      "endpoint_or_profile_required": "请选择提供商 endpoint 或 profile。",
+      "provider_not_detected": "未检测到所选提供商。",
+      "provider_auth_required": "需要进行提供商身份验证。",
+      "provider_auth_unverified": "尚未验证提供商身份验证。",
+      "provider_invocation_unavailable": "无法调用提供商。",
+      "provider_invocation_unverified": "尚未验证提供商调用能力。",
+      "model_unavailable": "所选模型不可用。",
+      "model_availability_unverified": "尚未验证模型是否可用。",
+      "hot_rewire_required": "请重新应用设置以重连运行中的 AI 服务。",
+      "restart_required": "请重启 Maekon 以应用此设置。",
+      "privacy_gate_unavailable": "隐私 gate 不可用。",
+      "egress_gate_unavailable": "外部数据策略 gate 不可用。",
+      "budget_gate_unavailable": "AI 使用预算 gate 不可用。",
+      "audit_gate_unavailable": "AI 审计 gate 不可用。"
+    },
+    "action": {
+      "none": "无需操作",
+      "openAiSettings": "打开 AI 设置",
+      "openPrivacyConsent": "检查隐私同意",
+      "enableFeature": "启用所需功能",
+      "installProvider": "安装受支持的提供商",
+      "authenticateProvider": "登录提供商",
+      "verifyProviderInvocation": "验证提供商调用",
+      "selectModel": "选择并验证模型",
+      "applyHotRewire": "重新应用设置以重新连接 AI",
+      "restartApp": "重启 Maekon 以应用此设置",
+      "reviewPrivacy": "检查隐私门控",
+      "reviewEgress": "检查外部数据策略",
+      "reviewBudget": "检查 AI 使用预算",
+      "reviewAudit": "检查审计门控"
+    }
+  },
+  "summaryProvenance": {
+    "digest": { "heuristic": "规则摘要" },
+    "aiSegmentSummary": "AI 片段摘要",
+    "aiSegmentUnavailable": "AI 片段摘要不可用",
+    "aiDailyNarrative": "AI 每日叙述",
+    "dailyNarrativeUnavailable": "AI 每日叙述不可用",
+    "provider": {
+      "loopback": "此设备上的回环模型",
+      "subprocess": "订阅 CLI 子进程",
+      "external_api": "外部提供商 API",
+      "unknown": "提供商类型不可用"
+    },
+    "failure": {
+      "pipeline_disabled": "处理此项目时 AI 摘要管线已关闭。",
+      "below_minimum_duration": "此片段短于配置的最小时长。",
+      "provider_unavailable": "没有可用的兼容摘要提供商。",
+      "provider_failed": "提供商无法生成摘要。",
+      "invalid_response": "提供商响应不能作为有效 AI 摘要。",
+      "capacity_limited": "摘要队列已满。",
+      "not_generated": "未生成 AI 叙述；规则摘要仍然可用。"
+    }
+  },
   "featureCapability": {
     "preferredPath": "推荐路径",
     "setupTitle": "需要设置",
@@ -2391,11 +2463,11 @@
   "onboarding": {
     "step3Search": "搜索你看过的一切",
     "aiFeatures": {
-      "optInHint": "可选：开启本地嵌入、AI 语义搜索和 AI 每日摘要叙述。全部在设备端处理，重启 Maekon 后生效。",
-      "enableButton": "启用 AI 功能",
+      "optInHint": "可选：准备分层记忆、嵌入、语义搜索和 AI 摘要设置。处理位置会按 AI 设置使用回环、订阅 CLI 或外部 API。仍需单独授予模式学习同意并重启。",
+      "enableButton": "准备 AI 功能",
       "enabling": "正在启用…",
-      "enabled": "已启用 AI 功能",
-      "enabledNote": "重启后，本地嵌入、语义搜索和 AI 每日摘要叙述将生效。",
+      "prepared": "AI 配置已保存",
+      "preparedNote": "仅保存配置并不代表已就绪。请完成提供商和单独的模式学习同意要求，然后重启 Maekon。",
       "error": "无法启用 AI 功能：{{error}}"
     },
     "step1Title": "欢迎使用 Maekon",
@@ -2518,6 +2590,11 @@
     "create_failed_title": "无法创建会话",
     "create_failed": "创建 AI 会话失败。",
     "provider_not_configured": "{{provider}} 尚未配置。请在设置 → AI 与自动化中添加凭据，然后重试。",
+    "no_ready_provider": "没有可用的 AI 提供商",
+    "provider_unavailable": "提供商不可用",
+    "local_runtime_unavailable": "无法连接到 Ollama。请启动 Ollama 并检查已配置的端点，然后重试。",
+    "local_runtime_invalid": "已配置的本地端点不是 Ollama。仅当端点为 Ollama 时才能选择本地 LLM。",
+    "local_model_missing": "所选 Ollama 模型尚未安装。请安装或选择可用模型，然后重试。",
     "load_failed_title": "无法加载会话",
     "load_failed": "加载 AI 会话失败。",
     "refresh_failed": "刷新 AI 会话失败。",
@@ -2651,6 +2728,38 @@
     "closePanelLabel": "关闭建议面板",
     "badgeNew": "新",
     "historyLoadError": "无法加载历史记录。",
+    "localAnalysis": {
+      "status": {
+        "generated": "已生成本地建议",
+        "no_candidate": "未找到本地候选建议",
+        "throttled": "本地分析正在等待",
+        "provider_offline": "本地分析提供商不可用",
+        "policy_blocked": "本地分析已禁用",
+        "consent_required": "本地分析需要获得同意"
+      },
+      "reason": {
+        "generated": "已生成本地建议",
+        "no_valid_candidate": "未找到有效的本地候选建议",
+        "not_admitted": "本地候选建议未通过审核筛选",
+        "no_input": "没有可供分析的本地活动",
+        "context_unchanged": "本地上下文未发生变化",
+        "analysis_throttled": "本地分析正在等待下一次允许运行",
+        "provider_unavailable": "所选本地分析提供商不可用",
+        "analysis_disabled": "本地活动建议生成功能已禁用",
+        "capture_policy_blocked": "捕获策略阻止了本地分析",
+        "suggestion_queue_unavailable": "本地建议审核队列不可用",
+        "consent_required": "本地分析需要获得同意",
+        "provider_consent_required": "分析提供商需要获得同意",
+        "provider_policy_blocked": "策略阻止了分析提供商"
+      },
+      "producer": {
+        "periodic": "定期分析",
+        "app_switch": "应用切换分析"
+      },
+      "provenance": "{{source}} · {{producer}} · {{time}}",
+      "counts": "已生成 {{candidateCount}} 条 · 待审核 {{queueCount}} 条",
+      "timeUnavailable": "时间不可用"
+    },
     "badgeLabel": "{{count}} 条新建议"
   },
   "suggestionStats": {
@@ -2953,24 +3062,24 @@
   },
   "advancedTab": {
     "aiFeaturesMaster": "启用 AI 功能",
-    "aiFeaturesMasterDescription": "一步开启本地嵌入、AI 语义搜索和 AI 每日摘要叙述，全部在设备端处理。重启 Maekon 后生效。",
+    "aiFeaturesMasterDescription": "同时准备分层记忆、嵌入、语义搜索和 AI 摘要设置。不会自动授予模式学习同意。处理位置取决于所选提供商。",
     "llmSummary": "AI 每日摘要叙述",
-    "llmSummaryDescription": "使用设备端 LLM 用自然语言总结你的一天（需要嵌入）。重启后生效。",
+    "llmSummaryDescription": "使用所选 LLM 提供商生成片段摘要和每日叙述（需要分层记忆和嵌入）。每个结果都会显示处理位置。",
     "maxConcurrentSessions": "最大并发会话数",
     "idleTimeoutSeconds": "空闲超时（秒）",
     "sessionTimeoutSeconds": "会话超时（秒）",
     "maxRetries": "最大重试次数",
     "maxHistoryTurns": "最大历史轮次",
     "healthCheckIntervalSeconds": "健康检查间隔（秒）",
-    "enableSuggestions": "启用建议",
-    "enableSuggestionsDescription": "根据您的活动接收 AI 驱动的建议",
+    "enableSuggestions": "接收服务器建议",
+    "enableSuggestionsDescription": "从已登录的 ONESHIM 服务器流接收建议",
     "showBorder": "显示边框",
     "showBorderDescription": "监控时在屏幕周围显示彩色边框",
     "showPanel": "显示面板",
     "showPanelDescription": "显示追踪状态面板",
     "borderOpacity": "边框不透明度（0.0 - 1.0）",
-    "enableAnalysis": "启用分析",
-    "enableAnalysisDescription": "对活动片段运行 LLM 分析",
+    "enableAnalysis": "生成本地活动建议",
+    "enableAnalysisDescription": "使用所选 LLM 提供商分析已获同意的本地活动和 OCR 上下文",
     "analysisIntervalSeconds": "分析间隔（秒）",
     "minConfidence": "最低置信度（0.0 - 1.0）",
     "maxSuggestions": "最大建议数",

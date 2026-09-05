@@ -1235,7 +1235,7 @@ export type ProviderCliDependencyStatus = 'ready' | 'missing' | 'stale_process_e
 
 export interface ProviderCliDiscoveryReport {
   candidate_name: string
-  executable_path: string
+  executable_hint: string
   version_status: ProviderCliVersionStatus
   dependency_status: ProviderCliDependencyStatus
   status_reason: string | null
@@ -1257,8 +1257,107 @@ export interface FeatureCapability {
   configuration_env_vars: string[]
 }
 
+export type AiCapabilityId =
+  | 'chat.subprocess'
+  | 'chat.http_api'
+  | 'chat.local_llm'
+  | 'ocr.capture'
+  | 'ocr.suggestion_analysis'
+  | 'segment_summary'
+  | 'daily_narrative'
+
+export type AiReadinessStatus = 'ready' | 'blocked'
+
+export type AiReadinessReasonCode =
+  | 'ready'
+  | 'compiled_capability_missing'
+  | 'runtime_flag_disabled'
+  | 'consent_required'
+  | 'access_mode_mismatch'
+  | 'endpoint_or_profile_required'
+  | 'provider_not_detected'
+  | 'provider_auth_required'
+  | 'provider_auth_unverified'
+  | 'provider_invocation_unavailable'
+  | 'provider_invocation_unverified'
+  | 'model_unavailable'
+  | 'model_availability_unverified'
+  | 'hot_rewire_required'
+  | 'restart_required'
+  | 'privacy_gate_unavailable'
+  | 'egress_gate_unavailable'
+  | 'budget_gate_unavailable'
+  | 'audit_gate_unavailable'
+
+export type AiReadinessAction =
+  | 'none'
+  | 'open_ai_settings'
+  | 'open_privacy_consent'
+  | 'enable_feature'
+  | 'install_provider'
+  | 'authenticate_provider'
+  | 'verify_provider_invocation'
+  | 'select_model'
+  | 'apply_hot_rewire'
+  | 'restart_app'
+  | 'review_privacy'
+  | 'review_egress'
+  | 'review_budget'
+  | 'review_audit'
+
+export type AiProviderDetection = 'not_required' | 'not_detected' | 'detected'
+export type AiProviderAuthReadiness = 'not_required' | 'required' | 'unverified' | 'ready'
+export type AiProviderInvocationReadiness = 'not_required' | 'unavailable' | 'unverified' | 'ready'
+export type AiModelAvailability = 'not_required' | 'unavailable' | 'unverified' | 'available'
+export type AiRuntimeApplyRequirement = 'runtime_applied' | 'hot_rewire' | 'restart'
+export type AiConsentField = 'ocr_processing' | 'activity_pattern_learning' | 'full_text_extraction'
+export type AiInvocationGuardState = 'enforced_at_invocation' | 'unavailable'
+
+export interface AiConsentReadiness {
+  field: AiConsentField
+  granted: boolean
+}
+
+export interface AiReadinessDimensions {
+  compiled_capability: boolean
+  selected_access_mode: 'provider_api_key' | 'local_model' | 'provider_subscription_cli' | 'provider_o_auth'
+  access_mode_compatible: boolean
+  endpoint_or_profile_configured: boolean
+  provider_detection: AiProviderDetection
+  provider_auth: AiProviderAuthReadiness
+  provider_invocation: AiProviderInvocationReadiness
+  model_availability: AiModelAvailability
+  runtime_flag_enabled: boolean
+  consent: AiConsentReadiness[]
+  apply_requirement: AiRuntimeApplyRequirement
+  apply_pending: boolean
+  privacy_gate: AiInvocationGuardState
+  egress_gate: AiInvocationGuardState
+  budget_gate: AiInvocationGuardState
+  audit_gate: AiInvocationGuardState
+}
+
+export interface AiCapabilityReadiness {
+  capability_id: AiCapabilityId
+  status: AiReadinessStatus
+  reason_code: AiReadinessReasonCode
+  action: AiReadinessAction
+  action_copy_key: string
+  dimensions: AiReadinessDimensions
+}
+
+export interface AiReadinessSnapshot {
+  contract_version: number
+  capabilities: AiCapabilityReadiness[]
+}
+
 export interface FeatureCapabilitySnapshot {
   features: FeatureCapability[]
+  /**
+   * #11735 authoritative AI readiness. Optional only for compatibility with
+   * old fixture/build snapshots; consumers must treat absence as blocked.
+   */
+  ai_readiness?: AiReadinessSnapshot
   /**
    * COMPILE-capability flag (#7600): true only when this binary was built with the `audio`
    * cargo feature. Optional on the TS side (existing test fixtures predate this field) — treat
@@ -1698,6 +1797,23 @@ export interface DailyDigestContentSummary {
   mins: number
 }
 
+export type AiSummaryProviderClass = 'loopback' | 'subprocess' | 'external_api' | 'unknown'
+export type AiSummaryFailureReason =
+  | 'pipeline_disabled'
+  | 'below_minimum_duration'
+  | 'provider_unavailable'
+  | 'provider_failed'
+  | 'invalid_response'
+  | 'capacity_limited'
+  | 'not_generated'
+
+export interface AiSummaryArtifact {
+  text?: string | null
+  provider_class?: AiSummaryProviderClass | null
+  generated_at?: string | null
+  failure_reason?: AiSummaryFailureReason | null
+}
+
 export interface DailyDigestSegment {
   segment_id: string
   start_time: string
@@ -1709,6 +1825,7 @@ export interface DailyDigestSegment {
   dominant_app: string
   content_summary: DailyDigestContentSummary[]
   annotation?: { highlight_type: string; text: string }
+  ai_summary?: AiSummaryArtifact
 }
 
 export interface DailyDigestComparison {
@@ -1733,6 +1850,9 @@ export interface DailyDigestResponse {
   insight: DailyDigestInsight | null
   timeline: DailyDigestSegment[]
   statistics: DailyDigestStatistics
+  generated_at: string
+  digest_provenance: 'heuristic'
+  ai_narrative: AiSummaryArtifact
 }
 
 // ── GUI V2 Session types ─────────────────────────────────────────

@@ -8,8 +8,7 @@
 //! model as the rest of local data, and a PHC is a one-way verifier, not a
 //! plaintext secret.
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 
 use crate::ipc_error::IpcError;
 
@@ -59,14 +58,8 @@ pub(crate) fn validate_pin(pin: &str) -> Result<(), IpcError> {
 pub(crate) fn hash_pin(pin: &str) -> Result<String, IpcError> {
     validate_pin(pin)?;
     let salt_bytes: [u8; 16] = rand::random();
-    let salt = SaltString::encode_b64(&salt_bytes).map_err(|error| {
-        IpcError::new(
-            "internal.generic",
-            format!("PIN salt encode failed: {error}"),
-        )
-    })?;
     let hash = Argon2::default()
-        .hash_password(pin.as_bytes(), &salt)
+        .hash_password_with_salt(pin.as_bytes(), &salt_bytes)
         .map_err(|error| IpcError::new("internal.generic", format!("PIN hash failed: {error}")))?
         .to_string();
     Ok(hash)
@@ -128,6 +121,16 @@ mod tests {
         // A corrupted / non-PHC string fails verification (fail-closed).
         assert!(!verify_pin("2468", "not-a-valid-phc-string"));
         assert!(!verify_pin("2468", ""));
+    }
+
+    #[test]
+    fn verifies_argon2_0_5_phc_string_after_upgrade() {
+        // Published by argon2 0.5.3's PHC test suite for password "password".
+        // This pins read compatibility for verifiers enrolled before the 0.6 upgrade.
+        const PRE_UPGRADE_PHC: &str =
+            "$argon2id$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc";
+        assert!(verify_pin("password", PRE_UPGRADE_PHC));
+        assert!(!verify_pin("sassword", PRE_UPGRADE_PHC));
     }
 
     #[test]

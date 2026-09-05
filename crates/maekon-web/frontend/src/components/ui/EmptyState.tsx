@@ -10,6 +10,7 @@ export interface EmptyStateProps {
   action?: {
     label: string
     onClick: () => void
+    disabled?: boolean
   }
 }
 
@@ -25,7 +26,7 @@ export function EmptyState({ icon, title, description, action }: EmptyStateProps
       </h3>
       <p className={cn('mb-4 max-w-md text-center text-content-secondary', typography.body)}>{description}</p>
       {action && (
-        <Button type="button" variant="primary" size="md" onClick={action.onClick}>
+        <Button type="button" variant="primary" size="md" onClick={action.onClick} disabled={action.disabled}>
           {action.label}
         </Button>
       )}

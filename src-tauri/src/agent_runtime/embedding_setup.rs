@@ -5,6 +5,7 @@ use crate::provider_adapters::ExternalOcrPrivacyGuard;
 use maekon_core::config::AppConfig;
 use maekon_core::config::PiiFilterLevel;
 use maekon_core::error::CoreError;
+use maekon_core::models::ai_summary::{AiSummaryFailureReason, AiSummaryProviderClass};
 #[cfg(feature = "analysis")]
 use maekon_core::ports::secret_store::SecretStoreSet;
 
@@ -238,6 +239,8 @@ pub(super) fn loopback_embedding_target(
 pub(super) struct EmbeddingComponents {
     pub embedding_pipeline: Option<Arc<maekon_analysis::EmbeddingPipeline>>,
     pub llm_summarizer: Option<Arc<maekon_analysis::LlmSegmentSummarizer>>,
+    pub llm_summary_provider_class: Option<AiSummaryProviderClass>,
+    pub llm_summary_unavailable_reason: Option<AiSummaryFailureReason>,
     /// EmbeddingProvider to wire into scheduler.
     pub embedding_provider:
         Option<Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>>,
@@ -277,6 +280,14 @@ pub(super) fn build_embedding_components(
 ) -> EmbeddingComponents {
     let mut embedding_pipeline_arc: Option<Arc<maekon_analysis::EmbeddingPipeline>> = None;
     let mut llm_summarizer_arc: Option<Arc<maekon_analysis::LlmSegmentSummarizer>> = None;
+    let summary_provider_class = super::summary_provider_class::classify(config);
+    let mut summary_unavailable_reason = Some(
+        if config.analysis.embedding.enabled && config.analysis.embedding.llm_summary_enabled {
+            AiSummaryFailureReason::ProviderUnavailable
+        } else {
+            AiSummaryFailureReason::PipelineDisabled
+        },
+    );
     let mut embedding_provider_out: Option<
         Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>,
     > = None;
@@ -563,7 +574,10 @@ pub(super) fn build_embedding_components(
                     // filtered via pii_filter_summ + VisionPiiSanitizer inside the
                     // provider. Not routed through GuardedAnalysisProvider (no active-
                     // window gate needed for loopback device-local egress — MG-PII-03/AC8).
-                    if config.ai_provider.llm_api.is_none() {
+                    if config.ai_provider.llm_api.is_none()
+                        && config.ai_provider.access_mode.normalized_for_ai_surfaces()
+                            == maekon_core::config::AiAccessMode::LocalModel
+                    {
                         crate::agent_runtime::analysis_helpers::build_local_ollama_summary_provider(
                             pii_level_summ,
                             breaker_registry.clone(),
@@ -579,13 +593,16 @@ pub(super) fn build_embedding_components(
                             maekon_vision::privacy::sanitize_title_with_level(text, pii_level_summ)
                         });
                     let min_duration = embedding_config.min_segment_for_summary_secs;
-                    llm_summarizer_arc =
-                        Some(Arc::new(maekon_analysis::LlmSegmentSummarizer::new(
+                    llm_summarizer_arc = Some(Arc::new(
+                        maekon_analysis::LlmSegmentSummarizer::new_with_provider_class(
                             provider,
                             pii_filter_summ,
                             true,
                             min_duration,
-                        )));
+                            summary_provider_class,
+                        ),
+                    ));
+                    summary_unavailable_reason = None;
                     info!("LLM segment summarizer enabled");
                 } else {
                     // No provider yielded — neither llm_api configured nor local
@@ -618,6 +635,8 @@ pub(super) fn build_embedding_components(
     EmbeddingComponents {
         embedding_pipeline: embedding_pipeline_arc,
         llm_summarizer: llm_summarizer_arc,
+        llm_summary_provider_class: Some(summary_provider_class),
+        llm_summary_unavailable_reason: summary_unavailable_reason,
         embedding_provider: embedding_provider_out,
         vector_store: vector_store_out,
         reloadable_model: reloadable_model_out,
@@ -1054,6 +1073,10 @@ mod target_resolver_tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "analysis", not(feature = "embedding")))]
+#[path = "embedding_setup_summary_tests.rs"]
+mod summary_tests;
 
 #[cfg(all(test, not(feature = "embedding")))]
 mod tests {

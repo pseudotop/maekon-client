@@ -117,7 +117,7 @@
   "checklist": {
     "schema_version": "maekon.release_checklist_results.v2",
     "source_path": "docs/release-checklist.md",
-    "source_sha256": "26ec0f2833ef351355ff049a174090960dc981382b68af0022554129e7540063",
+    "source_sha256": "073f4610831ad7d465efb097624fa2bd97af0ea630085f4883078fb44131f59c",
     "registry_schema_version": "maekon.release_checklist_dispositions.v2",
     "registry_sha256": "23e4ffcdc638dfba7b0935d0399f9644599eec8f4dc2265360515ba61a5678e9",
     "item_count": 69,

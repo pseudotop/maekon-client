@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use chrono::{NaiveDate, Utc};
 
+use maekon_core::models::ai_summary::AiSummaryArtifact;
 use maekon_core::models::daily_digest::{
     self, ContentBrief, DailyDigest, DailyStatistics, DayComparison, TimelineEntry,
 };
@@ -35,6 +36,8 @@ impl DailyDigestGenerator {
             timeline,
             statistics,
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: AiSummaryArtifact::default(),
         }
     }
 
@@ -66,6 +69,10 @@ impl DailyDigestGenerator {
                     dominant_app,
                     content_summary,
                     annotation: None, // Filled by DailyInsightGenerator
+                    ai_summary: AiSummaryArtifact {
+                        text: seg.llm_summary.clone(),
+                        ..Default::default()
+                    },
                 }
             })
             .collect();
@@ -374,6 +381,8 @@ mod tests {
                 comparison: None,
             },
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         };
 
         // Current day: 4h deep work, 1h communication, 5 switches

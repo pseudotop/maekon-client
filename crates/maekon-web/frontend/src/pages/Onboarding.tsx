@@ -39,7 +39,9 @@ import {
 } from '../api/client'
 import type { ConsentPermissions } from '../api/contracts'
 import { errorMessageFromInvoke } from '../api/desktop'
+import { AiReadinessNotice } from '../components/AiReadinessNotice'
 import { Alert, Badge, Button } from '../components/ui'
+import { invalidateAiReadinessSnapshotCache, useAiReadinessSnapshot } from '../hooks/useAiReadinessSnapshot'
 import { colors, iconSize, motion, radius, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import { IS_LINUX, IS_MAC, IS_TAURI, IS_WINDOWS } from '../utils/platform'
@@ -610,6 +612,7 @@ function StepConsent() {
     setError(null)
     try {
       await setConsent(buildMonitoringGrant())
+      invalidateAiReadinessSnapshotCache()
       setGranted(true)
     } catch (nextError) {
       setError(errorMessageFromInvoke(nextError))
@@ -696,12 +699,13 @@ function StepFeatures() {
   const { t } = useTranslation()
   const iconCls = cn(iconSize.base, 'text-brand-text')
   const [enabling, setEnabling] = useState(false)
-  const [enabled, setEnabled] = useState(false)
+  const [prepared, setPrepared] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const aiReadinessSnapshot = useAiReadinessSnapshot()
 
-  // Explicit, informed opt-in: fetch current settings, then flip the three
-  // analysis flags (analysis + embedding + llm_summary) that make up the AI
-  // features bundle. No auto-enable — only on click.
+  // Explicit, informed opt-in: prepare the four config prerequisites. The
+  // separate Tier-4 consent is never granted here, and readiness stays blocked
+  // until provider/build/restart requirements are genuinely satisfied.
   const handleEnableAiFeatures = useCallback(async () => {
     setEnabling(true)
     setError(null)
@@ -712,11 +716,13 @@ function StepFeatures() {
         analysis: {
           ...current.analysis,
           enabled: true,
+          tiered_memory_enabled: true,
           embedding_enabled: true,
           llm_summary_enabled: true,
         },
       })
-      setEnabled(true)
+      invalidateAiReadinessSnapshotCache()
+      setPrepared(true)
     } catch (nextError) {
       setError(errorMessageFromInvoke(nextError))
     } finally {
@@ -740,11 +746,17 @@ function StepFeatures() {
 
       {/* #8059 G2b: privacy-first AI-features opt-in (default off). */}
       <div className="mt-6 w-full max-w-md text-left">
-        {enabled ? (
-          <div data-testid="onboarding-aifeatures-enabled">
-            <Alert variant="success" title={t('onboarding.aiFeatures.enabled')}>
-              <p>{t('onboarding.aiFeatures.enabledNote')}</p>
+        {prepared ? (
+          <div data-testid="onboarding-aifeatures-prepared" className="space-y-3">
+            <Alert variant="info" title={t('onboarding.aiFeatures.prepared')}>
+              <p>{t('onboarding.aiFeatures.preparedNote')}</p>
             </Alert>
+            <AiReadinessNotice
+              snapshot={aiReadinessSnapshot}
+              capabilityIds={['segment_summary', 'daily_narrative']}
+              showReady
+              compact
+            />
           </div>
         ) : (
           <>
@@ -805,6 +817,7 @@ function StepCoaching() {
       // Fetch current consent snapshot, merge Tier-4 field, then re-grant.
       const snapshot = await getConsent()
       await setConsent({ ...snapshot.permissions, activity_pattern_learning: true })
+      invalidateAiReadinessSnapshotCache()
       // Set coaching.enabled=true via REST settings write.
       const current = await fetchSettings()
       await updateSettings({ ...current, coaching: { ...current.coaching, enabled: true } })
@@ -964,6 +977,7 @@ function StepReady() {
     setGranting(true)
     try {
       await setConsent(buildMonitoringGrant())
+      invalidateAiReadinessSnapshotCache()
       await refreshConsent()
     } finally {
       setGranting(false)

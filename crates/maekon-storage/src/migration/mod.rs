@@ -66,6 +66,8 @@
 //!   (#10358); included in the full local erasure sweep.
 //! - `v56_wbs_xlsx_receipts.rs` — durable local-first output receipt spool;
 //!   successful upload marks a row instead of deleting its local evidence.
+//! - `v57_ai_summary_provenance.rs` — persists provider class and failure reason
+//!   for segment summaries and daily AI narratives (#11738).
 //! - `v53_vault_mirror_state.rs` — `vault_mirror_state` (per-file content
 //!   hash for the ADR-033 memory vault mirror's change detection; member of
 //!   the GDPR erase sweep).
@@ -118,11 +120,12 @@ mod v53_vault_mirror_state;
 mod v54_orphan_annotation_cleanup;
 mod v55_effective_mapping_cache;
 mod v56_wbs_xlsx_receipts;
+mod v57_ai_summary_provenance;
 
 use rusqlite::Connection;
 use tracing::{error, info, warn};
 
-pub const CURRENT_VERSION: u32 = 56;
+pub const CURRENT_VERSION: u32 = 57;
 
 /// Keep at most this many pre-migration backups for a given DB; older ones are
 /// pruned after each new backup so they cannot accumulate unbounded across the
@@ -467,6 +470,9 @@ pub fn run_migrations_to(conn: &Connection, target: u32) -> Result<(), rusqlite:
     }
     if target >= 56 && current < 56 {
         run_migration_step(conn, 56, v56_wbs_xlsx_receipts::migrate_v56)?;
+    }
+    if target >= 57 && current < 57 {
+        run_migration_step(conn, 57, v57_ai_summary_provenance::migrate_v57)?;
     }
 
     Ok(())

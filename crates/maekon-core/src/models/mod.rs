@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod ai_session;
+pub mod ai_summary;
 pub mod analysis;
 pub mod annotation;
 pub mod app_registry;

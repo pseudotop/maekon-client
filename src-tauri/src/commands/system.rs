@@ -8,6 +8,9 @@ use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use maekon_core::resource_budget;
 use tauri::command;
 
+use crate::ai_readiness::{
+    build_ai_readiness_snapshot_with_local_preflight, probe_local_chat_preflight,
+};
 use crate::feature_capabilities::{
     build_feature_capability_snapshot,
     probe_provider_surface_endpoint as probe_provider_surface_endpoint_impl,
@@ -202,10 +205,24 @@ pub async fn get_secret_backend_capabilities(
 /// Generic feature capability + maturity snapshot for desktop runtime surfaces.
 #[command]
 pub async fn get_feature_capabilities(
-    state: tauri::State<'_, FeatureCapabilityState>,
+    feature_state: tauri::State<'_, FeatureCapabilityState>,
+    app_state: tauri::State<'_, AppState>,
+    config_state: tauri::State<'_, ConfigRuntimeState>,
 ) -> Result<FeatureCapabilitySnapshot, IpcError> {
-    let secret_backend = state.0.clone();
-    Ok(build_feature_capability_snapshot(&secret_backend).await)
+    let secret_backend = feature_state.0.clone();
+    let mut snapshot = build_feature_capability_snapshot(&secret_backend).await;
+    let current_config = config_state.config_manager().get();
+    let local_chat_preflight = probe_local_chat_preflight(&current_config.ai_provider).await;
+    let consent =
+        ConsentGate::from_ref(app_state.capture.consent_manager.as_ref()).permissions_snapshot();
+    snapshot.ai_readiness = Some(build_ai_readiness_snapshot_with_local_preflight(
+        &snapshot,
+        &current_config,
+        &app_state.config,
+        &consent,
+        Some(local_chat_preflight),
+    ));
+    Ok(snapshot)
 }
 
 /// Probe the currently configured provider endpoint for a direct/self-hosted surface.

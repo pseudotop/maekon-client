@@ -246,6 +246,13 @@ const ACTIVITY_SEGMENTS_COLUMNS: &[ColumnSpec] = &[
         ColumnKind::TextOptional,
         ExtractorGate::IncludeLlmSummary,
     ),
+    // #11738: coarse provenance and safe failure reasons follow the same
+    // privacy opt-in as the narrative they describe.
+    col_gated(
+        "llm_summary_status_json",
+        ColumnKind::TextDefault("{}"),
+        ExtractorGate::IncludeLlmSummary,
+    ),
     col_gated(
         "content_activities_json",
         ColumnKind::TextDefault("[]"),
@@ -812,6 +819,7 @@ mod tests {
         let cfg = SyncConfig::default();
         let expr = ACTIVITY_SEGMENTS.extractor_select_expr(&cfg);
         assert!(!expr.contains("'llm_summary'"));
+        assert!(!expr.contains("'llm_summary_status_json'"));
         assert!(expr.contains("'trigger_reason',trigger_reason"));
         assert!(expr.contains("'hlc_wall_ms',hlc_wall_ms"));
     }
@@ -824,6 +832,7 @@ mod tests {
         };
         let expr = ACTIVITY_SEGMENTS.extractor_select_expr(&cfg);
         assert!(expr.contains("'llm_summary',llm_summary"));
+        assert!(expr.contains("'llm_summary_status_json',llm_summary_status_json"));
     }
 
     #[test]

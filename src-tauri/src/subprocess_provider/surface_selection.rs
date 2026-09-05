@@ -184,6 +184,11 @@ fn cli_discovery_report_for_candidate(
     SubprocessCliDiscoveryReport {
         candidate_name: candidate_name.to_string(),
         executable_path: executable_path.display().to_string(),
+        executable_hint: executable_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(candidate_name)
+            .to_string(),
         version_status: SubprocessCliVersionStatus::NotChecked,
         dependency_status: dependency.dependency_status,
         status_reason: dependency.status_reason,

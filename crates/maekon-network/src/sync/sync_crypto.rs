@@ -93,6 +93,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kdf_output_matches_argon2_0_5() {
+        // Generated independently with argon2 0.5.3 using the same default
+        // parameters. This protects stored sync data and LAN authentication
+        // from a silent KDF change during dependency upgrades.
+        let expected = [
+            0x0b, 0x97, 0x78, 0x86, 0xf9, 0x3d, 0xc1, 0x82, 0xc0, 0x2a, 0x6d, 0xd2, 0x86, 0xc5,
+            0xca, 0xd7, 0xb0, 0xa5, 0x64, 0x49, 0xc7, 0xc5, 0x57, 0xa6, 0xcc, 0xa8, 0x09, 0x93,
+            0xf5, 0x94, 0xac, 0x95,
+        ];
+
+        let actual = derive_key("maekon-sync-compatibility", b"0123456789abcdef")
+            .expect("fixed Argon2id KDF vector");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn encrypt_decrypt_roundtrip() {
         let passphrase = "test-passphrase-12345";
         let plaintext = b"hello world, this is a sync test";

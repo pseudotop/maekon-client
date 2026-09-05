@@ -31,6 +31,7 @@ const statsFixture = {
   acceptance_rate: 0.6667,
   by_type: [],
   by_source: [],
+  latest_local_analysis: null,
 }
 
 describe('SuggestionStats error/retry path', () => {
@@ -87,5 +88,66 @@ describe('SuggestionStats error/retry path', () => {
     // The truncated date label (slice(5)) should be visible in the daily trends block.
     await waitFor(() => expect(screen.getByText('01-10')).toBeInTheDocument())
     expect(screen.getByText('01-11')).toBeInTheDocument()
+  })
+
+  it('제안 기록이 없어도 최신 로컬 분석의 no-candidate 상태와 provenance를 표시한다', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_suggestion_stats') {
+        return Promise.resolve({
+          ...statsFixture,
+          total_shown: 0,
+          total_accepted: 0,
+          total_rejected: 0,
+          acceptance_rate: 0,
+          latest_local_analysis: {
+            status: 'no_candidate',
+            reason: 'no_valid_candidate',
+            producer: 'app_switch',
+            source: 'llm_local',
+            observed_at: '2026-09-02T08:30:00Z',
+            candidate_count: 0,
+            queue_count: 0,
+            missing_permissions: [],
+          },
+        })
+      }
+      if (cmd === 'get_suggestion_daily_stats') return Promise.resolve([])
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+
+    renderStats()
+
+    expect(await screen.findByText('No valid local candidate found')).toBeInTheDocument()
+    expect(screen.getByTestId('local-analysis-status')).toHaveAttribute('data-status', 'no_candidate')
+    expect(screen.getByText(/Local.*app-switch analysis/)).toBeInTheDocument()
+    expect(screen.getByText('No data yet')).toBeInTheDocument()
+  })
+
+  it('renders analysis-disabled as the exact policy blocker', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_suggestion_stats') {
+        return Promise.resolve({
+          ...statsFixture,
+          total_shown: 0,
+          latest_local_analysis: {
+            status: 'policy_blocked',
+            reason: 'analysis_disabled',
+            producer: 'periodic',
+            source: 'llm_local',
+            observed_at: '2026-09-02T08:30:00Z',
+            candidate_count: 0,
+            queue_count: 0,
+            missing_permissions: [],
+          },
+        })
+      }
+      if (cmd === 'get_suggestion_daily_stats') return Promise.resolve([])
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+
+    renderStats()
+
+    expect(await screen.findByText('Local activity suggestion generation is disabled')).toBeInTheDocument()
+    expect(screen.queryByText('Local analysis is blocked by capture policy')).not.toBeInTheDocument()
   })
 })

@@ -236,6 +236,17 @@ Required for public RC release:
 - `UPDATE_SIGNING_PRIVATE_KEY_B64`
 - `MAEKON_UPDATE_PUBLIC_KEY`
 
+Before release, the sole maintainer can dispatch **Signing Keypair Rehearsal**
+(`signing-keypair-rehearsal.yml`) from public `main` and explicitly approve the
+`release-signing` environment. The job checks out the dispatch SHA, verifies the
+configured key against the client's trusted keys, signs and verifies a probe,
+and requires missing-private and mismatched-public negative controls to fail.
+The receipt artifact records only check results and the public-key fingerprint;
+its name identifies the source SHA, run ID and attempt. Record the successful
+run URL and download its receipt as protected-runner evidence. Local tests alone
+do not satisfy this evidence. The workflow has read-only repository permissions
+and creates no tag, Release or distributed application artifact.
+
 Prepared for Windows Authenticode activation, but intentionally unset until a legal-entity
 Public Trust identity and certificate profile exist:
 

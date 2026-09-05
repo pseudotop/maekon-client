@@ -874,6 +874,8 @@ pub(super) mod tests {
             timeline: vec![],
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 
@@ -1319,6 +1321,8 @@ mod review_fix_tests {
             timeline: vec![],
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 }
@@ -1336,6 +1340,8 @@ mod b3_root_change_tests {
             timeline: vec![],
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 

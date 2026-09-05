@@ -205,6 +205,7 @@ mod tests {
             dominant_app: "VS Code".to_string(),
             content_summary: vec![],
             annotation: None,
+            ai_summary: Default::default(),
         }
     }
 
@@ -215,6 +216,8 @@ mod tests {
             timeline: segs.iter().map(|s| timeline_entry(s)).collect(),
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 

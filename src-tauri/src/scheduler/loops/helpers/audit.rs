@@ -251,6 +251,10 @@ mod tests {
             regime_detection_interval_hours: 2,
             last_drift_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             llm_summarizer: None,
+            llm_summary_provider_class: None,
+            llm_summary_unavailable_reason: Some(
+                maekon_core::models::ai_summary::AiSummaryFailureReason::PipelineDisabled,
+            ),
             embedding_pipeline: None,
             text_search: None,
             gui_pipeline_state: None,

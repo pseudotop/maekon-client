@@ -112,6 +112,103 @@ impl maekon_core::ports::storage::StorageService for NoopStorage {
     }
 }
 
+struct RecordingSummaryStorage {
+    writes: std::sync::atomic::AtomicUsize,
+    last: parking_lot::Mutex<Option<maekon_core::models::ai_summary::AiSummaryArtifact>>,
+}
+
+#[async_trait::async_trait]
+impl maekon_core::ports::storage::StorageService for RecordingSummaryStorage {
+    async fn save_event(
+        &self,
+        _event: &maekon_core::models::event::Event,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn get_events(
+        &self,
+        _from: DateTime<Utc>,
+        _to: DateTime<Utc>,
+        _limit: usize,
+    ) -> Result<Vec<maekon_core::models::event::Event>, CoreError> {
+        Ok(vec![])
+    }
+
+    async fn get_pending_events(
+        &self,
+        _limit: usize,
+    ) -> Result<Vec<maekon_core::models::event::Event>, CoreError> {
+        Ok(vec![])
+    }
+
+    async fn mark_as_sent(&self, _event_ids: &[String]) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn enforce_retention(&self) -> Result<usize, CoreError> {
+        Ok(0)
+    }
+
+    async fn save_suggestion(
+        &self,
+        _suggestion: &maekon_core::models::suggestion::Suggestion,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn save_activity_segment(
+        &self,
+        _summary: &maekon_core::models::tiered_memory::SegmentSummary,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn update_segment_llm_summary(
+        &self,
+        _segment_id: &str,
+        _summary: &str,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn update_segment_ai_summary(
+        &self,
+        _segment_id: &str,
+        artifact: &maekon_core::models::ai_summary::AiSummaryArtifact,
+    ) -> Result<(), CoreError> {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *self.last.lock() = Some(artifact.clone());
+        Ok(())
+    }
+}
+
+struct FixedSummaryProvider;
+
+#[async_trait::async_trait]
+impl maekon_core::ports::analysis_provider::AnalysisProvider for FixedSummaryProvider {
+    async fn analyze(
+        &self,
+        _context_json: &str,
+        _system_prompt: &str,
+    ) -> Result<Vec<maekon_core::models::suggestion::Suggestion>, CoreError> {
+        Ok(vec![])
+    }
+
+    async fn summarize_text(
+        &self,
+        _context_json: &str,
+        _system_prompt: &str,
+    ) -> Result<String, CoreError> {
+        Ok("Provider-backed segment summary".to_string())
+    }
+
+    fn provider_name(&self) -> &str {
+        "fixed-summary-provider"
+    }
+}
+
 /// Helper: build a minimal AdaptiveTriggerState for testing.
 fn make_trigger_state() -> AdaptiveTriggerState {
     let config = TieredMemoryConfig::default();
@@ -145,6 +242,10 @@ fn make_trigger_state() -> AdaptiveTriggerState {
         regime_detection_interval_hours: 2,
         last_drift_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         llm_summarizer: None,
+        llm_summary_provider_class: None,
+        llm_summary_unavailable_reason: Some(
+            maekon_core::models::ai_summary::AiSummaryFailureReason::PipelineDisabled,
+        ),
         embedding_pipeline: None,
         text_search: None,
         gui_pipeline_state: None,
@@ -450,6 +551,61 @@ async fn llm_summary_semaphore_caps_at_four() {
     let _reacquired = LLM_SUMMARY_SEMAPHORE
         .try_acquire()
         .expect("semaphore must have a free permit after all 4 are dropped");
+}
+
+#[tokio::test]
+async fn eligible_segment_persists_exactly_one_generated_outcome() {
+    use maekon_core::models::ai_summary::AiSummaryProviderClass;
+    use maekon_core::models::tiered_memory::{SegmentSummary, TriggerReason};
+    use std::collections::HashMap;
+
+    let now = Utc::now();
+    let summary = SegmentSummary {
+        segment_id: "segment-summary-once".to_string(),
+        start_time: now - chrono::Duration::minutes(30),
+        end_time: now,
+        duration_secs: 1800,
+        regime_id: None,
+        trigger_reason: TriggerReason::ForcedMaxDuration,
+        event_count: 12,
+        app_breakdown: HashMap::from([("Editor".to_string(), 1800)]),
+        category_breakdown: HashMap::from([("Development".to_string(), 1800)]),
+        context_switch_count: 1,
+        dominant_category: "Development".to_string(),
+        avg_importance: 0.8,
+        patterns_detected: vec![],
+        content_activities: vec![],
+        container: None,
+        llm_summary: None,
+    };
+    let summarizer = Arc::new(
+        maekon_analysis::LlmSegmentSummarizer::new_with_provider_class(
+            Arc::new(FixedSummaryProvider),
+            Box::new(str::to_string),
+            true,
+            60,
+            AiSummaryProviderClass::Loopback,
+        ),
+    );
+    let recording = Arc::new(RecordingSummaryStorage {
+        writes: std::sync::atomic::AtomicUsize::new(0),
+        last: parking_lot::Mutex::new(None),
+    });
+    let storage: Arc<dyn maekon_core::ports::storage::StorageService> = recording.clone();
+
+    let artifact =
+        super::segment::generate_and_persist_summary_outcome(&summarizer, &storage, &summary).await;
+
+    assert!(artifact.is_generated());
+    assert_eq!(
+        artifact.provider_class,
+        Some(AiSummaryProviderClass::Loopback)
+    );
+    assert_eq!(
+        recording.writes.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(recording.last.lock().as_ref(), Some(&artifact));
 }
 
 /// #8051 regression: closing a segment must index its content into the FTS5

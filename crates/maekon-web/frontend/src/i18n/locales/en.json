@@ -1851,6 +1851,78 @@
     "reauthDescription": "Your OAuth session has expired. Please reconnect.",
     "switchToCli": "Use {{surface}} instead"
   },
+  "aiReadiness": {
+    "readyTitle": "AI features are ready",
+    "blockedTitle": "AI setup required",
+    "capability": {
+      "chatSubprocess": "AI Chat · subscription CLI",
+      "chatHttpApi": "AI Chat · provider API",
+      "chatLocalLlm": "AI Chat · local model",
+      "ocrCapture": "OCR capture",
+      "ocrSuggestionAnalysis": "OCR-derived AI suggestions",
+      "segmentSummary": "AI segment summaries",
+      "dailyNarrative": "AI daily narrative"
+    },
+    "reason": {
+      "ready": "Ready",
+      "compiled_capability_missing": "This build does not include the required capability.",
+      "runtime_flag_disabled": "The required feature is disabled.",
+      "consent_required": "The required privacy consent has not been granted.",
+      "access_mode_mismatch": "The selected AI access mode does not match this provider path.",
+      "endpoint_or_profile_required": "Select a provider endpoint or profile.",
+      "provider_not_detected": "The selected provider was not detected.",
+      "provider_auth_required": "Provider authentication is required.",
+      "provider_auth_unverified": "Provider authentication has not been verified.",
+      "provider_invocation_unavailable": "The provider cannot be invoked.",
+      "provider_invocation_unverified": "Provider invocation has not been verified.",
+      "model_unavailable": "The selected model is unavailable.",
+      "model_availability_unverified": "Model availability has not been verified.",
+      "hot_rewire_required": "Apply the setting again to rewire the running AI service.",
+      "restart_required": "Restart Maekon to apply this setting.",
+      "privacy_gate_unavailable": "The privacy gate is unavailable.",
+      "egress_gate_unavailable": "The external-data policy gate is unavailable.",
+      "budget_gate_unavailable": "The AI usage budget gate is unavailable.",
+      "audit_gate_unavailable": "The AI audit gate is unavailable."
+    },
+    "action": {
+      "none": "No action needed",
+      "openAiSettings": "Open AI settings",
+      "openPrivacyConsent": "Review privacy consent",
+      "enableFeature": "Enable the required feature",
+      "installProvider": "Install a supported provider",
+      "authenticateProvider": "Sign in to the provider",
+      "verifyProviderInvocation": "Verify provider invocation",
+      "selectModel": "Select and verify a model",
+      "applyHotRewire": "Apply the setting again to rewire AI",
+      "restartApp": "Restart Maekon to apply this setting",
+      "reviewPrivacy": "Review the privacy gate",
+      "reviewEgress": "Review the external-data policy",
+      "reviewBudget": "Review the AI usage budget",
+      "reviewAudit": "Review the audit gate"
+    }
+  },
+  "summaryProvenance": {
+    "digest": { "heuristic": "Heuristic digest" },
+    "aiSegmentSummary": "AI segment summary",
+    "aiSegmentUnavailable": "AI segment summary unavailable",
+    "aiDailyNarrative": "AI daily narrative",
+    "dailyNarrativeUnavailable": "AI daily narrative unavailable",
+    "provider": {
+      "loopback": "Loopback model on this device",
+      "subprocess": "Subscription CLI subprocess",
+      "external_api": "External provider API",
+      "unknown": "Provider class unavailable"
+    },
+    "failure": {
+      "pipeline_disabled": "The AI summary pipeline was disabled when this item was processed.",
+      "below_minimum_duration": "This segment was shorter than the configured AI summary minimum.",
+      "provider_unavailable": "No compatible summary provider was available.",
+      "provider_failed": "The provider could not generate a summary. No provider error body was retained.",
+      "invalid_response": "The provider returned a response that could not be accepted as an AI summary.",
+      "capacity_limited": "The summary queue was at capacity when this segment closed.",
+      "not_generated": "No AI narrative was generated; the heuristic digest remains available."
+    }
+  },
   "featureCapability": {
     "preferredPath": "Preferred path",
     "setupTitle": "Setup required",
@@ -2391,11 +2463,11 @@
   "onboarding": {
     "step3Search": "Search everything you've seen",
     "aiFeatures": {
-      "optInHint": "Optional: turn on local embedding, AI semantic search, and the AI daily-digest narrative. Everything runs on-device and takes effect after you restart Maekon.",
-      "enableButton": "Enable AI features",
+      "optInHint": "Optional: prepare tiered memory, embedding, semantic search, and AI summaries. Provider processing may be loopback, subscription CLI, or external API according to your AI settings. Separate Pattern Learning consent and a restart are still required.",
+      "enableButton": "Prepare AI features",
       "enabling": "Enabling…",
-      "enabled": "AI features enabled",
-      "enabledNote": "Local embedding, semantic search, and the AI daily-digest narrative will be active after you restart Maekon.",
+      "prepared": "AI configuration saved",
+      "preparedNote": "Configuration alone is not readiness. Complete the provider and separate Pattern Learning consent requirements below, then restart Maekon.",
       "error": "Could not enable AI features: {{error}}"
     },
     "step1Title": "Welcome to Maekon",
@@ -2495,6 +2567,11 @@
     "create_failed_title": "Could not create a session",
     "create_failed": "Failed to create an AI session.",
     "provider_not_configured": "{{provider}} is not configured. Add its credential in Settings → AI & Automation, then try again.",
+    "no_ready_provider": "No ready AI provider",
+    "provider_unavailable": "Provider unavailable",
+    "local_runtime_unavailable": "Ollama is not reachable. Start Ollama and verify the configured endpoint, then try again.",
+    "local_runtime_invalid": "The configured local endpoint is not Ollama. Choose Local LLM only for an Ollama endpoint.",
+    "local_model_missing": "The selected Ollama model is not installed. Install or select an available model, then try again.",
     "load_failed_title": "Could not load sessions",
     "load_failed": "Failed to load AI sessions.",
     "refresh_failed": "Failed to refresh AI sessions.",
@@ -2651,6 +2728,38 @@
     "closePanelLabel": "Close suggestions panel",
     "badgeNew": "new",
     "historyLoadError": "Could not load history.",
+    "localAnalysis": {
+      "status": {
+        "generated": "Local suggestions generated",
+        "no_candidate": "No local candidate found",
+        "throttled": "Local analysis is waiting",
+        "provider_offline": "Local analysis provider unavailable",
+        "policy_blocked": "Local analysis is disabled",
+        "consent_required": "Consent required for local analysis"
+      },
+      "reason": {
+        "generated": "Local suggestions generated",
+        "no_valid_candidate": "No valid local candidate found",
+        "not_admitted": "Local candidates did not pass review filters",
+        "no_input": "No local activity was available to analyze",
+        "context_unchanged": "Local context has not changed",
+        "analysis_throttled": "Local analysis is waiting for its next allowed run",
+        "provider_unavailable": "The selected local analysis provider is unavailable",
+        "analysis_disabled": "Local activity suggestion generation is disabled",
+        "capture_policy_blocked": "Local analysis is blocked by capture policy",
+        "suggestion_queue_unavailable": "The local suggestion review queue is unavailable",
+        "consent_required": "Consent required for local analysis",
+        "provider_consent_required": "The analysis provider requires consent",
+        "provider_policy_blocked": "The analysis provider is blocked by policy"
+      },
+      "producer": {
+        "periodic": "periodic analysis",
+        "app_switch": "app-switch analysis"
+      },
+      "provenance": "{{source}} · {{producer}} · {{time}}",
+      "counts": "{{candidateCount}} generated · {{queueCount}} in review",
+      "timeUnavailable": "Time unavailable"
+    },
     "badgeLabel": "{{count}} new suggestions"
   },
   "suggestionStats": {
@@ -2953,24 +3062,24 @@
   },
   "advancedTab": {
     "aiFeaturesMaster": "Enable AI features",
-    "aiFeaturesMasterDescription": "Turns on local embedding, AI semantic search, and the AI daily-digest narrative in one step — all processed on-device. Takes effect after you restart Maekon.",
+    "aiFeaturesMasterDescription": "Prepares tiered memory, embedding, semantic search, and AI summaries together. It does not grant Pattern Learning consent. Processing location follows the selected provider; restart Maekon after all readiness checks pass.",
     "llmSummary": "AI daily-digest narrative",
-    "llmSummaryDescription": "Use the on-device LLM to write a natural-language summary of your day (requires embedding). Takes effect after restart.",
+    "llmSummaryDescription": "Use the selected LLM provider to write segment summaries and a daily narrative (requires tiered memory and embedding). Provider location is shown with each result. Takes effect after restart.",
     "maxConcurrentSessions": "Max concurrent sessions",
     "idleTimeoutSeconds": "Idle timeout (seconds)",
     "sessionTimeoutSeconds": "Session timeout (seconds)",
     "maxRetries": "Max retries",
     "maxHistoryTurns": "Max history turns",
     "healthCheckIntervalSeconds": "Health check interval (seconds)",
-    "enableSuggestions": "Enable suggestions",
-    "enableSuggestionsDescription": "Receive AI-powered suggestions based on your activity",
+    "enableSuggestions": "Receive server suggestions",
+    "enableSuggestionsDescription": "Receive suggestions from the signed-in ONESHIM server stream",
     "showBorder": "Show border",
     "showBorderDescription": "Display a colored border around the screen when monitoring",
     "showPanel": "Show panel",
     "showPanelDescription": "Display the tracking status panel",
     "borderOpacity": "Border opacity (0.0 - 1.0)",
-    "enableAnalysis": "Enable analysis",
-    "enableAnalysisDescription": "Run LLM analysis on activity segments",
+    "enableAnalysis": "Generate local activity suggestions",
+    "enableAnalysisDescription": "Analyze consented local activity and OCR context with the selected LLM provider",
     "analysisIntervalSeconds": "Analysis interval (seconds)",
     "minConfidence": "Min confidence (0.0 - 1.0)",
     "maxSuggestions": "Max suggestions",

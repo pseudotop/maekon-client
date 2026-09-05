@@ -18,6 +18,17 @@ interface SourceStats {
   rejected: number
 }
 
+export interface LocalAnalysisStatus {
+  status: 'generated' | 'no_candidate' | 'throttled' | 'provider_offline' | 'policy_blocked' | 'consent_required'
+  reason: string
+  producer: 'periodic' | 'app_switch'
+  source: 'llm_local'
+  observed_at: string
+  candidate_count: number
+  queue_count: number
+  missing_permissions: string[]
+}
+
 // Aligned to the Rust DailyStatDto wire contract (#5699).
 // Previous shape (day/total/acted/suggestion_type/source) caused a TypeError at
 // day.slice(5) because `day` was undefined when rows had the new shape.
@@ -45,6 +56,7 @@ interface StatsData {
   acceptance_rate: number
   by_type: TypeCount[]
   by_source: SourceStats[]
+  latest_local_analysis: LocalAnalysisStatus | null
 }
 
 const barColors: Record<string, string> = {
@@ -52,6 +64,73 @@ const barColors: Record<string, string> = {
   rejected: 'bg-semantic-error',
   deferred: 'bg-semantic-warning',
   pending: 'bg-content-secondary',
+}
+
+const localStatusDefaults: Record<LocalAnalysisStatus['status'], string> = {
+  generated: 'Local suggestions generated',
+  no_candidate: 'No local candidate found',
+  throttled: 'Local analysis is waiting',
+  provider_offline: 'Local analysis provider unavailable',
+  policy_blocked: 'Local analysis is disabled',
+  consent_required: 'Consent required for local analysis',
+}
+
+const localReasonDefaults: Record<string, string> = {
+  generated: 'Local suggestions generated',
+  no_valid_candidate: 'No valid local candidate found',
+  not_admitted: 'Local candidates did not pass review filters',
+  no_input: 'No local activity was available to analyze',
+  context_unchanged: 'Local context has not changed',
+  analysis_throttled: 'Local analysis is waiting for its next allowed run',
+  provider_unavailable: 'The selected local analysis provider is unavailable',
+  analysis_disabled: 'Local activity suggestion generation is disabled',
+  capture_policy_blocked: 'Local analysis is blocked by capture policy',
+  suggestion_queue_unavailable: 'The local suggestion review queue is unavailable',
+  consent_required: 'Consent required for local analysis',
+  provider_consent_required: 'The analysis provider requires consent',
+  provider_policy_blocked: 'The analysis provider is blocked by policy',
+}
+
+export function LocalAnalysisStatusNotice({ status }: { status: LocalAnalysisStatus | null }) {
+  const { t, i18n } = useTranslation()
+  if (!status) return null
+
+  const observedAt = new Date(status.observed_at)
+  const observedLabel = Number.isNaN(observedAt.getTime())
+    ? t('suggestions.localAnalysis.timeUnavailable', 'Time unavailable')
+    : new Intl.DateTimeFormat(i18n.language, { dateStyle: 'short', timeStyle: 'short' }).format(observedAt)
+
+  return (
+    <div
+      className="rounded-md border border-muted bg-surface-muted/70 px-3 py-2 text-[10px]"
+      data-testid="local-analysis-status"
+      data-status={status.status}
+      data-candidate-count={status.candidate_count}
+      data-queue-count={status.queue_count}
+    >
+      <div className={cn('text-content-primary', typography.weight.medium)}>
+        {t(
+          `suggestions.localAnalysis.reason.${status.reason}`,
+          localReasonDefaults[status.reason] ?? localStatusDefaults[status.status],
+        )}
+      </div>
+      <div className="mt-1 text-content-secondary">
+        {t('suggestions.localAnalysis.provenance', '{{source}} · {{producer}} · {{time}}', {
+          source: t('suggestions.sourceLocal', 'Local'),
+          producer: t(`suggestions.localAnalysis.producer.${status.producer}`, status.producer),
+          time: observedLabel,
+        })}
+      </div>
+      {status.status === 'generated' && (
+        <div className="mt-1 text-content-secondary">
+          {t('suggestions.localAnalysis.counts', '{{candidateCount}} generated · {{queueCount}} in review', {
+            candidateCount: status.candidate_count,
+            queueCount: status.queue_count,
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function SuggestionStats() {
@@ -124,8 +203,14 @@ export function SuggestionStats() {
       </div>
     )
   }
-  if (!stats || stats.total_shown === 0)
-    return <p className="p-4 text-content-secondary text-xs">{t('suggestionStats.noData', 'No data yet')}</p>
+  if (!stats) return null
+  if (stats.total_shown === 0)
+    return (
+      <div className="flex flex-col gap-3 p-3">
+        <LocalAnalysisStatusNotice status={stats.latest_local_analysis} />
+        <p className="text-content-secondary text-xs">{t('suggestionStats.noData', 'No data yet')}</p>
+      </div>
+    )
 
   // Derive pending = total_shown minus all explicitly-labelled outcomes.
   const pending = stats.total_shown - (stats.total_accepted + stats.total_rejected + stats.total_deferred)
@@ -139,6 +224,7 @@ export function SuggestionStats() {
 
   return (
     <div className="flex flex-col gap-3 p-3">
+      <LocalAnalysisStatusNotice status={stats.latest_local_analysis} />
       <div className="text-center">
         {/* acceptance_rate is a fraction 0..1 — render as percentage (#5699) */}
         <div className={cn('text-2xl text-brand', typography.weight.bold)}>
