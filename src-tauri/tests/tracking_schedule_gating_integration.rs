@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Integration tests for Tracking Schedule gating — Phase 9 PR-A, Task A.8.
 //!
 //! # Tier Design

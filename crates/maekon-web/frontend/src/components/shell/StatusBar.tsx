@@ -1,5 +1,5 @@
 import { Camera, Cpu, HardDrive, Wifi, WifiOff, Zap, ZapOff } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSSE } from '../../hooks/useSSE'
 import { iconSize, layout, typography } from '../../styles/tokens'
@@ -12,22 +12,27 @@ declare const __APP_VERSION__: string
 function useAutomationStatus(connected: boolean) {
   const [status, setStatus] = useState(connected)
 
-  const poll = useCallback(async () => {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      const result = await invoke<boolean>('get_automation_status')
-      setStatus(result)
-    } catch {
-      // Browser fallback — derive from SSE connection
-      setStatus(connected)
+  useEffect(() => {
+    // A poll that settles after unmount must not set state: the component is
+    // gone, and in tests the DOM environment may already be torn down (#12517).
+    let disposed = false
+    const poll = async () => {
+      let next = connected
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        next = await invoke<boolean>('get_automation_status')
+      } catch {
+        // Browser fallback — derive from SSE connection
+      }
+      if (!disposed) setStatus(next)
+    }
+    void poll()
+    const id = setInterval(poll, 5_000)
+    return () => {
+      disposed = true
+      clearInterval(id)
     }
   }, [connected])
-
-  useEffect(() => {
-    poll()
-    const id = setInterval(poll, 5_000)
-    return () => clearInterval(id)
-  }, [poll])
 
   return status
 }

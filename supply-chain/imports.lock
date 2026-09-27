@@ -35,15 +35,15 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.aws-lc-rs]]
-version = "1.18.0"
-when = "2026-08-07"
+version = "1.18.1"
+when = "2026-09-01"
 user-id = 156764
 user-login = "justsmth"
 user-name = "Justin W Smith"
 
 [[publisher.aws-lc-sys]]
-version = "0.44.0"
-when = "2026-08-07"
+version = "0.45.0"
+when = "2026-09-01"
 user-id = 156764
 user-login = "justsmth"
 user-name = "Justin W Smith"
@@ -54,13 +54,6 @@ when = "2026-08-04"
 user-id = 5563
 user-login = "marshallpierce"
 user-name = "Marshall Pierce"
-
-[[publisher.blake2]]
-version = "0.10.6"
-when = "2022-12-16"
-user-id = 5059
-user-login = "newpavlov"
-user-name = "Artyom Pavlov"
 
 [[publisher.brotli]]
 version = "8.0.2"
@@ -131,22 +124,22 @@ user-login = "madsmtm"
 user-name = "Mads Marquart"
 
 [[publisher.clap]]
-version = "4.6.6"
-when = "2026-08-06"
+version = "4.6.7"
+when = "2026-09-14"
 user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
 
 [[publisher.clap_builder]]
-version = "4.6.6"
-when = "2026-08-06"
+version = "4.6.7"
+when = "2026-09-14"
 user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
 
 [[publisher.clap_derive]]
-version = "4.6.4"
-when = "2026-07-21"
+version = "4.6.7"
+when = "2026-09-14"
 user-id = 6743
 user-login = "epage"
 user-name = "Ed Page"
@@ -170,21 +163,28 @@ version = "0.10.1"
 when = "2025-05-26"
 user-id = 2396
 user-login = "jdm"
-user-name = "Josh Matthews"
+user-name = "Josh Bowman-Matthews"
 
 [[publisher.core-graphics]]
 version = "0.25.0"
 when = "2025-05-27"
 user-id = 2396
 user-login = "jdm"
-user-name = "Josh Matthews"
+user-name = "Josh Bowman-Matthews"
 
 [[publisher.core-graphics-types]]
 version = "0.1.1"
 when = "2020-09-15"
 user-id = 2396
 user-login = "jdm"
-user-name = "Josh Matthews"
+user-name = "Josh Bowman-Matthews"
+
+[[publisher.crossbeam]]
+version = "0.8.5"
+when = "2026-09-05"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
 
 [[publisher.ctr]]
 version = "0.10.0-rc.3"
@@ -244,6 +244,13 @@ user-name = "Mads Marquart"
 [[publisher.drm]]
 version = "0.14.1"
 when = "2024-10-24"
+user-id = 3551
+user-login = "Drakulix"
+user-name = "Victoria Brekenfeld"
+
+[[publisher.drm]]
+version = "0.15.0"
+when = "2026-03-19"
 user-id = 3551
 user-login = "Drakulix"
 user-name = "Victoria Brekenfeld"
@@ -309,7 +316,63 @@ version = "0.1.9"
 when = "2026-01-30"
 trusted-publisher = "github:rust-lang/cc-rs"
 
+[[publisher.futures]]
+version = "0.3.34"
+when = "2026-08-11"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
+
+[[publisher.futures-channel]]
+version = "0.3.34"
+when = "2026-08-11"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
+
 [[publisher.futures-core]]
+version = "0.3.34"
+when = "2026-08-11"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
+
+[[publisher.futures-executor]]
+version = "0.3.34"
+when = "2026-08-11"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
+
+[[publisher.futures-io]]
+version = "0.3.34"
+when = "2026-08-11"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
+
+[[publisher.futures-macro]]
+version = "0.3.34"
+when = "2026-08-11"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
+
+[[publisher.futures-sink]]
+version = "0.3.34"
+when = "2026-08-11"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
+
+[[publisher.futures-task]]
+version = "0.3.34"
+when = "2026-08-11"
+user-id = 33035
+user-login = "taiki-e"
+user-name = "Taiki Endo"
+
+[[publisher.futures-util]]
 version = "0.3.34"
 when = "2026-08-11"
 user-id = 33035
@@ -621,7 +684,7 @@ user-name = "Shane F. Carr"
 version = "0.25.10"
 when = "2026-03-10"
 user-id = 11453
-user-login = "HeroicKatora"
+user-login = "197g"
 user-name = "Aurelia Molzer"
 
 [[publisher.jni]]
@@ -652,8 +715,8 @@ user-id = 55123
 user-login = "rust-lang-owner"
 
 [[publisher.jsonwebtoken]]
-version = "11.0.0"
-when = "2026-07-24"
+version = "11.1.0"
+when = "2026-09-16"
 user-id = 2876
 user-login = "Keats"
 user-name = "Vincent Prouillet"
@@ -1080,6 +1143,13 @@ user-id = 2668
 user-login = "jackpot51"
 user-name = "Jeremy Soller"
 
+[[publisher.reqwest]]
+version = "0.13.5"
+when = "2026-09-08"
+user-id = 359
+user-login = "seanmonstar"
+user-name = "Sean McArthur"
+
 [[publisher.rusqlite]]
 version = "0.40.2"
 when = "2026-08-08"
@@ -1095,8 +1165,8 @@ user-login = "ejmahler"
 user-name = "Elliott Mahler"
 
 [[publisher.rustls]]
-version = "0.23.43"
-when = "2026-07-29"
+version = "0.23.45"
+when = "2026-09-14"
 user-id = 2751
 user-login = "ctz"
 user-name = "Joe Birr-Pixton"
@@ -1218,7 +1288,7 @@ version = "0.8.9"
 when = "2025-03-28"
 user-id = 2396
 user-login = "jdm"
-user-name = "Josh Matthews"
+user-name = "Josh Bowman-Matthews"
 
 [[publisher.string_cache]]
 version = "0.9.0"
@@ -1263,15 +1333,15 @@ user-login = "tauri-bot"
 user-name = "tauri"
 
 [[publisher.tauri-plugin-dialog]]
-version = "2.7.2"
-when = "2026-07-18"
+version = "2.7.3"
+when = "2026-08-31"
 user-id = 95389
 user-login = "tauri-bot"
 user-name = "tauri"
 
 [[publisher.tauri-plugin-fs]]
-version = "2.5.1"
-when = "2026-05-02"
+version = "2.5.2"
+when = "2026-08-31"
 user-id = 95389
 user-login = "tauri-bot"
 user-name = "tauri"
@@ -1284,15 +1354,15 @@ user-login = "tauri-bot"
 user-name = "tauri"
 
 [[publisher.tauri-plugin-notification]]
-version = "2.3.3"
-when = "2025-10-27"
+version = "2.4.0"
+when = "2026-08-31"
 user-id = 95389
 user-login = "tauri-bot"
 user-name = "tauri"
 
 [[publisher.tauri-plugin-single-instance]]
-version = "2.4.3"
-when = "2026-07-13"
+version = "2.4.5"
+when = "2026-09-20"
 user-id = 95389
 user-login = "tauri-bot"
 user-name = "tauri"
@@ -1316,14 +1386,14 @@ version = "0.4.3"
 when = "2022-03-27"
 user-id = 2396
 user-login = "jdm"
-user-name = "Josh Matthews"
+user-name = "Josh Bowman-Matthews"
 
 [[publisher.tendril]]
 version = "0.5.0"
 when = "2026-01-09"
 user-id = 2396
 user-login = "jdm"
-user-name = "Josh Matthews"
+user-name = "Josh Bowman-Matthews"
 
 [[publisher.termcolor]]
 version = "1.4.1"
@@ -1373,6 +1443,13 @@ when = "2026-07-22"
 user-id = 6741
 user-login = "Darksonn"
 user-name = "Alice Ryhl"
+
+[[publisher.tower-http]]
+version = "0.7.1"
+when = "2026-08-31"
+user-id = 359
+user-login = "seanmonstar"
+user-name = "Sean McArthur"
 
 [[publisher.transpose]]
 version = "0.2.3"
@@ -1872,15 +1949,29 @@ user-login = "Manishearth"
 user-name = "Manish Goregaokar"
 
 [[publisher.zbus]]
-version = "5.14.0"
-when = "2026-02-22"
+version = "5.19.0"
+when = "2026-08-09"
+user-id = 6423
+user-login = "zeenix"
+user-name = "Zeeshan Ali Khan"
+
+[[publisher.zbus_macros]]
+version = "5.19.0"
+when = "2026-08-09"
 user-id = 6423
 user-login = "zeenix"
 user-name = "Zeeshan Ali Khan"
 
 [[publisher.zbus_names]]
-version = "4.3.1"
-when = "2026-01-09"
+version = "4.3.4"
+when = "2026-07-17"
+user-id = 6423
+user-login = "zeenix"
+user-name = "Zeeshan Ali Khan"
+
+[[publisher.zcheapstr]]
+version = "1.1.0"
+when = "2026-08-10"
 user-id = 6423
 user-login = "zeenix"
 user-name = "Zeeshan Ali Khan"
@@ -1914,8 +2005,22 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.zvariant]]
-version = "5.10.0"
-when = "2026-02-22"
+version = "5.15.0"
+when = "2026-08-18"
+user-id = 6423
+user-login = "zeenix"
+user-name = "Zeeshan Ali Khan"
+
+[[publisher.zvariant_derive]]
+version = "5.15.0"
+when = "2026-08-18"
+user-id = 6423
+user-login = "zeenix"
+user-name = "Zeeshan Ali Khan"
+
+[[publisher.zvariant_utils]]
+version = "4.2.0"
+when = "2026-08-18"
 user-id = 6423
 user-login = "zeenix"
 user-name = "Zeeshan Ali Khan"
@@ -2085,6 +2190,12 @@ change.
 who = "Chris Fallin <chris@cfallin.org>"
 criteria = "safe-to-deploy"
 delta = "0.3.29 -> 0.3.32"
+
+[[audits.bytecodealliance.audits.rustls-webpki]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.103.13 -> 0.103.15"
+notes = "Minor updates and feature shufflings."
 
 [[audits.bytecodealliance.audits.signal-hook-registry]]
 who = "Pat Hickey <phickey@fastly.com>"
@@ -2713,7 +2824,7 @@ aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-ch
 [[audits.mozilla.wildcard-audits.core-graphics-types]]
 who = "Bobby Holley <bobbyholley@gmail.com>"
 criteria = "safe-to-deploy"
-user-id = 2396 # Josh Matthews (jdm)
+user-id = 2396 # Josh Bowman-Matthews (jdm)
 start = "2020-07-20"
 end = "2023-05-04"
 renew = false

@@ -425,6 +425,90 @@ impl ExternalOcrPrivacyGuard {
             .map(Some)
     }
 
+    /// Observe the full consent/privacy revision; canonical helpers still grant permission.
+    pub(super) fn candidate_consent_revision(
+        &self,
+    ) -> Result<String, maekon_core::models::candidate_decision::DecisionUnavailable> {
+        use maekon_core::models::candidate_decision::{digest_bytes, DecisionUnavailable};
+        if !self.consent_manager.full_text_extraction_permitted()
+            || self.consent_manager.has_pending_deletion()
+            || self
+                .consent_manager
+                .erasing()
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(DecisionUnavailable::ConsentOrPolicyDenied);
+        }
+        let record = self
+            .consent_manager
+            .current_consent()
+            .ok_or(DecisionUnavailable::ConsentOrPolicyDenied)?;
+        serde_json::to_vec(&(
+            record,
+            self.pii_filter_level,
+            self.external_data_policy,
+            &self.privacy_config,
+        ))
+        .map(|bytes| digest_bytes(&bytes))
+        .map_err(|_| DecisionUnavailable::ConsentOrPolicyDenied)
+    }
+
+    /// Local data authorization is not remote egress authorization (#12456).
+    /// Reuse canonical permissions and surface exclusions without key lookup,
+    /// provider-specific remote gates or an inference call.
+    pub async fn local_candidate_authority(
+        &self,
+    ) -> Result<(String, String), maekon_core::models::candidate_decision::DecisionUnavailable>
+    {
+        use maekon_core::models::candidate_decision::{window_digest, DecisionUnavailable};
+        let before = self.candidate_consent_revision()?;
+        let window = self
+            .process_monitor
+            .get_active_window()
+            .await
+            .map_err(|_| DecisionUnavailable::ConsentOrPolicyDenied)?
+            .ok_or(DecisionUnavailable::ConsentOrPolicyDenied)?;
+        // Assessing an existing GUI snapshot does not start a new OCR operation.
+        // Keep full-text consent and the canonical surface exclusions independent
+        // of the provider-specific remote authorization path.
+        if maekon_vision::privacy::is_sensitive_app(&window.app_name)
+            || maekon_vision::privacy::should_exclude_by_policy(
+                &self.privacy_config,
+                &window.app_name,
+                &window.title,
+            )
+        {
+            return Err(DecisionUnavailable::ConsentOrPolicyDenied);
+        }
+        let after = self.candidate_consent_revision()?;
+        if before != after {
+            return Err(DecisionUnavailable::ConsentOrPolicyDenied);
+        }
+        Ok((after, window_digest(&window)?))
+    }
+
+    #[cfg(feature = "analysis")]
+    pub(super) async fn candidate_authority(
+        &self,
+    ) -> Result<(String, String), maekon_core::models::candidate_decision::DecisionUnavailable>
+    {
+        use maekon_core::models::candidate_decision::{window_digest, DecisionUnavailable};
+        let before = self.candidate_consent_revision()?;
+        let window = self
+            .ensure_external_llm_allowed("typesafe", "candidate_decision")
+            .await
+            .map_err(|_| DecisionUnavailable::ConsentOrPolicyDenied)?;
+        let after = self.candidate_consent_revision()?;
+        if before != after {
+            return Err(DecisionUnavailable::ConsentOrPolicyDenied);
+        }
+        Ok((after, window_digest(&window)?))
+    }
+
+    pub(super) fn sanitize_candidate_text(&self, text: &str) -> String {
+        maekon_vision::privacy::sanitize_title_with_level(text, self.external_llm_filter_level())
+    }
+
     fn external_llm_filter_level(&self) -> PiiFilterLevel {
         self.external_data_policy
             .effective_egress_pii_level(self.pii_filter_level)

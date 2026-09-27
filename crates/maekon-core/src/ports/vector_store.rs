@@ -1,11 +1,13 @@
 //! Port for storing and searching embedding vectors with time-decay and metadata filtering.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
 use crate::error::CoreError;
 use crate::models::embedding::{EmbeddingMetadata, SearchFilters, SearchResult};
+use crate::ports::consent_manager::ConsentManagerPort;
 use crate::quantization::QuantizedVector;
 
 /// Port for storing and searching embedding vectors.
@@ -48,6 +50,25 @@ pub trait VectorStore: Send + Sync {
     ) -> Result<u64, CoreError> {
         self.store(vector, metadata).await?;
         self.last_insert_id().await
+    }
+
+    /// Store only while the live activity-pattern permission remains valid.
+    ///
+    /// The default implementation is suitable for non-blocking test doubles.
+    /// Adapters that queue work onto another thread MUST override this method
+    /// and run the actual mutation through
+    /// [`ConsentManagerPort::run_if_activity_pattern_learning_permitted`] at
+    /// that thread's final write boundary (#11969).
+    async fn store_returning_id_if_activity_pattern_learning_permitted(
+        &self,
+        vector: Vec<f32>,
+        metadata: EmbeddingMetadata,
+        consent_manager: Arc<dyn ConsentManagerPort>,
+    ) -> Result<Option<u64>, CoreError> {
+        if !consent_manager.activity_pattern_learning_permitted() {
+            return Ok(None);
+        }
+        self.store_returning_id(vector, metadata).await.map(Some)
     }
 
     /// Search for the top-k most similar vectors with time decay weighting.
@@ -122,6 +143,24 @@ pub trait VectorStore: Send + Sync {
         self.store_quantized(vector_f32, vector_int8, metadata, skip_float32)
             .await?;
         self.last_insert_id().await
+    }
+
+    /// Quantized counterpart of
+    /// [`Self::store_returning_id_if_activity_pattern_learning_permitted`].
+    async fn store_quantized_returning_id_if_activity_pattern_learning_permitted(
+        &self,
+        vector_f32: Vec<f32>,
+        vector_int8: &QuantizedVector,
+        metadata: EmbeddingMetadata,
+        skip_float32: bool,
+        consent_manager: Arc<dyn ConsentManagerPort>,
+    ) -> Result<Option<u64>, CoreError> {
+        if !consent_manager.activity_pattern_learning_permitted() {
+            return Ok(None);
+        }
+        self.store_quantized_returning_id(vector_f32, vector_int8, metadata, skip_float32)
+            .await
+            .map(Some)
     }
 
     /// Search using INT8 quantized cosine similarity (faster, approximate).
@@ -207,5 +246,140 @@ pub trait VectorStore: Send + Sync {
     /// vector so it can be inserted into the HNSW index.
     async fn last_insert_id(&self) -> Result<u64, CoreError> {
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consent::{ConsentManager, ConsentPermissions};
+    use crate::models::embedding::EmbeddingContentType;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct RecordingStore {
+        float_writes: AtomicUsize,
+        quantized_writes: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl VectorStore for RecordingStore {
+        async fn store(
+            &self,
+            vector: Vec<f32>,
+            metadata: EmbeddingMetadata,
+        ) -> Result<(), CoreError> {
+            assert_eq!(vector, [1.0, 0.0]);
+            assert_eq!(metadata.segment_id, "consent-boundary");
+            self.float_writes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn store_quantized(
+            &self,
+            vector: Vec<f32>,
+            quantized: &QuantizedVector,
+            metadata: EmbeddingMetadata,
+            skip_float32: bool,
+        ) -> Result<(), CoreError> {
+            assert_eq!(vector, [1.0, 0.0]);
+            assert_eq!(quantized.data, [127, -128]);
+            assert_eq!(metadata.segment_id, "consent-boundary");
+            assert!(skip_float32);
+            self.quantized_writes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn last_insert_id(&self) -> Result<u64, CoreError> {
+            Ok(23)
+        }
+        async fn search(
+            &self,
+            _: &[f32],
+            _: usize,
+            _: f32,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            unreachable!("write-boundary fixture")
+        }
+        async fn search_filtered(
+            &self,
+            _: &[f32],
+            _: usize,
+            _: f32,
+            _: &SearchFilters,
+        ) -> Result<Vec<SearchResult>, CoreError> {
+            unreachable!("write-boundary fixture")
+        }
+        async fn enforce_retention(&self, _: u32) -> Result<u64, CoreError> {
+            unreachable!("write-boundary fixture")
+        }
+        async fn mark_stale(&self, _: &str) -> Result<u64, CoreError> {
+            unreachable!("write-boundary fixture")
+        }
+        async fn update_vector(&self, _: i64, _: Vec<f32>, _: &str) -> Result<u64, CoreError> {
+            unreachable!("write-boundary fixture")
+        }
+        async fn get_current_model_id(&self) -> Result<Option<String>, CoreError> {
+            unreachable!("write-boundary fixture")
+        }
+        async fn get_stale_vectors(&self, _: usize) -> Result<Vec<(i64, String)>, CoreError> {
+            unreachable!("write-boundary fixture")
+        }
+    }
+
+    #[tokio::test]
+    async fn default_float_and_quantized_writes_observe_grant_and_withdrawal() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ConsentManager::new(dir.path().join("consent.json")));
+        let store = RecordingStore::default();
+        let metadata = EmbeddingMetadata {
+            segment_id: "consent-boundary".into(),
+            content_type: EmbeddingContentType::SegmentSummary,
+            content_label: None,
+            timestamp: chrono::Utc::now(),
+            original_text: "synthetic fixture".into(),
+            model_id: "test".into(),
+        };
+        let quantized = QuantizedVector {
+            data: vec![127, -128],
+            scale: 1.0,
+            offset: 0.0,
+        };
+        for (permitted, writes) in [(false, 0), (true, 1), (false, 1)] {
+            manager
+                .grant_consent(
+                    ConsentPermissions {
+                        activity_pattern_learning: permitted,
+                        ..Default::default()
+                    },
+                    30,
+                )
+                .unwrap();
+            let expected = permitted.then_some(23);
+            assert_eq!(
+                store
+                    .store_returning_id_if_activity_pattern_learning_permitted(
+                        vec![1.0, 0.0],
+                        metadata.clone(),
+                        manager.clone()
+                    )
+                    .await
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(
+                store
+                    .store_quantized_returning_id_if_activity_pattern_learning_permitted(
+                        vec![1.0, 0.0],
+                        &quantized,
+                        metadata.clone(),
+                        true,
+                        manager.clone()
+                    )
+                    .await
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(store.float_writes.load(Ordering::SeqCst), writes);
+            assert_eq!(store.quantized_writes.load(Ordering::SeqCst), writes);
+        }
     }
 }

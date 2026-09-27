@@ -110,6 +110,7 @@ pub(super) fn install_erasure_wiring(
         sqlite_storage.clone(),
         retry_frame_storage,
         retry_vault_writer,
+        crate::ai_invocation_evidence::evidence_path(),
     ));
 }
 

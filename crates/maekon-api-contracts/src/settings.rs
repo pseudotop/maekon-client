@@ -501,10 +501,51 @@ pub struct AiSessionSettings {
     pub max_retries: u32,
     pub max_history_turns: u32,
     pub health_check_interval_secs: u64,
+    /// Daily pre-call token allowance as an ASCII decimal string; zero means unlimited.
+    /// Omission or null preserves the stored value (#12096).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_u64_decimal_string"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    pub daily_token_budget: Option<u64>,
     #[serde(default = "default_max_output_tokens")]
     pub max_output_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<serde_json::Value>,
+}
+
+mod optional_u64_decimal_string {
+    use serde::{de::Error, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_str(&value.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<String>::deserialize(deserializer)?
+            .map(|digits| {
+                if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(D::Error::custom(
+                        "daily_token_budget must contain only ASCII decimal digits",
+                    ));
+                }
+                digits
+                    .parse::<u64>()
+                    .map_err(|_| D::Error::custom("daily_token_budget is outside the u64 range"))
+            })
+            .transpose()
+    }
 }
 
 fn default_max_output_tokens() -> u32 {
@@ -520,6 +561,7 @@ impl Default for AiSessionSettings {
             max_retries: 3,
             max_history_turns: 100,
             health_check_interval_secs: 30,
+            daily_token_budget: None,
             max_output_tokens: default_max_output_tokens(),
             thinking: None,
         }
@@ -1395,6 +1437,42 @@ mod enum_drift_guard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daily_token_budget_round_trips_as_an_exact_decimal_string() {
+        for budget in [
+            0_u64,
+            4096,
+            9_007_199_254_740_991,
+            9_007_199_254_740_993,
+            u64::MAX,
+        ] {
+            let settings = AiSessionSettings {
+                daily_token_budget: Some(budget),
+                ..AiSessionSettings::default()
+            };
+            let json = serde_json::to_value(settings).expect("settings JSON");
+            assert_eq!(json["daily_token_budget"], budget.to_string());
+            let restored: AiSessionSettings =
+                serde_json::from_value(json).expect("decimal string settings");
+            assert_eq!(restored.daily_token_budget, Some(budget));
+        }
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn daily_token_budget_schema_uses_an_optional_string() {
+        let schema = serde_json::to_value(schemars::schema_for!(AiSessionSettings))
+            .expect("settings schema");
+        let property = &schema["properties"]["daily_token_budget"];
+        assert_eq!(property["type"], serde_json::json!(["string", "null"]));
+        assert!(property.get("format").is_none());
+        assert!(property.get("minimum").is_none());
+        assert!(!schema["required"]
+            .as_array()
+            .expect("required settings fields")
+            .contains(&serde_json::json!("daily_token_budget")));
+    }
 
     /// #5966: legacy IPC/settings payloads use the old
     /// `allow_unredacted_external_ocr` key; the serde alias must keep them

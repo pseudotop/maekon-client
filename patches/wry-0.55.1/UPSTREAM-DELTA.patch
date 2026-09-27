@@ -556,16 +556,16 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
 -    // Gdk.Window
 -    let gdk_window = unsafe { gdk_x11_window_foreign_new_for_display(raw, x11_window) };
 -    let gdk_window = unsafe { gdk::Window::from_glib_full(gdk_window) };
-+    let _ = (raw, x11_window);
-+    #[cfg(feature = "tracing")]
-+    tracing::warn!("GTK4 does not support GTK3 foreign GdkWindow wrapping for raw X11 parents");
- 
+-
 -    // Gtk.Window
 -    let window = gtk::Window::new(gtk::WindowType::Toplevel);
 -    window.connect_realize(glib::clone!(@weak gdk_window as wd => move |w| w.set_window(wd)));
 -    window.set_has_window(true);
 -    window.realize();
--
++    let _ = (raw, x11_window);
++    #[cfg(feature = "tracing")]
++    tracing::warn!("GTK4 does not support GTK3 foreign GdkWindow wrapping for raw X11 parents");
+ 
      // Gtk.Box (vertical)
 +    let window = gtk::Window::new();
      let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -699,7 +699,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
              Self::new_gtk(
                &box_,
                WebViewAttributes {
-@@ -589,7 +565,7 @@
+@@ -589,16 +565,22 @@
  
    fn add_to_container<W>(webview: &WebView, container: &W, attributes: &WebViewAttributes) -> bool
    where
@@ -708,7 +708,14 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
    {
      let mut is_in_fixed_parent = false;
  
-@@ -598,7 +574,7 @@
+     let container_type = container.type_().name();
+     if container_type == "GtkBox" {
++      // Maekon (#12580): GTK4 box children keep their natural size unless they
++      // opt into expansion. The GTK3 port packed the webview into the box with
++      // expand and fill set; without the same flags the webview is 0 px tall
++      // and the window looks empty.
++      webview.set_vexpand(true);
++      webview.set_hexpand(true);
        container
          .dynamic_cast_ref::<gtk::Box>()
          .unwrap()
@@ -717,7 +724,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
      } else if container_type == "GtkFixed" {
        let scale_factor = webview.scale_factor() as f64;
        let (width, height) = attributes
-@@ -617,11 +593,13 @@
+@@ -617,11 +599,13 @@
        container
          .dynamic_cast_ref::<gtk::Fixed>()
          .unwrap()
@@ -733,7 +740,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
      }
  
      is_in_fixed_parent
-@@ -639,20 +617,18 @@
+@@ -639,20 +623,18 @@
        #[cfg(feature = "tracing")]
        let _span = tracing::info_span!(parent: None, "wry::ipc::handle").entered();
  
@@ -762,7 +769,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
    }
  
    #[cfg(any(debug_assertions, feature = "devtools"))]
-@@ -677,7 +653,7 @@
+@@ -677,7 +659,7 @@
    }
  
    pub fn print(&self) -> Result<()> {
@@ -771,25 +778,26 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
      print.run_dialog(None::<&gtk::Window>);
      Ok(())
    }
-@@ -699,20 +675,22 @@
+@@ -699,20 +681,22 @@
        #[cfg(feature = "tracing")]
        let span = SendEnteredSpan(tracing::debug_span!("wry::eval").entered());
  
 -      self.webview.run_javascript(js, cancellable, |result| {
 -        #[cfg(feature = "tracing")]
 -        drop(span);
-+      self
-+        .webview
-+        .evaluate_javascript(js, None, None, cancellable, |result| {
-+          #[cfg(feature = "tracing")]
-+          drop(span);
- 
+-
 -        if let Some(callback) = callback {
 -          let result = result
 -            .map(|r| r.js_value().and_then(|js| js.to_json(0)))
 -            .unwrap_or_default()
 -            .unwrap_or_default()
 -            .to_string();
++      self
++        .webview
++        .evaluate_javascript(js, None, None, cancellable, |result| {
++          #[cfg(feature = "tracing")]
++          drop(span);
++
 +          if let Some(callback) = callback {
 +            let result = result
 +              .map(|js| js.to_json(0))
@@ -806,7 +814,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
      }
  
      Ok(())
-@@ -766,10 +744,10 @@
+@@ -766,10 +750,10 @@
  
    pub fn set_background_color(&self, (red, green, blue, alpha): RGBA) -> Result<()> {
      self.webview.set_background_color(&gtk::gdk::RGBA::new(
@@ -821,7 +829,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
      ));
      Ok(())
    }
-@@ -780,7 +758,7 @@
+@@ -780,7 +764,7 @@
    }
  
    pub fn load_url_with_headers(&self, url: &str, headers: http::HeaderMap) -> Result<()> {
@@ -830,7 +838,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
      if let Some(ref mut req_headers) = req.http_headers() {
        for (header, value) in headers.iter() {
-@@ -807,15 +785,13 @@
+@@ -807,15 +791,13 @@
    }
  
    pub fn clear_all_browsing_data(&self) -> Result<()> {
@@ -853,7 +861,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
      }
  
      Ok(())
-@@ -844,31 +820,37 @@
+@@ -844,31 +826,37 @@
        return Ok(bounds);
      }
  
@@ -901,7 +909,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
      }
  
      Ok(())
-@@ -892,7 +874,7 @@
+@@ -892,7 +880,7 @@
      if let Some(x11_data) = &self.x11 {
        if x11_data.is_child {
          if visible {
@@ -910,7 +918,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
          } else {
            x11_data.gtk_window.hide();
          }
-@@ -905,7 +887,7 @@
+@@ -905,7 +893,7 @@
      self.set_visible_x11(visible);
  
      if visible {
@@ -919,7 +927,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
      } else {
        self.webview.hide();
      }
-@@ -922,8 +904,12 @@
+@@ -922,8 +910,12 @@
    }
  
    pub fn focus_parent(&self) -> Result<()> {
@@ -934,7 +942,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
      }
  
      Ok(())
-@@ -1007,13 +993,27 @@
+@@ -1007,13 +999,27 @@
      soup_cookie
    }
  
@@ -967,7 +975,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
        cookies_manager.cookies(url, None::<&Cancellable>, move |cookies| {
          let cookies = cookies.map(|cookies| {
            cookies
-@@ -1026,7 +1026,7 @@
+@@ -1026,7 +1032,7 @@
      }
  
      loop {
@@ -976,7 +984,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
        if let Ok(response) = rx.try_recv() {
          return response.map_err(Into::into);
-@@ -1036,11 +1036,7 @@
+@@ -1036,11 +1042,7 @@
  
    pub fn cookies(&self) -> Result<Vec<cookie::Cookie<'static>>> {
      let (tx, rx) = std::sync::mpsc::channel();
@@ -989,7 +997,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
        cookies_manager.all_cookies(None::<&Cancellable>, move |cookies| {
          let cookies = cookies.map(|cookies| {
            cookies
-@@ -1053,7 +1049,7 @@
+@@ -1053,7 +1055,7 @@
      }
  
      loop {
@@ -998,7 +1006,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
        if let Ok(response) = rx.try_recv() {
          return response.map_err(Into::into);
-@@ -1063,11 +1059,7 @@
+@@ -1063,11 +1065,7 @@
  
    pub fn set_cookie(&self, cookie: &cookie::Cookie<'_>) -> Result<()> {
      let (tx, rx) = std::sync::mpsc::channel();
@@ -1011,7 +1019,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
        let mut soup_cookie = Self::cookie_into_soup_cookie(cookie);
        cookies_manager.add_cookie(&mut soup_cookie, None::<&Cancellable>, move |ret| {
          let _ = tx.send(ret);
-@@ -1075,7 +1067,7 @@
+@@ -1075,7 +1073,7 @@
      }
  
      loop {
@@ -1020,7 +1028,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
        if let Ok(response) = rx.try_recv() {
          return response.map_err(Into::into);
-@@ -1085,11 +1077,7 @@
+@@ -1085,11 +1083,7 @@
  
    pub fn delete_cookie(&self, cookie: &cookie::Cookie<'_>) -> Result<()> {
      let (tx, rx) = std::sync::mpsc::channel();
@@ -1033,7 +1041,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
        let mut soup_cookie = Self::cookie_into_soup_cookie(cookie);
        cookies_manager.delete_cookie(&mut soup_cookie, None::<&Cancellable>, move |ret| {
          let _ = tx.send(ret);
-@@ -1097,7 +1085,7 @@
+@@ -1097,7 +1091,7 @@
      }
  
      loop {
@@ -1042,7 +1050,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
        if let Ok(response) = rx.try_recv() {
          return response.map_err(Into::into);
-@@ -1107,28 +1095,26 @@
+@@ -1107,28 +1101,30 @@
  
    pub fn reparent<W>(&self, container: &W) -> Result<()>
    where
@@ -1060,6 +1068,10 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
        let container_type = container.type_().name();
        if container_type == "GtkBox" {
++        // Maekon (#12580): keep the GTK3 expand-and-fill behaviour when the
++        // webview moves into another box (see `add_to_container`).
++        self.webview.set_vexpand(true);
++        self.webview.set_hexpand(true);
          container
            .dynamic_cast_ref::<gtk::Box>()
            .unwrap()
@@ -1079,7 +1091,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
        }
      }
  
-@@ -1177,8 +1163,8 @@
+@@ -1177,8 +1173,8 @@
        translate::{FromGlibPtrContainer, ToGlibPtr},
      },
    };
@@ -1090,7 +1102,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
    pub trait CookieManageExt: IsA<CookieManager> + 'static {
      fn all_cookies<P: FnOnce(std::result::Result<Vec<soup::Cookie>, glib::Error>) + 'static>(
-@@ -1234,7 +1220,7 @@
+@@ -1234,7 +1230,7 @@
  
    extern "C" {
      pub fn webkit_cookie_manager_get_all_cookies(
@@ -1102,7 +1114,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
 diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/webkitgtk/synthetic_mouse_events.rs vendored/src/webkitgtk/synthetic_mouse_events.rs
 --- upstream/src/webkitgtk/synthetic_mouse_events.rs
 +++ vendored/src/webkitgtk/synthetic_mouse_events.rs
-@@ -1,26 +1,36 @@
+@@ -1,26 +1,41 @@
  use std::{cell::RefCell, rc::Rc};
  
 -use gtk::{
@@ -1122,8 +1134,13 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
    let bf_state_c = bf_state.clone();
 -  webview.connect_button_press_event(move |webview, event| {
-+  let webview_c = webview.clone();
++  // Weak: the gesture is owned by this webview, and GTK4 destroy never breaks a strong
++  // self-capture cycle, so the webview would never be finalized (#12652).
++  let webview_c = webview.downgrade();
 +  gesture.connect_pressed(move |gesture, n_press, x, y| {
++    let Some(webview_c) = webview_c.upgrade() else {
++      return;
++    };
 +    let button = gesture.current_button();
      let mut inhibit = false;
 -    match event.button() {
@@ -1149,7 +1166,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
            None::<&gtk::gio::Cancellable>,
            |_| {},
          );
-@@ -29,8 +39,18 @@
+@@ -29,8 +44,18 @@
        9 => {
          inhibit = true;
          bf_state_c.set(FORWARD);
@@ -1170,7 +1187,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
            None::<&gtk::gio::Cancellable>,
            |_| {},
          );
-@@ -39,22 +59,32 @@
+@@ -39,22 +64,37 @@
      }
  
      if inhibit {
@@ -1183,8 +1200,13 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
    let bf_state_c = bf_state.clone();
 -  webview.connect_button_release_event(move |webview, event| {
-+  let webview_c = webview.clone();
++  // Weak: the gesture is owned by this webview, and GTK4 destroy never breaks a strong
++  // self-capture cycle, so the webview would never be finalized (#12652).
++  let webview_c = webview.downgrade();
 +  gesture.connect_released(move |gesture, n_press, x, y| {
++    let Some(webview_c) = webview_c.upgrade() else {
++      return;
++    };
 +    let button = gesture.current_button();
      let mut inhibit = false;
 -    match event.button() {
@@ -1210,7 +1232,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
            None::<&gtk::gio::Cancellable>,
            |_| {},
          );
-@@ -63,8 +93,18 @@
+@@ -63,8 +103,18 @@
        9 => {
          inhibit = true;
          bf_state_c.remove(FORWARD);
@@ -1231,7 +1253,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
            None::<&gtk::gio::Cancellable>,
            |_| {},
          );
-@@ -72,20 +112,25 @@
+@@ -72,20 +122,25 @@
        _ => {}
      }
      if inhibit {
@@ -1265,7 +1287,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
    let mut buttons = 0;
    // left button
    if modifers_state.contains(ModifierType::BUTTON1_MASK) {
-@@ -153,9 +198,9 @@
+@@ -153,9 +208,9 @@
      event_name = event_name,
      x = x,
      y = y,

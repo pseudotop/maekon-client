@@ -9,7 +9,9 @@ use crate::config::{CredentialAuthMode, CredentialBackendKind, ExternalApiEndpoi
 use crate::error::CoreError;
 use crate::ports::oauth::OAuthPort;
 use crate::ports::secret_store::{provider_api_key_secret_ref, SecretStore};
-use crate::provider_surface::{provider_surface_uses_no_auth, provider_vendor_id_or_default};
+use crate::provider_surface::{
+    canonical_provider_surface_id, provider_surface_uses_no_auth, provider_vendor_id_or_default,
+};
 
 // --- Type definitions ---
 
@@ -131,6 +133,57 @@ impl CredentialSource {
         })
     }
 
+    /// API-key credential for an HTTP Chat session on `surface_id` that sends
+    /// to `session_url` (#12541).
+    ///
+    /// Settings saves a key under `provider/<vendor>/<profile>`, and every
+    /// OpenAI-compatible vendor (Groq, DeepSeek, OpenRouter, ...) maps to the
+    /// same `generic` vendor there, so the storage location cannot tell which
+    /// surface a key is for. The `configured` endpoint can: Settings records
+    /// the key's binding on it next to the surface and URL the key was saved
+    /// for. The binding therefore applies only to a session on that catalog
+    /// surface whose URL has the same scheme, host, and port. Another surface,
+    /// such as the first HTTP surface the Chat page selects, gets no key.
+    /// Neither does the configured surface once its endpoint points at another
+    /// host, because the session sends to the catalog URL. No-auth surfaces
+    /// need no key.
+    ///
+    /// # Errors
+    /// `ConfigCode::Missing` when no configured binding applies; otherwise the
+    /// errors of [`Self::from_api_key_endpoint_for_profile`].
+    pub fn for_http_session(
+        configured: Option<&ExternalApiEndpoint>,
+        profile_id: Option<&str>,
+        surface_id: &str,
+        session_url: &str,
+        secret_store: Option<Arc<dyn SecretStore>>,
+    ) -> Result<Self, CoreError> {
+        if provider_surface_uses_no_auth(surface_id) {
+            return Ok(Self::NoAuth);
+        }
+        let applies = |endpoint: &&ExternalApiEndpoint| {
+            let bound_surface = endpoint
+                .surface_id
+                .as_deref()
+                .and_then(canonical_provider_surface_id);
+            bound_surface
+                .is_some_and(|bound| canonical_provider_surface_id(surface_id) == Some(bound))
+                && url_origin(&endpoint.endpoint)
+                    .is_some_and(|bound| url_origin(session_url) == Some(bound))
+        };
+        match configured.filter(applies) {
+            Some(endpoint) => {
+                Self::from_api_key_endpoint_for_profile(endpoint, profile_id, secret_store)
+            }
+            None => Err(CoreError::Config {
+                code: crate::error_codes::ConfigCode::Missing,
+                message: format!(
+                    "no saved API key is bound to provider surface '{surface_id}' at this endpoint"
+                ),
+            }),
+        }
+    }
+
     /// Resolve to a bearer token string at request time.
     ///
     /// For `ApiKey`, returns the key directly.
@@ -187,6 +240,14 @@ impl CredentialSource {
             Self::StoredSecret { .. } => None,
         }
     }
+}
+
+/// Lowercased `scheme://authority` of an absolute URL, or `None` without a
+/// scheme. URLs with the same origin send to the same host and port.
+fn url_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    Some(format!("{scheme}://{authority}").to_ascii_lowercase())
 }
 
 impl std::fmt::Debug for CredentialSource {
@@ -407,5 +468,184 @@ mod tests {
         .unwrap();
         let token = source.resolve_bearer_token().await.unwrap();
         assert_eq!(token, "sk-env");
+    }
+
+    // ── #12541: which saved key an HTTP Chat session may send ────────────────
+
+    const OPENAI_DIRECT: &str = "provider_surface.openai.direct_api";
+    const OPENAI_URL: &str = "https://api.openai.com/v1/responses";
+
+    /// `llm_api` as Settings records it after saving a key for `surface_id`:
+    /// the key sits at `provider_api_key_secret_ref(<vendor>, "llm")`.
+    fn settings_llm_api(
+        provider_type: AiProviderType,
+        surface_id: &str,
+        endpoint: &str,
+    ) -> ExternalApiEndpoint {
+        let (namespace, key) =
+            provider_api_key_secret_ref(provider_vendor_id_or_default(provider_type), "llm")
+                .unwrap();
+        ExternalApiEndpoint {
+            endpoint: endpoint.to_string(),
+            api_key: String::new(),
+            model: None,
+            timeout_secs: 30,
+            provider_type,
+            surface_id: Some(surface_id.to_string()),
+            credential: Some(CredentialBinding {
+                auth_mode: CredentialAuthMode::ApiKey,
+                backend_kind: CredentialBackendKind::OsSecretStore,
+                secret_ref: Some(SecretRef {
+                    namespace,
+                    key: key.to_string(),
+                }),
+                projection_enabled: false,
+            }),
+        }
+    }
+
+    fn assert_no_key_applies(result: Result<CredentialSource, CoreError>, surface_id: &str) {
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                CoreError::Config {
+                    code: crate::error_codes::ConfigCode::Missing,
+                    message,
+                } if message.contains(surface_id)
+            ),
+            "no saved key may apply to {surface_id}, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_session_sends_the_key_saved_for_its_surface_and_host() {
+        let store = Arc::new(TestSecretStore::new());
+        store
+            .store("provider/openai/llm", "api_key", "sk-settings")
+            .await
+            .unwrap();
+        let llm_api = settings_llm_api(AiProviderType::OpenAi, OPENAI_DIRECT, OPENAI_URL);
+
+        let source = CredentialSource::for_http_session(
+            Some(&llm_api),
+            Some("llm"),
+            OPENAI_DIRECT,
+            OPENAI_URL,
+            Some(store),
+        )
+        .unwrap();
+        assert_eq!(source.resolve_bearer_token().await.unwrap(), "sk-settings");
+    }
+
+    #[test]
+    fn http_session_matches_the_origin_not_the_path_or_case() {
+        // An endpoint saved before a catalog path change still names the host
+        // the key was saved for.
+        let llm_api = settings_llm_api(
+            AiProviderType::OpenAi,
+            OPENAI_DIRECT,
+            "https://api.openai.com/v1/chat/completions",
+        );
+        let source = CredentialSource::for_http_session(
+            Some(&llm_api),
+            Some("llm"),
+            "Provider_Surface.OpenAI.Direct_API",
+            "HTTPS://API.OPENAI.COM/v1/responses",
+            Some(Arc::new(TestSecretStore::new())),
+        )
+        .unwrap();
+        assert!(
+            matches!(&source, CredentialSource::StoredSecret { namespace, .. } if namespace == "provider/openai/llm"),
+            "got {source:?}"
+        );
+    }
+
+    #[test]
+    fn http_session_gets_no_key_saved_for_another_surface_on_the_same_host() {
+        let llm_api = settings_llm_api(
+            AiProviderType::Generic,
+            "provider_surface.generic.direct_api",
+            "https://api.openai.com/v1/chat/completions",
+        );
+        assert_no_key_applies(
+            CredentialSource::for_http_session(
+                Some(&llm_api),
+                Some("llm"),
+                OPENAI_DIRECT,
+                OPENAI_URL,
+                Some(Arc::new(TestSecretStore::new())),
+            ),
+            OPENAI_DIRECT,
+        );
+    }
+
+    #[test]
+    fn http_session_never_sends_a_groq_key_to_deepseek() {
+        // Both vendors share `provider/generic/llm`; only the binding's
+        // surface tells them apart.
+        let llm_api = settings_llm_api(
+            AiProviderType::Generic,
+            "provider_surface.groq.direct_api",
+            "https://api.groq.com/openai/v1/chat/completions",
+        );
+        let deepseek = "provider_surface.deepseek.direct_api";
+        assert_no_key_applies(
+            CredentialSource::for_http_session(
+                Some(&llm_api),
+                Some("llm"),
+                deepseek,
+                "https://api.deepseek.com/v1/chat/completions",
+                Some(Arc::new(TestSecretStore::new())),
+            ),
+            deepseek,
+        );
+    }
+
+    #[test]
+    fn http_session_gets_no_key_saved_for_a_custom_host() {
+        // The session sends to the catalog URL, not the configured endpoint.
+        let llm_api = settings_llm_api(
+            AiProviderType::OpenAi,
+            OPENAI_DIRECT,
+            "https://llm-proxy.example.com/v1/responses",
+        );
+        assert_no_key_applies(
+            CredentialSource::for_http_session(
+                Some(&llm_api),
+                Some("llm"),
+                OPENAI_DIRECT,
+                OPENAI_URL,
+                Some(Arc::new(TestSecretStore::new())),
+            ),
+            OPENAI_DIRECT,
+        );
+    }
+
+    #[test]
+    fn http_session_without_a_configured_endpoint_has_no_key() {
+        assert_no_key_applies(
+            CredentialSource::for_http_session(
+                None,
+                Some("llm"),
+                OPENAI_DIRECT,
+                OPENAI_URL,
+                Some(Arc::new(TestSecretStore::new())),
+            ),
+            OPENAI_DIRECT,
+        );
+    }
+
+    #[test]
+    fn http_session_on_a_no_auth_surface_needs_no_key() {
+        let source = CredentialSource::for_http_session(
+            None,
+            None,
+            "provider_surface.ollama.local_http",
+            "http://localhost:11434/v1/responses",
+            None,
+        )
+        .unwrap();
+        assert!(matches!(source, CredentialSource::NoAuth), "got {source:?}");
     }
 }

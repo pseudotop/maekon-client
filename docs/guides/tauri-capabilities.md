@@ -89,18 +89,20 @@ Windows:    ["magic-overlay"]
 | `core:window:allow-show` | Show the overlay |
 | `core:window:allow-hide` | Hide the overlay |
 | `notification:default` | Desktop notifications for coaching nudges |
-| Overlay `allow-*` app commands | Suggestions panel, coaching feedback, detection overlay, automation confirmation, Codex approval |
+| Overlay `allow-*` app commands | Suggestions panel, coaching feedback, detection overlay, automation confirmation, Codex approval, AI readiness, main-window navigation, log bridge |
 
 The overlay is intentionally restricted. It cannot resize, drag, close, or
 maximize itself. The `set-ignore-cursor-events` permission is critical --
 it allows the overlay to toggle between interactive (showing UI elements)
 and pass-through (invisible to mouse) modes. Its app commands are limited to
-the commands that `overlay.html` invokes directly:
+the commands that `overlay.html` invokes:
 
 - `toggle_suggestions_panel`, `get_pending_suggestions`, suggestion feedback/history/stats/replay commands
 - `toggle_automation_confirm`, `confirm_automation_command`, `respond_codex_approval`
 - `refresh_detection_overlay`, `toggle_detection_overlay`
 - `get_capture_status`, `dismiss_coaching_message`, `submit_coaching_feedback`
+- `get_feature_capabilities` (AI readiness in the suggestions panel), `show_main_window` (settings navigation)
+- `record_frontend_log` (log bridge installed by `overlay/main.tsx`)
 
 ### `tracking-panel.json` (tracking-panel window)
 
@@ -122,17 +124,39 @@ Windows:    ["tracking-panel"]
 | `core:window:allow-set-size` | Resize the panel dynamically |
 | `core:window:allow-start-dragging` | Allow the user to drag the panel |
 | `core:window:allow-set-position` | Programmatic position control |
-| Tracking-panel `allow-*` app commands | Capture status/actions, focus toggle, suggestions open, main-window open, tray quit |
+| Tracking-panel `allow-*` app commands | Capture status/actions, focus toggle, suggestions open, main-window open, tray quit, context recovery, durable tasks, log bridge |
 
 The tracking panel has `allow-emit` (which the overlay does not) because it
 needs to send user interaction events back to the Rust backend. It also has
 position/size control for its floating-window UX. Its app commands are limited
-to the commands that `tracking-panel.html` invokes directly:
+to the commands that `tracking-panel.html` invokes:
 
 - `get_capture_status`, `get_connection_status`, `get_panel_position`, `save_panel_position`
 - `trigger_manual_capture`, `analyze_current_scene`, `toggle_capture_pause`, `set_indicator_visible`
 - `get_focus_mode_status`, `toggle_focus_mode`, `toggle_suggestions_panel`
 - `show_main_window`, `request_app_quit`
+- `request_current_context_suggestions` ("Find my next step" in `ContextRecoveryPanel`)
+- `list_task_candidates`, `list_todos`, `confirm_task_candidate`, `dismiss_task_candidate`, `transition_todo`
+- `record_frontend_log` (log bridge installed by `tracking-panel/main.tsx`)
+
+`delete_todo` is deliberately absent: `useDurableTasks()` exposes it, but the
+panel never calls it (#12501).
+
+### Frontend parity gate
+
+`crt_prv_ipc_030_main_capability_scopes_all_app_commands` derives each
+secondary window's command set from the frontend sources its page loads and
+requires the capability to allow exactly that set. It follows relative imports
+from the page's module script and counts `invoke`-style calls (including
+aliases such as `{ invoke: inv }`) only inside the declarations the window
+actually imports. A command that the scan reaches but the window never calls
+goes in `WINDOW_SCAN_EXCEPTIONS` with its reason instead of the capability.
+
+The gate exists because the hand-kept window lists it replaced matched the
+capability files while both missed the context-recovery and durable-task
+commands the tracking panel has called since #8925, so the app ACL rejects
+those calls (#12501). The scan is lexical, so a command name passed through a
+variable is invisible to it.
 
 ## Adding a New IPC Command
 
@@ -173,7 +197,9 @@ identifiers used by the capability files. The identifiers are kebab-case
 Add the generated `allow-<command>` permission only to the capability for the
 window that needs it. Today that is normally `default.json` (`main`) only. Do
 not add app-command permissions to `overlay.json` or `tracking-panel.json`
-unless the command is explicitly reviewed for those surfaces.
+unless the command is explicitly reviewed for those surfaces. When code loaded
+by `overlay.html` or `tracking-panel.html` starts calling a command, the
+frontend parity gate fails until that window's capability allows it.
 
 If your command uses a Tauri plugin API (e.g., `notification`, `dialog`,
 `global-shortcut`), also add the corresponding plugin permission to the

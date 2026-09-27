@@ -1,4 +1,6 @@
-//! Tauri IPC command contract tests — CRT-PRV-IPC-001..051.
+#![cfg(test)]
+
+//! Tauri IPC command contract tests — CRT-PRV-IPC-001..053.
 //!
 //! Each `#[test]` asserts that the named IPC command module exists +
 //! declares at least one `#[tauri::command]` function. These are SMOKE /
@@ -14,9 +16,9 @@
 //!   cargo test -p maekon-app --test ipc_command_contract
 
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn commands_dir() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -131,13 +133,6 @@ fn app_command_permission(action: &str, command: &str) -> String {
     format!("{action}-{}", command.replace('_', "-"))
 }
 
-fn app_command_permission_set(commands: &[&str]) -> BTreeSet<String> {
-    commands
-        .iter()
-        .map(|command| app_command_permission("allow", command))
-        .collect()
-}
-
 fn declared_app_command_permissions(capability: &Value) -> BTreeSet<String> {
     capability_permission_ids(capability)
         .into_iter()
@@ -148,43 +143,611 @@ fn declared_app_command_permissions(capability: &Value) -> BTreeSet<String> {
         .collect()
 }
 
-const OVERLAY_APP_COMMANDS: &[&str] = &[
-    "get_suggestions_panel_open",
-    "toggle_suggestions_panel",
-    "toggle_automation_confirm",
-    "get_pending_suggestions",
-    "refresh_detection_overlay",
-    "toggle_detection_overlay",
-    "get_capture_status",
-    "dismiss_coaching_message",
-    "submit_coaching_feedback",
-    "record_suggestion_replay_event",
-    "explain_suggestion_in_chat",
-    "submit_suggestion_feedback",
-    "get_suggestion_history",
-    "get_suggestion_stats",
-    "get_suggestion_daily_stats",
-    "confirm_automation_command",
-    "run_suggestion_action",
-    "respond_codex_approval",
+/// Secondary windows: capability file, window label, and the page the window
+/// builder loads through `WebviewUrl::App(..)` (`magic_overlay/window.rs`,
+/// `magic_overlay/tracking_panel.rs`).
+const SECONDARY_WINDOW_PAGES: &[(&str, &str, &str)] = &[
+    ("overlay.json", "magic-overlay", "overlay.html"),
+    (
+        "tracking-panel.json",
+        "tracking-panel",
+        "tracking-panel.html",
+    ),
 ];
 
-const TRACKING_PANEL_APP_COMMANDS: &[&str] = &[
-    "get_capture_status",
-    "get_connection_status",
-    "get_panel_position",
-    "save_panel_position",
-    "trigger_manual_capture",
-    "analyze_current_scene",
-    "get_focus_mode_status",
-    "toggle_focus_mode",
-    "get_pending_suggestion_count",
-    "toggle_suggestions_panel",
-    "show_main_window",
-    "request_app_quit",
-    "toggle_capture_pause",
-    "set_indicator_visible",
-];
+/// App commands the frontend scan reaches from a window's page although the
+/// window never calls them. Granting them instead would widen the window's
+/// IPC surface without a caller (#6708), so each one carries its reason.
+const WINDOW_SCAN_EXCEPTIONS: &[(&str, &str, &str)] = &[(
+    "tracking-panel",
+    "delete_todo",
+    "useDurableTasks() also returns deleteTodo; ContextRecoveryPanel never calls it",
+)];
+
+fn frontend_dir() -> PathBuf {
+    repo_dir()
+        .join("crates")
+        .join("maekon-web")
+        .join("frontend")
+}
+
+/// Module entry of a frontend page: the `src` of its `<script type="module">`.
+fn page_module_entry(page: &str) -> PathBuf {
+    let path = frontend_dir().join(page);
+    let html = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+    let source = html
+        .split("<script type=\"module\" src=\"")
+        .nth(1)
+        .and_then(|tail| tail.split('"').next())
+        .unwrap_or_else(|| panic!("{page} must load its app through a module script"));
+    frontend_dir().join(source.trim_start_matches('/'))
+}
+
+/// Static scan of the frontend a window loads (#12501).
+///
+/// Tauri denies an app command whose `allow-*` permission is missing from the
+/// calling window's capability, even when the command compiles, registers,
+/// and is allowed for `main`. The hand-kept window lists this scan replaced
+/// agreed with the capability files while both missed the context-recovery
+/// and durable-task commands the tracking panel had started to call.
+///
+/// The scan follows relative imports from the page's module entry and
+/// attributes each app-command call to the top-level declaration containing
+/// it, so a window that imports one function from a shared API module does not
+/// inherit every command of that module. It is a lexical scan, not a
+/// TypeScript compiler: a command name passed through a variable is invisible
+/// to it.
+mod frontend_scan {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Component, Path, PathBuf};
+
+    const ALL: &str = "*";
+
+    pub type Reader<'a> = &'a dyn Fn(&Path) -> Option<String>;
+
+    struct Block {
+        name: Option<String>,
+        default_export: bool,
+        text: String,
+    }
+
+    enum Binding {
+        /// `import { a as b }` (imported `a`, local `b`); a default import
+        /// imports `default`, `import * as ns` imports `*`.
+        Local { imported: String, local: String },
+        /// Side-effect or dynamic import: the whole module runs.
+        Whole,
+        /// `export { a as b } from` / `export * from`.
+        ReExport { imported: String, exported: String },
+    }
+
+    struct Import {
+        specifier: String,
+        binding: Binding,
+    }
+
+    struct Module {
+        blocks: Vec<Block>,
+        imports: Vec<Import>,
+        aliases: BTreeSet<String>,
+    }
+
+    /// App commands invoked by the code reachable from `entry`.
+    pub fn scan(entry: &Path, commands: &BTreeSet<String>, read: Reader<'_>) -> BTreeSet<String> {
+        let mut modules: BTreeMap<PathBuf, Module> = BTreeMap::new();
+        let mut used: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+        let mut queue = vec![(entry.to_path_buf(), BTreeSet::from([ALL.to_owned()]))];
+        while let Some((path, names)) = queue.pop() {
+            let first_visit = !used.contains_key(&path);
+            let current = used.entry(path.clone()).or_default();
+            if !first_visit && names.is_subset(current) {
+                continue;
+            }
+            current.extend(names);
+            let current = current.clone();
+            if !modules.contains_key(&path) {
+                let Some(source) = read(&path) else {
+                    continue;
+                };
+                modules.insert(path.clone(), parse_module(&source));
+            }
+            let module = &modules[&path];
+            let reachable: String = selected_blocks(module, &current)
+                .into_iter()
+                .map(|block| block.text.as_str())
+                .collect();
+            for import in &module.imports {
+                let Some(target) = resolve(&path, &import.specifier, read) else {
+                    continue;
+                };
+                // Importing a module runs its anonymous top-level code even
+                // when no binding is used, so an unused binding still loads it
+                // with an empty request.
+                let request = match &import.binding {
+                    Binding::Whole => BTreeSet::from([ALL.to_owned()]),
+                    Binding::Local { imported, local } if mentions(&reachable, local) => {
+                        BTreeSet::from([imported.clone()])
+                    }
+                    Binding::Local { .. } => BTreeSet::new(),
+                    Binding::ReExport { imported, .. } if current.contains(ALL) => {
+                        BTreeSet::from([imported.clone()])
+                    }
+                    Binding::ReExport { imported, exported } if exported == ALL => {
+                        if imported == ALL {
+                            current.clone()
+                        } else {
+                            continue;
+                        }
+                    }
+                    Binding::ReExport { imported, exported } if current.contains(exported) => {
+                        BTreeSet::from([imported.clone()])
+                    }
+                    Binding::ReExport { .. } => continue,
+                };
+                queue.push((target, request));
+            }
+        }
+
+        let mut invoked = BTreeSet::new();
+        for (path, names) in &used {
+            let Some(module) = modules.get(path) else {
+                continue;
+            };
+            for block in selected_blocks(module, names) {
+                invoked.extend(invoked_commands(&block.text, &module.aliases, commands));
+            }
+        }
+        invoked
+    }
+
+    /// Blocks that run when `used` names are imported: the requested
+    /// declarations, anonymous top-level code, and every top-level
+    /// declaration those mention (helpers, constants, exported siblings).
+    fn selected_blocks<'m>(module: &'m Module, used: &BTreeSet<String>) -> Vec<&'m Block> {
+        let everything = used.contains(ALL);
+        let mut pending: Vec<usize> = module
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| {
+                everything
+                    || (block.name.is_none() && !block.default_export)
+                    || (block.default_export && used.contains("default"))
+                    || block.name.as_ref().is_some_and(|name| used.contains(name))
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let mut selected: BTreeSet<usize> = pending.iter().copied().collect();
+        while let Some(index) = pending.pop() {
+            let text = &module.blocks[index].text;
+            for (other, block) in module.blocks.iter().enumerate() {
+                let referenced = block.name.as_ref().is_some_and(|name| mentions(text, name));
+                if referenced && selected.insert(other) {
+                    pending.push(other);
+                }
+            }
+        }
+        selected
+            .into_iter()
+            .map(|index| &module.blocks[index])
+            .collect()
+    }
+
+    fn parse_module(source: &str) -> Module {
+        let clean = strip_comments(source);
+        let lines: Vec<&str> = clean.lines().collect();
+        let mut imports = Vec::new();
+        let mut body = Vec::new();
+        let mut index = 0;
+        while index < lines.len() {
+            if is_module_statement(lines[index]) {
+                let mut statement = lines[index].to_owned();
+                let mut end = index;
+                while !module_statement_complete(&statement) && end + 1 < lines.len() {
+                    end += 1;
+                    statement.push('\n');
+                    statement.push_str(lines[end]);
+                }
+                parse_module_statement(&statement, &mut imports);
+                index = end + 1;
+                continue;
+            }
+            body.push(lines[index]);
+            index += 1;
+        }
+        let mut rest = clean.as_str();
+        while let Some(offset) = rest.find("import(") {
+            rest = &rest[offset + "import(".len()..];
+            if let Some(specifier) = leading_string(rest.trim_start()) {
+                imports.push(Import {
+                    specifier,
+                    binding: Binding::Whole,
+                });
+            }
+        }
+        Module {
+            blocks: split_blocks(&body),
+            imports,
+            aliases: invoke_aliases(&clean),
+        }
+    }
+
+    /// `import ...` and `export {...}` / `export * ...` statements.
+    fn is_module_statement(line: &str) -> bool {
+        let import_statement = line
+            .strip_prefix("import")
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|next| next.is_whitespace() || matches!(next, '{' | '*' | '\'' | '"'));
+        import_statement
+            || ["export {", "export *", "export type {", "export type *"]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+    }
+
+    fn module_statement_complete(statement: &str) -> bool {
+        from_specifier(statement).is_some()
+            || statement
+                .strip_prefix("import")
+                .is_some_and(|rest| leading_string(rest.trim_start()).is_some())
+            || (statement.starts_with("export")
+                && statement.contains('}')
+                && !statement.contains(" from"))
+    }
+
+    fn parse_module_statement(statement: &str, imports: &mut Vec<Import>) {
+        let (is_import, rest) = match statement.strip_prefix("import") {
+            Some(rest) => (true, rest.trim_start()),
+            None => (false, statement.trim_start_matches("export").trim_start()),
+        };
+        if rest.starts_with("type ") || rest.starts_with("type{") {
+            return;
+        }
+        let Some(specifier) = from_specifier(statement) else {
+            if is_import {
+                if let Some(specifier) = leading_string(rest) {
+                    imports.push(Import {
+                        specifier,
+                        binding: Binding::Whole,
+                    });
+                }
+            }
+            return;
+        };
+        let clause = rest
+            .rsplit_once(" from")
+            .map_or(rest, |(clause, _)| clause)
+            .trim();
+        let mut push = |binding| {
+            imports.push(Import {
+                specifier: specifier.clone(),
+                binding,
+            })
+        };
+        if let Some(namespace) = clause.strip_prefix('*') {
+            let alias = namespace.trim().strip_prefix("as ").map(str::trim);
+            push(if is_import {
+                Binding::Local {
+                    imported: ALL.to_owned(),
+                    local: alias.unwrap_or_default().to_owned(),
+                }
+            } else {
+                Binding::ReExport {
+                    imported: ALL.to_owned(),
+                    exported: alias.unwrap_or(ALL).to_owned(),
+                }
+            });
+            return;
+        }
+        let (default_part, named_part) = match clause.split_once('{') {
+            Some((head, tail)) => (head, tail.split('}').next().unwrap_or_default()),
+            None => (clause, ""),
+        };
+        let default_local = default_part.trim().trim_end_matches(',').trim();
+        if is_import && !default_local.is_empty() {
+            push(Binding::Local {
+                imported: "default".to_owned(),
+                local: default_local.to_owned(),
+            });
+        }
+        for part in named_part.split(',').map(str::trim) {
+            if part.is_empty() || part.starts_with("type ") {
+                continue;
+            }
+            let (imported, local) = part
+                .split_once(" as ")
+                .map_or((part, part), |(imported, local)| {
+                    (imported.trim(), local.trim())
+                });
+            push(if is_import {
+                Binding::Local {
+                    imported: imported.to_owned(),
+                    local: local.to_owned(),
+                }
+            } else {
+                Binding::ReExport {
+                    imported: imported.to_owned(),
+                    exported: local.to_owned(),
+                }
+            });
+        }
+    }
+
+    /// The module specifier after the last `from` keyword.
+    fn from_specifier(statement: &str) -> Option<String> {
+        let (_, tail) = statement.rsplit_once("from")?;
+        leading_string(tail.trim_start())
+    }
+
+    /// Contents of a string literal starting at `text`.
+    fn leading_string(text: &str) -> Option<String> {
+        let quote = text.chars().next().filter(|c| matches!(c, '\'' | '"'))?;
+        let body = &text[1..];
+        body.find(quote).map(|end| body[..end].to_owned())
+    }
+
+    /// Top-level declarations start at column 0 in the formatted sources;
+    /// everything else continues the current block.
+    fn split_blocks(lines: &[&str]) -> Vec<Block> {
+        let mut blocks = vec![Block {
+            name: None,
+            default_export: false,
+            text: String::new(),
+        }];
+        for line in lines {
+            if let Some((name, default_export)) = declaration(line) {
+                blocks.push(Block {
+                    name,
+                    default_export,
+                    text: String::new(),
+                });
+            }
+            let block = blocks.last_mut().expect("preamble block exists");
+            block.text.push_str(line);
+            block.text.push('\n');
+        }
+        blocks
+    }
+
+    fn declaration(line: &str) -> Option<(Option<String>, bool)> {
+        if line.starts_with(char::is_whitespace) {
+            return None;
+        }
+        let mut tokens = line.split_whitespace().peekable();
+        let exported = tokens.next_if_eq(&"export").is_some();
+        let default_export = exported && tokens.next_if_eq(&"default").is_some();
+        while tokens
+            .next_if(|token| matches!(*token, "declare" | "abstract" | "async"))
+            .is_some()
+        {}
+        let keyword = tokens.peek().copied().unwrap_or_default();
+        let declares = matches!(
+            keyword,
+            "function"
+                | "function*"
+                | "const"
+                | "let"
+                | "var"
+                | "class"
+                | "type"
+                | "interface"
+                | "enum"
+        );
+        if !declares {
+            return exported.then_some((None, default_export));
+        }
+        tokens.next();
+        let name: String = tokens
+            .next()
+            .unwrap_or_default()
+            .trim_start_matches('*')
+            .chars()
+            .take_while(|c| is_identifier_char(*c))
+            .collect();
+        Some(((!name.is_empty()).then_some(name), default_export))
+    }
+
+    /// Names bound to Tauri's `invoke`: `{ invoke: inv }` and `invoke as inv`.
+    fn invoke_aliases(source: &str) -> BTreeSet<String> {
+        let mut aliases = BTreeSet::new();
+        for (offset, _) in source.match_indices("invoke") {
+            let preceded = source[..offset]
+                .chars()
+                .next_back()
+                .is_some_and(is_identifier_char);
+            if preceded {
+                continue;
+            }
+            let rest = source[offset + "invoke".len()..].trim_start();
+            let alias = rest
+                .strip_prefix(':')
+                .or_else(|| rest.strip_prefix("as "))
+                .map(|tail| {
+                    tail.trim_start()
+                        .chars()
+                        .take_while(|c| is_identifier_char(*c))
+                        .collect::<String>()
+                });
+            if let Some(alias) = alias.filter(|alias| !alias.is_empty()) {
+                aliases.insert(alias);
+            }
+        }
+        aliases
+    }
+
+    fn invoked_commands(
+        text: &str,
+        aliases: &BTreeSet<String>,
+        commands: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let mut invoked = BTreeSet::new();
+        for command in commands {
+            for quote in ['\'', '"', '`'] {
+                let literal = format!("{quote}{command}{quote}");
+                for (offset, _) in text.match_indices(&literal) {
+                    let is_invoke = callee_before(text, offset).is_some_and(|callee| {
+                        callee.to_ascii_lowercase().contains("invoke") || aliases.contains(&callee)
+                    });
+                    if is_invoke {
+                        invoked.insert(command.clone());
+                    }
+                }
+            }
+        }
+        invoked
+    }
+
+    /// The callee receiving the literal at `offset` as its first argument:
+    /// `name('x')`, `obj.name<A<B>>(\n 'x')`.
+    fn callee_before(text: &str, offset: usize) -> Option<String> {
+        let bytes = text.as_bytes();
+        let mut index = last_non_space_before(bytes, offset)?;
+        if bytes[index] != b'(' {
+            return None;
+        }
+        index = last_non_space_before(bytes, index)?;
+        if bytes[index] == b'>' {
+            let mut depth = 0usize;
+            loop {
+                match bytes[index] {
+                    b'>' => depth += 1,
+                    b'<' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                index = index.checked_sub(1)?;
+            }
+            index = last_non_space_before(bytes, index)?;
+        }
+        let end = index + 1;
+        let begin = bytes[..end]
+            .iter()
+            .rposition(|byte| !is_identifier_byte(*byte))
+            .map_or(0, |position| position + 1);
+        (begin < end).then(|| text[begin..end].to_owned())
+    }
+
+    fn last_non_space_before(bytes: &[u8], before: usize) -> Option<usize> {
+        bytes[..before]
+            .iter()
+            .rposition(|byte| !byte.is_ascii_whitespace())
+    }
+
+    /// Replaces `//` and `/* */` comments with whitespace, leaving strings.
+    fn strip_comments(source: &str) -> String {
+        let chars: Vec<char> = source.chars().collect();
+        let mut clean = String::with_capacity(source.len());
+        let mut index = 0;
+        let mut quote: Option<char> = None;
+        while index < chars.len() {
+            let current = chars[index];
+            let next = chars.get(index + 1).copied();
+            if let Some(open) = quote {
+                clean.push(current);
+                if current == '\\' {
+                    if let Some(escaped) = next {
+                        clean.push(escaped);
+                        index += 1;
+                    }
+                } else if current == open || (current == '\n' && open != '`') {
+                    quote = None;
+                }
+                index += 1;
+                continue;
+            }
+            match (current, next) {
+                ('/', Some('/')) => {
+                    while index < chars.len() && chars[index] != '\n' {
+                        index += 1;
+                    }
+                }
+                ('/', Some('*')) => {
+                    index += 2;
+                    while index < chars.len()
+                        && !(chars[index] == '*' && chars.get(index + 1) == Some(&'/'))
+                    {
+                        if chars[index] == '\n' {
+                            clean.push('\n');
+                        }
+                        index += 1;
+                    }
+                    index += 2;
+                }
+                _ => {
+                    if matches!(current, '\'' | '"' | '`') {
+                        quote = Some(current);
+                    }
+                    clean.push(current);
+                    index += 1;
+                }
+            }
+        }
+        clean
+    }
+
+    fn resolve(from: &Path, specifier: &str, read: Reader<'_>) -> Option<PathBuf> {
+        if !(specifier.starts_with("./") || specifier.starts_with("../")) {
+            return None;
+        }
+        let joined = normalize(&from.parent()?.join(specifier));
+        let mut candidates = Vec::new();
+        if matches!(
+            joined.extension().and_then(|ext| ext.to_str()),
+            Some("ts" | "tsx")
+        ) {
+            candidates.push(joined.clone());
+        }
+        for suffix in [".ts", ".tsx"] {
+            candidates.push(PathBuf::from(format!("{}{suffix}", joined.display())));
+        }
+        for index in ["index.ts", "index.tsx"] {
+            candidates.push(joined.join(index));
+        }
+        candidates
+            .into_iter()
+            .find(|candidate| !is_test_source(candidate) && read(candidate).is_some())
+    }
+
+    fn normalize(path: &Path) -> PathBuf {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    normalized.pop();
+                }
+                other => normalized.push(other.as_os_str()),
+            }
+        }
+        normalized
+    }
+
+    fn is_test_source(path: &Path) -> bool {
+        let text = path.to_string_lossy();
+        text.contains(".test.") || text.contains(".spec.") || text.contains("__tests__")
+    }
+
+    fn mentions(text: &str, name: &str) -> bool {
+        !name.is_empty()
+            && text.match_indices(name).any(|(offset, _)| {
+                let before = text[..offset].chars().next_back();
+                let after = text[offset + name.len()..].chars().next();
+                !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
+            })
+    }
+
+    fn is_identifier_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '_' || c == '$'
+    }
+
+    fn is_identifier_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+    }
+}
 
 /// Some modules under commands/ are pure helpers (no #[tauri::command] —
 /// e.g., generate_external_cert.rs is a build-time helper, suggestion_parser.rs
@@ -210,6 +773,7 @@ const HELPER_MODULES: &[&str] = &[
 /// test above AND its module name here, or this enumeration test fails.
 const COVERED_COMMAND_MODULES: &[&str] = &[
     "ai_session",
+    "ai_verification",
     "analysis",
     "assignment_email_draft",
     "audio",
@@ -548,29 +1112,132 @@ fn crt_prv_ipc_030_main_capability_scopes_all_app_commands() {
         );
     }
 
-    for command in OVERLAY_APP_COMMANDS
-        .iter()
-        .chain(TRACKING_PANEL_APP_COMMANDS)
-    {
-        assert!(
-            commands.contains(*command),
-            "window-scoped command {command} must exist in build.rs APP_COMMANDS"
+    let read = |path: &Path| fs::read_to_string(path).ok();
+    let mut violations = Vec::new();
+    for (capability_file, window, page) in SECONDARY_WINDOW_PAGES {
+        let capability = read_capability(capability_file);
+        assert_eq!(
+            capability_windows(&capability),
+            BTreeSet::from([(*window).to_owned()]),
+            "{capability_file} must only target the {window} window"
         );
+
+        let invoked = frontend_scan::scan(&page_module_entry(page), &commands, &read);
+        let exceptions: BTreeSet<String> = WINDOW_SCAN_EXCEPTIONS
+            .iter()
+            .filter(|(exception_window, _, _)| exception_window == window)
+            .map(|(_, command, _)| (*command).to_owned())
+            .collect();
+        let stale: BTreeSet<&String> = exceptions.difference(&invoked).collect();
+        assert!(
+            stale.is_empty(),
+            "{window} scan exceptions are no longer reached from {page}: {stale:?}"
+        );
+
+        let expected: BTreeSet<String> = invoked
+            .difference(&exceptions)
+            .map(|command| app_command_permission("allow", command))
+            .collect();
+        let declared = declared_app_command_permissions(&capability);
+        let missing: BTreeSet<&String> = expected.difference(&declared).collect();
+        let not_invoked: BTreeSet<&String> = declared.difference(&expected).collect();
+        if !missing.is_empty() || !not_invoked.is_empty() {
+            violations.push(format!(
+                "{capability_file}: missing {missing:?}; not invoked by {page} {not_invoked:?}"
+            ));
+        }
     }
-
-    let overlay = read_capability("overlay.json");
-    assert_eq!(
-        declared_app_command_permissions(&overlay),
-        app_command_permission_set(OVERLAY_APP_COMMANDS),
-        "overlay capability must allow exactly the app commands used by overlay.html"
+    assert!(
+        violations.is_empty(),
+        "secondary window capabilities must allow exactly the app commands their page \
+         invokes; Tauri denies the missing ones at runtime:\n{}",
+        violations.join("\n")
     );
+}
 
-    let tracking_panel = read_capability("tracking-panel.json");
-    assert_eq!(
-        declared_app_command_permissions(&tracking_panel),
-        app_command_permission_set(TRACKING_PANEL_APP_COMMANDS),
-        "tracking-panel capability must allow exactly the app commands used by tracking-panel.html"
-    );
+/// Positive and negative controls for the frontend scan, on an in-memory tree.
+#[test]
+fn crt_prv_ipc_030_frontend_scan_follows_used_code_only() {
+    let files = BTreeMap::from([
+        (
+            "/fe/src/win/main.tsx",
+            "import { App } from './App'\nimport '../boot'\nimport './styles.css'\n\n\
+             createRoot(root).render(<App />)\n",
+        ),
+        (
+            "/fe/src/win/App.tsx",
+            "import {\n  used,\n  importedButUnused,\n} from '../api/client'\n\
+             import { install } from '../logging/bridge'\n\
+             import { neverCalled } from '../api/topLevel'\n\
+             import { invoke as call } from '@tauri-apps/api/core'\n\n\
+             export function App() {\n  // invoke('cmd_in_comment')\n\
+             \x20 const { invoke: inv } = window.tauri\n\
+             \x20 void inv<Snapshot<Map<string, number>>>(\n    'cmd_alias',\n  )\n\
+             \x20 void call('cmd_import_alias')\n  install()\n  return used()\n}\n",
+        ),
+        (
+            "/fe/src/api/client.ts",
+            "export async function used() {\n  return tauriInvoke<T>('cmd_used')\n}\n\n\
+             export async function importedButUnused() {\n  return tauriInvoke('cmd_unused')\n}\n\n\
+             export function neverImported() {\n  return tauriInvoke('cmd_never_imported')\n}\n",
+        ),
+        (
+            "/fe/src/logging/bridge.ts",
+            "export function install() {\n  send()\n}\n\n\
+             function send() {\n  return invoke('cmd_helper')\n}\n\n\
+             export function other() {\n  return invoke('cmd_other')\n}\n",
+        ),
+        (
+            "/fe/src/api/topLevel.ts",
+            "invoke('cmd_top_level')\n\nexport function neverCalled() {\n  return invoke('cmd_never_called')\n}\n",
+        ),
+        (
+            "/fe/src/boot.ts",
+            "invoke('cmd_side_effect')\nexport const label = describe('cmd_not_invoke')\n",
+        ),
+        (
+            "/fe/src/win/App.test.tsx",
+            "invoke('cmd_test_only')\n",
+        ),
+    ]);
+    let read = |path: &Path| {
+        files
+            .get(path.to_str().expect("utf-8 test path"))
+            .map(|source| (*source).to_owned())
+    };
+    let commands: BTreeSet<String> = [
+        "cmd_in_comment",
+        "cmd_alias",
+        "cmd_import_alias",
+        "cmd_used",
+        "cmd_unused",
+        "cmd_never_imported",
+        "cmd_helper",
+        "cmd_other",
+        "cmd_side_effect",
+        "cmd_not_invoke",
+        "cmd_test_only",
+        "cmd_top_level",
+        "cmd_never_called",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+
+    let invoked = frontend_scan::scan(Path::new("/fe/src/win/main.tsx"), &commands, &read);
+
+    let expected: BTreeSet<String> = [
+        "cmd_alias",
+        "cmd_import_alias",
+        "cmd_used",
+        "cmd_helper",
+        "cmd_side_effect",
+        "cmd_top_level",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(invoked, expected);
 }
 
 #[test]
@@ -882,8 +1549,8 @@ fn crt_prv_ipc_050_console_handoff_takes_no_authority_argument() {
     assert_eq!(src.matches("#[tauri::command]").count(), 1);
 }
 
-/// #10358: standalone XLSX generation keeps filesystem authority in native
-/// dialogs, rejects output aliases, and never accepts a bearer through IPC.
+/// #11120: standalone XLSX generation accepts only a persisted assignment
+/// receipt and keeps all remaining authority in server/native boundaries.
 #[test]
 fn crt_prv_ipc_051_tmd_xlsx_keeps_native_file_authority() {
     assert_command_module("tmd_xlsx");
@@ -902,6 +1569,9 @@ fn crt_prv_ipc_051_tmd_xlsx_keeps_native_file_authority() {
         "input_path",
         "output_path",
         "template_path",
+        "organization_id",
+        "mapping_id",
+        "assignment_id",
         "bearer",
         "token",
     ] {
@@ -910,6 +1580,24 @@ fn crt_prv_ipc_051_tmd_xlsx_keeps_native_file_authority() {
             "TMD XLSX IPC must not accept `{forbidden}`"
         );
     }
+    assert!(
+        signature.contains("assignment_receipt_id"),
+        "TMD XLSX IPC must accept the persisted assignment receipt"
+    );
+    let produced_flow = src
+        .split("XlsxFillOutcome::Written")
+        .nth(1)
+        .expect("TMD XLSX command must retain the produced flow");
+    let persist_index = produced_flow
+        .find("persist_atomic(")
+        .expect("produced flow must atomically persist the workbook");
+    let receipt_index = produced_flow
+        .find(".append_pending(")
+        .expect("produced flow must append a durable local receipt");
+    assert!(
+        persist_index < receipt_index,
+        "a produced receipt must not exist before the workbook is persisted"
+    );
     for required in [
         ".blocking_pick_file()",
         ".blocking_save_file()",
@@ -922,6 +1610,150 @@ fn crt_prv_ipc_051_tmd_xlsx_keeps_native_file_authority() {
         );
     }
     assert_eq!(src.matches("#[tauri::command]").count(), 1);
+}
+
+/// #12530: the HTTP Chat verification sends only its own fixed message. The
+/// WebView can start the check, but it cannot choose what is sent, to which
+/// surface or model, with which key, or which record is written.
+#[test]
+fn crt_prv_ipc_052_chat_http_verification_takes_no_content_argument() {
+    assert_command_module("ai_verification");
+    let path = commands_dir().join("ai_verification.rs");
+    let src = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+    let signature = src
+        .split("pub async fn verify_chat_http_provider(")
+        .nth(1)
+        .expect("ai_verification must declare verify_chat_http_provider")
+        .split(") ->")
+        .next()
+        .expect("the command signature must close");
+
+    for forbidden in [
+        "message",
+        "prompt",
+        "content",
+        "attachment",
+        "surface",
+        "model",
+        "endpoint",
+        "key",
+        "token",
+        "fingerprint",
+        "path",
+    ] {
+        assert!(
+            !signature.contains(forbidden),
+            "HTTP Chat verification IPC must not accept `{forbidden}`"
+        );
+    }
+    assert_eq!(src.matches("#[command]").count(), 1);
+}
+
+/// WBS assignee commands the overlay invokes through `api/wbsAssignee.ts`.
+const WBS_ASSIGNEE_COMMANDS: [&str; 7] = [
+    "wbs_offer_document_consent",
+    "wbs_open_session",
+    "wbs_recommend",
+    "wbs_confirm_candidate",
+    "wbs_execute",
+    "wbs_read_execution",
+    "wbs_cancel_session",
+];
+
+/// Quoted `wbs_*` literals in a source file, such as the first argument of
+/// `invoke<T>('wbs_execute', …)`.
+fn quoted_wbs_command_literals(src: &str) -> BTreeSet<String> {
+    let mut literals = BTreeSet::new();
+    for quote in ['\'', '"', '`'] {
+        for (offset, _) in src.match_indices(&format!("{quote}wbs_")) {
+            let body = &src[offset + 1..];
+            let literal: String = body
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                .collect();
+            if body[literal.len()..].starts_with(quote) {
+                literals.insert(literal);
+            }
+        }
+    }
+    literals
+}
+
+/// #12700: the overlay shows its WBS toggle and panel only when the feature
+/// capability snapshot reports `wbs_assignee_available`, which comes from
+/// `WBS_ASSIGNEE_COMMANDS_REGISTERED`. That constant must follow the real
+/// registration. With the commands missing, every WBS call fails as an
+/// unknown command; with them registered and the flag off, a working feature
+/// stays hidden. The frontend scan in `crt_prv_ipc_030` only sees registered
+/// commands, so it cannot catch the first case.
+#[test]
+fn crt_prv_ipc_053_wbs_capability_flag_matches_command_registration() {
+    let api_path = frontend_dir()
+        .join("src")
+        .join("api")
+        .join("wbsAssignee.ts");
+    let api_src = fs::read_to_string(&api_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", api_path.display(), e));
+    let expected: BTreeSet<String> = WBS_ASSIGNEE_COMMANDS
+        .iter()
+        .map(|command| (*command).to_owned())
+        .collect();
+    assert_eq!(
+        quoted_wbs_command_literals(&api_src),
+        expected,
+        "WBS_ASSIGNEE_COMMANDS must list exactly the commands wbsAssignee.ts invokes"
+    );
+
+    let lib_path = src_dir().join("lib.rs");
+    let lib_src = fs::read_to_string(&lib_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", lib_path.display(), e));
+    let handler = extract_invoke_handler_commands(&lib_src);
+    let build_path = manifest_dir().join("build.rs");
+    let build_src = fs::read_to_string(&build_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", build_path.display(), e));
+    let manifest = extract_build_manifest_commands(&build_src);
+
+    let partially: BTreeSet<&str> = WBS_ASSIGNEE_COMMANDS
+        .iter()
+        .copied()
+        .filter(|command| handler.contains(*command) || manifest.contains(*command))
+        .collect();
+    let registered = WBS_ASSIGNEE_COMMANDS
+        .iter()
+        .all(|command| handler.contains(*command) && manifest.contains(*command));
+    assert!(
+        partially.is_empty() || registered,
+        "WBS assignee commands must be registered together in lib.rs and build.rs; \
+         found only: {partially:?}"
+    );
+
+    let capabilities_path = src_dir().join("feature_capabilities.rs");
+    let capabilities_src = fs::read_to_string(&capabilities_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", capabilities_path.display(), e));
+    let flag = capabilities_src
+        .split("const WBS_ASSIGNEE_COMMANDS_REGISTERED: bool = ")
+        .nth(1)
+        .and_then(|tail| tail.split(';').next())
+        .map(str::trim)
+        .expect("feature_capabilities.rs must declare WBS_ASSIGNEE_COMMANDS_REGISTERED");
+    let flag = match flag {
+        "true" => true,
+        "false" => false,
+        other => panic!("WBS_ASSIGNEE_COMMANDS_REGISTERED must be a bool literal, found {other:?}"),
+    };
+    assert_eq!(
+        flag, registered,
+        "WBS_ASSIGNEE_COMMANDS_REGISTERED must equal whether lib.rs and build.rs register \
+         the WBS assignee commands"
+    );
+    assert_eq!(
+        capabilities_src
+            .matches("wbs_assignee_available: WBS_ASSIGNEE_COMMANDS_REGISTERED")
+            .count(),
+        2,
+        "both FeatureCapabilitySnapshot builder paths must report the registration constant"
+    );
 }
 
 /// #8199: native fullscreen-policy diagnostics must remain debug-gated rather

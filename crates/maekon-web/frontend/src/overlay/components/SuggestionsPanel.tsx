@@ -2,15 +2,18 @@ import { Loader2, Lock, RefreshCw } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { AiReadinessNotice } from '../../components/AiReadinessNotice'
+import { useAiReadinessSnapshot } from '../../hooks/useAiReadinessSnapshot'
 import { translateError, type WireErrorLocale } from '../../i18n/translateError'
 import { iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { navigateMainWindow } from '../mainWindowNavigation'
 import { buildSuggestionReplayEvent, recordSuggestionReplayEvent } from '../suggestionReplay'
 import type { SuggestionGuiAnchorPayload, SuggestionSurfacePlacement, SuggestionViewDto } from '../types'
 import { SuggestionHistory } from './SuggestionHistory'
 import { SuggestionItem } from './SuggestionItem'
 import { SuggestionReplayTrail } from './SuggestionReplayTrail'
-import { SuggestionStats } from './SuggestionStats'
+import { type LocalAnalysisStatus, LocalAnalysisStatusNotice, SuggestionStats } from './SuggestionStats'
 import { showToast } from './Toast'
 
 // ADR-019 Follow-up #3: Route through translateError to preserve and localize the IpcError wire code.
@@ -113,6 +116,8 @@ export function SuggestionsPanel({
   anchor,
 }: SuggestionsPanelProps) {
   const { t, i18n } = useTranslation()
+  const aiReadinessSnapshot = useAiReadinessSnapshot()
+  const suggestionLoadError = t('suggestions.loadError', 'Could not load suggestions.')
   // ADR-019 Follow-up #3: Map the current UI locale to the wire-error locale (same pattern as BugReportWizard).
   const errorLocale: WireErrorLocale = i18n.language?.startsWith('ko') ? 'ko' : 'en'
   const [error, setError] = useState<string | null>(null)
@@ -120,6 +125,19 @@ export function SuggestionsPanel({
   const refreshingRef = useRef(false)
   const recordedProposalKeyRef = useRef<string | null>(null)
   const [activeTab, setActiveTab] = useState<'active' | 'history' | 'stats'>('active')
+  const [latestLocalAnalysis, setLatestLocalAnalysis] = useState<LocalAnalysisStatus | null>(null)
+
+  const handleReadinessAction = useCallback(
+    async (route: string) => {
+      try {
+        await navigateMainWindow(route)
+        onClose()
+      } catch (e) {
+        showToast(errorMessage(e, errorLocale), 'error')
+      }
+    },
+    [errorLocale, onClose],
+  )
 
   // Source filter with localStorage persistence
   const [sourceFilter, setSourceFilter] = useState<Set<string>>(() => {
@@ -171,14 +189,21 @@ export function SuggestionsPanel({
     try {
       await Promise.resolve(onRefresh())
       setError(null)
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        const stats = await invoke<{ latest_local_analysis?: LocalAnalysisStatus | null }>('get_suggestion_stats')
+        setLatestLocalAnalysis(stats?.latest_local_analysis ?? null)
+      } catch (_e) {
+        console.warn('Local analysis status refresh failed')
+      }
     } catch (_e) {
       console.warn('SuggestionsPanel refresh failed')
-      setError(t('suggestions.loadError', 'Could not load suggestions.'))
+      setError(suggestionLoadError)
     } finally {
       refreshingRef.current = false
       setRefreshing(false)
     }
-  }, [onRefresh, t])
+  }, [onRefresh, suggestionLoadError])
 
   useEffect(() => {
     if (!open) return
@@ -265,6 +290,14 @@ export function SuggestionsPanel({
           open ? 'translate-y-0 opacity-100' : 'translate-y-[calc(100%+2rem)] opacity-0',
         )}
       >
+        <AiReadinessNotice
+          snapshot={aiReadinessSnapshot}
+          capabilityIds={['ocr.suggestion_analysis']}
+          onAction={(route) => void handleReadinessAction(route)}
+          compact
+          className="mb-2"
+        />
+        <LocalAnalysisStatusNotice status={latestLocalAnalysis} />
         <div className="flex items-center gap-3">
           <span className="shrink-0 rounded-full border border-muted bg-surface-muted px-2 py-1 text-content-secondary text-xs">
             {breadcrumb ?? t('suggestions.currentTarget', 'Current target')}
@@ -344,6 +377,18 @@ export function SuggestionsPanel({
         >
           &times;
         </button>
+      </div>
+
+      <AiReadinessNotice
+        snapshot={aiReadinessSnapshot}
+        capabilityIds={['ocr.suggestion_analysis']}
+        onAction={(route) => void handleReadinessAction(route)}
+        compact
+        className="m-3"
+      />
+
+      <div className="px-3 pb-3">
+        <LocalAnalysisStatusNotice status={latestLocalAnalysis} />
       </div>
 
       {breadcrumb && (

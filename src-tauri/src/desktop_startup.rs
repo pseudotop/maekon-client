@@ -49,6 +49,11 @@ impl DesktopStartupCoordinator {
             crate::window_state::restore_main_window_state(&window);
 
             crate::window_state::show_restore_and_focus_main_window(&window);
+            // #12572: on Linux the tao GTK4 port only queues `show()` for the event
+            // loop, while `is_visible()` reads GTK state at once, so the window is
+            // never visible yet at this point and debug builds panicked here. macOS
+            // and Windows show synchronously and keep the check.
+            #[cfg(not(target_os = "linux"))]
             debug_assert!(
                 window.is_visible().unwrap_or(false),
                 "main window must be visible after desktop startup"

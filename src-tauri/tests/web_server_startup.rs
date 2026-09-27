@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Integration test: WebServer startup, HTTP request, and graceful shutdown.
 //!
 //! Verifies that `WebServer` can:

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-verify-chat-http-provider"
+description = "Enables the verify_chat_http_provider command without any pre-configured scope."
+commands.allow = ["verify_chat_http_provider"]
+
+[[permission]]
+identifier = "deny-verify-chat-http-provider"
+description = "Denies the verify_chat_http_provider command without any pre-configured scope."
+commands.deny = ["verify_chat_http_provider"]

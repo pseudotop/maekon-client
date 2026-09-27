@@ -24,6 +24,7 @@ import {
   withdrawConsent,
 } from '../../api/client'
 import { Alert, Button, Card, CardTitle, Spinner } from '../../components/ui'
+import { invalidateAiReadinessSnapshotCache } from '../../hooks/useAiReadinessSnapshot'
 import { addToast } from '../../hooks/useToast'
 import { describeIpcError } from '../../i18n/tauriIpcErrors'
 import { colors, elevation, typography } from '../../styles/tokens'
@@ -273,6 +274,10 @@ export default function PrivacyLayout() {
     // that the design forbids).
     mutationFn: async () => {
       await withdrawConsent()
+      // Consent is already withdrawn even if the subsequent data purge fails.
+      // Refresh every mounted AI surface at this boundary so it fails closed
+      // instead of retaining a ready snapshot for the cache TTL.
+      invalidateAiReadinessSnapshotCache()
       return deleteAllData()
     },
     onSuccess: (result) => {
@@ -311,6 +316,9 @@ export default function PrivacyLayout() {
     mutationFn: restoreBackup,
     onSuccess: (result) => {
       setRestoreResult(result)
+      if (result.success) {
+        invalidateAiReadinessSnapshotCache()
+      }
       addToast(
         result.success ? 'success' : 'error',
         result.success ? t('backup.restoreSuccess') : t('backup.restoreFailed'),

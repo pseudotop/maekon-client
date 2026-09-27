@@ -70,9 +70,11 @@ test.describe('Chat Audio', () => {
   })
 
   test('should have transport selector accessible for audio session creation', async ({ page }) => {
-    // To use audio, user needs to create a session via a transport — ensure selector works
+    // Standalone mode has no authoritative desktop readiness snapshot, so the
+    // selector must start in the explicit no-provider state instead of
+    // pretending the subprocess path is ready.
     const transportSelect = page.locator('select').filter({ has: page.locator('option[value="subprocess"]') })
     await expect(transportSelect).toBeVisible({ timeout: 10000 })
-    await expect(transportSelect).toHaveValue('subprocess')
+    await expect(transportSelect).toHaveValue('')
   })
 })

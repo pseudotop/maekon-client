@@ -39,6 +39,7 @@
     "allow-request-desktop-screen-capture-permission",
     "allow-open-desktop-permission-settings",
     "allow-probe-provider-surface-endpoint",
+    "allow-verify-chat-http-provider",
     "allow-get-allowed-setting-keys",
     "allow-oauth-start-flow",
     "allow-oauth-flow-status",

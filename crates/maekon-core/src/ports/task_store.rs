@@ -159,6 +159,18 @@ pub struct CandidateFilter {
     pub limit: Option<u32>,
 }
 
+impl CandidateFilter {
+    /// Candidates a person can still decide on. Confirmed, dismissed and
+    /// expired rows are terminal with their content cleared, so a review
+    /// surface listing them shows untitled rows whose actions cannot succeed.
+    pub fn reviewable() -> Self {
+        Self {
+            states: Some(vec![CandidateState::Proposed]),
+            limit: None,
+        }
+    }
+}
+
 /// Filter for listing to-dos.
 #[derive(Debug, Clone, Default)]
 pub struct TodoFilter {
@@ -236,4 +248,18 @@ pub trait TaskQueryPort: Send + Sync {
 
     /// List the blocker edges for which `todo_id` is the blocked side.
     async fn list_blockers(&self, todo_id: &str) -> Result<Vec<TaskBlocker>, CoreError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reviewable_filter_asks_only_for_proposed_candidates() {
+        // The storage test proves the listing; this pins the filter itself,
+        // because a maekon-core mutant never runs the maekon-storage tests.
+        let filter = CandidateFilter::reviewable();
+        assert_eq!(filter.states, Some(vec![CandidateState::Proposed]));
+        assert_eq!(filter.limit, None);
+    }
 }

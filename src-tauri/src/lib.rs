@@ -43,6 +43,8 @@
 
 pub mod agent_runtime;
 pub mod agent_runtime_support;
+pub mod ai_invocation_evidence;
+pub mod ai_readiness;
 pub mod app_runtime_launch;
 pub mod app_runtime_launch_health_probe;
 pub mod audit_query;
@@ -90,6 +92,7 @@ pub mod integrity_guard;
 pub mod ipc_error;
 pub mod launch_resources;
 pub mod lifecycle;
+pub mod local_analysis_status;
 pub mod log_retention;
 #[cfg(target_os = "macos")]
 pub mod macos_integration;
@@ -1110,6 +1113,7 @@ pub fn run() {
             commands::permissions::request_desktop_screen_capture_permission,
             commands::permissions::open_desktop_permission_settings,
             commands::system::probe_provider_surface_endpoint,
+            commands::ai_verification::verify_chat_http_provider,
             commands::settings::get_allowed_setting_keys,
             commands::integration::oauth_start_flow,
             commands::integration::oauth_flow_status,

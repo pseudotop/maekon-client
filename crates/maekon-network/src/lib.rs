@@ -77,6 +77,7 @@ pub mod batch_uploader;
 // share it without an adapter→adapter dependency. P1 kept transitional
 // re-exports here; P2 repointed every caller to `maekon_http_core::…` and
 // removed them — reach the substrate directly, not through this crate.
+pub mod candidate_decision_client;
 pub mod codex_app_server;
 pub mod codex_app_server_session;
 pub mod compression;
@@ -85,8 +86,13 @@ pub mod console_handoff;
 pub mod context_home;
 pub mod effective_mapping;
 pub mod feature_perf_uploader;
+pub mod gateway_candidate_decision;
+pub mod gateway_candidate_request;
+pub mod gateway_candidate_response;
 pub mod http_api_session;
 pub mod http_client;
+pub mod local_candidate_model;
+pub mod local_candidate_response;
 pub mod local_llm_session;
 pub(crate) mod mutex_ext;
 pub mod oauth;

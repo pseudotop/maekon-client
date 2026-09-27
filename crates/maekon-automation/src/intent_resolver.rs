@@ -64,16 +64,24 @@ impl IntentResolver {
                     .into_iter()
                     .find(|e| e.confidence >= self.config.min_confidence)
                     .ok_or_else(|| {
+                        // The retry loop and the GUI controller log this message
+                        // at WARN, so it names the target text by length only.
                         AutomationError::ElementNotFound(format!(
-                            "no element found at or above {:.0}% confidence (text={:?}, role={:?})",
+                            "no element found at or above {:.0}% confidence (text_len={}, role={:?})",
                             self.config.min_confidence * 100.0,
-                            text,
+                            text.as_deref().map_or(0, str::len),
                             role
                         ))
                     })?;
 
                 let (cx, cy) = best.bounds.center();
-                debug!(text = %best.text, x = cx, y = cy, confidence = best.confidence, "element click");
+                debug!(
+                    text_len = best.text.len(),
+                    x = cx,
+                    y = cy,
+                    confidence = best.confidence,
+                    "element click"
+                );
                 self.input_driver.mouse_click(button, cx, cy).await?;
 
                 Ok((true, Some(best)))
@@ -95,7 +103,7 @@ impl IntentResolver {
 
                 if let Some(elem) = &best {
                     let (cx, cy) = elem.bounds.center();
-                    debug!(text = %elem.text, x = cx, y = cy, "click");
+                    debug!(text_len = elem.text.len(), x = cx, y = cy, "click");
                     self.input_driver.mouse_click("left", cx, cy).await?;
                 }
 
@@ -120,7 +128,11 @@ impl IntentResolver {
                 // but left this unbounded).
                 const MAX_WAIT_MS: u64 = 300_000;
                 let effective_timeout_ms = (*timeout_ms).min(MAX_WAIT_MS);
-                debug!(text, timeout_ms = effective_timeout_ms, "text waiting");
+                debug!(
+                    text_len = text.len(),
+                    timeout_ms = effective_timeout_ms,
+                    "text waiting"
+                );
                 let start = Instant::now();
                 let timeout = std::time::Duration::from_millis(effective_timeout_ms);
 
@@ -132,14 +144,18 @@ impl IntentResolver {
 
                     if let Ok(elems) = &elements {
                         if !elems.is_empty() {
-                            info!(text, elapsed_ms = start.elapsed().as_millis(), "text found");
+                            info!(
+                                text_len = text.len(),
+                                elapsed_ms = start.elapsed().as_millis(),
+                                "text found"
+                            );
                             return Ok((true, elems.first().cloned()));
                         }
                     }
 
                     if start.elapsed() >= timeout {
                         warn!(
-                            text,
+                            text_len = text.len(),
                             timeout_ms = effective_timeout_ms,
                             "text waiting timeout"
                         );

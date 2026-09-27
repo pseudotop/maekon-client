@@ -1041,6 +1041,12 @@
           "markdownDescription": "Enables the verify_audit_log command without any pre-configured scope."
         },
         {
+          "description": "Enables the verify_chat_http_provider command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-verify-chat-http-provider",
+          "markdownDescription": "Enables the verify_chat_http_provider command without any pre-configured scope."
+        },
+        {
           "description": "Enables the withdraw_consent command without any pre-configured scope.",
           "type": "string",
           "const": "allow-withdraw-consent",
@@ -1909,6 +1915,12 @@
           "type": "string",
           "const": "deny-verify-audit-log",
           "markdownDescription": "Denies the verify_audit_log command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the verify_chat_http_provider command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-verify-chat-http-provider",
+          "markdownDescription": "Denies the verify_chat_http_provider command without any pre-configured scope."
         },
         {
           "description": "Denies the withdraw_consent command without any pre-configured scope.",

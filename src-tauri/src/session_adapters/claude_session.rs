@@ -33,6 +33,7 @@ use maekon_core::models::ai_session::{
 use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
 
 use crate::session_adapters::claude_normalizer::ClaudeStreamState;
+use crate::session_adapters::invocation_policy::InvocationPolicy;
 use crate::session_adapters::prompt_payload::{
     extract_native_response_schema, render_message_payload,
 };
@@ -47,6 +48,7 @@ pub struct ClaudeSubprocessSession {
     session_id: String,
     cli_session_id: String,
     surface: DetectedSubprocessCli,
+    policy: InvocationPolicy,
     model: String,
     system_prompt: Option<String>,
     default_tools: Option<Vec<ToolDefinition>>,
@@ -68,12 +70,17 @@ impl ClaudeSubprocessSession {
         config: &SessionConfig,
         session_config: Arc<AiSessionConfig>,
         default_tools: Option<Vec<ToolDefinition>>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, CoreError> {
+        let policy = InvocationPolicy::resolve(
+            config,
+            maekon_api_contracts::provider_specs::SubprocessInvocationMode::ClaudePrintJson,
+        )?;
+        Ok(Self {
             session_id: Uuid::new_v4().to_string(),
             cli_session_id: Uuid::new_v4().to_string(),
             created_at: Utc::now(),
             surface,
+            policy,
             model: config.model.clone().unwrap_or_else(|| "sonnet".to_string()),
             system_prompt: config.system_prompt.clone(),
             default_tools,
@@ -84,7 +91,7 @@ impl ClaudeSubprocessSession {
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
             turn_lock: Arc::new(AsyncMutex::new(())),
-        }
+        })
     }
 
     fn build_command(
@@ -124,6 +131,7 @@ impl ClaudeSubprocessSession {
         cmd.arg("--permission-mode")
             .arg(&self.config.permission_mode);
         append_session_tool_restriction_flags(&mut cmd, &self.surface.surface_id);
+        self.policy.append_command_flags(&mut cmd);
         cmd.arg("--model").arg(&self.model);
         cmd.arg("--session-id").arg(&self.cli_session_id);
 
@@ -368,7 +376,7 @@ mod tests {
             surface_id: Some("provider_surface.anthropic.subprocess_cli".to_string()),
             model: Some("sonnet".to_string()),
             system_prompt: None,
-            tools_enabled: false,
+            tools_enabled: true,
             cwd: None,
             sandbox_policy: None,
             approval_policy: None,
@@ -381,7 +389,8 @@ mod tests {
             &config,
             Arc::new(AiSessionConfig::default()),
             None,
-        );
+        )
+        .expect("enabled session");
 
         session.terminate().await;
 
@@ -397,7 +406,7 @@ mod tests {
             surface_id: Some("provider_surface.anthropic.subprocess_cli".to_string()),
             model: Some("sonnet".to_string()),
             system_prompt: None,
-            tools_enabled: false,
+            tools_enabled: true,
             cwd: None,
             sandbox_policy: None,
             approval_policy: None,
@@ -410,7 +419,8 @@ mod tests {
             &config,
             Arc::new(AiSessionConfig::default()),
             None,
-        );
+        )
+        .expect("enabled session");
         assert!(session.is_external());
     }
 
@@ -454,7 +464,7 @@ mod tests {
             surface_id: Some("provider_surface.anthropic.subprocess_cli".to_string()),
             model: Some("sonnet".to_string()),
             system_prompt,
-            tools_enabled: false,
+            tools_enabled: true,
             cwd: None,
             sandbox_policy: None,
             approval_policy: None,
@@ -468,6 +478,7 @@ mod tests {
             Arc::new(AiSessionConfig::default()),
             None,
         )
+        .expect("enabled session")
     }
 
     /// The prompt travels over stdin (`-p -`), so even an enormous prompt no

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use axum::{
     extract::State,
     http::{header, StatusCode},

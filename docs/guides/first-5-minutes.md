@@ -20,7 +20,7 @@ Expected: app starts without server/auth dependency.
 ## 3. Keep privacy baseline
 
 In Settings:
-- keep sandbox enabled (`Standard` or `Strict`)
+- the automation sandbox is off by default; if you want OS isolation, turn it on (`Standard` or `Strict`) before enabling automation. How much it isolates depends on the OS (see Platform limitations in the README)
 - set `external_data_policy` to `PiiFilterStandard` or stricter
 - keep `allow_unredacted_external_ocr=false`
 

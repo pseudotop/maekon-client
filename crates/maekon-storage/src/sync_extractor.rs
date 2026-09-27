@@ -825,10 +825,10 @@ mod tests {
             guard
                 .execute(
                     "INSERT INTO activity_segments (id, start_time, end_time, duration_secs, \
-                     trigger_reason, dominant_category, llm_summary, hlc_wall_ms, hlc_counter, \
+                    trigger_reason, dominant_category, llm_summary, llm_summary_status_json, hlc_wall_ms, hlc_counter, \
                      origin_device_id) VALUES ('seg-s', '2026-01-01', '2026-01-01', 3600, \
-                     'timer', 'Dev', 'reviewed the Q2 headcount spreadsheet', 100, 1, ?1)",
-                    rusqlite::params![device_id],
+                     'timer', 'Dev', 'reviewed the Q2 headcount spreadsheet', ?2, 100, 1, ?1)",
+                    rusqlite::params![device_id, r#"{"provider_class":"external_api"}"#],
                 )
                 .unwrap();
         }
@@ -846,6 +846,10 @@ mod tests {
             cs.segments[0].get("llm_summary").is_none(),
             "llm_summary must be absent when not opted in"
         );
+        assert!(
+            cs.segments[0].get("llm_summary_status_json").is_none(),
+            "summary provenance must be absent when its narrative is not opted in"
+        );
 
         // Opted in: the narrative IS emitted.
         let cfg = SyncConfig {
@@ -858,6 +862,10 @@ mod tests {
         assert_eq!(
             cs2.segments[0]["llm_summary"],
             "reviewed the Q2 headcount spreadsheet"
+        );
+        assert_eq!(
+            cs2.segments[0]["llm_summary_status_json"],
+            r#"{"provider_class":"external_api"}"#
         );
     }
 

@@ -2,6 +2,8 @@
 //! commands, intents, workflows, and GUI interaction sessions.
 //! Implemented by `AutomationController` in `maekon-automation`.
 
+pub mod wbs;
+
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 

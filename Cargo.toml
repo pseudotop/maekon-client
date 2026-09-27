@@ -111,7 +111,7 @@ expect_used = "warn"
 
 [workspace.package]
 edition = "2021"
-version = "0.0.1-rc.10"
+version = "0.0.1-rc.11"
 license = "Apache-2.0"
 # #11339: 1.88.0 was declared for jsonwebtoken 11.0.0 (#9375) and stayed there
 # long after the lockfile stopped honouring it. Nothing verified the claim — no
@@ -189,7 +189,7 @@ rusqlite = { version = "0.40", features = [
 
 # 압축
 flate2 = "1"
-zstd = "0.13"
+zstd = "0.14"
 lz4_flex = "0.14"
 
 # ML inference (ONNX Runtime — aligned with fastembed's transitive version)
@@ -264,7 +264,7 @@ gethostname = "1.1"
 
 # Sync encryption (Phase 3b — shared by maekon-storage + maekon-network)
 aes-gcm = "0.11"
-argon2 = "0.5"
+argon2 = "0.6"
 hex = "0.4"
 
 # LAN Sync (Phase 3b-2)

@@ -5,6 +5,7 @@ import {
   CalendarRange,
   ClipboardList,
   Clock,
+  FileSpreadsheet,
   FileText,
   Gauge,
   Home,
@@ -89,6 +90,7 @@ const SupportPage = lazy(() => import('../pages/support/SupportPage'))
 const LoginPage = lazy(() => import('../pages/auth/LoginPage'))
 const ContextHomePage = lazy(() => import('../pages/home/ContextHomePage'))
 const AssignmentEmailDraftPage = lazy(() => import('../pages/assignment-email-draft/AssignmentEmailDraftPage'))
+const WbsXlsxDraftPage = lazy(() => import('../pages/wbs-xlsx-draft/WbsXlsxDraftPage'))
 
 // --- Lazy imports: Settings sub-routes ---
 const GeneralTab = lazy(() => import('../pages/setting-tabs/GeneralTab'))
@@ -452,6 +454,13 @@ export const routeTree: RouteNode[] = [
     labelKey: 'nav.assignmentEmailDraft',
     icon: Mail,
     component: AssignmentEmailDraftPage,
+  },
+  // #11120 WD-04.5: receipt-only native XLSX picker, writer, and receipt surface.
+  {
+    path: '/wbs-xlsx-draft',
+    labelKey: 'nav.wbsXlsxDraft',
+    icon: FileSpreadsheet,
+    component: WbsXlsxDraftPage,
   },
 ]
 

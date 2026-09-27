@@ -25,7 +25,7 @@ El canal público es un prerelease temprano para Global Alpha por invitación. N
 
 ## Inicio Rápido desde Source Build
 
-El repositorio público ya está disponible y este source snapshot apunta al release candidate `v0.0.1-rc.10`. Trátelo como publicado solo cuando existan el GitHub Release y sus artefactos correspondientes. Como el endpoint `latest` de GitHub excluye prereleases, use los comandos con versión fijada de la guía de instalación para validar binarios. Para desarrollo y builds de debug, ejecute Maekon desde un source checkout local.
+El repositorio público ya está disponible y este source snapshot apunta al release candidate `v0.0.1-rc.11`. Trátelo como publicado solo cuando existan el GitHub Release y sus artefactos correspondientes. Como el endpoint `latest` de GitHub excluye prereleases, use los comandos con versión fijada de la guía de instalación para validar binarios. Para desarrollo y builds de debug, ejecute Maekon desde un source checkout local.
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -51,8 +51,8 @@ Los comandos del instalador de release están documentados abajo. Para fijar la 
 ## Por qué Maekon
 
 - **Organice la actividad como información de trabajo gobernada**: Registre contexto, cronología, tendencias de enfoque, interrupciones y rutas de automatización aprobadas en un solo lugar.
-- **Manténgase ligero en el dispositivo**: El procesamiento edge (codificación delta, miniaturas, OCR) reduce el volumen de transferencia y mantiene respuestas rápidas.
-- **Evalúe la pila de escritorio en Global Alpha**: El prerelease incluye código multiplataforma, base de actualización, integración con la bandeja del sistema y panel web local; verifique el build y la plataforma concretos antes de usarlo.
+- **Manténgase ligero en el dispositivo**: El procesamiento edge (codificación delta, miniaturas y OCR local en macOS y Windows) reduce el volumen de transferencia y mantiene respuestas rápidas.
+- **Evalúe la pila de escritorio en Global Alpha**: El prerelease incluye código multiplataforma, base de actualización, integración con la bandeja del sistema (macOS y Windows) y panel web local; verifique el build y la plataforma concretos antes de usarlo.
 
 ## Para Quién Es
 
@@ -79,7 +79,7 @@ El modo autónomo es la ruta de evaluación predeterminada para Global Alpha.
 
 - Los niveles de filtrado de PII (Desactivado/Básico/Estándar/Estricto) se aplican en la canalización de visión
 - Los datos locales se almacenan en SQLite y se gestionan con controles de retención
-- La automatización requiere validación de políticas, perfiles de sandbox y registro local de auditoría
+- La automatización está desactivada por defecto. Al activarla, las acciones pasan por los controles de políticas de Maekon y quedan en el registro local de auditoría; el aislamiento con el sandbox del sistema operativo es opcional y varía según el sistema (ver [Limitaciones por plataforma](#limitaciones-por-plataforma))
 - Política de informes y respuesta de seguridad: [SECURITY.md](./SECURITY.md)
 - Comentarios Alpha, solicitudes de privacidad o retiro (estado actual de recepción): [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - Línea base de integridad autónoma: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
@@ -103,7 +103,7 @@ Las afirmaciones de privacidad anteriores no son texto de marketing — cada una
 | Las creencias (claims) del grafo de memoria sobre ti son consultables y retractables con un clic (Privacy → Claims) | rutas de claims en [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | El consentimiento es fail-closed: sin permiso válido no hay captura | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
 | Las rutas cubiertas de la canalización de visión aplican el filtro PII configurado antes de sus pasos documentados de almacenamiento o egress | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
-| Las rutas de ejecución de automatización compatibles están diseñadas para pasar por política, sandbox y auditoría | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+| Las acciones de automatización pasan por un control de comandos y el registro local de auditoría; el aislamiento con sandbox solo se aplica si está activado | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
 
 ### Política de sincronización del código fuente
 
@@ -113,12 +113,12 @@ Este repositorio es una **exportación de instantáneas verificadas** de la fuen
 
 ### Características Principales
 - **Monitoreo de Contexto en Tiempo Real**: Rastrea ventanas activas, recursos del sistema y actividad del usuario
-- **Procesamiento de Imagen Edge**: Captura de pantalla, codificación delta, miniaturas y OCR
-- **Automatización Gobernada por Políticas**: Encauza acciones aprobadas mediante políticas, aislamiento en sandbox y auditoría
+- **Procesamiento de Imagen Edge**: Captura de pantalla, codificación delta, miniaturas y OCR (OCR local en macOS y Windows)
+- **Automatización Gobernada por Políticas**: Desactivada por defecto. Ejecuta las acciones aprobadas tras los controles de políticas y las registra en la auditoría local; el aislamiento con sandbox es opcional y varía según el sistema operativo
 - **Funciones de Servidor Conectado (Vista Previa / Opt-in)**: Los candidatos revisables para la siguiente acción y la sincronización de retroalimentación están disponibles para validación escalonada y no son la ruta autónoma predeterminada
-- **Bandeja del Sistema**: Se ejecuta en segundo plano con acceso rápido
+- **Bandeja del Sistema** (macOS, Windows): Se ejecuta en segundo plano con acceso rápido. Linux todavía no tiene bandeja.
 - **Actualización Automática**: Actualizaciones automáticas basadas en GitHub Releases — durante la fase pre-1.0, las actualizaciones se publican en el canal pre-release y las instalaciones predeterminadas lo siguen; el canal estable se abrirá con la primera versión estable
-- **Multiplataforma**: Compatible con macOS, Windows y Linux
+- **Multiplataforma**: Funciona en macOS, Windows y Linux; Linux tiene menos funciones (ver [Limitaciones por plataforma](#limitaciones-por-plataforma))
 
 ### Panel Web Local (http://localhost:10090)
 - **Panel de Control**: Métricas del sistema en tiempo real, gráficos de CPU/memoria, tiempo de uso de aplicaciones
@@ -137,7 +137,22 @@ Este repositorio es una **exportación de instantáneas verificadas** de la fuen
 ## Requisitos
 
 - Rust 1.88.0 o posterior
-- macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
+- macOS 10.15+ / Windows 10+ / Linux x64 (se recomienda X11; en Wayland no están disponibles el panel de seguimiento, la superposición ni «Encontrar mi siguiente paso»)
+
+### Limitaciones por plataforma
+
+No todas las funciones están disponibles en todos los sistemas operativos. La tabla refleja el código actual; «sin verificar» significa que aún no se ha comprobado en una build de release.
+
+| Función | macOS | Windows | Linux (X11) | Linux (Wayland) |
+| --- | --- | --- | --- | --- |
+| Bandeja del sistema | Sí | Sí | No | No |
+| Panel de seguimiento y «Encontrar mi siguiente paso» | Sí | Sí | Sí (sin verificar) | No |
+| Superposición | Sí | Sí | Sí (sin verificar) | No |
+| OCR local | Sí (Vision) | Sí (Windows OCR) | No | No |
+| Atajos globales | Sí | Sí | Sí | No (sin verificar) |
+| Almacenamiento de credenciales | Llavero | Administrador de credenciales | Keyring del kernel; sin verificar si se conserva tras reiniciar | Igual que X11 |
+
+La automatización y su sandbox del sistema operativo están desactivados por defecto. Con el sandbox activado, el grado de aislamiento depende del sistema operativo.
 
 ## Inicio Rápido para Desarrolladores (Compilar desde el Código Fuente)
 
@@ -242,22 +257,22 @@ Guía de instalación completa:
 
 ### Instalación Rápida (Terminal)
 
-Ejecute los siguientes comandos fijados a `v0.0.1-rc.10` únicamente después de que el GitHub Release correspondiente publique sus artefactos.
+Ejecute los siguientes comandos fijados a `v0.0.1-rc.11` únicamente después de que el GitHub Release correspondiente publique sus artefactos.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
 ```
 
 ### Recursos de Lanzamiento

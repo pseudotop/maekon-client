@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "../build.rs"]
+mod app_build_script;
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
@@ -438,4 +441,421 @@ fn pkg_builder_supports_unsigned_builds_with_strict_shell_options() {
         !script.contains(r#""${SIGN_ARGS[@]}""#),
         "PKG builder should not expand an empty SIGN_ARGS array under set -u"
     );
+}
+
+// #12181: Exercise the actual build helper with owned Git metadata. These tests
+// prove revision/watch coverage; Cargo freshness is a separate paired build.
+#[cfg(test)]
+mod git_watch {
+    use super::{app_build_script, fs, Path, PathBuf};
+    use std::collections::BTreeSet;
+    use std::ffi::OsString;
+    use std::process::{Command, ExitStatus, Output};
+
+    struct Fixture {
+        owner: tempfile::TempDir,
+        repo: PathBuf,
+        empty_config: PathBuf,
+        empty_hooks: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let owner = tempfile::Builder::new()
+                .prefix("maekon-git-watch-")
+                .tempdir()
+                .expect("create owned Git fixture");
+            let repo = owner.path().join("repository 한글 with spaces");
+            let empty_config = owner.path().join("empty-config");
+            let empty_hooks = owner.path().join("empty-hooks");
+            fs::create_dir(&repo).expect("create fixture repository");
+            fs::create_dir(&empty_hooks).expect("create empty hooks/template directory");
+            fs::write(&empty_config, "").expect("create empty Git config");
+            Self {
+                owner,
+                repo,
+                empty_config,
+                empty_hooks,
+            }
+        }
+
+        fn run(&self, cwd: &Path, args: &[&str]) -> Output {
+            let owner = self
+                .owner
+                .path()
+                .canonicalize()
+                .expect("owned fixture root");
+            assert!(cwd.canonicalize().expect("fixture cwd").starts_with(&owner));
+            let mut command = Command::new("git");
+            command.current_dir(cwd).env_clear();
+            // Keep only executable/OS plumbing, never inherited Git overrides,
+            // credentials, global/system configuration, or hook templates.
+            for name in ["PATH", "PATHEXT", "SystemRoot", "WINDIR", "TEMP", "TMP"] {
+                if let Some(value) = std::env::var_os(name) {
+                    command.env(name, value);
+                }
+            }
+            command
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", &self.empty_config)
+                .env("GIT_CEILING_DIRECTORIES", &owner)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .args([
+                    "-c",
+                    "user.name=Maekon Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                ])
+                .args(["-c", "commit.gpgSign=false", "-c", "gc.auto=0"])
+                .arg("-c")
+                .arg(format!("core.hooksPath={}", self.empty_hooks.display()))
+                .arg("-c")
+                .arg(format!("init.templateDir={}", self.empty_hooks.display()))
+                .args(args);
+            command
+                .output()
+                .expect("Git must be available for the owned fixture")
+        }
+
+        fn git(&self, cwd: &Path, args: &[&str]) -> String {
+            let output = self.run(cwd, args);
+            assert!(
+                output.status.success(),
+                "fixture Git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout)
+                .expect("fixture Git UTF-8")
+                .trim()
+                .to_owned()
+        }
+
+        fn init(&self) {
+            self.git(
+                &self.repo,
+                &["init", "--quiet", "--initial-branch=watch-main"],
+            );
+        }
+
+        fn package(&self, repo: &Path) -> PathBuf {
+            let package = repo.join("clients/maekon-client/src-tauri");
+            fs::create_dir_all(&package).expect("create nested package");
+            package
+        }
+
+        fn commit(&self, repo: &Path, content: &str) -> String {
+            fs::write(repo.join("owned.txt"), content).expect("write owned fixture input");
+            self.git(repo, &["add", "--", "owned.txt"]);
+            self.git(repo, &["commit", "--quiet", "--no-gpg-sign", "-m", content]);
+            self.git(repo, &["rev-parse", "--short=9", "HEAD"])
+        }
+
+        fn git_path(&self, repo: &Path, name: &str) -> PathBuf {
+            PathBuf::from(self.git(
+                repo,
+                &["rev-parse", "--path-format=absolute", "--git-path", name],
+            ))
+        }
+
+        fn metadata(&self, package: &Path) -> (String, Vec<PathBuf>) {
+            let (revision, paths) = app_build_script::git_build_metadata(package);
+            let owner = self.owner.path().canonicalize().expect("fixture root");
+            let mut canonical = BTreeSet::new();
+            for path in &paths {
+                assert!(
+                    path.is_absolute(),
+                    "watch must resolve from the package cwd: {path:?}"
+                );
+                let resolved = path.canonicalize().expect("no nonexistent Git watches");
+                assert!(
+                    resolved.starts_with(&owner),
+                    "watch escaped owned fixture: {path:?}"
+                );
+                assert_ne!(path.file_name(), Some(std::ffi::OsStr::new("index")));
+                assert!(canonical.insert(resolved), "duplicate watch: {path:?}");
+            }
+            (revision, paths)
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum WatchState {
+        Missing,
+        File(Vec<u8>),
+        Directory(Vec<OsString>),
+    }
+
+    fn snapshot(paths: &[PathBuf]) -> Vec<WatchState> {
+        paths
+            .iter()
+            .map(|path| {
+                if !path.exists() {
+                    WatchState::Missing
+                } else if path.is_dir() {
+                    let mut names = fs::read_dir(path)
+                        .expect("watched directory")
+                        .map(|entry| entry.expect("watched entry").file_name())
+                        .collect::<Vec<_>>();
+                    names.sort();
+                    WatchState::Directory(names)
+                } else {
+                    WatchState::File(fs::read(path).expect("watched file"))
+                }
+            })
+            .collect()
+    }
+
+    fn contains_watch(paths: &[PathBuf], expected: &Path) -> bool {
+        let expected = expected.canonicalize().expect("expected watch exists");
+        paths
+            .iter()
+            .any(|path| path.canonicalize().expect("watch exists") == expected)
+    }
+
+    #[test]
+    fn nested_unicode_checkout_watches_ref_changes_without_index() {
+        let fixture = Fixture::new();
+        fixture.init();
+        let first = fixture.commit(&fixture.repo, "first");
+        let package = fixture.package(&fixture.repo);
+        let (revision, paths) = fixture.metadata(&package);
+        assert_eq!(revision, first);
+        let head = fixture.git_path(&package, "HEAD");
+        let reference = fixture.git_path(&package, "refs/heads/watch-main");
+        assert!(contains_watch(&paths, &head));
+        assert!(contains_watch(&paths, &reference));
+        let before = snapshot(&paths);
+        assert_eq!(
+            fixture.metadata(&package),
+            (revision.clone(), paths.clone())
+        );
+        assert_eq!(snapshot(&paths), before);
+        fs::write(fixture.repo.join("owned.txt"), "staged-only").expect("stage-only fixture");
+        fixture.git(&fixture.repo, &["add", "--", "owned.txt"]);
+        assert_eq!(
+            snapshot(&paths),
+            before,
+            "index-only update is not a revision input"
+        );
+        let head_before = fs::read(&head).expect("symbolic HEAD");
+        let second = fixture.commit(&fixture.repo, "second");
+        assert_ne!(first, second);
+        assert_eq!(
+            fs::read(&head).expect("unchanged symbolic HEAD"),
+            head_before
+        );
+        assert_ne!(
+            snapshot(&paths),
+            before,
+            "previous watches must observe the ref update"
+        );
+        assert_eq!(fixture.metadata(&package).0, second);
+    }
+
+    #[test]
+    fn linked_worktree_uses_its_own_head_and_shared_ref() {
+        let fixture = Fixture::new();
+        fixture.init();
+        let first = fixture.commit(&fixture.repo, "first");
+        let linked = fixture.owner.path().join("linked 한글 worktree");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "linked-watch",
+                linked.to_str().expect("fixture path"),
+            ],
+        );
+        let package = fixture.package(&linked);
+        let (revision, paths) = fixture.metadata(&package);
+        assert_eq!(revision, first);
+        assert!(linked.join(".git").is_file());
+        assert!(contains_watch(&paths, &linked.join(".git")));
+        let own_head = fixture.git_path(&package, "HEAD");
+        let main_head = fixture.git_path(&fixture.repo, "HEAD");
+        assert_ne!(own_head, main_head);
+        assert!(contains_watch(&paths, &own_head));
+        assert!(!contains_watch(&paths, &main_head));
+        assert!(contains_watch(
+            &paths,
+            &fixture.git_path(&package, "refs/heads/linked-watch")
+        ));
+        assert!(contains_watch(
+            &paths,
+            &own_head
+                .parent()
+                .expect("worktree metadata")
+                .join("commondir")
+        ));
+        let before = snapshot(&paths);
+        let second = fixture.commit(&linked, "linked-second");
+        assert_ne!(second, first);
+        assert_ne!(snapshot(&paths), before);
+        assert_eq!(fixture.metadata(&package).0, second);
+        assert_eq!(
+            fixture.git(&fixture.repo, &["rev-parse", "--short=9", "HEAD"]),
+            first
+        );
+    }
+
+    #[test]
+    fn detached_head_change_is_observed() {
+        let fixture = Fixture::new();
+        fixture.init();
+        let first = fixture.commit(&fixture.repo, "first");
+        fixture.git(&fixture.repo, &["checkout", "--quiet", "--detach", "HEAD"]);
+        let package = fixture.package(&fixture.repo);
+        let (revision, paths) = fixture.metadata(&package);
+        assert_eq!(revision, first);
+        assert!(contains_watch(&paths, &fixture.git_path(&package, "HEAD")));
+        let before = snapshot(&paths);
+        let second = fixture.commit(&fixture.repo, "detached-second");
+        assert_ne!(first, second);
+        assert_ne!(snapshot(&paths), before);
+        assert_eq!(fixture.metadata(&package).0, second);
+    }
+
+    #[test]
+    fn packed_ref_to_new_loose_ref_is_observed_by_existing_parent() {
+        let fixture = Fixture::new();
+        fixture.init();
+        let first = fixture.commit(&fixture.repo, "first");
+        fixture.git(&fixture.repo, &["branch", "-m", "topic/watch"]);
+        fixture.git(&fixture.repo, &["pack-refs", "--all", "--prune"]);
+        let package = fixture.package(&fixture.repo);
+        let reference = fixture.git_path(&package, "refs/heads/topic/watch");
+        let packed = fixture.git_path(&package, "packed-refs");
+        assert!(!reference.exists());
+        assert!(packed.is_file());
+        let mut ancestor = reference.parent().expect("ref parent");
+        while !ancestor.exists() {
+            ancestor = ancestor.parent().expect("existing refs ancestor");
+        }
+        let (revision, paths) = fixture.metadata(&package);
+        assert_eq!(revision, first);
+        assert!(contains_watch(&paths, ancestor));
+        assert!(contains_watch(&paths, &packed));
+        let head = fixture.git_path(&package, "HEAD");
+        let head_before = fs::read(&head).expect("HEAD before loose ref");
+        let packed_before = fs::read(&packed).expect("packed refs before loose ref");
+        let before = snapshot(&paths);
+        let second = fixture.commit(&fixture.repo, "new-loose-ref");
+        assert_ne!(first, second);
+        assert!(reference.is_file());
+        assert_eq!(fs::read(&head).expect("same HEAD"), head_before);
+        assert_eq!(fs::read(&packed).expect("same packed refs"), packed_before);
+        assert_ne!(
+            snapshot(&paths),
+            before,
+            "watch set must observe creation of the loose override"
+        );
+        let (revision, paths) = fixture.metadata(&package);
+        assert_eq!(revision, second);
+        assert!(contains_watch(&paths, &reference));
+    }
+
+    #[test]
+    fn packing_a_watched_loose_ref_does_not_leave_missing_watches() {
+        let fixture = Fixture::new();
+        fixture.init();
+        let revision = fixture.commit(&fixture.repo, "first");
+        let package = fixture.package(&fixture.repo);
+        let (_, old_paths) = fixture.metadata(&package);
+        let before = snapshot(&old_paths);
+        fixture.git(&fixture.repo, &["pack-refs", "--all", "--prune"]);
+        assert_ne!(
+            snapshot(&old_paths),
+            before,
+            "ref removal must invalidate the previous watch set"
+        );
+        let (after, paths) = fixture.metadata(&package);
+        assert_eq!(after, revision);
+        assert!(contains_watch(
+            &paths,
+            &fixture.git_path(&package, "packed-refs")
+        ));
+        assert_eq!(fixture.metadata(&package), (after, paths));
+    }
+
+    #[test]
+    fn unborn_head_preserves_unknown_and_observes_first_commit() {
+        let fixture = Fixture::new();
+        fixture.init();
+        let package = fixture.package(&fixture.repo);
+        assert!(!fixture
+            .run(&package, &["rev-parse", "--short=9", "HEAD"])
+            .status
+            .success());
+        let (revision, paths) = fixture.metadata(&package);
+        assert_eq!(revision, "unknown");
+        assert!(contains_watch(&paths, &fixture.git_path(&package, "HEAD")));
+        let before = snapshot(&paths);
+        let first = fixture.commit(&fixture.repo, "first");
+        assert_ne!(snapshot(&paths), before);
+        assert_eq!(fixture.metadata(&package).0, first);
+    }
+
+    #[test]
+    fn source_export_and_invalid_gitfile_return_unknown_without_missing_watches() {
+        let fixture = Fixture::new();
+        let package = fixture.package(&fixture.repo);
+        assert!(!fixture
+            .run(&package, &["rev-parse", "--short=9", "HEAD"])
+            .status
+            .success());
+        assert_eq!(
+            fixture.metadata(&package),
+            ("unknown".to_owned(), Vec::new())
+        );
+        fs::write(
+            fixture.repo.join(".git"),
+            "gitdir: missing-owned-metadata\n",
+        )
+        .expect("invalid owned gitfile");
+        assert_eq!(
+            fixture.metadata(&package),
+            ("unknown".to_owned(), Vec::new())
+        );
+        assert_eq!(
+            fixture.metadata(&package.join("nonexistent")),
+            ("unknown".to_owned(), Vec::new())
+        );
+    }
+
+    #[test]
+    fn failed_git_stdout_is_not_accepted_as_a_revision() {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        #[cfg(unix)]
+        let failure_status = 1 << 8;
+        #[cfg(windows)]
+        let failure_status = 1;
+        let output = |success: bool, stdout: &[u8]| Output {
+            status: ExitStatus::from_raw(if success { 0 } else { failure_status }),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        };
+        let plausible_revision = b"123abcdef\n";
+        assert_eq!(
+            app_build_script::successful_git_stdout(output(true, plausible_revision)),
+            Some("123abcdef".to_owned())
+        );
+        assert_eq!(
+            app_build_script::successful_git_stdout(output(false, plausible_revision)),
+            None
+        );
+        assert_eq!(
+            app_build_script::successful_git_stdout(output(true, b" \n")),
+            None
+        );
+        assert_eq!(
+            app_build_script::successful_git_stdout(output(true, &[0xff])),
+            None
+        );
+    }
 }

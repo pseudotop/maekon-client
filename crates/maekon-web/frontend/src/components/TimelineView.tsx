@@ -6,7 +6,7 @@
 import { Settings2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { CreateOverrideRequest, RegimeOverride } from '../api/contracts'
+import type { AiSummaryArtifact, CreateOverrideRequest, RegimeOverride } from '../api/contracts'
 import { colors, motion, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import SegmentContextMenu from './SegmentContextMenu'
@@ -23,6 +23,7 @@ interface TimelineEntry {
   dominant_app: string
   content_summary: Array<{ content: string; work_type: string; mins: number }>
   annotation?: { highlight_type: string; text: string }
+  ai_summary?: AiSummaryArtifact
 }
 
 interface RegimeOption {
@@ -210,6 +211,31 @@ export default function TimelineView({
                         </div>
                       ))}
                     </div>
+                  )}
+
+                  {entry.ai_summary?.text && (
+                    <div className="mt-2 rounded-md border border-brand-signal/20 bg-brand-signal/5 px-2 py-1.5">
+                      <div className="mb-1 flex flex-wrap items-center gap-2 text-xs">
+                        <span className={cn(typography.label, 'text-brand-text')}>
+                          {t('summaryProvenance.aiSegmentSummary')}
+                        </span>
+                        <span className={colors.text.tertiary}>
+                          {t(`summaryProvenance.provider.${entry.ai_summary.provider_class ?? 'unknown'}`)}
+                        </span>
+                        {entry.ai_summary.generated_at && (
+                          <time dateTime={entry.ai_summary.generated_at} className={colors.text.tertiary}>
+                            {new Date(entry.ai_summary.generated_at).toLocaleString()}
+                          </time>
+                        )}
+                      </div>
+                      <p className={cn('text-xs', colors.text.secondary)}>{entry.ai_summary.text}</p>
+                    </div>
+                  )}
+                  {!entry.ai_summary?.text && entry.ai_summary?.failure_reason && isExpanded && (
+                    <p className={cn('mt-2 text-xs', colors.text.tertiary)}>
+                      {t('summaryProvenance.aiSegmentUnavailable')}:{' '}
+                      {t(`summaryProvenance.failure.${entry.ai_summary.failure_reason}`)}
+                    </p>
                   )}
 
                   {/* Annotation bubble */}

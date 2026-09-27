@@ -9,7 +9,7 @@ A practical rollout checklist for operating MAEKON in standalone-first mode.
 1. Run `cargo run -p maekon-app -- --offline`.
 2. Open dashboard at `http://localhost:10090`.
 3. In Settings:
-- keep sandbox enabled (`Standard` or `Strict`),
+- turn the automation sandbox on (`Standard` or `Strict`) if you want OS isolation; it is off by default and its strength varies by OS,
 - set `external_data_policy` to `PiiFilterStandard` or stricter,
 - keep `allow_unredacted_external_ocr=false`.
 

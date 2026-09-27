@@ -20,7 +20,7 @@ cargo run -p maekon-app -- --offline
 ## 3. 프라이버시 기본선 유지
 
 Settings에서:
-- 샌드박스를 `Standard` 또는 `Strict`로 유지
+- 자동화 샌드박스는 기본으로 꺼져 있습니다. OS 격리가 필요하면 자동화를 켜기 전에 샌드박스를 켜고 `Standard` 또는 `Strict`를 고릅니다. 격리 강도는 OS마다 다릅니다(README의 플랫폼별 제한 참고)
 - `external_data_policy`를 `PiiFilterStandard` 이상으로 유지
 - `allow_unredacted_external_ocr=false` 유지
 

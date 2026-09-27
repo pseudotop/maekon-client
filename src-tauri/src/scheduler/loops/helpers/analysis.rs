@@ -5,8 +5,10 @@ use std::sync::Arc;
 
 use tracing::{debug, info, warn};
 
+use maekon_core::config_manager::ConfigManager;
 use maekon_core::models::suggestion::{Priority, Suggestion};
 use maekon_core::models::tiered_memory::Regime;
+use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
 use maekon_core::ports::storage::StorageService;
 
 use crate::notification_manager::NotificationManager;
@@ -176,11 +178,11 @@ pub(crate) async fn enqueue_and_surface(
     on_changed: Option<&(dyn Fn(usize) + Send + Sync)>,
     notifier: Option<&Arc<NotificationManager>>,
     focus_active: bool,
-) {
+) -> usize {
     // #7914: uniform learned + static relevance gating for every LOCAL producer.
     let to_enqueue = apply_relevance_gates(to_enqueue, &gates).await;
     if to_enqueue.is_empty() {
-        return;
+        return 0;
     }
 
     let mut accepted = 0usize;
@@ -203,7 +205,7 @@ pub(crate) async fn enqueue_and_surface(
     };
 
     if accepted == 0 {
-        return;
+        return 0;
     }
     if let Some(cb) = on_changed {
         cb(count);
@@ -213,6 +215,7 @@ pub(crate) async fn enqueue_and_surface(
             nm.notify_suggestion(&t).await;
         }
     }
+    accepted
 }
 
 /// Run event-driven LLM analysis when the user switches to a new app.
@@ -225,6 +228,9 @@ pub(crate) async fn handle_event_analysis(
     app_name: &str,
     window_title: &str,
     ocr_hint: Option<&str>,
+    consent_manager: Option<&Arc<dyn ConsentManagerPort>>,
+    config_manager: Option<&ConfigManager>,
+    fallback_analysis_enabled: bool,
     // E20-24 (#4816): live suggestion queue (the manager's Arc). `None` when the
     // local-suggestions pipeline is absent; `Some` enqueues for live review.
     suggestion_queue: Option<&Arc<tokio::sync::Mutex<maekon_suggestion::queue::SuggestionQueue>>>,
@@ -237,38 +243,144 @@ pub(crate) async fn handle_event_analysis(
     on_changed: Option<&(dyn Fn(usize) + Send + Sync)>,
     notifier: Option<&Arc<NotificationManager>>,
     focus_active: bool,
-) {
-    if let Some(ref analyzer) = analyzer {
-        match analyzer
-            .on_significant_event(app_name, window_title, ocr_hint)
-            .await
-        {
-            Ok(suggestions) => {
-                for s in &suggestions {
-                    info!(
-                        id = %s.suggestion_id,
-                        priority = ?s.priority,
-                        content = %maekon_monitor::log_privacy::content_digest(&s.content),
-                        "event-driven suggestion produced"
-                    );
-                    if let Err(e) = storage.save_suggestion(s).await {
-                        warn!("suggestion save failure: {e}");
-                    }
-                }
-                // E20-24 (#4816): enqueue for live review (same producer wire as the
-                // periodic analysis loop). Dedup via queue fingerprint (push -> bool).
-                // #7914: regime + learned per-regime acceptance + FeedbackScorer
-                // gating now all happen inside `enqueue_and_surface` (one seam,
-                // one decision function), so this path applies the SAME gates as
-                // every other LOCAL producer instead of a bespoke subset.
-                if let Some(q) = suggestion_queue {
-                    enqueue_and_surface(q, suggestions, gates, on_changed, notifier, focus_active)
-                        .await;
+) -> crate::local_analysis_status::LocalAnalysisStatus {
+    use crate::local_analysis_status::{
+        missing_local_analysis_permissions, LocalAnalysisProducer, LocalAnalysisStatus,
+        LocalAnalysisStatusKind,
+    };
+    use maekon_analysis::AnalysisRunOutcome;
+
+    let producer = LocalAnalysisProducer::AppSwitch;
+    let initial_queue_count = match suggestion_queue {
+        Some(queue) => queue.lock().await.len(),
+        None => 0,
+    };
+    // Re-read the user-controlled feature switch at the same final boundary as
+    // consent. The monitor tick performs several awaits before reaching this
+    // helper, so its initial config snapshot is not current authorization.
+    let live_config = super::super::analysis_invocation_guard::analysis_config_now(
+        config_manager,
+        fallback_analysis_enabled,
+    );
+    if !live_config.enabled {
+        return LocalAnalysisStatus::new(
+            LocalAnalysisStatusKind::PolicyBlocked,
+            "analysis_disabled",
+            producer,
+            0,
+            initial_queue_count,
+        );
+    }
+    // Read the authority after the queue-count await and immediately before
+    // analyzer invocation. A tick-level snapshot can outlive a consent
+    // withdrawal while OCR is still being processed (#11737).
+    let permissions = ConsentGate::from_ref(consent_manager).permissions_snapshot();
+    let missing = missing_local_analysis_permissions(&permissions);
+    if !missing.is_empty() {
+        return LocalAnalysisStatus::consent_required(producer, missing, initial_queue_count);
+    }
+    let Some(analyzer) = analyzer else {
+        return LocalAnalysisStatus::new(
+            LocalAnalysisStatusKind::ProviderOffline,
+            "provider_unavailable",
+            producer,
+            0,
+            initial_queue_count,
+        );
+    };
+
+    match analyzer
+        .on_significant_event_with_outcome(app_name, window_title, ocr_hint)
+        .await
+    {
+        Ok(AnalysisRunOutcome::Generated(suggestions)) => {
+            let candidate_count = suggestions.len();
+            for s in &suggestions {
+                info!(
+                    id = %s.suggestion_id,
+                    priority = ?s.priority,
+                    content = %maekon_monitor::log_privacy::content_digest(&s.content),
+                    "event-driven suggestion produced"
+                );
+                if let Err(e) = storage.save_suggestion(s).await {
+                    warn!("suggestion save failure: {e}");
                 }
             }
-            Err(e) => {
-                debug!("event analysis skipped: {e}");
+            // E20-24 (#4816): enqueue for live review (same producer wire as the
+            // periodic analysis loop). Dedup via queue fingerprint (push -> bool).
+            // #7914: regime + learned per-regime acceptance + FeedbackScorer
+            // gating now all happen inside `enqueue_and_surface` (one seam,
+            // one decision function), so this path applies the SAME gates as
+            // every other LOCAL producer instead of a bespoke subset.
+            let Some(queue) = suggestion_queue else {
+                return LocalAnalysisStatus::new(
+                    LocalAnalysisStatusKind::PolicyBlocked,
+                    "suggestion_queue_unavailable",
+                    producer,
+                    candidate_count,
+                    0,
+                );
+            };
+            let admitted = enqueue_and_surface(
+                queue,
+                suggestions,
+                gates,
+                on_changed,
+                notifier,
+                focus_active,
+            )
+            .await;
+            let queue_count = queue.lock().await.len();
+            if admitted == 0 {
+                LocalAnalysisStatus::new(
+                    LocalAnalysisStatusKind::NoCandidate,
+                    "not_admitted",
+                    producer,
+                    candidate_count,
+                    queue_count,
+                )
+            } else {
+                LocalAnalysisStatus::new(
+                    LocalAnalysisStatusKind::Generated,
+                    "generated",
+                    producer,
+                    candidate_count,
+                    queue_count,
+                )
             }
+        }
+        Ok(AnalysisRunOutcome::NoCandidate) => LocalAnalysisStatus::new(
+            LocalAnalysisStatusKind::NoCandidate,
+            "no_valid_candidate",
+            producer,
+            0,
+            initial_queue_count,
+        ),
+        Ok(AnalysisRunOutcome::Throttled) => LocalAnalysisStatus::new(
+            LocalAnalysisStatusKind::Throttled,
+            "analysis_throttled",
+            producer,
+            0,
+            initial_queue_count,
+        ),
+        Ok(AnalysisRunOutcome::NoInput) => LocalAnalysisStatus::new(
+            LocalAnalysisStatusKind::NoCandidate,
+            "no_input",
+            producer,
+            0,
+            initial_queue_count,
+        ),
+        Ok(AnalysisRunOutcome::Unchanged) => LocalAnalysisStatus::new(
+            LocalAnalysisStatusKind::NoCandidate,
+            "context_unchanged",
+            producer,
+            0,
+            initial_queue_count,
+        ),
+        Err(error) => {
+            let core: maekon_core::error::CoreError = error.into();
+            debug!(err.code = %core.code(), "event analysis unavailable");
+            LocalAnalysisStatus::from_error(&core, producer, initial_queue_count)
         }
     }
 }
@@ -276,10 +388,114 @@ pub(crate) async fn handle_event_analysis(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use async_trait::async_trait;
+    use chrono::{DateTime, Utc};
+    use maekon_analysis::{ContextAnalyzer, ContextAssembler, PatternMiner};
+    use maekon_core::config::AnalysisConfig;
+    use maekon_core::consent::{ConsentManager, ConsentPermissions};
+    use maekon_core::error::CoreError;
+    use maekon_core::error_codes::ProviderCode;
+    use maekon_core::models::event::Event;
     use maekon_core::models::suggestion::SuggestionType;
+    use maekon_core::ports::analysis_provider::AnalysisProvider;
+    use maekon_core::ports::storage::StorageService;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex as StdMutex;
     use tokio::sync::Mutex;
+
+    struct LocalAnalysisTestStorage;
+
+    #[async_trait]
+    impl StorageService for LocalAnalysisTestStorage {
+        async fn save_event(&self, _event: &Event) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn get_events(
+            &self,
+            _from: DateTime<Utc>,
+            _to: DateTime<Utc>,
+            _limit: usize,
+        ) -> Result<Vec<Event>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn get_pending_events(&self, _limit: usize) -> Result<Vec<Event>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn mark_as_sent(&self, _event_ids: &[String]) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn enforce_retention(&self) -> Result<usize, CoreError> {
+            Ok(0)
+        }
+
+        async fn save_suggestion(&self, _suggestion: &Suggestion) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn save_activity_segment(
+            &self,
+            _summary: &maekon_core::models::tiered_memory::SegmentSummary,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn update_segment_llm_summary(
+            &self,
+            _segment_id: &str,
+            _llm_summary: &str,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    struct CapturingProvider {
+        calls: Arc<AtomicUsize>,
+        contexts: Arc<StdMutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl AnalysisProvider for CapturingProvider {
+        async fn analyze(
+            &self,
+            context_json: &str,
+            _system_prompt: &str,
+        ) -> Result<Vec<Suggestion>, CoreError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.contexts
+                .lock()
+                .expect("capture context lock")
+                .push(context_json.to_owned());
+            Ok(vec![make_suggestion("ocr-path", Priority::High)])
+        }
+
+        fn provider_name(&self) -> &str {
+            "capturing-test-provider"
+        }
+    }
+
+    struct FailingProvider;
+
+    #[async_trait]
+    impl AnalysisProvider for FailingProvider {
+        async fn analyze(
+            &self,
+            _context_json: &str,
+            _system_prompt: &str,
+        ) -> Result<Vec<Suggestion>, CoreError> {
+            Err(CoreError::Analysis {
+                code: ProviderCode::AnalysisFailed,
+                message: "synthetic provider failure".to_string(),
+            })
+        }
+
+        fn provider_name(&self) -> &str {
+            "failing-test-provider"
+        }
+    }
 
     fn make_suggestion(id: &str, priority: Priority) -> Suggestion {
         Suggestion {
@@ -296,6 +512,32 @@ mod tests {
             reasoning: None,
             context_scope: None,
         }
+    }
+
+    async fn run_event_fixture(
+        analyzer: &Option<Arc<ContextAnalyzer>>,
+        storage: &Arc<dyn StorageService>,
+        consent_manager: &Arc<dyn ConsentManagerPort>,
+        config_manager: &ConfigManager,
+        queue: &Arc<Mutex<maekon_suggestion::queue::SuggestionQueue>>,
+        ocr_hint: &str,
+    ) -> crate::local_analysis_status::LocalAnalysisStatus {
+        handle_event_analysis(
+            analyzer,
+            storage,
+            "FixtureApp",
+            "FixtureWindow",
+            Some(ocr_hint),
+            Some(consent_manager),
+            Some(config_manager),
+            true,
+            Some(queue),
+            RelevanceGates::pass_through(),
+            None,
+            None,
+            false,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -365,6 +607,65 @@ mod tests {
             0,
             "duplicate-only batch must not emit a refresh"
         );
+    }
+
+    include!("analysis_live_authority_tests.rs");
+
+    #[tokio::test]
+    async fn provider_failure_is_negative_control_and_never_reaches_review_queue() {
+        let storage: Arc<dyn StorageService> = Arc::new(LocalAnalysisTestStorage);
+        let analyzer = Some(Arc::new(ContextAnalyzer::new(
+            storage.clone(),
+            Arc::new(FailingProvider),
+            PatternMiner::new(),
+            ContextAssembler::new(Box::new(str::to_owned)),
+            AnalysisConfig {
+                throttle_secs: 0,
+                ..AnalysisConfig::default()
+            },
+        )));
+        let queue = Arc::new(Mutex::new(maekon_suggestion::queue::SuggestionQueue::new(
+            10,
+        )));
+        let consent_dir = tempfile::tempdir().expect("consent tempdir");
+        let consent_manager =
+            Arc::new(ConsentManager::new(consent_dir.path().join("consent.json")));
+        consent_manager
+            .grant_consent(
+                ConsentPermissions {
+                    screen_capture: true,
+                    ocr_processing: true,
+                    activity_pattern_learning: true,
+                    ..Default::default()
+                },
+                30,
+            )
+            .expect("grant complete local-analysis consent");
+        let consent_port: Arc<dyn ConsentManagerPort> = consent_manager;
+
+        let status = handle_event_analysis(
+            &analyzer,
+            &storage,
+            "FixtureApp",
+            "FixtureWindow",
+            Some("SYNTHETIC_SAFE_OCR_FIXTURE"),
+            Some(&consent_port),
+            None,
+            true,
+            Some(&queue),
+            RelevanceGates::pass_through(),
+            None,
+            None,
+            false,
+        )
+        .await;
+
+        assert_eq!(
+            status.status,
+            crate::local_analysis_status::LocalAnalysisStatusKind::ProviderOffline
+        );
+        assert_eq!(status.reason, "provider_unavailable");
+        assert!(queue.lock().await.is_empty());
     }
 
     // -----------------------------------------------------------------------

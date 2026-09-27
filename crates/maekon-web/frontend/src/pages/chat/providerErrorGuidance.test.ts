@@ -40,6 +40,27 @@ describe('chat provider error guidance', () => {
     expect(message).toBe('provider timed out')
   })
 
+  it.each([
+    ['service.unavailable', 'Ollama를 시작하세요.'],
+    ['config.invalid', 'Ollama endpoint를 선택하세요.'],
+    ['not_found.resource_missing', 'Ollama 모델을 설치하세요.'],
+  ])('maps Local LLM create error %s to localized pre-send guidance', (code, expected) => {
+    const message = chatCreateErrorMessage(
+      { code, message: 'backend diagnostic' },
+      {
+        providerName: 'Ollama',
+        providerNotConfiguredMessage: () => 'not used',
+        fallback: '세션을 만들지 못했습니다.',
+        transport: 'local_llm',
+        localRuntimeUnavailableMessage: 'Ollama를 시작하세요.',
+        localRuntimeInvalidMessage: 'Ollama endpoint를 선택하세요.',
+        localModelMissingMessage: 'Ollama 모델을 설치하세요.',
+      },
+    )
+
+    expect(message).toBe(expected)
+  })
+
   it('maps full-text policy denial to actionable Privacy guidance', () => {
     const error = {
       code: 'policy.denied',

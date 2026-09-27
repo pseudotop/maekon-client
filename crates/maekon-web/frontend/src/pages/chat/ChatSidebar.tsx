@@ -1,8 +1,9 @@
 import { ChevronDown, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { ProviderSurfaceSpec } from '../../api/contracts'
+import type { AiCapabilityReadiness, ProviderSurfaceSpec } from '../../api/contracts'
 import { Badge, Button, Input, Select } from '../../components/ui'
+import { aiReadinessReasonCopyKey } from '../../features/aiReadiness'
 import { defaultSurfaceModel } from '../../features/providerSurfaces'
 import { colors, iconSize, interaction, motion, radius, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
@@ -12,8 +13,10 @@ import type { SessionInfo, Transport } from './types'
 interface ChatSidebarProps {
   sessions: SessionInfo[]
   activeId: string | null
-  transport: Transport
+  transport: Transport | null
   setTransport: (t: Transport) => void
+  readiness: AiCapabilityReadiness | null
+  providerIdentity: string | null
   httpApiSurfaces: ProviderSurfaceSpec[]
   selectedHttpSurface: ProviderSurfaceSpec | null
   setHttpSurfaceId: (id: string) => void
@@ -38,6 +41,8 @@ export function ChatSidebar({
   activeId,
   transport,
   setTransport,
+  readiness,
+  providerIdentity,
   httpApiSurfaces,
   selectedHttpSurface,
   setHttpSurfaceId,
@@ -101,17 +106,42 @@ export function ChatSidebar({
       <div className="flex items-center gap-1 border-muted border-b px-2 py-2">
         <Select
           selectSize="sm"
-          value={transport}
-          onChange={(e) => setTransport(e.target.value as Transport)}
+          value={transport ?? ''}
+          onChange={(e) => {
+            if (e.target.value) setTransport(e.target.value as Transport)
+          }}
           className="flex-1 text-xs"
         >
-          <option value="subprocess">Subprocess</option>
-          <option value="http_api">HTTP API</option>
-          <option value="local_llm">Local LLM</option>
+          <option value="" disabled>
+            {t('chat.no_ready_provider')}
+          </option>
+          <option value="subprocess">{t('aiReadiness.capability.chatSubprocess')}</option>
+          <option value="http_api">{t('aiReadiness.capability.chatHttpApi')}</option>
+          <option value="local_llm">{t('aiReadiness.capability.chatLocalLlm')}</option>
         </Select>
         <Button variant="primary" size="sm" onClick={onCreate} isLoading={creating} disabled={createDisabled}>
           <Plus className={iconSize.sm} />
         </Button>
+      </div>
+      <div
+        className="flex items-center justify-between gap-2 border-muted border-b px-3 py-1.5 text-[10px]"
+        data-testid="chat-provider-readiness"
+        data-transport={transport ?? 'none'}
+        data-readiness-status={readiness?.status ?? 'blocked'}
+      >
+        <span className={cn('truncate', colors.text.secondary)}>
+          {providerIdentity ?? t('chat.provider_unavailable')}
+        </span>
+        <Badge
+          size="xs"
+          className={
+            readiness?.status === 'ready'
+              ? 'bg-semantic-success/15 text-semantic-success'
+              : 'bg-semantic-warning/15 text-semantic-warning'
+          }
+        >
+          {readiness ? t(aiReadinessReasonCopyKey(readiness), readiness.reason_code) : t('chat.no_ready_provider')}
+        </Badge>
       </div>
 
       {/* Advanced settings toggle */}

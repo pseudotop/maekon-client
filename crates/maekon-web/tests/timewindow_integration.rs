@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! E2E test verifying TimeWindow flows correctly through REST → handler → service → storage layer.
 //!
 //! Per Phase 2 iter-1 C3 + typed error-code follow-up: assertions cover status

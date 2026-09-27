@@ -25,7 +25,7 @@ MaekonはONESHIMなしでも独立して利用できるApache-2.0 local-firstデ
 
 ## Source Buildクイックスタート
 
-公開リポジトリは利用可能で、このsource snapshotは`v0.0.1-rc.10` release candidate向けです。対応するGitHub Releaseとassetが実在する場合にのみ公開済みとして扱ってください。GitHubの`latest` endpointはprereleaseを除外するため、release binaryの検証ではinstall guideのversion固定commandを使用してください。開発とdebug buildはローカルのsource checkoutから実行します。
+公開リポジトリは利用可能で、このsource snapshotは`v0.0.1-rc.11` release candidate向けです。対応するGitHub Releaseとassetが実在する場合にのみ公開済みとして扱ってください。GitHubの`latest` endpointはprereleaseを除外するため、release binaryの検証ではinstall guideのversion固定commandを使用してください。開発とdebug buildはローカルのsource checkoutから実行します。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -51,8 +51,8 @@ cp target/debug/maekon-sandbox-worker \
 ## Maekonを選ぶ理由
 
 - **活動をガバナンスされたワークインサイトに整理**: コンテキスト、タイムライン、フォーカスパターン、中断、承認済み自動化パスをひとつの場所で追跡します。
-- **軽量なオンデバイス処理**: Edge処理（デルタエンコーディング、サムネイル、OCR）により転送量を削減し、高速なレスポンスを維持します。
-- **Global Alphaでデスクトップスタックを評価**: Prereleaseにはクロスプラットフォームソース、更新基盤、システムトレイ統合、ローカルWebダッシュボードが含まれます。利用前に対象buildとplatformを検証してください。
+- **軽量なオンデバイス処理**: Edge処理（デルタエンコーディング、サムネイル、macOS・WindowsのローカルOCR）により転送量を削減し、高速なレスポンスを維持します。
+- **Global Alphaでデスクトップスタックを評価**: Prereleaseにはクロスプラットフォームソース、更新基盤、システムトレイ統合（macOS・Windows）、ローカルWebダッシュボードが含まれます。利用前に対象buildとplatformを検証してください。
 
 ## 対象ユーザー
 
@@ -79,7 +79,7 @@ Global AlphaではStandaloneモードが現在のデフォルト評価パスで�
 
 - PIIフィルタリングレベル（Off/Basic/Standard/Strict）がビジョンパイプラインに適用されます
 - ローカルデータはSQLiteに保存され、保持ポリシーで管理されます
-- 自動化にはポリシー検証、サンドボックスプロファイル、ローカル監査ログが必要です
+- 自動化は既定でオフです。オンにすると、アクションはMaekonのポリシーゲートを通り、ローカル監査ログに記録されます。OSサンドボックスによる隔離は任意で、OSによって異なります（[プラットフォーム別の制限](#プラットフォーム別の制限)を参照）
 - セキュリティ報告および対応ポリシー: [SECURITY.md](./SECURITY.md)
 - Alphaフィードバック・プライバシー要求・参加撤回（現在の受付状態）: [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - Standalone整合性ベースライン: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
@@ -103,7 +103,7 @@ Global AlphaではStandaloneモードが現在のデフォルト評価パスで�
 | メモリグラフが蓄積したユーザーに関する信念(claims)は閲覧・ワンクリック撤回が可能です (Privacy → Claims) | claimsルート: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | 同意はfail-closedです: 有効な同意がなければキャプチャしません | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
 | Vision pipelineの対象pathは、文書化された保存またはegress stepの前に設定済みPII filterを適用します | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
-| サポート対象の自動化実行pathはpolicy・sandbox・audit componentを通るよう設計されています | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+| 自動化アクションはコマンドゲートとローカル監査ログを通ります。OSサンドボックスによる隔離は有効にした場合にのみ適用されます | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
 
 ### ソース同期ポリシー
 
@@ -113,12 +113,12 @@ Global AlphaではStandaloneモードが現在のデフォルト評価パスで�
 
 ### コア機能
 - **リアルタイムコンテキストモニタリング**: アクティブウィンドウ、システムリソース、ユーザーアクティビティを追跡します
-- **Edgeイメージ処理**: スクリーンショットキャプチャ、デルタエンコーディング、サムネイル、OCR
-- **ポリシーゲート付き自動化**: 承認済みアクションをポリシー検査、サンドボックス隔離、監査ログ経由で実行します
+- **Edgeイメージ処理**: スクリーンショットキャプチャ、デルタエンコーディング、サムネイル、OCR（ローカルOCRはmacOS・Windows）
+- **ポリシーゲート付き自動化**: 既定でオフです。承認済みアクションをポリシー検査を通して実行し、ローカル監査ログに記録します。OSサンドボックスによる隔離は任意で、OSによって異なります
 - **サーバー連携機能（プレビュー / Opt-in）**: 確認可能な次の行動候補とフィードバック同期は段階的検証用に提供されており、デフォルトのStandaloneパスではありません
-- **システムトレイ**: バックグラウンドで実行され、クイックアクセスが可能です
+- **システムトレイ**（macOS・Windows）: バックグラウンドで実行され、クイックアクセスが可能です。Linuxにはまだトレイがありません。
 - **自動アップデート**: GitHub Releasesに基づく自動アップデート
-- **クロスプラットフォーム**: macOS、Windows、Linuxをサポートします
+- **クロスプラットフォーム**: macOS、Windows、Linuxで動作します。Linuxは機能が少なくなります（[プラットフォーム別の制限](#プラットフォーム別の制限)を参照）
 
 ### ローカルWebダッシュボード (http://localhost:10090)
 - **ダッシュボード**: リアルタイムシステム指標、CPU/メモリチャート、アプリ使用時間
@@ -137,7 +137,22 @@ Global AlphaではStandaloneモードが現在のデフォルト評価パスで�
 ## 動作要件
 
 - Rust 1.88.0以降
-- macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
+- macOS 10.15+ / Windows 10+ / Linux x64（X11推奨。Waylandではトラッキングパネル、オーバーレイ、「次のステップを探す」を利用できません）
+
+### プラットフォーム別の制限
+
+すべての機能がすべてのOSで使えるわけではありません。下の表は現在のソースに基づきます。「未確認」はrelease buildでまだ確認していないことを示します。
+
+| 機能 | macOS | Windows | Linux (X11) | Linux (Wayland) |
+| --- | --- | --- | --- | --- |
+| システムトレイ | 対応 | 対応 | なし | なし |
+| トラッキングパネルと「次のステップを探す」 | 対応 | 対応 | 対応（未確認） | なし |
+| オーバーレイ | 対応 | 対応 | 対応（未確認） | なし |
+| ローカルOCR | 対応（Vision） | 対応（Windows OCR） | なし | なし |
+| グローバルショートカット | 対応 | 対応 | 対応 | なし（未確認） |
+| 認証情報の保存 | キーチェーン | 資格情報マネージャー | カーネルキーリング。再起動後の保持は未確認 | X11と同じ |
+
+自動化とOSサンドボックスはどちらも既定でオフです。サンドボックスをオンにした場合の隔離の強さはOSによって異なります。
 
 ## 開発者向けクイックスタート（ソースからビルド）
 
@@ -242,22 +257,22 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 
 ### クイックインストール（ターミナル）
 
-対応するGitHub Releaseにassetが公開された後で、以下の`v0.0.1-rc.10`固定commandを実行してください。
+対応するGitHub Releaseにassetが公開された後で、以下の`v0.0.1-rc.11`固定commandを実行してください。
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
 ```
 
 ### リリースアセット

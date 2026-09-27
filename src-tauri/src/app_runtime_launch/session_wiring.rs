@@ -1,3 +1,5 @@
+#[cfg(feature = "analysis")]
+use crate::provider_runtime_context::ProviderRuntimeContext;
 use crate::scheduler::shared_regime_state::SharedRegimeState;
 use crate::session_context::SessionContextAssembler;
 use crate::session_manager::SessionManagerImpl;
@@ -39,7 +41,8 @@ pub(super) fn build_session_manager(
     runtime_handle: &tokio::runtime::Handle,
     sqlite_storage: Arc<maekon_storage::sqlite::SqliteStorage>,
     config: &maekon_core::config::AppConfig,
-    data_dir_path: &std::path::Path,
+    // #12563: its provider secret stores are the ones the LLM resolver reads.
+    #[cfg(feature = "analysis")] provider_context: &ProviderRuntimeContext,
     shared_regime_state: Arc<SharedRegimeState>,
     consent_manager: Arc<dyn ConsentManagerPort>,
     // D7 (#4812 / E20-20): the single shared workspace-wide circuit-breaker
@@ -114,20 +117,6 @@ pub(super) fn build_session_manager(
         shared_regime_state,
     ));
 
-    let secret_store = {
-        let config_dir = maekon_core::config_manager::ConfigManager::config_dir()
-            .unwrap_or_else(|_| data_dir_path.to_path_buf());
-        let os_store = crate::provider_secret_backend::create_os_secret_store(&config_dir);
-        match crate::provider_secret_backend::resolve_provider_secret_backend(&config_dir, os_store)
-        {
-            Ok(r) => r.secret_store,
-            Err(e) => {
-                tracing::debug!("provider secret backend unavailable: {e}");
-                None
-            }
-        }
-    };
-
     // E21 #4882/#4883: privacy guard for external chat sessions. Reuses the
     // session audit logger for the egress audit trail and a dedicated process
     // monitor for the active-window/sensitive-app gate.
@@ -176,8 +165,12 @@ pub(super) fn build_session_manager(
     };
 
     let mut manager = SessionManagerImpl::new(session_config, audit_port, Some(context_assembler));
-    if let Some(store) = secret_store {
-        manager = manager.with_secret_store(store);
+    // #12563: HTTP Chat resolves each key from the store its binding names, not
+    // from a second store picked by `MAEKON_PROVIDER_SECRET_BACKEND` alone. Builds
+    // without `analysis` have no HttpApi credential path and keep the empty set.
+    #[cfg(feature = "analysis")]
+    {
+        manager = manager.with_secret_stores(provider_context.provider_secret_stores.clone());
     }
     manager = manager.with_app_handle(app_handle.clone());
     manager = manager.with_privacy_guard(privacy_guard);

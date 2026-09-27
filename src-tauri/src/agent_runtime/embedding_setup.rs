@@ -5,6 +5,7 @@ use crate::provider_adapters::ExternalOcrPrivacyGuard;
 use maekon_core::config::AppConfig;
 use maekon_core::config::PiiFilterLevel;
 use maekon_core::error::CoreError;
+use maekon_core::models::ai_summary::{AiSummaryFailureReason, AiSummaryProviderClass};
 #[cfg(feature = "analysis")]
 use maekon_core::ports::secret_store::SecretStoreSet;
 
@@ -238,6 +239,8 @@ pub(super) fn loopback_embedding_target(
 pub(super) struct EmbeddingComponents {
     pub embedding_pipeline: Option<Arc<maekon_analysis::EmbeddingPipeline>>,
     pub llm_summarizer: Option<Arc<maekon_analysis::LlmSegmentSummarizer>>,
+    pub llm_summary_provider_class: Option<AiSummaryProviderClass>,
+    pub llm_summary_unavailable_reason: Option<AiSummaryFailureReason>,
     /// EmbeddingProvider to wire into scheduler.
     pub embedding_provider:
         Option<Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>>,
@@ -275,8 +278,56 @@ pub(super) fn build_embedding_components(
     // one Arc, so co-located endpoints share a breaker.
     breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
 ) -> EmbeddingComponents {
+    let summary_registry = breaker_registry.clone();
+    #[cfg(feature = "analysis")]
+    let summary_stores = secret_stores;
+    #[cfg(not(feature = "analysis"))]
+    let summary_stores: Option<&()> = None;
+    build_embedding_components_with_summary_resolver(
+        config,
+        vector_store_opt,
+        #[cfg(feature = "analysis")]
+        secret_stores,
+        #[cfg(feature = "analysis")]
+        egress_ledger,
+        breaker_registry,
+        || {
+            crate::agent_runtime::analysis_helpers::build_analysis_provider(
+                &config.ai_provider,
+                config.privacy.pii_filter_level,
+                external_llm_privacy_guard,
+                summary_stores,
+                summary_registry,
+            )
+            .map(|(provider, _)| provider)
+        },
+    )
+}
+
+// The production resolver is supplied above; tests can supply inert CLI probes
+// without executing installed CLIs or changing process-wide discovery state.
+fn build_embedding_components_with_summary_resolver(
+    config: &AppConfig,
+    vector_store_opt: Option<Arc<dyn maekon_core::ports::vector_store::VectorStore>>,
+    #[cfg(feature = "analysis")] secret_stores: Option<&SecretStoreSet>,
+    #[cfg(feature = "analysis")] egress_ledger: Option<
+        Arc<dyn maekon_core::ports::egress_ledger::EgressLedgerSink>,
+    >,
+    breaker_registry: Arc<crate::breaker_registry::CircuitBreakerRegistry>,
+    resolve_summary: impl FnOnce() -> Option<
+        Arc<dyn maekon_core::ports::analysis_provider::AnalysisProvider>,
+    >,
+) -> EmbeddingComponents {
     let mut embedding_pipeline_arc: Option<Arc<maekon_analysis::EmbeddingPipeline>> = None;
     let mut llm_summarizer_arc: Option<Arc<maekon_analysis::LlmSegmentSummarizer>> = None;
+    let summary_provider_class = super::summary_provider_class::classify(config);
+    let mut summary_unavailable_reason = Some(
+        if config.analysis.embedding.enabled && config.analysis.embedding.llm_summary_enabled {
+            AiSummaryFailureReason::ProviderUnavailable
+        } else {
+            AiSummaryFailureReason::PipelineDisabled
+        },
+    );
     let mut embedding_provider_out: Option<
         Arc<dyn maekon_core::ports::embedding_provider::EmbeddingProvider>,
     > = None;
@@ -510,19 +561,9 @@ pub(super) fn build_embedding_components(
 
             // Build LlmSegmentSummarizer if LLM summary is enabled.
             //
-            // Two-path resolution (Decision 4, C2 #5722):
-            //
-            // Primary: llm_api Some → build_analysis_provider (existing path,
-            //   supports all configured providers + GuardedAnalysisProvider).
-            //   Triggered only when llm_api is NOT None.
-            //
-            // Fallback: llm_api None AND primary did NOT fire (i.e. no guard-missing
-            //   fail-closed was involved) → build_local_ollama_summary_provider:
-            //   loopback-pinned, catalog-default Ollama, no active-window gate.
-            //   The fallback is explicitly triggered by `config.ai_provider.llm_api
-            //   .is_none()` to avoid silently routing guard-missing or misconfigured
-            //   provider failures to loopback Ollama (regression risk documented in
-            //   verify.missing_hops[3]).
+            // #12338: CLI mode resolves its selected transport even without an
+            // HTTP endpoint. Only LocalModel without an endpoint may use the
+            // catalog Ollama fallback; a missing CLI must stay unavailable.
             //
             // Note: llm_summary is guarded by `llm_summary_enabled` (default false,
             //   explicit opt-in) + `embedding.enabled` (also default false). On
@@ -532,28 +573,13 @@ pub(super) fn build_embedding_components(
             if embedding_config.llm_summary_enabled {
                 let pii_level_summ = config.privacy.pii_filter_level;
 
-                // Normalise the secret_stores reference so it has the right type
-                // in both `analysis` and `not(analysis)` builds.  In `analysis`
-                // builds the parameter is `Option<&SecretStoreSet>`; in other
-                // builds the `not(analysis)` fallback of `build_analysis_provider`
-                // expects `Option<&()>`, so we supply `None::<&()>`.
-                #[cfg(feature = "analysis")]
-                let secret_stores_for_summary = secret_stores;
-                #[cfg(not(feature = "analysis"))]
-                let secret_stores_for_summary: Option<&()> = None;
-
                 let analysis_provider: Option<
                     Arc<dyn maekon_core::ports::analysis_provider::AnalysisProvider>,
-                > = if config.ai_provider.llm_api.is_some() {
-                    // Primary path: configured llm_api → build_analysis_provider.
-                    crate::agent_runtime::analysis_helpers::build_analysis_provider(
-                        &config.ai_provider,
-                        pii_level_summ,
-                        external_llm_privacy_guard.clone(),
-                        secret_stores_for_summary,
-                        breaker_registry.clone(),
-                    )
-                    .map(|(p, _)| p)
+                > = if config.ai_provider.llm_api.is_some()
+                    || config.ai_provider.access_mode.normalized_for_ai_surfaces()
+                        == maekon_core::config::AiAccessMode::ProviderSubscriptionCli
+                {
+                    resolve_summary()
                 } else {
                     None
                 }
@@ -563,7 +589,10 @@ pub(super) fn build_embedding_components(
                     // filtered via pii_filter_summ + VisionPiiSanitizer inside the
                     // provider. Not routed through GuardedAnalysisProvider (no active-
                     // window gate needed for loopback device-local egress — MG-PII-03/AC8).
-                    if config.ai_provider.llm_api.is_none() {
+                    if config.ai_provider.llm_api.is_none()
+                        && config.ai_provider.access_mode.normalized_for_ai_surfaces()
+                            == maekon_core::config::AiAccessMode::LocalModel
+                    {
                         crate::agent_runtime::analysis_helpers::build_local_ollama_summary_provider(
                             pii_level_summ,
                             breaker_registry.clone(),
@@ -579,19 +608,19 @@ pub(super) fn build_embedding_components(
                             maekon_vision::privacy::sanitize_title_with_level(text, pii_level_summ)
                         });
                     let min_duration = embedding_config.min_segment_for_summary_secs;
-                    llm_summarizer_arc =
-                        Some(Arc::new(maekon_analysis::LlmSegmentSummarizer::new(
+                    llm_summarizer_arc = Some(Arc::new(
+                        maekon_analysis::LlmSegmentSummarizer::new_with_provider_class(
                             provider,
                             pii_filter_summ,
                             true,
                             min_duration,
-                        )));
+                            summary_provider_class,
+                        ),
+                    ));
+                    summary_unavailable_reason = None;
                     info!("LLM segment summarizer enabled");
                 } else {
-                    // No provider yielded — neither llm_api configured nor local
-                    // Ollama fallback available (embedding feature absent, or
-                    // new_local_enrichment refused the derived endpoint).
-                    warn!("LLM summary enabled but no LLM provider available (configure llm_api or ensure Ollama is accessible)");
+                    warn!("LLM summary enabled but the selected provider is unavailable");
                 }
             }
 
@@ -618,6 +647,8 @@ pub(super) fn build_embedding_components(
     EmbeddingComponents {
         embedding_pipeline: embedding_pipeline_arc,
         llm_summarizer: llm_summarizer_arc,
+        llm_summary_provider_class: Some(summary_provider_class),
+        llm_summary_unavailable_reason: summary_unavailable_reason,
         embedding_provider: embedding_provider_out,
         vector_store: vector_store_out,
         reloadable_model: reloadable_model_out,
@@ -1054,6 +1085,10 @@ mod target_resolver_tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "analysis", not(feature = "embedding")))]
+#[path = "embedding_setup_summary_tests.rs"]
+mod summary_tests;
 
 #[cfg(all(test, not(feature = "embedding")))]
 mod tests {

@@ -89,6 +89,11 @@ impl AuditLogger {
         self
     }
 
+    /// Configured sink prerequisite; not queue acceptance or database commit.
+    pub(crate) fn has_persistence(&self) -> bool {
+        self.persistence.is_some()
+    }
+
     /// Attach a query handle for historical (storage-backed) audit lookup.
     ///
     /// When set, [`Self::entries_by_command_id`] falls through to this query

@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { type AppSettings, CONSENT_QUERY_KEY, getConsent } from '../../api/client'
+import { AiReadinessNotice } from '../../components/AiReadinessNotice'
 import { Alert, Card, CardTitle, GuidancePanel, Input } from '../../components/ui'
+import { useAiReadinessSnapshot } from '../../hooks/useAiReadinessSnapshot'
 import { colors, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useLoadedFormData, useSettingsFormContext } from '../settings/SettingsFormContext'
@@ -53,6 +55,7 @@ export default function AdvancedTab() {
   const { t } = useTranslation()
   const { form } = useSettingsFormContext()
   const formData = useLoadedFormData()
+  const aiReadinessSnapshot = useAiReadinessSnapshot()
 
   // #9687: the tiered-memory pipeline is gated on this consent in addition to
   // its own toggle. Read-only here — granting stays on Privacy → Data Controls.
@@ -79,14 +82,16 @@ export default function AdvancedTab() {
     })
   }
 
-  // G2a (#8059): the three config flags that make up the discoverable "AI
-  // features" bundle — local embedding, the on-device AI daily-digest
-  // narrative, and semantic search (which needs embedding wired). The master
-  // toggle flips all three atomically (on → all on; off → all off); the
+  // #11738: the four config flags required by the summary pipeline. Consent is
+  // deliberately not part of this transaction and remains a separate action.
+  // The master toggle flips all four atomically (on → all on; off → all off); the
   // individual power-user toggles below stay in sync. Checkbox has no
-  // indeterminate state, so the master reads ON only when all three are on.
+  // indeterminate state, so the master reads ON only when all four are on.
   const aiFeaturesAllOn =
-    formData.analysis.enabled && formData.analysis.embedding_enabled && formData.analysis.llm_summary_enabled
+    formData.analysis.enabled &&
+    formData.analysis.tiered_memory_enabled &&
+    formData.analysis.embedding_enabled &&
+    formData.analysis.llm_summary_enabled
 
   const handleEnableAiFeatures = (value: boolean) => {
     form.setFormData((prev) => {
@@ -96,6 +101,7 @@ export default function AdvancedTab() {
         analysis: {
           ...prev.analysis,
           enabled: value,
+          tiered_memory_enabled: value,
           embedding_enabled: value,
           llm_summary_enabled: value,
         },
@@ -218,10 +224,8 @@ export default function AdvancedTab() {
       <Card variant="default" padding="lg">
         <CardTitle sticky>{t('settings.advanced.analysis', 'Analysis Pipeline')}</CardTitle>
         <div className="space-y-4">
-          {/* G2a (#8059): master "Enable AI features" toggle — flips analysis,
-              embedding, and llm_summary together so the built-but-hidden AI
-              features (semantic search, AI daily-digest narrative) are
-              discoverable in one click. Everything runs on-device. */}
+          {/* #11738: prepare every config prerequisite atomically. The readiness
+              notice still owns provider, consent, build, and restart truth. */}
           <div className={cn('rounded-lg border border-brand-signal/40 bg-brand-signal/5 p-4', motion.colors)}>
             <ToggleRow
               label={t('advancedTab.aiFeaturesMaster')}
@@ -229,6 +233,15 @@ export default function AdvancedTab() {
               checked={aiFeaturesAllOn}
               onChange={handleEnableAiFeatures}
             />
+            {aiFeaturesAllOn && (
+              <AiReadinessNotice
+                snapshot={aiReadinessSnapshot}
+                capabilityIds={['segment_summary', 'daily_narrative']}
+                showReady
+                compact
+                className="mt-3"
+              />
+            )}
           </div>
           <ToggleRow
             label={t('advancedTab.enableAnalysis')}
@@ -236,6 +249,9 @@ export default function AdvancedTab() {
             checked={formData.analysis.enabled}
             onChange={(v) => handleChange('analysis', 'enabled', v)}
           />
+          {aiReadinessSnapshot && (
+            <AiReadinessNotice snapshot={aiReadinessSnapshot} capabilityIds={['ocr.suggestion_analysis']} compact />
+          )}
           <div className="grid grid-cols-2 gap-4">
             <NumberField
               id="analysis-interval"

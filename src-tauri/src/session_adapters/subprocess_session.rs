@@ -23,6 +23,7 @@ use maekon_core::models::ai_session::{
 };
 use maekon_core::ports::conversation_session::{ConversationSession, ResponseStream};
 
+use crate::session_adapters::invocation_policy::InvocationPolicy;
 use crate::session_adapters::prompt_payload::{
     extract_native_response_schema, render_conversation_prompt, render_message_payload,
 };
@@ -41,6 +42,7 @@ pub struct GenericSubprocessSession {
     /// Catalog invocation mode that drives conversation dispatch (E21 #4864 B3
     /// SSOT) — replaces hard-coded `surface_id` string comparisons.
     invocation_mode: maekon_api_contracts::provider_specs::SubprocessInvocationMode,
+    policy: InvocationPolicy,
     provider_name: String,
     model: String,
     system_prompt: Option<String>,
@@ -65,7 +67,7 @@ impl GenericSubprocessSession {
         config: &SessionConfig,
         session_config: Arc<AiSessionConfig>,
         default_tools: Option<Vec<ToolDefinition>>,
-    ) -> Self {
+    ) -> Result<Self, CoreError> {
         let model = config
             .model
             .clone()
@@ -93,10 +95,12 @@ impl GenericSubprocessSession {
                     maekon_api_contracts::provider_specs::SubprocessInvocationMode::ManualChatGui,
                 );
 
-        Self {
+        let policy = InvocationPolicy::resolve(config, invocation_mode)?;
+        Ok(Self {
             session_id: Uuid::new_v4().to_string(),
             surface,
             invocation_mode,
+            policy,
             provider_name,
             model,
             system_prompt: config.system_prompt.clone(),
@@ -111,7 +115,7 @@ impl GenericSubprocessSession {
             max_history_turns: session_config.max_history_turns,
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
-        }
+        })
     }
 
     /// Catalog invocation mode driving conversation dispatch (B3 SSOT).
@@ -160,6 +164,7 @@ impl GenericSubprocessSession {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_oneshot_flags(&mut child, &self.surface.surface_id);
+        self.policy.append_command_flags(&mut child);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
         append_codex_reasoning_effort(&mut child, &self.surface.surface_id);
 
@@ -206,6 +211,7 @@ impl GenericSubprocessSession {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_oneshot_flags(&mut command, &self.surface.surface_id);
+        self.policy.append_command_flags(&mut command);
         append_model_flag(&mut command, &self.surface.surface_id, &self.model);
 
         let child = command.spawn().map_err(|err| CoreError::Internal {
@@ -249,6 +255,7 @@ impl GenericSubprocessSession {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_oneshot_flags(&mut command, &self.surface.surface_id);
+        self.policy.append_command_flags(&mut command);
         append_model_flag(&mut command, &self.surface.surface_id, &self.model);
 
         let mut child = command.spawn().map_err(|err| CoreError::Internal {
@@ -441,6 +448,7 @@ impl GenericSubprocessSession {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         append_oneshot_flags(&mut child, &self.surface.surface_id);
+        self.policy.append_command_flags(&mut child);
         append_model_flag(&mut child, &self.surface.surface_id, &self.model);
         append_codex_reasoning_effort(&mut child, &self.surface.surface_id);
 
@@ -1257,7 +1265,7 @@ mod tests {
             surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
             model: Some("gpt-5.4".to_string()),
             system_prompt: None,
-            tools_enabled: false,
+            tools_enabled: true,
             cwd: None,
             sandbox_policy: None,
             approval_policy: None,
@@ -1270,7 +1278,8 @@ mod tests {
             &config,
             Arc::new(AiSessionConfig::default()),
             None,
-        );
+        )
+        .expect("enabled session");
 
         session.terminate().await;
 
@@ -1348,29 +1357,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gemini_session_result_includes_usage_for_budget() {
+    async fn gemini_first_turn_produces_exactly_one_terminal_assistant_response_with_usage() {
         let temp_dir = tempdir().expect("tempdir");
         let executable_path = write_fake_gemini_session_cli(temp_dir.path());
         let session = gemini_session_with_executable(executable_path);
         let mut stream = session
-            .send_message(&basic_session_message("budget me"))
+            .send_message(&basic_session_message("Reply with READY."))
             .await
             .expect("fake Gemini session should start");
 
-        let item = stream
-            .next()
-            .await
-            .expect("stream should yield result")
-            .expect("result should not error");
-
-        match item {
-            OutboundMessage::Result { usage, .. } => {
-                let usage = usage.expect("Gemini session must not bypass token budget");
-                assert!(usage.input_tokens > 0);
-                assert!(usage.output_tokens > 0);
+        let mut terminal_responses = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("fake subprocess stream should not error") {
+                OutboundMessage::Result {
+                    content,
+                    done: true,
+                    usage,
+                } => {
+                    let usage = usage.expect("Gemini session must not bypass token budget");
+                    assert!(usage.input_tokens > 0);
+                    assert!(usage.output_tokens > 0);
+                    terminal_responses.push(content);
+                }
+                OutboundMessage::Text { .. } => {}
+                other => panic!("unexpected message: {other:?}"),
             }
-            other => panic!("unexpected message: {other:?}"),
         }
+
+        assert_eq!(terminal_responses.len(), 1);
+        assert!(terminal_responses[0].contains("Reply with READY."));
     }
 
     #[test]
@@ -1395,6 +1410,7 @@ mod tests {
             },
             invocation_mode:
                 maekon_api_contracts::provider_specs::SubprocessInvocationMode::GeminiCliPrompt,
+            policy: InvocationPolicy { approval: None },
             provider_name: "google".to_string(),
             model: "gemini-2.5-pro".to_string(),
             system_prompt: Some("Be concise.".to_string()),
@@ -1475,14 +1491,15 @@ mod tests {
                 surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
                 model: None,
                 system_prompt: None,
-                tools_enabled: false,
+                tools_enabled: true,
                 cwd: None,
                 sandbox_policy: None,
                 approval_policy: None,
             },
             Arc::new(AiSessionConfig::default()),
             None,
-        );
+        )
+        .expect("enabled Codex session");
         assert_eq!(
             codex.invocation_mode(),
             SubprocessInvocationMode::CodexExecJson
@@ -1498,14 +1515,15 @@ mod tests {
                 surface_id: Some("provider_surface.google.subprocess_cli".to_string()),
                 model: None,
                 system_prompt: None,
-                tools_enabled: false,
+                tools_enabled: true,
                 cwd: None,
                 sandbox_policy: None,
                 approval_policy: None,
             },
             Arc::new(AiSessionConfig::default()),
             None,
-        );
+        )
+        .expect("enabled Gemini session");
         assert_eq!(
             gemini.invocation_mode(),
             SubprocessInvocationMode::GeminiCliPrompt
@@ -1532,6 +1550,40 @@ mod tests {
         assert_eq!(output, format!("STDIN_OK:{prompt}"));
     }
 
+    #[tokio::test]
+    async fn subprocess_policy_nonstream_native_writers_preserve_approval_and_history() {
+        use crate::session_adapters::policy_tests::{config, InertCli, CODEX, GEMINI};
+
+        for (surface, kind, approval) in [
+            (CODEX, "codex", None),
+            (CODEX, "codex", Some("never")),
+            (CODEX, "codex", Some("on-request")),
+            (GEMINI, "gemini", None),
+        ] {
+            let fixture = InertCli::new(kind, approval);
+            let mut request = config(surface);
+            request.approval_policy = approval.map(str::to_string);
+            let session = GenericSubprocessSession::new(
+                fixture.surface(surface),
+                &request,
+                Arc::new(AiSessionConfig::default()),
+                None,
+            )
+            .expect("verified native policy");
+            assert!(session.history.read().await.is_empty());
+            assert_eq!(session.info().turn_count, 0);
+            let output = session
+                .invoke_surface("policy prompt")
+                .await
+                .expect("inert output");
+            assert!(output.contains("POLICY_OK"));
+            assert!(fixture.spawned());
+            // The nonstream writer itself has no conversation-state effects.
+            assert!(session.history.read().await.is_empty());
+            assert_eq!(session.info().turn_count, 0);
+        }
+    }
+
     fn basic_session_message(content: &str) -> SessionMessage {
         SessionMessage {
             screen_derived: false,
@@ -1553,6 +1605,7 @@ mod tests {
             },
             invocation_mode:
                 maekon_api_contracts::provider_specs::SubprocessInvocationMode::GeminiCliPrompt,
+            policy: InvocationPolicy { approval: None },
             provider_name: "google".to_string(),
             model: "gemini-2.5-pro".to_string(),
             system_prompt: None,
@@ -1661,7 +1714,7 @@ fn main() {
             surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
             model: Some("gpt-5.4".to_string()),
             system_prompt: None,
-            tools_enabled: false,
+            tools_enabled: true,
             cwd: None,
             sandbox_policy: None,
             approval_policy: None,
@@ -1674,7 +1727,8 @@ fn main() {
             &config,
             Arc::new(AiSessionConfig::default()),
             None,
-        );
+        )
+        .expect("enabled session");
         assert!(session.is_external());
     }
 
@@ -1689,7 +1743,7 @@ fn main() {
                 surface_id: Some("provider_surface.openai.subprocess_cli".to_string()),
                 model: model.map(str::to_string),
                 system_prompt: None,
-                tools_enabled: false,
+                tools_enabled: true,
                 cwd: None,
                 sandbox_policy: None,
                 approval_policy: None,
@@ -1697,6 +1751,7 @@ fn main() {
             Arc::new(AiSessionConfig::default()),
             None,
         )
+        .expect("enabled session")
     }
 
     #[test]

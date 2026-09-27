@@ -289,3 +289,162 @@ Web UI
 - `docs/contracts/automation-event-contract.ko.md`
 - `docs/crates/maekon-web.ko.md`
 - `docs/crates/maekon-automation.ko.md`
+
+
+## Update 2026-09-20 — Guard를 통과하는 비동기 후보 판단
+
+### 맥락과 결정
+
+구조화 원격 모델은 닫힌 후보 집합을 정렬할 수 있지만 결과가 사용자 확인이나 실행
+capability는 아니다. 이 ADR의 기존 proposal 단계를 확장하고 평행 장면 모델이나 새 실행
+경로를 만들지 않는다. 이 dated amendment는 정상 PR merge로 발효한다. 구현과 provider/
+데이터 승인은 별도 gate다.
+
+1. `maekon-core`가 async `CandidateDecisionPort`와 typed request/binding/candidate/outcome을
+   소유한다. `maekon-network`는 HTTP adapter, `src-tauri`는 guard와 composition을 소유한다.
+   automation은 core port에만 의존한다. 자유 생성 `LlmProvider`와 동기 로컬
+   `WorkTypeClassifier`의 계약은 유지한다.
+2. 기존 `GuiCandidate`/`UiSceneElement`에서 최소 opaque ID와 정제한 의미 설명을 projection한다.
+   원래 goal hash, local candidate binding hash, scene/frame generation, consent/policy revision,
+   monotonic deadline은 로컬에 둔다. 정제로 다른 목표가 같아질 수 있으므로 송신 payload hash가
+   원래 binding을 대신하지 않는다.
+3. 결과는 `selected`, `none`, `delegate`, `unavailable`이다. none은 적합한 후보 없음,
+   unavailable은 정책/실행/오류, delegate는 별도 판단 요청이며 다른 provider를 자동 호출하지 않는다.
+   selected는 현재 후보를 가리키며 capability를 부여하지 않는다.
+4. 인식 confidence, Choice 상대 확률, 분포 confidence, 선택 후보의 Noul suitability를 분리한다.
+   Noul confidence나 생성 rationale을 꾸며내지 않는다. Choice 다음 Noul은 실제 선택한 후보를
+   평가하고 두 호출을 모두 계상하며 중간에 guard를 재검증한다. test 공개 전에 threshold를 동결한다.
+5. 모든 요청과 cache hit 전에 현재 동의, 민감 앱/제외 정책, 최소 payload, endpoint, 자격,
+   audit, 예산을 검증한다. off/local-only/승인 부재/audit 부재이면 외부 호출 0이다.
+   기존 LLM decorator가 이 port를 자동 보호하지 않는다. composition은 raw network client가
+   아니라 guard로 감싼 port만 노출한다.
+6. HTTP await 동안 lock을 유지하지 않는다. 각 await 뒤 목표/후보/generation/policy·consent
+   revision/monotonic 만료를 다시 읽고 다르면 폐기한다. 허용된 in-flight 요청 뒤 철회는 새 호출과
+   결과 재사용을 막는다. best-effort 취소로 이미 발생한 호출/비용을 지우지 않는다.
+7. wire DTO에는 좌표/rect, 실제 입력할 본문, raw screenshot/AX, ticket/nonce/signature,
+   capability/API key/임의 metadata가 없다. goal·라벨·제목도 정제한다. 자격은 승인된 인증
+   헤더에만 두며 payload/raw provider 오류/비밀이 든 Debug를 로그에 남기지 않는다.
+   구조 검증 통과는 정책 허가 증거가 아니다.
+8. principal/provider/endpoint/model/rubric/schema, 허가 revision, input/candidate hash와 local
+   binding으로 cache를 분리한다. 계정 간 또는 만료 snapshot의 결과를 재사용하지 않는다.
+   해시는 결속이지 익명화가 아니다. cache hit에서도 현재 동의를 재검증한다.
+9. 중복/누락/추가 ID, 후보 밖 선택, 비유한 값, 잘못된 분포, Choice/argmax 불일치, 관측 모델
+   불일치, 잘못된 usage와 과대 응답을 거부한다. 요청/응답 bytes, timeout, retry 횟수, 총예산을
+   제한하고 숨겨진 재시도 없이 모든 시도를 기록한다.
+10. 추천 뒤에도 highlight → confirm → 서명 ticket → 최신 focus/policy 검증 → execute를 유지한다.
+    이 port는 deny를 약화하거나 사용자를 대신해 확인하거나 ticket/미검증 Skill을 활성화할 수 없다.
+    초기 runtime composition은 사용자 추천/실행 경로에 대해 비활성이다.
+
+### 대안과 결과
+
+생성 의도 port에 후보 선택을 넣으면 출력/권한 의미가 섞인다. automation의 직접 HTTP는 runtime
+보호를 우회한다. 평행 장면 모델은 기존 identity/최신성 소유권을 복제한다. 별도 core port와
+보호 adapter는 DTO/오류 분기·시험을 늘리지만 provider 변경을 automation 밖에 두고 기존 실행
+경계를 유지한다. proposal 단계 확장이므로 새 ADR 번호는 필요하지 않다.
+
+### 구현과 검증 경계
+
+예정 파일은 `crates/maekon-core/src/models/candidate_decision.rs`,
+`crates/maekon-core/src/ports/candidate_decision.rs`,
+`crates/maekon-network/src/candidate_decision_client.rs`,
+`src-tauri/src/provider_adapters/guarded_candidate_decision.rs` 및 module/composition 선언이다.
+이는 예정 경로이며 구현된 동작을 의미하지 않는다.
+
+off/local-only/거부 시 호출 수, 정제 wire capture, 응답 검증, cache 격리, 각 await 도중의
+철회/목표·후보·generation·TTL 변경 및 2차 적합성 호출 차단을 시험한다. 양성 대조와 guard
+제거 시 red가 되는 반증을 둔다. mock은 provider 성능이나 설치본 수락이 아니다. 실제 평가와
+데이터/예산 승인이 사용자 노출보다 앞서며, 실행에는 설치본 최신성·명시적 확인 증거가 계속 필요하다.
+
+## Update 2026-09-21 — 선택형 후보 판단 공급자
+
+Jev 호환은 Maekon 사용에 Jev 계정이나 유료 추론을 필수로 만들지 않는다.
+core 적격성 정책은
+[candidate_decision_policy.rs](../../crates/maekon-core/src/models/candidate_decision_policy.rs)에 둔다.
+상세 평가 계약은 내부 ONESHIM 저장소의
+`docs/development/ai-evaluation/candidate-decision-providers.md`다.
+이 amendment는 proposal 단계를 확장하며 정상 PR merge로 발효한다.
+
+1. core는 기본 Off인 순수 provider/mode/cost 적격성을 소유한다. 로컬 규칙, 검증된 loopback
+   모델, 사용자 소유 공식 Codex/Claude CLI, Jev direct, Jev Gateway는 별도 경로다.
+   subprocess도 클라우드로 전송할 수 있으므로 local-only 예외가 아니다.
+   암묵적인 다른 공급자·유료 fallback은 없다.
+2. CLI 인증 성공은 구독 billing 증거가 아니다. 최초 구독 경로는 확인된 구독 포함 관측과
+   사용자 요청을 요구한다. API-key billing, 비용 미확인, background CLI는 거부한다.
+   공식 CLI의 인증 방법을 변경하거나 중계하지 않는다.
+3. 프로모션은 만료가 있는 계정·endpoint·model 결속 가격 관측이며 영구 무료가 아니다.
+   만료 뒤에는 유료 API 허용 정책에서도 새 호출을 거부한다. 미관측 usage/cost는 unknown이다.
+4. Jev v1의 엄격한 Choice/Noul 의미를 보존한다. 후속 결과 계약은 Jev 분포, 모델 자기 보고,
+   로컬 휴리스틱, 미관측 증거를 분리한다. 다른 공급자의 결과에 Jev 확률을 만들어 넣지 않는다.
+5. 적격성은 전송·실행 권한이 아니다. 모든 adapter는 consent/privacy/audit/budget,
+   원 binding/deadline, 철회, cache 격리 검증을 유지한다. CLI adapter는 추가로 stream/file
+   상한·취소와 판단 전용 도구/MCP/plugin 제한 capability를 검증한다.
+6. 공급자 부재 때 수동 선택·확인 경로를 유지한다. 모델은 보류할 수 있고, 로컬 규칙이
+   모델 품질과 같다고 주장하지 않는다. Selected는 ticket·확인·Skill 활성화·실행 권한이 아니다.
+
+#12455는 이 계약과 순수 정책을 구현한다. #12456은 공통 결과와 로컬 runtime,
+#12457은 제한된 구독 CLI 판단, #12458은 선택형 Gateway transport와 가격을 소유한다.
+#12423은 공급자별 독립 동결 평가, #12424/#12425는 GUI·설치본 수락 gate를 유지한다.
+기존 #12176 동의 소유권과 모든 실행 guard는 계속 적용한다. 정책 단위 테스트와 38개
+설계 사례는 runtime·모델 품질·설치본 수락 증거가 아니다.
+
+
+### 공급자 중립 결과와 로컬 runtime (#12456)
+
+새 CandidateAssessmentPort는 기존 GUI 요청과 binding을 재사용한다.
+Selected에는 후보 ID만 들어간다. 태그 있는 증거는 로컬 exact-label 규칙,
+모델의 categorical 응답, 기존 Jev 분포를 구분한다. v1 호환 변환은 provider/model/rubric,
+Choice confidence·확률, 선택 후보 suitability, 원 attempt ID·비용, cache source,
+decision ID와 binding을 명시적으로 보존한다. 관측하지 못한 usage는 unknown으로 남긴다.
+
+공급자를 먼저 고른 후 필요한 HTTP 구성이나 secret 조회만 수행한다. Off는 실행 불가
+추천 결과를 반환한다. 명시한 LocalRules는 전역 AI 공급자와 독립적이며, 양끝 공백과
+대소문자를 정규화한 목표·라벨의 유일한 정확 일치만 선택한다. 일치 없음·동명·마스킹 충돌은
+보류하며 후보 순서나 recognition confidence로 동률을 깨지 않는다. 미지원 경로에서 유료
+fallback을 하지 않는다. 기존 종량제 Jev v1 경로에도 ExplicitPaidApiAllowed가 필요하다.
+
+로컬 runtime은 승인 없이 시작한다. 신뢰된 composition이 runtime당 한 번 만료·횟수 제한
+승인을 제공하고 최신 snapshot을 bind해야 한다. 재시작은 승인을 복원하지 않는다.
+A→B→A를 포함해 bind마다 epoch가 증가한다. 계정·모델·정책 변경은 영구 철회와 새 runtime을
+요구한다. 최초의 전체 consent/privacy revision을 고정하여 변경된 동의가 기존 승인을
+갱신하지 못한다. 로컬 데이터 권한은 full-text 동의와 민감/제외 화면 검사를 재사용하되
+공급자별 원격 gate와 독립적으로 판단한다. 이 판단 자체는 새 OCR 작업을 시작하지 않는다.
+
+시도 전과 비동기 관측·transport·audit 후에 현재 권한, 활성 창, 원 monotonic deadline을
+재검증한다. 불변 runtime clock anchor로 원 wall-clock 만료도 검사하여 절전 후 rebind나
+cache가 기한을 갱신하지 못하며, wall-clock 역행은 runtime을 영구 철회한다. Rust Instant만으로는
+절전 중 시간 경과가 보장되지 않는다(https://doc.rust-lang.org/std/time/struct.Instant.html).
+quota 예약은 원자적이며 취소나 감사 실패로 환급하지 않는다. 최종 publication은
+bind/revoke lock 안에서 재검사한다. 규칙 캐시도 현재 권한과 durable audit를 요구하고,
+원 deadline과 source decision을 보존하며 원 시도를 중복 기록하지 않는다. 모델 응답은
+캐시하지 않는다. 이는 추천 검사다. consumer는 확인·dispatch 때 현재 scene과 실행/동의
+gate를 다시 검증해야 한다(#12424/#12425, 기존 #12176 소유권 유지).
+
+선택형 Ollama adapter는 loopback/localhost origin만 허용하고 모든 해석 주소를 고정한다.
+proxy·redirect·retry를 금지하고 응답 크기를 제한한다. 정제된 후보 text와 요청별 ID만
+폐쇄된 categorical schema로 보내며 tools를 제공하지 않는다. 모델 다운로드·daemon 시작·
+원격 fallback을 하지 않는다. 신뢰된 daemon/configuration 승인은 정규 endpoint·model
+digest·만료와 결속한다. 추론 전후 cloud 비활성 상태와 설치된 비원격 weights를 확인하며,
+지원 여부가 불명확하거나 관측할 수 없으면 호출을 거부한다. 설치 tag의 접두사 없는
+SHA-256 hex digest는 신뢰한 승인의 정규 `sha256:` digest와 대조한다.
+
+loopback이나 이 probe만으로 임의 daemon의 신원 또는 설정 TOCTOU 부재가 증명되지는 않는다.
+승인 reference는 신뢰된 daemon/configuration 검증에서 나와야 하며 사용자 IPC의 자기
+주장이 될 수 없다. 여기서는 production 승인 발급자나 GUI consumer를 활성화하지 않으며,
+그 live 검증은 #12424/#12425에 남긴다. fixture 테스트는 실제 모델 품질·가격·계정 사용권·
+설치본 수락을 증명하지 않는다(#12423). CLI와 Gateway adapter는 #12457/#12458에 남는다.
+
+
+### Gateway 증거 타입과 정확한 가격 계산 (#12458, 첫 단계)
+
+core는 Gateway 계정·funding·routing·보고 비용·감사 증거를 별도 타입으로 정의하고,
+신뢰된 계정 관측·후보 평가 전송·영속 감사용 port를 둔다. TypeSafe-compatible endpoint와
+alias는 직접 Jev의 고정 모델과 구분한다. 관측하지 못한 비용과 confidence는 unknown이다.
+
+USD는 소수 12자리까지 정수 picoUSD로 계산한다. 입력·출력 token 요금과 고정 요청 수수료를
+모두 포함하며, 방향별 65,536 token 초과와 u64 금액 범위 초과를 거부한다. 예약액은 수수료를
+포함한 허용 최대 token 사용량으로 계산한다.
+
+이번 단계는 타입과 가격 계산만 제공한다. 증거 검증·계정 승인·HTTP 전송·영속 감사 구현·
+runtime 연결은 #12458에 남는다. 일반 factory는 여전히 Gateway를 거부하며 이번 변경으로
+계정 observer·키 조회·모델 호출·GUI consumer를 활성화하지 않는다. 공개 프로모션만으로
+계정 사용권이나 실효 비용 0을 증명하지 않는다.

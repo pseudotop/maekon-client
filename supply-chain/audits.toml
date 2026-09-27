@@ -76,6 +76,53 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.aes-gcm]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.11.0 -> 0.11.1"
+notes = """
+#11730 delta audit — aes-gcm 0.11.0 -> 0.11.1. License: Apache-2.0 OR MIT.
+Delta read in full: 5 files, +43/-19 (CHANGELOG, Cargo.toml, Cargo.toml.orig, README, src/lib.rs).
+
+Publisher note: 0.11.0 was published by user-id 267 (tarcieri), who this file already
+trusts via [[trusted.aes-gcm]]. 0.11.1 was published by `github:RustCrypto/AEADs`, a team
+account outside that trust entry, so the existing publisher trust does not carry over.
+This is a delta audit, not a trust extension.
+
+Non-code changes: CHANGELOG adds the 0.11.1 entry and retroactively reorganises the 0.11.0
+entries; README reorders badges. Neither carries meaning.
+
+Manifest changes:
+- `subtle` (v2) removed, `ctutils` (v0.4) added.
+- New optional feature `zeroize = ["dep:zeroize", "aes?/zeroize", "ghash/zeroize"]`.
+
+src/lib.rs has exactly two changes:
+
+1. The AEAD authentication-tag comparison switches its constant-time helper:
+   `use subtle::ConstantTimeEq;` -> `use ctutils::CtEq;`. The call site is unchanged
+   (`expected_tag[..TagSize::to_usize()].ct_eq(tag).into()`). This is the one
+   security-relevant line in the delta.
+2. A `#[cfg(feature = "zeroize")]` marker impl `ZeroizeOnDrop for AesGcm` with an empty
+   body; clearing is delegated to member drops (`Aes`, `Polyval`).
+
+Reachability measured, not assumed:
+- `ctutils 0.4.2` is already in this lockfile (pulled by other crates) and already carries
+  a safe-to-deploy audit in this file, so the swap introduces no unvetted crate. `subtle`
+  remains in the graph for other consumers.
+- The `zeroize` feature is NOT enabled for aes-gcm in this workspace: `cargo tree -i
+  aes-gcm -e features` shows only `default` -> `aes` from maekon-network / maekon-storage,
+  with zero `zeroize` occurrences. The new marker impl is therefore cfg-gated out of every
+  shipped target.
+
+Limitation recorded honestly: the existing `ctutils` audit is a capability and
+memory-safety check (no unsafe, no build script, no syscalls), not a timing analysis. The
+constant-time property of the tag comparison rests on RustCrypto's upstream authorship
+exactly as it did for `subtle` before this delta; this audit does not independently verify
+constant-time execution of either crate.
+
+No unsafe added, no build script, no new process/network/filesystem surface, no API
+removal."""
+
 [[audits.ahash]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -273,6 +320,38 @@ Reviewed against vendored registry source (whole crate; tests/benches/examples
 excluded). 2 unsafe: an `#[target_feature(enable="avx2")]` SIMD compression fn and its gated call site. AVX2 intrinsics, dispatched only when the feature is available (RustCrypto standard runtime detection). Sound; no memory-unsafety outside the gated SIMD path.
 No process/network/Command syscalls, no native (cc/cmake/bindgen) compilation.
 safe-to-deploy. Scope: per-crate unsafe-block + capability review.
+"""
+
+[[audits.argon2]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.6.0"
+notes = """
+#11848 exact-version full-source audit for PR #11840. License: MIT OR Apache-2.0;
+Rust 2024, MSRV 1.85, and no build script. Reviewed every Rust source file plus
+the crate feature graph (default alloc/getrandom/password-hash; optional kdf,
+parallel, rand_core, and zeroize). No process, filesystem, network, shell, FFI,
+or build-time execution capability was found.
+AUDIT SCOPE: full crate version; all targets and features reviewed.
+
+The unsafe surface is confined to three reviewed clusters. The custom zeroed
+Block allocator validates a non-zero array Layout, checks allocation failure,
+builds a slice with the same pointer/length, and deallocates exactly that Layout
+once. The parallel memory view holds a bounded non-null Block slice; Params
+enforces p_cost >= 1 and memory >= 8*p_cost, the outer pass/slice loops are
+serial synchronization boundaries, one view is created per lane, and runtime
+guards reject same-slice cross-lane reads and all out-of-segment writes. The AVX2
+compression call remains guarded by runtime cpufeatures detection. These
+invariants cover the unsafe Send/Sync and raw-pointer dereferences; no unguarded
+pointer escape was found.
+
+Exact crate tests passed on Windows for --all-features --all-targets: 6 unit,
+25 KAT, and 15 PHC tests (14 upstream ignored reference/oversize cases), with
+zero failures. --no-default-features also compiled and ran its zero-test targets.
+The KAT set covers Argon2d/i/id, versions 0x10/0x13, parallel lanes, wrong
+password, and different salt. Scope is memory safety, capability safety, PHC
+compatibility, and bundled algorithm vectors for this version; it is not an
+independent cryptographic proof.
 """
 
 [[audits.arrayvec]]
@@ -950,6 +1029,30 @@ and no process/network/Command syscalls in crate source. Pure safe-Rust →
 no memory-unsafety and no build-time or runtime code-execution / exfiltration
 vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
+"""
+
+[[audits.blake2]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.11.0"
+notes = """
+#11848 exact-version full-source audit for PR #11840. License: MIT OR Apache-2.0;
+Rust 2024, MSRV 1.85, and no build script. Reviewed all Rust source files and
+all alloc/reset/size_opt/zeroize features. No process, filesystem, network,
+shell, FFI, or build-time execution capability was found.
+AUDIT SCOPE: full crate version; all targets and features reviewed.
+
+The sole unsafe block converts an immutable reference to a repr(C) vector of
+four fully initialized u32/u64 fields into a byte slice of exactly size_of(Self).
+Those homogeneous fields introduce no uninitialized padding; the returned slice
+cannot outlive or mutate the vector. Compression, parameter sizing, keyed/unkeyed
+initialization, reset, and zeroization paths otherwise use safe bounded slices.
+Exact all-feature stable tests passed: 4 MAC, 1 BLAKE2b KAT, 3 personalization,
+and 2 keyed-API unkeyed-mode tests (10/10, zero failures); Argon2's all-feature
+suite additionally exercised BLAKE2b across 40 passing KAT/PHC cases. The
+upstream benchmark target alone requires nightly #![feature(test)] and was
+therefore excluded from the stable test run. Scope is memory/capability safety
+and bundled vectors for this version, not an independent cryptographic proof.
 """
 
 [[audits.block-buffer]]
@@ -2110,6 +2213,26 @@ Major version aligned with spki/pkcs8 0.8 family. Same scope as 0.7.x.
 MIT OR Apache-2.0. No active RustSec advisories.
 """
 
+[[audits.der]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.8.0 -> 0.8.2"
+notes = """
+Delta audit der 0.8.0 -> 0.8.2 (0.8.0 is yanked upstream; cargo-deny yanked finding).
+Reviewed `cargo vet diff der 0.8.0 0.8.2` (16 files, +813/-147): no `unsafe`, no build
+script, no ambient capability. Behavior changes: (1) `der_sort` moves from a hand-rolled
+O(n^2) insertion sort to `sort_unstable_by`, closing the quadratic-time decode DoS on a
+crafted reverse-sorted SET OF (RustCrypto/formats#2319); (2) `Position` tracks nesting
+depth and rejects more than 64 nested TLVs with `ErrorKind::NestingDepth`, preventing
+stack exhaustion (#2379); (3) `SliceReader::read_nested` returns `TrailingData` when a
+nested value is not fully consumed (#2401); (4) SET OF duplicates are accepted per X.680
+27.3 NOTE 3 and `SetDuplicate` is deprecated (#2272) - a spec-conformant relaxation;
+(5) additive `SetOfRef`, `AsIntRef`/`AsUintRef`, `iter_cmp_owned`. Discretion: three
+`expect()` calls guard invariants that cannot fail for already-decoded or sorted values,
+and the sort comparator returns Equal on a `der_cmp` error and surfaces the first error
+after sorting. The only manifest change is a new optional `derive_arbitrary` dependency
+(feature-gated, not enabled by this workspace). Net effect is hardening against untrusted input."""
+
 [[audits.der-parser]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -2947,6 +3070,64 @@ maintained. Commercial use permitted.
 Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch2.out + deny-batch2.out).
 """
+
+[[audits.flate2]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "1.1.9 -> 1.1.10"
+notes = """
+#11730 delta audit — flate2 1.1.9 -> 1.1.10. License: MIT OR Apache-2.0.
+Delta: 27 files, +794/-271 (counted here as +720/-263 excluding headers). This is the
+`no_std` release; the breadth is mostly a mechanical import migration, so the delta was
+decomposed before reading.
+
+Not taken on trust: cargo-vet suggests `cargo vet trust flate2 Byron` because Mozilla
+trusts that publisher. A publisher-trust precedent elsewhere is not evidence about this
+delta, so this is a read audit instead.
+
+Shape, measured:
+- +117/-82 of the diff is `use std::...` -> `use core::...` / `alloc::...` / `crate::...`.
+- `unsafe` is +1/-1 and `MaybeUninit` +3/-3, and both are the same migration: the single
+  changed `unsafe` line is `std::ffi::CStr::from_ptr` -> `core::ffi::CStr::from_ptr`
+  inside an already-existing block. No new `unsafe` operation, no new raw-pointer site.
+- No process, network, filesystem, env, asm or extern-C token appears on any added line
+  beyond that path rename.
+
+What `no_std` actually does here (src/lib.rs 124-141):
+
+    #![no_std]
+    #[cfg(not(flate2_unstable_nightly_alloc_io))] extern crate std;
+    #[cfg(flate2_unstable_nightly_alloc_io)]      use {alloc::io, core::error};
+    #[cfg(not(flate2_unstable_nightly_alloc_io))] use std::{error, io};
+
+`flate2_unstable_nightly_alloc_io` is a `--cfg` flag requiring nightly `feature(alloc_io)`,
+not a Cargo feature. It is not set anywhere in this workspace (no `.cargo` config, no
+rustflags carrying it), so `crate::io` resolves to `std::io` exactly as before. The
+`#![no_std]` attribute is nominal for our build; std is linked back in unconditionally.
+
+Backend reachability, measured rather than assumed:
+- Enabled features for flate2 here are `default`, `rust_backend`, `runtime_detection`,
+  `miniz_oxide`, `zlib-rs`, `any_zlib`, `any_impl`.
+- No C backend is in the lockfile before or after: `cloudflare-zlib-sys`, `libz-sys` and
+  `libz-ng-sys` are all absent; only `zlib-rs 0.6.3` (pure Rust) and `crc32fast 1.5.0`.
+- Therefore `src/ffi/c.rs` (+18/-55) is not compiled for us. That file carries the removal
+  of the Cloudflare backend: the `cloudflare_zlib` feature is redefined from
+  `["any_c_zlib", "cloudflare-zlib-sys", "dep:crc32fast"]` to plain `["zlib"]`. This
+  removes a C dependency path; it cannot add one.
+
+Reachable API changes reviewed: `Crc` gains `new`, `reset`, `combine`, `amount`, `sum`,
+`update` (a struct move plus accessors); `GzHeader::mtime_as_datetime` changes its return
+path from `time::SystemTime` to `std::time::SystemTime` and a `mtime_as_duration` is added;
+`reset_decoder_data` and per-type `reset` methods are added for stream reuse. New test file
+`tests/zero-write.rs` (+99) is test-only. No public API is removed other than the
+`mtime_as_datetime` signature path change noted above.
+
+Direction of change: one C dependency path deleted, no new capability, no new unsafe
+operation, I/O unchanged for this workspace's configuration.
+
+Scope: capability and memory-safety oriented delta review with the import migration
+verified as mechanical. Not a line-by-line re-derivation of the gz/zlib wrappers; those
+were covered by the whole-crate 1.1.9 audit already recorded in this file."""
 
 [[audits.flume]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -4558,6 +4739,18 @@ Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch2.out + deny-batch2.out).
 """
 
+[[audits.libspa]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.9.2 -> 0.10.1"
+notes = "#12391 delta audit libspa 0.9.2 -> 0.10.1. Dependencies shrink: nix and convert_case are dropped and rustix replaces nix. New feature levels are declared and build.rs drops one line. The new unsafe sits in two new modules. src/node/command.rs wraps the spa_node_command helpers added in libspa-sys. src/buffer/meta.rs adds read-only accessors for buffer metadata: VideoDamageIter calls spa_meta_check on each position before dereferencing it and only then advances, and MetaCursor::bitmap and MetaBitmap::bitmap_data check the SPA validity predicate and that the offset clears the header struct before forming a reference or a slice. Discretion: MetaBitmap::bitmap_data builds a slice of height times stride bytes at that offset, and the upper bound on that length rests on the C-side spa_meta_bitmap_is_valid rather than on a check in this crate. The multiplication cannot overflow a usize on 64-bit because both operands come from u32 fields, and the producer of those fields is the local PipeWire daemon over its own socket and shared memory rather than a remote peer. The crate exposes these accessors without calling them itself. The rest is mechanical: Debug impls and pod builder signatures."
+
+[[audits.libspa-sys]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.9.2 -> 0.10.1"
+notes = "#12391 delta audit libspa-sys 0.9.2 -> 0.10.1. build.rs blocklists the SPA_AUDIO_LAYOUT variables whose generated bindings are wrong, blocklists spa_meta_bitmap_is_valid and spa_meta_cursor_is_valid because they became inline functions upstream, and adds the bindgen clang_macro_fallback with its build directory inside OUT_DIR. Three new C files (command.c, node-command.c, meta.c) wrap SPA macros and static inline functions so they can be reached through FFI, with matching extern C declarations in command.rs, node_command.rs and meta.rs. Each wrapper is a single call to the corresponding SPA macro, and the Rust signatures line up with the C ones: uint32_t to u32, bool to bool, pointers to the bindgen repr(C) structs, and spa_command returned by value. No Rust-side unsafe logic is added; pointer validity stays the caller obligation, as in any -sys crate."
+
 [[audits.libsqlite3-sys]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -4605,6 +4798,12 @@ The single capability call is a std::fs::OpenOptions in the dispatch path, used 
 Scope: this audit reasons about the Rust side's handling of the handles and the mapping. It does not verify the compositor protocol exchange itself, and a compositor that reported a frame larger than the buffer it accepted would be outside what these checks cover.
 
 Exposure: reached through xcap into this workspace's maekon-vision. Linux only."""
+
+[[audits.libwayshot-xcap]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.3.2 -> 0.3.3"
+notes = "#12391 delta audit libwayshot-xcap 0.3.2 -> 0.3.3. Most of the diff is the waymirror example being dropped from the published tarball plus loosened version requirements; drm 0.14.1 -> 0.15 and rustix 1.0 -> 1.1 are the real bumps. src/convert.rs swaps chunks_exact_mut(4) for as_chunks_mut of width 4, same semantics. Discretion: the let-chain refactor in src/dispatch.rs moves the message about ignoring a wl_output below version 4 into an else branch that now also fires for every global that is not a wl_output. That is a tracing error call only - which globals get bound is unchanged - so the effect is log noise, not a capability or safety change."
 
 [[audits.libwebp-sys]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -4682,6 +4881,40 @@ so the head/tail anchor genuinely holds uninitialised memory. Every `unsafe { (*
 The HashMap side has its own subtlety the crate handles deliberately: the map is keyed by a reference into the node's own key, so the node must not move once inserted, and nodes are held in Box and manipulated only through raw pointers for exactly that reason.
 
 Scope, stated rather than implied. This entry identifies the crate's central invariant, confirms the unsafe surface is confined to the places that maintain it, and follows the reasoning at each cluster. It does not constitute an independent re-derivation of the algorithm's correctness under all interleavings or operation orders -- that needs either a proof or a Miri run under the crate's own test suite, and no Miri run was performed for this audit."""
+
+[[audits.lru]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.18.2 -> 0.18.3"
+notes = """
+#11730 delta audit — lru 0.18.2 -> 0.18.3. License: MIT.
+Delta read in full: 4 files, +24/-6 (CHANGELOG, Cargo.toml, Cargo.toml.orig, src/lib.rs).
+Only src/lib.rs carries code.
+
+Two source changes, both reviewed line by line:
+
+1. New `LruCache::sparse(cap)` constructor — `LruCache::construct(cap, HashMap::default())`.
+   Pure addition; identical to `new()` except the backing HashMap is not pre-allocated.
+   Safe Rust, no new dependency, no I/O, no capability change.
+
+2. An `unsafe` block is REMOVED, not added: the not-full allocation path changes from
+   `unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(LruEntry::new(k, v)))) }`
+   to `NonNull::new(Box::into_raw(...)).unwrap()`. The null assumption is now checked
+   instead of asserted. Strictly safer; net unsafe-site count decreases by one.
+
+Scope: no build script, no new dependency, no process/network/filesystem surface, no API
+removal. The delta is self-contained inside the crate — it introduces no cross-crate
+invariant and no target- or feature-gated behaviour change. Publisher jeromefroe
+(crate author) per crates.io.
+
+Not a line-by-line re-review of the pre-existing 88 unsafe sites in this crate; those were
+covered by the whole-crate 0.18.2 audit already recorded in this file."""
+
+[[audits.lru]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.18.3 -> 0.18.4"
+notes = "#12391 delta audit lru 0.18.3 -> 0.18.4. LruCache::retain is the only unsafe addition. It walks from head.next to the tail sentinel, capturing next before the current node can be freed; it forms a shared reference to the key and a mutable one to the value from the MaybeUninit fields of nodes that are initialized by construction and that do not alias each other; on removal it deletes the map entry, detaches the node before dropping key and value - the comment records that this is so a panicking Drop cannot leave dangling list pointers - and drops both in place after Box::from_raw. Length is read from the map, which retain updates, so it stays consistent. The same pattern is already used by the existing removal paths. New tests cover retain-all, retain-none, ordering after retain, and a drop-count leak check. No dependency, build script or capability change."
 
 [[audits.lru-slab]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -4868,6 +5101,18 @@ normal, build, dev and target-gated sections, measured by parsing both Cargo.tom
 files rather than reading diff hunks. Neither version has a build script.
 """
 
+[[audits.mdns-sd]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.21.0 -> 0.21.3"
+notes = "#12391 delta audit mdns-sd 0.21.0 -> 0.21.3, spanning three releases. This is a net hardening of the packet parser, which is the untrusted-input surface of this crate. read_char_string no longer indexes the packet buffer directly and returns an error when the length octet is missing, fixing an out-of-bounds panic on a truncated HINFO record that upstream found by fuzzing. read_name is split into read_labels, which takes a shared reference so that following a compression pointer cannot move the read cursor, bounds the assembled name at 255 bytes, and requires every pointer to point strictly backwards; a run of pointer-to-pointer hops is resolved iteratively before a single recursive call, so a pointer loop is rejected instead of hanging. read_rr_records re-anchors to the offset implied by RDLENGTH after every record, so malformed RDATA now drops one record instead of failing or desynchronising the whole message. The Debug impl for DnsIncoming is hand-written so that parse-failure messages no longer dump the raw packet. The duplicated decode_txt in dns_parser is removed in favour of the copy in service_info, which carries the same bounds check. On the sending side, legacy unicast responses echo the querier message id and cap record TTLs at ten seconds, per RFC 6762 section 6.7. A fuzz_api module is added but sits behind the default-off unstable-fuzz-api feature and is doc(hidden). Regression tests cover the truncated HINFO record and the pointer loop."
+
+[[audits.mdns-sd]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.21.3 -> 0.21.4"
+notes = "#12715 delta audit mdns-sd 0.21.3 -> 0.21.4. No unsafe, and the added UDP socket code is confined to mod tests. On the parsing side, a question with an unknown qtype is now skipped with a debug log instead of failing the whole message; the name, type and class must still be complete, so truncated input is rejected as before, and SVCB (64) and HTTPS (65) are added as known types. On the sending side, when an A, AAAA, SVCB or HTTPS question names a hostname one of our announced services owns and that record type is absent, the daemon now answers with an NSEC record listing the address families it does have, per RFC 6762 section 6.1. The NSEC encoder writes the next-domain field as a DNS name with the window-0 header in front of the bitmap; it casts the bitmap length to u8, which is sound for the one- or four-byte bitmaps the daemon builds. Browsing re-sends SRV and TXT, or A and AAAA, queries for every unexpired PTR instance that has not resolved, and resolve retries back off exponentially from 200 ms for up to four tries. Both run on the existing browse and resolve timers, whose intervals double, so the outgoing query rate stays tied to the advertised instance set. An already-announced service is no longer demoted back to probing when an address it excludes changes, and handle_query is refactored into answer_hostname_question and send_response with no behaviour change."
+
 [[audits.memchr]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5010,6 +5255,62 @@ Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch2.out + deny-batch2.out).
 """
 
+[[audits.miniz_oxide]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.8.9 -> 0.9.1"
+notes = """
+#11730 delta audit — miniz_oxide 0.8.9 -> 0.9.1. License: MIT OR Zlib OR Apache-2.0.
+Delta: 14 files, +540/-185. Pure-Rust deflate/inflate. This is a minor release, so the
+delta was scanned on capability axes first and then read where it matters.
+
+Measured properties (not assumed):
+- `unsafe`: 0 added and 0 removed in the delta; whole-crate token count identical between
+  0.8.9 and 0.9.1 (4 in both), same 14 source files, and neither version has a build.rs.
+- Capability tokens with zero occurrences on added lines: std::process, Command, std::net,
+  TcpStream, std::fs, File::, include_str, include_bytes, env!, std::env, extern "C",
+  asm!, transmute, from_raw, as_ptr, MaybeUninit.
+- Manifest: `simd-adler32` requirement 0.3.3 -> 0.3.8 and `serde` gains
+  `default-features = false` + `alloc`; `std` feature now forwards `serde?/std`. No crate
+  enters the graph: this lockfile already pins simd-adler32 0.3.9 (satisfying >=0.3.8) both
+  before and after, and serde is optional.
+
+Decompression path (untrusted input) read line by line:
+
+1. `inflate/core.rs` — Huffman table construction is rewritten to match zlib's
+   `inftrees.c`. It now checks over-subscription at every code length
+   (`left <<= 1; left -= ts; if left < 0 -> BadTotalSymbols`) instead of only inspecting
+   the final total, and the incomplete-table rule changes from
+   `total != 65536 && (used_symbols > 1 || bt == HUFFLEN_TABLE)` to
+   `total != 65536 && (bt == HUFFLEN_TABLE || max_code_len > 1)`, with the RFC 1951 /
+   zlib rationale in the source. Net effect: malformed tables are rejected earlier and
+   the accepted set is aligned to zlib.
+
+2. New `decompress_with_limit(r, in_buf, out, out_pos, out_max, flags)`; `decompress()`
+   now delegates with `out_max = usize::MAX`, so existing callers are unchanged.
+
+3. `inflate/output_buffer.rs` — `OutputBuffer` gains a `max` field built by
+   `position.saturating_add(max_count)` and then clamped to `slice.len()`. The
+   construction cannot overflow and cannot exceed the slice. `bytes_left()` changes from
+   `slice.len() - position` to `max - position`, i.e. it can only shrink.
+
+4. The LZ77 match-copy guard changes `out_len` from `out_buf.get_ref().len()` to
+   `out_buf.bytes_left()`. Because `max <= slice.len()`, the new threshold is less than
+   or equal to the old one for every position, so the bulk `apply_match` fast path is
+   entered on a strict subset of the previously allowed cases; everything else falls back
+   to the bounds-checked `WriteLenBytesToEnd` byte-wise path. The distance guard on the
+   line above still uses `get_ref().len()` and is unchanged. The direction of this change
+   is conservative — it cannot admit a bulk copy the old code rejected.
+
+Compression side (deflate/core.rs +303/-82 and friends) is API surface for the new 0.9
+features plus the stored-block and zlib-header refactors; it introduces no unsafe, no new
+dependency, and no new capability per the scan above, and it does not parse untrusted
+input the way the inflate path does.
+
+Scope: capability and memory-safety oriented delta review with line-by-line reading of the
+decompression changes. Not a line-by-line re-derivation of the whole deflate encoder; that
+was covered by the whole-crate 0.8.9 audit already recorded in this file."""
+
 [[audits.mio]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5058,6 +5359,24 @@ who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
 version = "0.0.3"
 notes = "#8685 full-crate audit. Dependency-free proc macro with one inert `skip` attribute that returns its input token stream unchanged. No unsafe code, build script, filesystem/network/process access, generated runtime behavior, or transitive dependencies. License: MIT."
+
+[[audits.mutants]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.0.3 -> 0.0.4"
+notes = """
+#11729. AUDIT SCOPE: full crate version; all targets and features reviewed.
+Reviewed the exact crates.io source resolved by the locked checksum. The normalized
+manifest exposes one proc-macro library target, zero features and dependencies, no
+build script, and no auto-discovered binaries, examples, tests, or benches. The entire
+executable source remains one inert `skip` attribute that returns its input token
+stream unchanged. The 0.0.3 to 0.0.4 delta only moves changelog text to NEWS.md and
+adds Cargo-generated manifest metadata and a dependency-free lockfile; it does not add
+or change executable behavior. Both all-feature/all-target `cargo check` and `cargo test`
+pass against the registry source. No unsafe code,
+FFI, filesystem, network, process, environment, generated runtime behavior, or target-
+specific code is present. License: MIT.
+"""
 
 [[audits.native-tls]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -5459,6 +5778,12 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.opentelemetry]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.32.0 -> 0.33.0"
+notes = "#12715 delta audit opentelemetry 0.32.0 -> 0.33.0. No unsafe, build script or capability use is added. TraceState now keeps at most 32 list members, as the W3C trace-context specification requires: from_str takes the first 32 comma-separated members (an invalid member beyond the limit is ignored rather than rejected), from_key_value takes the first 32 pairs, and insert truncates to 31 before pushing the new member to the front. This bounds the memory and work spent on an inbound tracestate header. The largest addition is an experimental global ContextObserver, a OnceLock-held callback notified on context attach and detach for out-of-process profilers. It compiles only under the new default-off experimental_context_observer feature, which this workspace does not enable. BoundGauge and BoundUpDownCounter complete the bound-instrument API behind the existing default-off experimental_metrics_bound_instruments feature. The otel_info/otel_warn/otel_debug/otel_error macros now accept token-tree keys so dotted attribute names can be quoted. The rest is a byte-string rewrite of the baggage invalid-key table with the same 17 characters, W3C link updates, and tests."
+
 [[audits.opentelemetry-http]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5472,6 +5797,12 @@ No process/network/Command syscalls, no inline asm!, no native (cc/cmake/bindgen
 compilation. safe-to-deploy. Scope: per-crate unsafe-block + capability review.
 """
 
+[[audits.opentelemetry-http]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.32.0 -> 0.33.0"
+notes = "#12715 delta audit opentelemetry-http 0.32.0 -> 0.33.0. The one unsafe block recorded in the 0.32.0 audit, the manual Pin projection inside the hyper Body newtype, is deleted together with that type, so the crate no longer contains unsafe. The built-in reqwest (async and blocking) and hyper clients now read response bodies incrementally and abort with the new ResponseBodyTooLarge error past 4 MiB, bounding the memory an OTLP collector can make the exporter allocate. The hyper client's timeout now covers the complete response body instead of only dispatch and headers. Those clients return 4xx and 5xx responses as Ok so the exporter can classify them for retry, while transport failures and timeouts stay Err; ResponseExt::error_for_status is kept for callers that want the old behaviour. The deprecated HttpClient::send is removed, ResponseExt is sealed, and the reqwest-rustls-webpki-roots feature is dropped because reqwest 0.13 no longer has webpki-roots. The new TcpListener and TcpStream use is confined to mod tests, and futures-executor, tokio and tower-service are added only as dev-dependencies."
+
 [[audits.opentelemetry-otlp]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5484,6 +5815,12 @@ No native (cc/cmake/bindgen) compilation in the crate. safe-to-deploy.
 Scope: capability + memory-safety review (the network/process capability is
 the crate's stated purpose, not an exfiltration vector).
 """
+
+[[audits.opentelemetry-otlp]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.32.0 -> 0.33.0"
+notes = "#12715 delta audit opentelemetry-otlp 0.32.0 -> 0.33.0. No unsafe is added. Retries are now on by default for OTLP/HTTP and gRPC: at most 3 retries, only for the responses the OTLP specification lists as retryable (for HTTP, 429, 502, 503 and 504), with exponential backoff capped at 1.6 s and every sleep bounded by the remaining export deadline. Server-supplied Retry-After and RetryInfo delays are capped as well, so a collector cannot stall the export thread past the configured timeout. The blocking path sleeps with std::thread::sleep on the SDK worker thread. OTLP/HTTP request bodies are capped at 64 MiB before and after compression, and oversized requests are dropped without sending. Invalid endpoint environment variables now produce a build error and empty ones are treated as unset, instead of silently falling back to another endpoint or localhost. The new OTEL_EXPORTER_OTLP_INSECURE variable and its TRACES, METRICS and LOGS variants affect only schemeless gRPC endpoints, and such endpoints now default to https. Building the blocking reqwest client on its helper thread returns an error instead of panicking when the spawn or setup fails. The serialize feature, and with it the optional serde dependency, is removed, as are the deprecated tls alias and the experimental retry features. The rest is error-type consolidation, sealed configuration traits, and tests; futures-executor is added only as a dev-dependency."
 
 [[audits.opentelemetry-proto]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -5500,6 +5837,12 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.opentelemetry-proto]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.32.0 -> 0.33.0"
+notes = "#12715 delta audit opentelemetry-proto 0.32.0 -> 0.33.0. No unsafe and no build script: the build.rs-like file in the diff is tests/grpc_build.rs, an integration test. Most of the 5,286 deleted lines are the vendored upstream opentelemetry-proto tree (.proto sources, docs, Makefile, CI workflow, JSON examples) that the crate no longer ships, since the generated Rust in src/proto is what compiles. transform/logs.rs changes about ten lines so logs are grouped by target, scope version, attributes and schema URL instead of target alone, and each scope's schema URL is exported. Behind the with-serde feature, which this workspace does not enable, the AnyValue deserializer in proto.rs treats null fields as unset and accepts an empty object, and the generated collector request and response types gain serde(default) so omitted fields deserialize. json_serde.rs and the logs transform add tests only."
+
 [[audits.opentelemetry_sdk]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5512,6 +5855,12 @@ tests/benches/examples excluded). whole-crate verified: 0 `unsafe`. OpenTelemetr
 No process/network/Command syscalls, no inline asm!, no native (cc/cmake/bindgen)
 compilation. safe-to-deploy. Scope: per-crate unsafe-block + capability review.
 """
+
+[[audits.opentelemetry_sdk]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.32.1 -> 0.33.0"
+notes = "#12715 delta audit opentelemetry_sdk 0.32.1 -> 0.33.0. No unsafe is added. BatchSpanProcessor and BatchLogProcessor now increment their pending-item counter before enqueueing and roll it back when the queue is full, fixing a race where a span or log enqueued just before force_flush or shutdown could be missed. The new SDK self-observability counters (processed, queue-full and after-shutdown drops, queue capacity) compile only under the default-off experimental_metrics_bound_instruments feature. The OTEL_BSP, OTEL_BLRP and OTEL_METRIC_EXPORT_INTERVAL environment-variable names and defaults become public constants; the periodic reader still reads OTEL_METRIC_EXPORT_INTERVAL, now under the renamed constant, and no new variable is read. The default resource skips std::env::current_exe under Miri only. Delta-temporality observable counters no longer report wrong deltas when attributes arrive in unsorted key order. futures-channel, futures-executor, futures-util and thiserror become optional but are re-enabled by the trace, metrics, logs and experimental_async_runtime features, so this workspace's trace/metrics/rt-tokio build pulls the same set. The logs processors gain the same counter fix and gated metrics. The remaining additions are tests and benchmarks."
 
 [[audits.ordered-stream]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -5572,6 +5921,26 @@ vector. Scope: capability + memory-safety audit (reproducible static check),
 not a line-by-line logic review.
 """
 
+[[audits.password-hash]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.6.1"
+notes = """
+#11848 exact-version full-source audit for PR #11840. License: MIT OR Apache-2.0;
+Rust 2024, MSRV 1.85, no build script, and crate-level forbid(unsafe_code).
+Reviewed both Rust source files and all features (alloc, getrandom, rand_core,
+phc). The crate only defines typed hashing/verifying traits, maps errors, and
+generates a fixed 16-byte salt through getrandom or a caller-supplied
+TryCryptoRng. No process, filesystem, network, shell, FFI, or other execution
+capability exists. The PHC representation moved to the separately audited phc
+crate; error translation is exhaustive except for the intentional non-exhaustive
+fallback to Internal. Exact --all-features --all-targets tests passed (1/1),
+including successful and rejected-password verifier paths. Scope is complete
+source/capability review and trait behavior, not an independent audit of RNG
+implementations supplied by dependencies.
+AUDIT SCOPE: full crate version; all targets and features reviewed.
+"""
+
 [[audits.paste]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5615,6 +5984,12 @@ criteria = "safe-to-deploy"
 version = "3.0.6"
 notes = "Phase 6 #3908 batch8: pem reviewed; PEM framing/base64 parser/encoder only, crate denies unsafe_code, supports no_std+alloc, and performs no filesystem/network/process access or cryptographic primitive implementation."
 
+[[audits.pem]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "3.0.6 -> 4.0.0"
+notes = "AUDIT SCOPE: delta 3.0.6 -> 4.0.0; all targets and features reviewed. #11730 (delta newly surfaced by the regenerated dependabot group #11821). Zero source changes: the delta touches only .github/workflows/ci.yml, Cargo.toml and Cargo.toml.orig, and src/ is byte-identical. The real changes are (1) MSRV 1.60.0 -> 1.71.0, (2) base64 ^0.22 -> ^0.23, and (3) a dev-only criterion bump 0.3 -> 0.8. The major version bump is semver propagation from base64 types appearing in pem's public API, not a change in pem's own logic. Because the delta does not close inside the crate, the base64 axis was checked separately rather than assumed: the new lockfile resolves base64 0.23.1, which our own audits.toml does NOT cover (0.13.1 / 0.21.7 / 0.22.1 only); it is covered by [[trusted.base64]] (user-id 5563, marshallpierce, 2019-10-25 to 2027-08-18, owner-approved under #9374), and imports.lock records the same user-id publishing 0.23.1 on 2026-08-04, inside that window. No new unsafe, no build script, no network access."
+
 [[audits.pem-rfc7468]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -5639,6 +6014,26 @@ URL percent-encoding/decoding. No unsafe code. Maintained by the url/servo team.
 Widely used by reqwest, hyper, and URL parsing crates. Actively maintained.
 Verified: cargo audit shows no active advisory for this version.
 cargo vet check + cargo deny check passing after batch (see /tmp/vet-batch3.out + deny-batch3.out).
+"""
+
+[[audits.phc]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+version = "0.6.1"
+notes = """
+#11848 exact-version full-source audit for PR #11840. License: Apache-2.0 OR MIT;
+Rust 2024, MSRV 1.85, no build script, and crate-level forbid(unsafe_code).
+Reviewed all eight Rust source files and the alloc/getrandom/rand_core feature
+surface. PHC parsing is bounded by fixed maximum sizes for identifiers,
+parameters, salt, and output; checked buffer growth and validated Base64/ASCII
+inputs prevent indexing or allocation surprises. Random salt helpers use
+getrandom or CryptoRng/TryCryptoRng and fixed-size initialized buffers. No
+process, filesystem, network, shell, FFI, or other execution capability exists.
+Exact --all-features --all-targets tests passed: 35 unit, 2 encoding, 7 PHC
+structure, and 2 scrypt/Argon2id vector tests (46/46, zero failures). Scope is
+complete source/capability and parser-boundary review, not an audit of external
+RNG implementations.
+AUDIT SCOPE: full crate version; all targets and features reviewed.
 """
 
 [[audits.phf]]
@@ -5892,6 +6287,18 @@ excluded). ring-buffer `slice::from_raw_parts` whose offset and length are expli
 No process/network syscalls beyond the crate's stated purpose, no native
 (cc/cmake/bindgen) compilation. safe-to-deploy. Scope: per-crate unsafe-block review.
 """
+
+[[audits.pipewire]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.9.2 -> 0.10.1"
+notes = "#12391 delta audit pipewire 0.9.2 -> 0.10.1. Dependencies shrink: anyhow, thiserror, once_cell and nix are dropped, rustix replaces nix, and the once_cell Lazy type becomes the std LazyLock. The bulk of the diff is an ownership restructure that gives each object type a box_ and an rc variant; it moves code rather than changing behaviour. The new unsafe follows the existing FFI patterns of the crate: Buffer::find_meta null-checks the spa_buffer and the result of spa_buffer_find_meta before forming a reference bound to the borrow of self; Node::send_command is a new proxy method that documents the W and X permissions it requires; Stream::time and the timespec construction use a zeroed MaybeUninit, a valid bit pattern for these plain C structs and what allows the padding fields that 32-bit musl adds for 64-bit time to be initialized. Loop::iterate now calls leave from a Drop guard, so the loop is left even if iteration unwinds, which is a fix rather than a regression. No filesystem, process or network capability is introduced."
+
+[[audits.pipewire-sys]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.9.2 -> 0.10.1"
+notes = "#12391 delta audit pipewire-sys 0.9.2 -> 0.10.1. The manifest moves build dependencies to workspace inheritance and raises rust-version to 1.80. build.rs hoists the OUT_DIR path and adds the bindgen clang_macro_fallback, pointing its build directory at that same OUT_DIR, so the helper that bindgen compiles to resolve C macros stays inside the cargo output directory. src/lib.rs adds one lint allow on the generated bindings module. No hand-written FFI surface and no new ambient capability."
 
 [[audits.pkcs8]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -6557,6 +6964,12 @@ criteria = "safe-to-deploy"
 delta = "0.10.1 -> 0.10.2"
 notes = "Removes two unsafe blocks and replaces each with a checked equivalent. In `distr::slice::Choose`, `self.slice.get_unchecked(idx)` becomes `self.slice.get(idx)` followed by an expect naming likely memory corruption; in `UniformChar`, `char::from_u32_unchecked(x)` becomes `char::from_u32(x)` with the same treatment. Both previously relied on invariants established at construction time; they now fail loudly instead of invoking UB if those invariants are ever violated. The remainder of the delta is a substantial rewrite of the module-level documentation for `distr`, adding a quick start and restructuring the description of the Distribution trait. No sampling algorithm changes."
 
+[[audits.rand]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.10.2 -> 0.10.3"
+notes = "#12715 delta audit rand 0.10.2 -> 0.10.3. No unsafe is added and no sampling algorithm changes; the release closes three edge cases that panicked or reported the wrong error. WeightedIndex::new and update_weights called unwrap on the uniform sampler built over the total weight, which panicked when float weights summed to infinity; both now return Error::Overflow, and update_weights builds the new sampler before mutating self, so a failed update leaves the distribution unchanged. UniformFloat::new_inclusive checks that high - low is finite before dividing by (1 - EPSILON), so large finite ranges such as 0.0..=f64::MAX are accepted instead of failing with NonFinite; the scale-correction step is rewritten around le_mask/all, and decrease_masked is specified to step infinite inputs down to MAX. UniformInt::max, which the serde deserializer for Uniform<char> uses to reject out-of-range samplers, now saturates to MAX when low + range - 1 wraps; before, a crafted sampler could wrap to a small value, pass that check, and reach the expect added in 0.10.2 when sampled. In addition, sample_weighted returns InvalidWeight when infinite weights fill the reservoir instead of continuing with a non-finite threshold, WeightedIndexIter reports an exact size_hint and implements ExactSizeIterator, and WeightedIndex::weight uses slice get instead of indexing after a cmp match. The remainder is documentation and tests."
+
 [[audits.rand_chacha]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -6727,6 +7140,12 @@ tests/benches/examples excluded). whole-crate verified: 0 `unsafe`. X.509 certif
 No process/network/Command syscalls, no inline asm!, no native (cc/cmake/bindgen)
 compilation. safe-to-deploy. Scope: per-crate unsafe-block + capability review.
 """
+
+[[audits.rcgen]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.14.9 -> 0.14.10"
+notes = "AUDIT SCOPE: delta 0.14.9 -> 0.14.10; all targets and features reviewed. #11730 (delta newly surfaced by the regenerated dependabot group #11821). All six changed source files were read; every change moves toward RFC 5280 conformance. (1) Empty CRL distribution point URIs are now rejected on both the certificate and CRL paths, blocking an encoding that violates GeneralNames ::= SEQUENCE SIZE (1..MAX) (new Error::EmptyCrlDistributionPointUris). (2) Missing-extension-block bug fix: should_write_exts omitted key_usages and crl_distribution_points, so a certificate requesting only one of them silently dropped the keyUsage or CRLDistributionPoints extension. (3) RFC 5280 5.3.1: the reasonCode extension is omitted when the reason is Unspecified. (4) RFC 5280 5.3.2: invalidityDate must be GeneralizedTime even in the 1950-2049 UTCTime range, so dt_to_generalized replaces write_dt_utc_or_generalized. (5) The RSA-PSS path was removed; the removed PKCS_RSA_PSS_SHA256 was pub(crate) rather than pub, was already commented out of SignatureAlgorithm::iter(), and its own doc comment recorded that both openssl and webpki reject the certificates it produced -- dead private code, so this is not a semver break in a patch release. (6) ML-DSA moved from the aws_lc_rs_unstable gate to aws_lc_rs (aws-lc-rs 1.18 stabilized PQDSA), with to_pkcs8 -> to_pkcs8v1. Every change ships with a test. Reachability was measured on three axes: maekon depends on rcgen with default features only (crypto, pem, ring) and enables neither aws_lc_rs nor fips, so (6) is not compiled; there are zero call sites setting key_usages and zero CRL uses, so (1)-(4) do not change current output. Since those are absence claims, a positive control was run on the same sweep: rcgen matches 11 files and CertificateParams matches 10. No new unsafe, no build script, no network access."
 
 [[audits.realfft]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -8442,6 +8861,12 @@ Recorded as a maintenance hazard rather than a current defect: because the impls
 
 Exposure: a direct optional dependency of this workspace's own maekon-app behind the webdriver feature, alongside tauri-plugin-wdio-webdriver. Not in the default graph."""
 
+[[audits.tauri-plugin-wdio]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "1.3.0 -> 1.4.0"
+notes = "#12391 delta audit tauri-plugin-wdio 1.3.0 -> 1.4.0. The published tarball differs only in the version string in Cargo.toml and Cargo.toml.orig. No source file, no build.rs line and no dependency changed, so this release is effectively a republish of 1.3.0."
+
 [[audits.tauri-winrt-notification]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -8870,6 +9295,12 @@ Well-maintained, widely used in the ecosystem. 0.26.x targets rustls 0.23.x.
 No active RustSec advisories. License: MIT OR Apache-2.0.
 """
 
+[[audits.tokio-rustls]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.26.4 -> 0.26.5"
+notes = "#12391 delta audit tokio-rustls 0.26.4 -> 0.26.5. Most of the diff is the tests directory being excluded from the published tarball. The functional change is poll_read on both the client and the server stream: it now returns early when the filled buffer is empty and then keeps calling poll_fill_buf until the ReadBuf is full, breaking on EOF, Pending or error. Each consume is bounded by the minimum of the available data and the remaining buffer, and an error after partial data is re-emitted on the next poll because nothing was consumed, which is valid AsyncRead behaviour. The rest is doc comments recommending handshake timeouts, a cargo_check_external_types allowlist, and formatting. No unsafe code, no change to TLS state handling, and the rustls requirement is unchanged."
+
 [[audits.tokio-stream]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -9243,6 +9674,12 @@ All three are the tracing-subscriber downcast protocol: `unsafe fn downcast_raw(
 
 The rest of the crate is span and metric bridging between tracing and OpenTelemetry, in safe Rust."""
 
+[[audits.tracing-opentelemetry]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.33.0 -> 0.34.0"
+notes = "#12715 delta audit tracing-opentelemetry 0.33.0 -> 0.34.0. The release changes no source file. The whole diff is the package version, a CHANGELOG entry pointing at upstream PR #268, and the requirements on opentelemetry, opentelemetry_sdk and the other opentelemetry-family crates moving from 0.32 to 0.33 in Cargo.toml and Cargo.toml.orig. No dependency is added or removed, and the three downcast_raw unsafe sites described in the 0.33.0 audit are untouched."
+
 [[audits.tracing-subscriber]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -9568,6 +10005,57 @@ notes = """
 AUDIT SCOPE: full crate version; all targets and features reviewed. #11509 VD-05.7a full audit — usearch 2.26.0. License: Apache-2.0. The crate is packaged from unum-cloud/USearch itself (path_in_vcs empty): all 9 packaged files are byte-identical to the repository at tag commit cc23bbaf (0 differing; 166 repo-only files trimmed; positive control fired), which pins package==repository — the C++ HNSW core (include/, 11,794 lines) is the upstream project's own v2.26.0 code, not third-party vendoring, and the verdict on it transfers to the upstream project at that release. Rust surface read in full (rust/lib.rs, 2,796 lines, 35 unsafe tokens): 8 slice reinterpretations between #[repr(transparent)] newtypes (b1x8/u8, f16/i16 — same size and alignment, every bit pattern valid); cxx unsafe extern "C++" bridge declarations; synchronous filtered-search trampolines whose stack-closure pointers cannot outlive the call; change_metric stores Box::into_raw and Drop pairs each variant with Box::from_raw; Send/Sync impls rest on USearch's documented internal synchronization plus Send+Sync bounds on stored metric closures; view_from_buffer is correctly pub unsafe with an explicit use-after-free example in its docs. rust/lib.cpp (503 lines) is cxx glue compiled by build.rs via cxx_build over in-package sources only — no Command, no network, no out-of-package paths (the numkong feature consumes only DEP_NUMKONG_INCLUDE and link metadata). Reached via maekon-analysis.
 """
 
+[[audits.usearch]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "2.26.0 -> 2.26.1"
+notes = """
+#11730 delta audit — usearch 2.26.0 -> 2.26.1. License: Apache-2.0.
+Delta read in full: 7 files, +49/-13 (Cargo.toml, Cargo.toml.orig, README, build.rs,
+include/usearch/index.hpp, include/usearch/index_dense.hpp, rust/lib.rs).
+
+This crate compiles vendored C++ headers into the binary, so the C++ hunks were read as
+first-class code, not treated as data. All of them are bounds hardening in the index-file
+deserialisation path:
+
+1. index.hpp — version patch macro bump, plus a new guard when loading node levels:
+   `if (file.size() < first_offset.value) { reset(); return failed("File is corrupted
+   and can't fit the node levels"); }`.
+
+2. index_dense.hpp — three changes:
+   a. `try_reserve` is made monotonic: `limits.members` is raised to at least
+      `typed_->capacity()` and `vectors_lookup_.size()`, and the old assignment from
+      `slot_lookup_.capacity()` is dropped. Reducing thread limits can no longer shrink
+      member-addressed storage.
+   b. New guard `if (offset > file.size()) return failed("File is corrupted and lacks
+      matrix dimensions");`. Upstream's own comment states the motive: `file.size() -
+      offset` would otherwise underflow into a huge span. This closes an integer
+      underflow that fed an out-of-bounds span.
+   c. The vectors span size changes from an unchecked `matrix_rows * matrix_cols` to
+      `checked_mul(...)` plus a `file.size() - offset < vectors_bytes.value` bound check.
+      This closes an integer overflow that fed an out-of-bounds read.
+
+3. build.rs — one line removed: `.flag_if_supported("/MD")`. MSVC-only C runtime linkage
+   flag. No new command, no download, no file write, no new build-time capability.
+
+4. rust/lib.rs — adds one `#[test]`
+   (`reserve_uses_requested_member_capacity_and_never_shrinks`) inside `mod tests`.
+   Test-only; not part of the library surface.
+
+Direction of change: this delta removes undefined behaviour on malformed index files. It
+adds no capability, no dependency, no `unsafe`, and no process/network surface. Nothing in
+the delta is reachable as new functionality; the only behavioural difference on
+well-formed input is that `try_reserve` no longer shrinks.
+
+Not a re-review of the whole vendored C++ tree; that was covered by the full-crate 2.26.0
+audit already recorded in this file (#11509 VD-05.7a)."""
+
+[[audits.usearch]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "2.26.1 -> 2.26.2"
+notes = "#12391 delta audit usearch 2.26.1 -> 2.26.2. One functional change, in the vendored C++ header include/usearch/index.hpp: memory_mapped_file_t on Linux now retries open(path, O_RDONLY) when open(path, O_RDONLY | O_NOATIME) fails with EPERM. O_NOATIME requires owning the file or holding CAP_FOWNER, so the fallback drops a privilege requirement rather than adding one, and it opens the same path read-only. No Rust code, build.rs or dependency changed."
+
 [[audits.utf8-zero]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -9633,6 +10121,49 @@ Upgrading is strictly safer than staying: 1.24.0 can accept input that 1.24.1 re
 Scope: delta review of the shipping source change plus capability/static signals
 (dependencies, unsafe count, build script). Not a line-by-line audit of the whole crate.
 """
+
+[[audits.uuid]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "1.24.1 -> 1.26.0"
+notes = """
+#11730 delta audit — uuid 1.24.1 -> 1.26.0. License: Apache-2.0 OR MIT.
+Delta read in full: 6 files, +150/-14 (Cargo.toml, Cargo.toml.orig, README, src/lib.rs,
+src/external/serde_support.rs, src/timestamp.rs).
+
+Manifest: version bump only, including the matching bump of the wasm32-gated
+`uuid-rng-internal-lib` path dependency. No dependency added or removed, no feature added,
+no build script (this crate has none).
+
+Two source additions, both opt-in:
+
+1. `src/external/serde_support.rs` adds `pub mod bytes` — a serde helper that writes a
+   Uuid through `Serializer::serialize_bytes(u.as_bytes())` and reads it back through
+   `deserialize_bytes`, so byte-string-aware formats (CBOR, MessagePack) encode 16 bytes
+   instead of a 16-element integer sequence. It is reachable only when a consumer opts in
+   with `#[serde(with = "uuid::serde::bytes")]`. `src/lib.rs` re-exports it next to the
+   existing `braced/compact/hyphenated/simple/urn` modules. The module ships its own
+   `#[cfg(test)]` round-trip test.
+
+2. `src/timestamp.rs` adds `ContextV7::with_additional_precision_bits(bits)` and rewrites
+   the existing `with_additional_precision()` to delegate to it with 12. The new method
+   caps its argument with `cmp::min(bits, 12)`, matching the width of the `rand_a` field,
+   so an out-of-range request cannot widen the timestamp field beyond the v7 layout. A
+   `#[test]` covers the 10-bit case, equivalence of `with_additional_precision()` and
+   `with_additional_precision_bits(12)`, the cap at values above 12, and that 0 disables
+   the feature.
+
+Behaviour on existing call sites is unchanged: `with_additional_precision()` still yields
+12 bits, and the test asserts that equivalence directly.
+
+No `unsafe`, no new dependency, no build script, no process/network/filesystem surface, no
+API removal, no change to random-number sourcing or to the UUID layout itself."""
+
+[[audits.uuid]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "1.26.0 -> 1.26.1"
+notes = "#12391 delta audit uuid 1.26.0 -> 1.26.1. src/timestamp.rs replaces UNIX_EPOCH plus Duration with checked_add followed by unwrap_or(UNIX_EPOCH) in the conversion from Timestamp to SystemTime, removing a panic on overflow. Discretion: an overflowing timestamp now converts to UNIX_EPOCH instead of panicking; the new doc comment states this and points callers who need to detect it at the TryFrom impl. src/v7.rs rewrites how the counter is placed into rand_a and rand_b. The arithmetic is u128 with no unsafe: counter_bits is clamped to 74 and then to at most 76 after the two-bit shift around the variant, so the shift of 124 minus counter_bits stays between 48 and 123 and cannot underflow, and every bit the counter does not occupy still comes from rng::u128. New tests assert that each of 42 counter bits reaches the UUID and that sort order is preserved. No dependency, build script or capability change."
 
 [[audits.version-compare]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -10564,6 +11095,12 @@ criteria = "safe-to-deploy"
 version = "0.9.6"
 notes = "AUDIT SCOPE: full crate version; all targets and features reviewed. #11596 VD-05.7d full audit — xcap 0.9.6. License: Apache-2.0. Screen-capture library used directly by maekon-monitor; audited as a full read because the crate's whole purpose is a powerful capability (screen contents). Verdict basis: captured pixel data flows only to the caller (return values / mpsc channel) — zero network, zero process spawn, zero fs writes in src (the only fs ops are reading and deleting the temporary screenshot files the XDG desktop portal itself produced; file:// scheme is enforced in safe_uri_to_path). Platform surfaces read in full: macOS (CoreGraphics CGWindowListCreateImage + AVCaptureSession recorder; unsafe blocks are standard CV pixel-buffer lock/base-address patterns with lengths from CVPixelBufferGetBytesPerRow/DataSize and null checks, lock/unlock paired via scopeguard), Windows (D3D11 staging-texture Map with RowPitch-corrected copies; VerQueryValueW version-resource reads with OS-provided lengths), Linux (X11 via xcb, Wayland via consent-mediated org.freedesktop.portal Screenshot over zbus + pipewire/libwayshot), OHOS (OH_AVScreenCapture). build.rs (95 lines, read in full) only adds NDK link-search paths for the ohos target and exits immediately elsewhere. One env read: DISPLAY on Linux. No obfuscated constants, no proc macros, dependencies are ecosystem standards (objc2*, windows, xcb, zbus, pipewire, image)."
 
+[[audits.xcap]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.9.6 -> 0.9.8"
+notes = "#12391 delta audit xcap 0.9.6 -> 0.9.8. Dependency bumps (pipewire 0.9 -> 0.10, rand 0.9 -> 0.10, xcb 1.5 -> 1.7, zbus 5.6 -> 5.17) and resolver 2 -> 3. src/linux/wayland_video_recorder.rs reuses the existing portal D-Bus connection through self.proxy.connection() instead of opening a new one per call, and replaces chunks_exact and chunks_exact_mut with the stabilized as_chunks and as_chunks_mut, which drop the remainder the same way. Discretion: Cargo.toml.orig carries a patch.crates-io table redirecting xcb to a git branch, and declares libwayshot-xcap as a git dependency, both to work around RUSTSEC-2026-0194 and RUSTSEC-2026-0195 in quick-xml. Neither reaches consumers - a patch table outside a workspace root is ignored, and cargo publish normalises the git dependency to its crates.io version. The published Cargo.toml in this tarball contains neither, and our Cargo.lock resolves both from crates.io. No unsafe code and no new capability."
+
 [[audits.xkbcommon]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -10902,6 +11439,12 @@ len is the minimum of the source length and the remaining output capacity, so ou
 
 Scope: this crate is the safe wrapper; the compression itself lives in zstd-safe and zstd-sys, which are separate entries."""
 
+[[audits.zstd]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "0.13.3 -> 0.14.0"
+notes = "#12396 delta audit zstd 0.13.3 -> 0.14.0. This is the safe wrapper; the compression lives in zstd-safe and zstd-sys, audited separately. The API break behind the major bump is the same lifetime tightening as in zstd-safe, applied in four places (raw Decoder and Encoder with_prepared_dictionary, and the read and write stream variants): the dictionary borrow moves from a free lifetime to the wrapper own lifetime, so a dictionary cannot be dropped while a stream still holds it. The rest is additive - set_pledged_src_size on the bulk compressor, finish_frame on the read decoder, with_context constructors that let a caller reuse a context - plus a bug fix where finish() now flushes the frame before returning the inner reader, with a regression test for reading into an empty buffer (upstream issue 251). No unsafe code is added and no build script or dependency capability changes. This repository uses only zstd::encode_all and zstd::decode_all, in maekon-network compression.rs, neither of which is touched by the lifetime change, and cargo check -p maekon-network --lib compiles against this lockfile. License declaration changes from MIT to BSD-3-Clause, matching the vendored library; cargo deny reports licenses ok."
+
 [[audits.zstd-safe]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -10917,6 +11460,12 @@ The part that carries the real weight is that output lengths come back from the 
 
 Scope: the C implementation in zstd-sys is not covered by this entry."""
 
+[[audits.zstd-safe]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "7.2.4 -> 8.0.0"
+notes = "#12396 delta audit zstd-safe 7.2.4 -> 8.0.0. The major bump carries two soundness fixes rather than new capability. First, CCtx and DCtx gain a Poison field: once a streaming call returns an error the code is recorded, later calls return it through guard() instead of continuing on a context the C library considers unusable, and it is cleared on the paths that genuinely reset the session. Second, ref_cdict and the matching ddict method tighten the dictionary borrow from a free lifetime to the context own lifetime, so a dictionary can no longer be dropped while a context still references it; that is the API break behind the major version. compress_block becomes pub unsafe fn, stating a caller contract that was previously unmarked. In the seekable module, which this repository does not enable, the DerefMut that handed out a mutable Seekable is replaced by explicit decompress and decompress_frame forwards, so a caller can no longer reach the inner handle while an opaque Box is registered with the C side, and a missing Box::from_raw is added on the cleanup path, fixing a leak of that box. The Send and Sync impls keep the same reasoning and their safety comments are rewritten to spell it out: the context is a plain owned heap allocation with no thread-local state, and every mutating method takes &mut self so a shared reference only reads. No new unsafe block, no filesystem, process or network access, and the cmake and vendored features are pass-throughs to zstd-sys that are off by default. License declaration changes from MIT OR Apache-2.0 to BSD-3-Clause, matching the vendored library; cargo deny reports licenses ok."
+
 [[audits.zstd-sys]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
 criteria = "safe-to-deploy"
@@ -10924,6 +11473,12 @@ version = "2.0.16+zstd.1.5.7"
 notes = """
 AUDIT SCOPE: full crate version; all targets and features reviewed. #11509 VD-05.7a full audit — zstd-sys 2.0.16+zstd.1.5.7. License: MIT OR Apache-2.0. The zstd/ tree (95 files, 80,084 C lines) is a byte-identical, unpatched copy of facebook/zstd at submodule commit f8745da6 (v1.5.7), verified file-by-file against the upstream tarball (0 differing; the 542 upstream-only files are trimming — tests, contrib, programs; positive control fired). The C verdict transfers to upstream zstd 1.5.7. Rust surface: three pregenerated bindgen files (markers present; 8 unsafe tokens, all type-position callback declarations) plus src/wasm_shim.rs — the only hand-written unsafe (8 sites), compiled only under cfg(target_arch = "wasm32") and read in full: a header-stored-size malloc/calloc/free and qsort/memcmp/memcpy/memmove/memset forwards under C caller contracts. Two recorded defects, neither blocking: the shim allocator does not null-check before writing its size header (an OOM-path write through null on wasm), and shim free lacks a free(NULL) guard — but every zstd-internal call routes through ZSTD_customFree, which checks ptr!=NULL before dispatching (verified in lib/common/allocations.h), and the shim is not compiled on any shipped target. calloc's nmemb*size multiply is unchecked (same OOM class). build.rs (301 lines): cc over the vendored tree, pkg-config probing, optional bindgen; no process/network/out-of-package access. Reached via zstd-safe -> zstd.
 """
+
+[[audits.zstd-sys]]
+who = "ONESHIM Contributors <security@oneshim.thengd.com>"
+criteria = "safe-to-deploy"
+delta = "2.0.16+zstd.1.5.7 -> 2.1.0+zstd.1.5.7"
+notes = "#12396 delta audit zstd-sys 2.0.16+zstd.1.5.7 -> 2.1.0+zstd.1.5.7. The vendored C tree does not move: no file under zstd/lib or zstd/contrib changes, only zstd/build/cmake/** and zstd/lib/libzstd.pc.in are added to the package, which the cc build path never reads. The full audit of 2.0.16 (#11509 VD-05.7a) verified that tree byte-for-byte against facebook/zstd v1.5.7, and the +zstd.1.5.7 metadata is unchanged, so that verdict carries over. Build surface narrows rather than widens: bindgen leaves the default feature set, so the default build no longer invokes clang at all; the huf_decompress_amd64.S assembly is now also skipped whenever CARGO_CFG_TARGET_ARCH is not x86_64, where upstream gates it out anyway; and -fvisibility=hidden is only passed when the target env is msvc is false, read from CARGO_CFG_TARGET_ENV rather than host cfg, which fixes cross builds handing a gcc flag to cl.exe. Two new features are added and both default off: cmake, which builds the same vendored tree through cmake::Config with shared, programs, tests and contrib disabled and the same hidden-visibility defines, and vendored, which only suppresses the pkg-config path. src/wasm_shim.rs marks rust_zstd_wasm_shim_qsort and rust_zstd_wasm_shim_memcmp as unsafe extern C, which states a caller contract that was previously unmarked; it is still compiled only for wasm32 and is not on any shipped target. The package license declaration changes from MIT/Apache-2.0 to BSD-3-Clause, matching the vendored zstd library; BSD-3-Clause is already on this repository deny.toml allowlist and cargo deny reports licenses ok."
 
 [[audits.zune-core]]
 who = "ONESHIM Contributors <security@oneshim.thengd.com>"
@@ -11111,7 +11666,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.blake2]]
 criteria = "safe-to-deploy"
-user-id = 5059 # Artyom Pavlov (newpavlov)
+user-id = 5059
 start = "2019-08-25"
 end = "2027-05-29"
 notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published crate): RustCrypto maintainer (Artyom Pavlov). Trusts only this publisher's releases within the window; generated/FFI bindings not line-auditable."
@@ -11209,17 +11764,24 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.core-foundation]]
 criteria = "safe-to-deploy"
-user-id = 2396 # Josh Matthews (jdm)
+user-id = 2396 # Josh Bowman-Matthews (jdm)
 start = "2019-11-12"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Josh Matthews, Servo project — tendril/string_cache. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
 [[trusted.core-graphics]]
 criteria = "safe-to-deploy"
-user-id = 2396 # Josh Matthews (jdm)
+user-id = 2396 # Josh Bowman-Matthews (jdm)
 start = "2019-10-28"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Josh Matthews, Servo project — tendril/string_cache. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.crossbeam]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2020-10-12"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: taiki-e maintains crossbeam-rs. Extends the existing taiki-e trust (futures-core, fastrand, portable-atomic-util) to the crossbeam facade crate that maekon-network and maekon-storage depend on."
 
 [[trusted.ctr]]
 criteria = "safe-to-deploy"
@@ -11361,12 +11923,68 @@ start = "2025-09-05"
 end = "2027-08-22"
 notes = "Publish share: 11 of 12 published versions carry trustpub_data from this repository — the highest Trusted Publishing coverage anywhere in this backlog. The crate is released from the same repository as cc, which is why the signature is identical. Exposure: boundary — the crate locates the MSVC toolchain for build scripts and so influences which compiler a build invokes. Why an audit was not performed: it has not been reached yet; the crate is small enough that an audit would be feasible and preferable. Why this entry names a signature rather than a person: releases made through crates.io Trusted Publishing carry no `published_by` login, so trusting the human maintainer does not cover them. Measured 2026-08-22 — after trusting the human publisher for this crate the exemption remained, and the crate's recent versions report `published_by = null` with `trustpub_data` naming the repository below. Trusting the signature is what covers those releases, and it is also the stronger claim: an OIDC-issued release is bound to a specific repository and CI run and cannot come from a leaked personal token. Window basis: start is the signature's first publication, per cargo-vet's default. Approval: this entry lands by pull request under the ONESHIM Contributors identity, which policy section 5 records as the approval mechanism. It does not cite the #3908 owner-approved identity review, because this identity was not part of it."
 
+[[trusted.futures]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2020-10-05"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: taiki-e maintains futures-rs and already holds this project trust for futures-core. The rest of the futures-rs workspace was recorded as per-version audits instead, so every 0.3.x patch bump re-blocked the gate — exactly the failure the futures-core note recorded under #11082. The trust window starts at this publisher first release, so releases published by cramertj before that date stay outside it."
+
+[[trusted.futures-channel]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2020-10-05"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: taiki-e maintains futures-rs and already holds this project trust for futures-core. The rest of the futures-rs workspace was recorded as per-version audits instead, so every 0.3.x patch bump re-blocked the gate — exactly the failure the futures-core note recorded under #11082. The trust window starts at this publisher first release, so releases published by cramertj before that date stay outside it."
+
 [[trusted.futures-core]]
 criteria = "safe-to-deploy"
 user-id = 33035 # Taiki Endo (taiki-e)
 start = "2020-10-05"
 end = "2027-05-29"
 notes = "#11082 publisher-trust (owner-approved identity): taiki-e maintains futures-rs. A version-pinned exemption (0.3.33) was invalidated by every patch bump. Releases published by cramertj before 2020-10-05 stay outside the trust range."
+
+[[trusted.futures-executor]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2020-10-05"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: taiki-e maintains futures-rs and already holds this project trust for futures-core. The rest of the futures-rs workspace was recorded as per-version audits instead, so every 0.3.x patch bump re-blocked the gate — exactly the failure the futures-core note recorded under #11082. The trust window starts at this publisher first release, so releases published by cramertj before that date stay outside it."
+
+[[trusted.futures-io]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2020-10-05"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: taiki-e maintains futures-rs and already holds this project trust for futures-core. The rest of the futures-rs workspace was recorded as per-version audits instead, so every 0.3.x patch bump re-blocked the gate — exactly the failure the futures-core note recorded under #11082. The trust window starts at this publisher first release, so releases published by cramertj before that date stay outside it."
+
+[[trusted.futures-macro]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2020-10-05"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: taiki-e maintains futures-rs and already holds this project trust for futures-core. The rest of the futures-rs workspace was recorded as per-version audits instead, so every 0.3.x patch bump re-blocked the gate — exactly the failure the futures-core note recorded under #11082. The trust window starts at this publisher first release, so releases published by cramertj before that date stay outside it."
+
+[[trusted.futures-sink]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2020-10-05"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: taiki-e maintains futures-rs and already holds this project trust for futures-core. The rest of the futures-rs workspace was recorded as per-version audits instead, so every 0.3.x patch bump re-blocked the gate — exactly the failure the futures-core note recorded under #11082. The trust window starts at this publisher first release, so releases published by cramertj before that date stay outside it."
+
+[[trusted.futures-task]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2019-07-29"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: taiki-e maintains futures-rs and already holds this project trust for futures-core. The rest of the futures-rs workspace was recorded as per-version audits instead, so every 0.3.x patch bump re-blocked the gate — exactly the failure the futures-core note recorded under #11082. The trust window starts at this publisher first release, so releases published by cramertj before that date stay outside it."
+
+[[trusted.futures-util]]
+criteria = "safe-to-deploy"
+user-id = 33035 # Taiki Endo (taiki-e)
+start = "2020-10-05"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: taiki-e maintains futures-rs and already holds this project trust for futures-core. The rest of the futures-rs workspace was recorded as per-version audits instead, so every 0.3.x patch bump re-blocked the gate — exactly the failure the futures-core note recorded under #11082. The trust window starts at this publisher first release, so releases published by cramertj before that date stay outside it."
 
 [[trusted.gbm]]
 criteria = "safe-to-deploy"
@@ -11475,7 +12093,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved identity, co-published cr
 
 [[trusted.getrandom]]
 criteria = "safe-to-deploy"
-user-id = 5059 # Artyom Pavlov (newpavlov)
+user-id = 5059
 start = "2019-06-28"
 end = "2027-08-20"
 notes = "#11243 publisher-trust extension: this publisher is already trusted in this file for other crates under the #3908 owner-approved identity review, and `cargo vet suggest` reported them as the publisher of this crate. Extending the existing decision to this crate removes an exemption without asserting a line-by-line audit. Trusts only this publisher's releases within the window."
@@ -11489,7 +12107,7 @@ notes = "#11243 publisher-trust extension: this publisher is already trusted in 
 
 [[trusted.gif]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2019-06-01"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -11734,7 +12352,7 @@ notes = "#11127 publisher-trust (owner-approved identity): sffc (Shane Carr) is 
 
 [[trusted.image]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2019-04-13"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -12229,6 +12847,13 @@ start = "2019-08-07"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Jeremy Soller, System76/Redox OS — libredox/redox_syscall. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.reqwest]]
+criteria = "safe-to-deploy"
+user-id = 359 # Sean McArthur (seanmonstar)
+start = "2019-03-04"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: seanmonstar authors reqwest and already holds this project trust for h2, http, http-body and http-body-util — the hyper stack reqwest is built on. Trusting the transport but not the client it exists to serve was an omission."
+
 [[trusted.rgb]]
 criteria = "safe-to-deploy"
 user-id = 988 # Kornel (kornelski)
@@ -12350,7 +12975,7 @@ notes = "#11127 publisher-trust (owner-approved identity): dtolnay, 7 of 24 rele
 
 [[trusted.servo_arc]]
 criteria = "safe-to-deploy"
-user-id = 2396 # Josh Matthews (jdm)
+user-id = 2396 # Josh Bowman-Matthews (jdm)
 start = "2025-06-10"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Josh Matthews, Servo project — tendril/string_cache. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -12392,7 +13017,7 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Bilal Elmouss
 
 [[trusted.string_cache]]
 criteria = "safe-to-deploy"
-user-id = 2396 # Josh Matthews (jdm)
+user-id = 2396 # Josh Bowman-Matthews (jdm)
 start = "2021-10-12"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Josh Matthews, Servo project — tendril/string_cache. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -12532,7 +13157,7 @@ notes = "#3908 Phase 2 publisher-trust (owner-approved, specific identity): Taur
 
 [[trusted.tendril]]
 criteria = "safe-to-deploy"
-user-id = 2396 # Josh Matthews (jdm)
+user-id = 2396 # Josh Bowman-Matthews (jdm)
 start = "2022-03-27"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Josh Matthews, Servo project — tendril/string_cache. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -12560,7 +13185,7 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): David Tolnay 
 
 [[trusted.tiff]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2019-04-25"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -12592,6 +13217,13 @@ user-id = 6741 # Alice Ryhl (Darksonn)
 start = "2021-01-04"
 end = "2027-08-22"
 notes = "Publish share: Darksonn shipped 18 of 21 published versions (86%), with carllerche accounting for the other 3 and no versions lacking a publisher record. The strongest share of the three Darksonn crates in this batch. Window: start is the publisher's first publication. Corroboration: mozilla and bytecodealliance trust this publisher. Those registries publish trust entries without notes (measured 2026-08-22: mozilla 2 of 228, zcash 0 of 206, arielos 0 of 95, isrg 0 of 50), so the citation is corroboration and not the basis; the findings above are. Release process: trustpub_data is null on every version. Exposure: general. Stream adapters over tokio primitives; no cryptography, no process spawning, no direct FFI surface."
+
+[[trusted.tower-http]]
+criteria = "safe-to-deploy"
+user-id = 359 # Sean McArthur (seanmonstar)
+start = "2024-09-23"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: seanmonstar publishes tower-http and already holds this project trust for h2, http, http-body and http-body-util. maekon-web is the only consumer."
 
 [[trusted.transpose]]
 criteria = "safe-to-deploy"
@@ -12693,7 +13325,7 @@ notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Microsoft Web
 
 [[trusted.weezl]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2020-06-29"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -12896,7 +13528,7 @@ notes = "#11281 VD-05.7 Tier 3-c publisher-trust. Publish share: rtbo shipped 21
 
 [[trusted.y4m]]
 criteria = "safe-to-deploy"
-user-id = 11453 # Aurelia Molzer (HeroicKatora)
+user-id = 11453 # Aurelia Molzer (197g)
 start = "2020-07-23"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): image-rs team — image/tiff. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
@@ -12922,12 +13554,26 @@ start = "2020-07-19"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Zeeshan Ali — zbus/zvariant lead maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
 
+[[trusted.zbus_macros]]
+criteria = "safe-to-deploy"
+user-id = 6423 # Zeeshan Ali Khan (zeenix)
+start = "2020-07-19"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: zeenix authors zbus/zvariant and already holds this project trust for zbus, zbus_names, zvariant and endi. This entry closes the gap for zbus_macros, which lives in the same workspace and ships from the same release. Trusting zbus while not trusting its proc-macro and utility halves was an omission, not a policy line."
+
 [[trusted.zbus_names]]
 criteria = "safe-to-deploy"
 user-id = 6423 # Zeeshan Ali Khan (zeenix)
 start = "2021-07-30"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Zeeshan Ali — zbus/zvariant lead maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.zcheapstr]]
+criteria = "safe-to-deploy"
+user-id = 6423 # Zeeshan Ali Khan (zeenix)
+start = "2026-08-09"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: zeenix authors zbus/zvariant and already holds this project trust for zbus, zbus_names, zvariant and endi. This entry closes the gap for zcheapstr, which lives in the same workspace and ships from the same release. Trusting zbus while not trusting its proc-macro and utility halves was an omission, not a policy line."
 
 [[trusted.zeroize]]
 criteria = "safe-to-deploy"
@@ -12977,3 +13623,17 @@ user-id = 6423 # Zeeshan Ali Khan (zeenix)
 start = "2019-12-30"
 end = "2027-05-29"
 notes = "#3908 Phase 2b publisher-trust (owner-approved identity): Zeeshan Ali — zbus/zvariant lead maintainer. Trusts only this publisher's releases within the window; large generated/FFI/expert-concurrency code not line-auditable in triage."
+
+[[trusted.zvariant_derive]]
+criteria = "safe-to-deploy"
+user-id = 6423 # Zeeshan Ali Khan (zeenix)
+start = "2020-05-22"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: zeenix authors zbus/zvariant and already holds this project trust for zbus, zbus_names, zvariant and endi. This entry closes the gap for zvariant_derive, which lives in the same workspace and ships from the same release. Trusting zbus while not trusting its proc-macro and utility halves was an omission, not a policy line."
+
+[[trusted.zvariant_utils]]
+criteria = "safe-to-deploy"
+user-id = 6423 # Zeeshan Ali Khan (zeenix)
+start = "2023-03-07"
+end = "2027-09-18"
+notes = "#12391 publisher-trust: zeenix authors zbus/zvariant and already holds this project trust for zbus, zbus_names, zvariant and endi. This entry closes the gap for zvariant_utils, which lives in the same workspace and ships from the same release. Trusting zbus while not trusting its proc-macro and utility halves was an omission, not a policy line."
