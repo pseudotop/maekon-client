@@ -75,23 +75,27 @@ fn raw_plane_info(install_id: &str, account_subject_ref: &str) -> Vec<u8> {
 ///
 /// extract: `PRK = HMAC-SHA256(salt, ikm)`; expand: `OKM = HMAC-SHA256(PRK,
 /// info || 0x01)[..32]`. One block suffices for a 256-bit key.
-fn hkdf_sha256_32(ikm: &[u8], salt: &[u8], info: &[u8]) -> Zeroizing<[u8; 32]> {
+fn hkdf_sha256_32(
+    ikm: &[u8],
+    salt: &[u8],
+    info: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, StorageError> {
     // extract
     let mut extract = <HmacSha256 as HmacKeyInit>::new_from_slice(salt)
-        .expect("HMAC-SHA256 accepts a key of any length");
+        .map_err(|_| StorageError::Encryption("raw-plane HKDF extract init failed".into()))?;
     extract.update(ikm);
     let prk = extract.finalize().into_bytes();
 
     // expand (single block, counter = 0x01)
     let mut expand = <HmacSha256 as HmacKeyInit>::new_from_slice(&prk)
-        .expect("HMAC-SHA256 accepts a key of any length");
+        .map_err(|_| StorageError::Encryption("raw-plane HKDF expand init failed".into()))?;
     expand.update(info);
     expand.update(&[0x01]);
     let okm = expand.finalize().into_bytes();
 
     let mut out = [0u8; 32];
     out.copy_from_slice(&okm[..32]);
-    Zeroizing::new(out)
+    Ok(Zeroizing::new(out))
 }
 
 impl EncryptionKey {
@@ -111,7 +115,7 @@ impl EncryptionKey {
             .map_err(|e| StorageError::Encryption(format!("raw-plane salt generation: {e}")))?;
 
         let info = raw_plane_info(install_id, account_subject_ref);
-        let subkey = hkdf_sha256_32(self.as_bytes(), &key_salt, &info);
+        let subkey = hkdf_sha256_32(self.as_bytes(), &key_salt, &info)?;
 
         let cipher = Aes256Gcm::new_from_slice(subkey.as_slice())
             .map_err(|e| StorageError::Encryption(format!("raw-plane cipher init: {e}")))?;
@@ -149,7 +153,7 @@ impl EncryptionKey {
             ));
         }
         let info = raw_plane_info(install_id, account_subject_ref);
-        let subkey = hkdf_sha256_32(self.as_bytes(), &bundle.key_salt, &info);
+        let subkey = hkdf_sha256_32(self.as_bytes(), &bundle.key_salt, &info)?;
 
         let cipher = Aes256Gcm::new_from_slice(subkey.as_slice())
             .map_err(|e| StorageError::Encryption(format!("raw-plane cipher init: {e}")))?;
@@ -169,6 +173,58 @@ mod tests {
 
     fn key() -> EncryptionKey {
         EncryptionKey::from_bytes([7u8; 32])
+    }
+
+    #[test]
+    fn hkdf_matches_rfc5869_sha256_vectors() {
+        // #12047: Pin the first block from RFC 5869 Appendix A.1-A.3.
+        // A round-trip alone would also pass after an incompatible KDF change.
+        // https://www.rfc-editor.org/rfc/rfc5869.html#appendix-A
+        let vectors = [
+            (
+                vec![0x0b; 22],
+                (0x00..=0x0c).collect::<Vec<u8>>(),
+                (0xf0..=0xf9).collect::<Vec<u8>>(),
+                "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf",
+            ),
+            (
+                (0x00..=0x4f).collect(),
+                (0x60..=0xaf).collect(),
+                (0xb0..=0xff).collect(),
+                "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c",
+            ),
+            (
+                vec![0x0b; 22],
+                Vec::new(),
+                Vec::new(),
+                "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d",
+            ),
+        ];
+        for (ikm, salt, info, expected) in vectors {
+            let output = hkdf_sha256_32(&ikm, &salt, &info).expect("HKDF vector");
+            assert_eq!(hex::encode(output.as_slice()), expected);
+        }
+    }
+
+    #[test]
+    fn a_different_install_binding_cannot_decrypt() {
+        let k = key();
+        let bundle = k.encrypt_raw_plane(b"fixture", "inst_A", "acct_1").unwrap();
+        let err = k
+            .decrypt_raw_plane(&bundle, "inst_B", "acct_1")
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Encryption(_)));
+    }
+
+    #[test]
+    fn modified_ciphertext_is_rejected() {
+        let k = key();
+        let mut bundle = k.encrypt_raw_plane(b"fixture", "inst_1", "acct_1").unwrap();
+        bundle.ciphertext[0] ^= 1;
+        let err = k
+            .decrypt_raw_plane(&bundle, "inst_1", "acct_1")
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Encryption(_)));
     }
 
     #[test]
@@ -240,9 +296,12 @@ mod tests {
     fn length_prefixed_info_has_no_boundary_collision() {
         // ("ab","c") and ("a","bc") must derive different subkeys.
         let k = key();
-        let salt = [9u8; KEY_SALT_LEN];
-        let s1 = hkdf_sha256_32(k.as_bytes(), &salt, &raw_plane_info("ab", "c"));
-        let s2 = hkdf_sha256_32(k.as_bytes(), &salt, &raw_plane_info("a", "bc"));
+        // Any salt works; both derivations share it, so draw one per run rather
+        // than hard-coding a value that reads as a production salt.
+        let mut salt = [0u8; KEY_SALT_LEN];
+        getrandom::fill(&mut salt).unwrap();
+        let s1 = hkdf_sha256_32(k.as_bytes(), &salt, &raw_plane_info("ab", "c")).unwrap();
+        let s2 = hkdf_sha256_32(k.as_bytes(), &salt, &raw_plane_info("a", "bc")).unwrap();
         assert_ne!(s1.as_slice(), s2.as_slice());
     }
 }

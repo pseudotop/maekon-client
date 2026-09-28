@@ -28,7 +28,7 @@ ADR 번호는 이 레지스트리 안에서만 의미가 있으며 전역 ONESHI
 | ID | 제목 | Status | Scope |
 |----|------|--------|-------|
 | [001](./ADR-001-rust-client-architecture-patterns.md) | Rust Client Architecture Patterns | Accepted | 전체 워크스페이스 |
-| [002](./ADR-002-os-gui-interaction-boundary.md) | OS GUI Interaction Boundary and Runtime Split | Accepted | core / automation / vision / web / src-tauri |
+| [002](./ADR-002-os-gui-interaction-boundary.md) | OS GUI Interaction Boundary and Runtime Split (2026-09-20 guarded candidate decision update) | Accepted | core / automation / vision / web / src-tauri; network decision adapter |
 | [003](./ADR-003-directory-module-pattern.md) | Directory Module Pattern for Large Source Files | Accepted | 모든 crate |
 | [004](./ADR-004-tauri-v2-migration.md) | Tauri v2 Migration (iced → Tauri v2 + WebView) | Accepted | Desktop shell |
 | [005](./ADR-005-tauri-governance.md) | Tauri v2 Governance | Accepted | `src-tauri/tauri.conf.json`, permissions |

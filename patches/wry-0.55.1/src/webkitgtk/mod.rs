@@ -571,6 +571,12 @@ impl InnerWebView {
 
     let container_type = container.type_().name();
     if container_type == "GtkBox" {
+      // Maekon (#12580): GTK4 box children keep their natural size unless they
+      // opt into expansion. The GTK3 port packed the webview into the box with
+      // expand and fill set; without the same flags the webview is 0 px tall
+      // and the window looks empty.
+      webview.set_vexpand(true);
+      webview.set_hexpand(true);
       container
         .dynamic_cast_ref::<gtk::Box>()
         .unwrap()
@@ -1102,6 +1108,10 @@ impl InnerWebView {
 
       let container_type = container.type_().name();
       if container_type == "GtkBox" {
+        // Maekon (#12580): keep the GTK3 expand-and-fill behaviour when the
+        // webview moves into another box (see `add_to_container`).
+        self.webview.set_vexpand(true);
+        self.webview.set_hexpand(true);
         container
           .dynamic_cast_ref::<gtk::Box>()
           .unwrap()

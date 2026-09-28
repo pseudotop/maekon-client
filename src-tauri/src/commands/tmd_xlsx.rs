@@ -3,10 +3,12 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use maekon_core::models::effective_mapping::{MappingResolutionReason, MappingResolutionRejection};
+use maekon_core::models::effective_mapping::{
+    EffectiveMapping, MappingResolutionReason, MappingResolutionRejection,
+};
 use maekon_core::models::wbs_xlsx::{
     EffectiveWbsXlsxProjection, EffectiveWbsXlsxProjectionResolution, LocalWbsXlsxReceipt,
-    WbsXlsxOutcome,
+    WbsXlsxHandoff, WbsXlsxOutcome,
 };
 use maekon_core::ports::effective_mapping_cache::EffectiveMappingCache;
 use maekon_core::ports::wbs_xlsx_client::WbsXlsxClient;
@@ -21,6 +23,12 @@ use uuid::Uuid;
 use crate::ipc_error::IpcError;
 
 const CODE_UNAVAILABLE: &str = "service.unavailable";
+
+type TmdXlsxServices = (
+    Arc<dyn WbsXlsxClient>,
+    Arc<dyn WbsXlsxReceiptStore>,
+    Arc<dyn EffectiveMappingCache>,
+);
 
 pub struct TmdXlsxState {
     client: Mutex<Option<Arc<dyn WbsXlsxClient>>>,
@@ -59,13 +67,7 @@ impl TmdXlsxState {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cache);
     }
 
-    fn get(
-        &self,
-    ) -> Option<(
-        Arc<dyn WbsXlsxClient>,
-        Arc<dyn WbsXlsxReceiptStore>,
-        Arc<dyn EffectiveMappingCache>,
-    )> {
+    fn get(&self) -> Option<TmdXlsxServices> {
         let client = self
             .client
             .lock()
@@ -99,22 +101,31 @@ pub enum GenerateTmdXlsxResult {
         first_mismatch_column: String,
         receipt_upload_pending: bool,
     },
-    Produced {
-        receipt_id: String,
-        output_path: String,
-        artifact_sha256: String,
-        row_count: usize,
-        escaped_cell_count: usize,
-        receipt_upload_pending: bool,
-    },
+    Produced(Box<ProducedTmdXlsx>),
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProducedTmdXlsx {
+    receipt_id: String,
+    assignment_receipt_id: String,
+    assignment_id: String,
+    mapping_id: String,
+    output_path: String,
+    artifact_sha256: String,
+    template_structure_hash: String,
+    mapping_content_hash: String,
+    approved_template_hash: String,
+    assignment_hash: String,
+    source_snapshot_hash: String,
+    row_count: usize,
+    escaped_cell_count: usize,
+    receipt_upload_pending: bool,
 }
 
 #[tauri::command]
 pub async fn generate_tmd_xlsx(
     app: tauri::AppHandle,
-    organization_id: String,
-    mapping_id: String,
-    assignment_id: String,
+    assignment_receipt_id: String,
     state: State<'_, TmdXlsxState>,
 ) -> Result<GenerateTmdXlsxResult, IpcError> {
     let (client, receipts, cache) = state.get().ok_or_else(|| {
@@ -126,12 +137,21 @@ pub async fn generate_tmd_xlsx(
 
     flush_pending_receipts(&client, &receipts).await;
 
+    let handoff = client
+        .resolve_handoff(&assignment_receipt_id)
+        .await
+        .map_err(IpcError::from)?;
+    let organization_id = handoff.organization_id.clone();
+    let mapping_id = handoff.mapping_id.clone();
+    let assignment_id = handoff.assignment_id.clone();
+
     let resolution = client
         .resolve_effective_projection(&organization_id, &mapping_id, &assignment_id)
         .await
         .map_err(IpcError::from)?;
     let effective = match resolution {
         EffectiveWbsXlsxProjectionResolution::Effective(value) => {
+            require_handoff_projection_match(&handoff, &value.effective)?;
             if let Err(error) = cache
                 .store_server_validated(&value.effective, &canonical_now())
                 .await
@@ -167,6 +187,11 @@ pub async fn generate_tmd_xlsx(
     let Some(output_path) = pick_output_path(&app, &assignment_id).await? else {
         return Ok(GenerateTmdXlsxResult::Cancelled);
     };
+    let latest_handoff = client
+        .resolve_handoff(&assignment_receipt_id)
+        .await
+        .map_err(IpcError::from)?;
+    require_unchanged_handoff(&handoff, &latest_handoff)?;
     let same_file_input = input_path.clone();
     let same_file_output = output_path.clone();
     let overwrites_template = tokio::task::spawn_blocking(move || {
@@ -198,7 +223,7 @@ pub async fn generate_tmd_xlsx(
                 None,
                 None,
                 None,
-            );
+            )?;
             let upload_pending =
                 record_and_upload(client, receipts, &organization_id, &receipt).await?;
             Ok(GenerateTmdXlsxResult::HeaderDrift {
@@ -216,15 +241,11 @@ pub async fn generate_tmd_xlsx(
                 &effective,
                 WbsXlsxOutcome::Produced,
                 None,
-                Some(structure_hash),
+                Some(structure_hash.clone()),
                 Some(artifact_sha256.clone()),
                 Some(effective.projection.rows.len()),
                 Some(escaped_cell_count),
-            );
-            receipts
-                .append_pending(&organization_id, &receipt)
-                .await
-                .map_err(IpcError::from)?;
+            )?;
             let persisted_path = output_path.clone();
             tokio::task::spawn_blocking(move || persist_atomic(&persisted_path, &bytes))
                 .await
@@ -235,18 +256,64 @@ pub async fn generate_tmd_xlsx(
                     )
                 })?
                 .map_err(writer_error)?;
+            receipts
+                .append_pending(&organization_id, &receipt)
+                .await
+                .map_err(IpcError::from)?;
             let upload_pending =
                 upload_recorded_receipt(client, receipts, &organization_id, &receipt).await?;
-            Ok(GenerateTmdXlsxResult::Produced {
+            Ok(GenerateTmdXlsxResult::Produced(Box::new(ProducedTmdXlsx {
                 receipt_id: receipt.receipt_id,
+                assignment_receipt_id,
+                assignment_id: effective.effective.assignment_id.clone(),
+                mapping_id: effective.effective.mapping_id.clone(),
                 output_path: output_path.display().to_string(),
                 artifact_sha256,
+                template_structure_hash: structure_hash,
+                mapping_content_hash: effective.effective.content_hash.clone(),
+                approved_template_hash: effective.effective.approved_template_hash.clone(),
+                assignment_hash: effective.effective.assignment_hash.clone(),
+                source_snapshot_hash: effective.effective.source_snapshot_hash.clone(),
                 row_count: effective.projection.rows.len(),
                 escaped_cell_count,
                 receipt_upload_pending: upload_pending,
-            })
+            })))
         }
     }
+}
+
+fn require_handoff_projection_match(
+    handoff: &WbsXlsxHandoff,
+    effective: &EffectiveMapping,
+) -> Result<(), IpcError> {
+    let matches = effective.organization_id == handoff.organization_id
+        && effective.mapping_id == handoff.mapping_id
+        && effective.version_id == handoff.mapping_version_id
+        && effective.content_hash == handoff.mapping_content_hash
+        && effective.approved_template_hash == handoff.approved_template_hash
+        && effective.assignment_id == handoff.assignment_id
+        && effective.assignment_hash == handoff.assignment_hash
+        && effective.source_snapshot_hash == handoff.source_snapshot_hash;
+    if matches {
+        return Ok(());
+    }
+    Err(IpcError::new(
+        "validation.invalid_field",
+        "WBS XLSX handoff anchors changed before the effective projection resolved",
+    ))
+}
+
+fn require_unchanged_handoff(
+    initial: &WbsXlsxHandoff,
+    latest: &WbsXlsxHandoff,
+) -> Result<(), IpcError> {
+    if initial == latest {
+        return Ok(());
+    }
+    Err(IpcError::new(
+        "validation.invalid_field",
+        "WBS XLSX handoff anchors changed while native file selection was open",
+    ))
 }
 
 async fn pick_input_path(app: &tauri::AppHandle) -> Result<Option<PathBuf>, IpcError> {
@@ -345,20 +412,32 @@ fn receipt_after_gate(
     artifact_sha256: Option<String>,
     row_count: Option<usize>,
     escaped_cell_count: Option<usize>,
-) -> LocalWbsXlsxReceipt {
-    LocalWbsXlsxReceipt {
+) -> Result<LocalWbsXlsxReceipt, IpcError> {
+    let row_count = row_count.map(u64::try_from).transpose().map_err(|error| {
+        IpcError::new(
+            "internal.generic",
+            format!("XLSX row count is out of range: {error}"),
+        )
+    })?;
+    let escaped_cell_count =
+        escaped_cell_count
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|error| {
+                IpcError::new(
+                    "internal.generic",
+                    format!("XLSX escaped cell count is out of range: {error}"),
+                )
+            })?;
+    Ok(LocalWbsXlsxReceipt {
         receipt_id: Uuid::new_v4().to_string(),
         mapping_id: effective.effective.mapping_id.clone(),
         assignment_id: effective.effective.assignment_id.clone(),
         outcome,
         reason_code,
         artifact_sha256,
-        row_count: row_count.map(|value| {
-            u64::try_from(value).expect("supported XLSX targets use at most 64-bit usize")
-        }),
-        escaped_cell_count: escaped_cell_count.map(|value| {
-            u64::try_from(value).expect("supported XLSX targets use at most 64-bit usize")
-        }),
+        row_count,
+        escaped_cell_count,
         template_structure_hash,
         mapping_content_hash: Some(effective.effective.content_hash.clone()),
         approved_template_hash: Some(effective.effective.approved_template_hash.clone()),
@@ -367,7 +446,7 @@ fn receipt_after_gate(
         approval_seq: Some(effective.effective.approval_seq),
         approved_at: Some(effective.effective.approved_at.clone()),
         produced_at: canonical_now(),
-    }
+    })
 }
 
 async fn record_and_upload(
@@ -524,6 +603,10 @@ fn writer_error(error: maekon_storage::tmd_xlsx_writer::XlsxWriterError) -> IpcE
 }
 
 #[cfg(test)]
+#[path = "tmd_xlsx/receipt_tests.rs"]
+mod receipt_contract_tests;
+
+#[cfg(test)]
 mod tests {
     use async_trait::async_trait;
     use maekon_core::error::CoreError;
@@ -540,6 +623,10 @@ mod tests {
 
     #[async_trait]
     impl WbsXlsxClient for SequenceClient {
+        async fn resolve_handoff(&self, _: &str) -> Result<WbsXlsxHandoff, CoreError> {
+            unreachable!("sequence test does not resolve a handoff")
+        }
+
         async fn resolve_effective_projection(
             &self,
             _: &str,
@@ -614,6 +701,48 @@ mod tests {
         }
     }
 
+    fn handoff() -> WbsXlsxHandoff {
+        WbsXlsxHandoff {
+            contract_version: "wbs-xlsx-handoff.v1".into(),
+            assignment_receipt_contract_version: "assignment-confirm.v1".into(),
+            organization_id: "org-1".into(),
+            assignment_receipt_id: "ercv-1".into(),
+            assignment_id: "assignment-1".into(),
+            assignment_hash: "a".repeat(64),
+            source_snapshot_id: "snapshot-1".into(),
+            source_snapshot_version: "assignment-board.v1:1".into(),
+            source_snapshot_hash: "b".repeat(64),
+            wbs_item_id: "item-1".into(),
+            wbs_template_id: "template-1".into(),
+            mapping_id: "mapping-1".into(),
+            mapping_version_id: "mapping-version-1".into(),
+            mapping_content_hash: "c".repeat(64),
+            approved_template_hash: "d".repeat(64),
+            synthetic: true,
+            source_kind: "wd_brokerage_seed".into(),
+            seed_namespace: "wd-brokerage".into(),
+            seed_revision: "wd-01.4".into(),
+        }
+    }
+
+    pub(super) fn effective_mapping() -> EffectiveMapping {
+        EffectiveMapping {
+            mapping_id: "mapping-1".into(),
+            organization_id: "org-1".into(),
+            version_id: "mapping-version-1".into(),
+            version_seq: 1,
+            content_hash: "c".repeat(64),
+            content: "{}".into(),
+            approval_seq: 1,
+            approved_at: "2026-08-18T00:00:00+00:00".into(),
+            approved_by_user_id: "approver-1".into(),
+            approved_template_hash: "d".repeat(64),
+            assignment_id: "assignment-1".into(),
+            assignment_hash: "a".repeat(64),
+            source_snapshot_hash: "b".repeat(64),
+        }
+    }
+
     #[test]
     fn canonical_timestamp_matches_server_receipt_contract() {
         let value = canonical_now();
@@ -636,6 +765,32 @@ mod tests {
             reason_code(MappingResolutionReason::ReceiptInstanceStale),
             "receipt_instance_stale"
         );
+    }
+
+    #[test]
+    fn handoff_anchor_drift_is_rejected_before_native_file_selection() {
+        let handoff = handoff();
+        let mut effective = effective_mapping();
+        require_handoff_projection_match(&handoff, &effective)
+            .expect("matching handoff projection should pass validation");
+
+        effective.content_hash = "e".repeat(64);
+        let error = require_handoff_projection_match(&handoff, &effective).unwrap_err();
+
+        assert_eq!(error.code, "validation.invalid_field");
+    }
+
+    #[test]
+    fn handoff_drift_during_native_file_selection_is_rejected_before_write() {
+        let initial = handoff();
+        let mut latest = initial.clone();
+        require_unchanged_handoff(&initial, &latest)
+            .expect("unchanged handoff should pass revalidation");
+
+        latest.assignment_hash = "e".repeat(64);
+        let error = require_unchanged_handoff(&initial, &latest).unwrap_err();
+
+        assert_eq!(error.code, "validation.invalid_field");
     }
 
     #[test]

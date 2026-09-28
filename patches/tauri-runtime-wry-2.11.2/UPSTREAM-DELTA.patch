@@ -88,7 +88,7 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
  
    impl HitTestResult {
      fn to_win32(self) -> i32 {
-@@ -501,128 +501,86 @@
+@@ -501,128 +501,91 @@
  
  #[cfg(not(windows))]
  mod gtk {
@@ -142,11 +142,16 @@ diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --
 -        | gtk::gdk::EventMask::BUTTON_PRESS_MASK
 -        | gtk::gdk::EventMask::TOUCH_MASK,
 -    );
-+    let webview_c = webview.clone();
++    // Weak: the gesture is owned by this webview, and GTK4 destroy never breaks a strong
++    // self-capture cycle, so the webview would never be finalized (#12652).
++    let webview_c = webview.downgrade();
 +    gesture.connect_pressed(move |gesture, _n_press, x, y| {
 +      if gesture.current_button() != 1 {
 +        return;
 +      }
++      let Some(webview_c) = webview_c.upgrade() else {
++        return;
++      };
  
 -    webview.connect_button_press_event(
 -      move |webview: &webkit2gtk::WebView, event: &gtk::gdk::EventButton| {

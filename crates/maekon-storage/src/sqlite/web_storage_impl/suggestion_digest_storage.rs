@@ -331,6 +331,9 @@ impl SqliteStorage {
             timeline_json,
             statistics_json,
             generated_at: digest.generated_at.to_rfc3339(),
+            ai_narrative_status_json: serde_json::to_string(&digest.ai_narrative).map_err(|e| {
+                StorageError::Internal(format!("Failed to serialize AI narrative status: {e}"))
+            })?,
         })
     }
 
@@ -339,14 +342,15 @@ impl SqliteStorage {
         params: &DailyDigestParams,
     ) -> Result<(), StorageError> {
         conn.execute(
-            "INSERT OR REPLACE INTO daily_digests (date, insight_json, timeline_json, statistics_json, generated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR REPLACE INTO daily_digests (date, insight_json, timeline_json, statistics_json, generated_at, ai_narrative_status_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 params.date,
                 params.insight_json,
                 params.timeline_json,
                 params.statistics_json,
-                params.generated_at
+                params.generated_at,
+                params.ai_narrative_status_json
             ],
         )
         .map_err(|e| StorageError::Internal(format!("Failed to save daily digest: {e}")))?;
@@ -374,7 +378,8 @@ impl SqliteStorage {
         date: &str,
     ) -> Result<Option<DailyDigest>, StorageError> {
         let result = conn.query_row(
-            "SELECT date, insight_json, timeline_json, statistics_json, generated_at
+            "SELECT date, insight_json, timeline_json, statistics_json, generated_at,
+                    ai_narrative_status_json
              FROM daily_digests WHERE date = ?1",
             rusqlite::params![date],
             |row| {
@@ -383,18 +388,27 @@ impl SqliteStorage {
                 let timeline_json: String = row.get(2)?;
                 let statistics_json: String = row.get(3)?;
                 let generated_at_str: String = row.get(4)?;
+                let ai_narrative_status_json: String = row.get(5)?;
                 Ok((
                     date_str,
                     insight_json,
                     timeline_json,
                     statistics_json,
                     generated_at_str,
+                    ai_narrative_status_json,
                 ))
             },
         );
 
         match result {
-            Ok((date_str, insight_json, timeline_json, statistics_json, generated_at_str)) => {
+            Ok((
+                date_str,
+                insight_json,
+                timeline_json,
+                statistics_json,
+                generated_at_str,
+                ai_narrative_status_json,
+            )) => {
                 // `parse_daily_digest_row` returns `CoreError`; `?` wraps it via
                 // `StorageError::Core` so the typed wire code survives the
                 // round-trip back to `CoreError` at the trait boundary.
@@ -404,6 +418,7 @@ impl SqliteStorage {
                     &timeline_json,
                     &statistics_json,
                     &generated_at_str,
+                    &ai_narrative_status_json,
                 )?;
                 Ok(Some(digest))
             }
@@ -436,7 +451,8 @@ impl SqliteStorage {
     ) -> Result<Vec<DailyDigest>, StorageError> {
         let mut stmt = conn
             .prepare(
-                "SELECT date, insight_json, timeline_json, statistics_json, generated_at
+                "SELECT date, insight_json, timeline_json, statistics_json, generated_at,
+                        ai_narrative_status_json
                  FROM daily_digests ORDER BY date DESC LIMIT ?1",
             )
             .map_err(|e| {
@@ -450,24 +466,34 @@ impl SqliteStorage {
                 let timeline_json: String = row.get(2)?;
                 let statistics_json: String = row.get(3)?;
                 let generated_at_str: String = row.get(4)?;
+                let ai_narrative_status_json: String = row.get(5)?;
                 Ok((
                     date_str,
                     insight_json,
                     timeline_json,
                     statistics_json,
                     generated_at_str,
+                    ai_narrative_status_json,
                 ))
             })
             .map_err(|e| StorageError::Internal(format!("Failed to query daily_digests: {e}")))?
             .filter_map(|r| r.ok())
             .filter_map(
-                |(date_str, insight_json, timeline_json, statistics_json, generated_at_str)| {
+                |(
+                    date_str,
+                    insight_json,
+                    timeline_json,
+                    statistics_json,
+                    generated_at_str,
+                    ai_narrative_status_json,
+                )| {
                     SqliteStorage::parse_daily_digest_row(
                         &date_str,
                         insight_json.as_deref(),
                         &timeline_json,
                         &statistics_json,
                         &generated_at_str,
+                        &ai_narrative_status_json,
                     )
                     .ok()
                 },
@@ -585,7 +611,7 @@ impl SqliteStorage {
             .prepare(
                 "SELECT id, start_time, end_time, duration_secs, dominant_category,
                         regime_id, app_breakdown, content_activities_json,
-                        context_switch_count, llm_summary
+                        context_switch_count, llm_summary, llm_summary_status_json
                  FROM activity_segments
                  WHERE datetime(start_time) >= datetime(?1)
                    AND datetime(start_time) < datetime(?2)
@@ -612,6 +638,11 @@ impl SqliteStorage {
                         .unwrap_or_else(|| "[]".to_string()),
                     context_switch_count: row.get::<_, Option<i64>>(8)?.unwrap_or(0) as u32,
                     llm_summary: row.get(9)?,
+                    ai_summary: row
+                        .get::<_, String>(10)
+                        .ok()
+                        .and_then(|json| serde_json::from_str(&json).ok())
+                        .unwrap_or_default(),
                 })
             })
             .map_err(|e| StorageError::Internal(format!("Failed to query segments: {e}")))?
@@ -639,6 +670,7 @@ struct DailyDigestParams {
     timeline_json: String,
     statistics_json: String,
     generated_at: String,
+    ai_narrative_status_json: String,
 }
 
 #[cfg(test)]

@@ -262,14 +262,11 @@ Per-platform signal mechanism:
 - **Windows**: Named pipe
 - **Linux**: D-Bus name `com.maekon.app.SingleInstance`
 
-**Known limitation — Wayland tray-only startup**:
+**Known limitation — Wayland startup without a window**:
 
-When the first instance starts in tray-only mode without ever showing the main window (some Wayland environments), a second launch (e.g., a dock icon click) may send the focus signal but no window appears.
+When the first instance starts without ever showing the main window (some Wayland environments), a second launch (e.g., a dock icon click) may send the focus signal but no window appears.
 
-This was accepted as a known limitation in PR-B1 risk register §13. If it happens:
-
-1. Click the tray icon → choose "Show window"
-2. Or run `maekon --show-window` from a terminal (a `window.create()` fallback is planned for a follow-up PR).
+This was accepted as a known limitation in PR-B1 risk register §13. Linux has no tray icon, and Maekon has no `--show-window` option. If it happens, end the running Maekon process (for example from your system monitor) and launch Maekon again.
 
 ---
 

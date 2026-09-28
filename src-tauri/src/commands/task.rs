@@ -104,7 +104,7 @@ pub async fn list_task_candidates(
 ) -> Result<Vec<TaskCandidateView>, IpcError> {
     let candidates = state
         .storage
-        .list_candidates(CandidateFilter::default())
+        .list_candidates(CandidateFilter::reviewable())
         .await
         .map_err(IpcError::from)?;
     Ok(candidates

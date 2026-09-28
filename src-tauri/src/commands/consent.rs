@@ -417,7 +417,8 @@ pub async fn withdraw_consent(
                 cs.config_manager().clone(),
             )
         });
-    erase_all_local_data(storage, frame_storage, vault_writer).await?;
+    let invocation_evidence = crate::ai_invocation_evidence::evidence_path();
+    erase_all_local_data(storage, frame_storage, vault_writer, invocation_evidence).await?;
 
     Ok(snapshot)
 }
@@ -470,6 +471,7 @@ async fn erase_all_local_data(
     storage: Arc<SqliteStorage>,
     frame_storage: Option<Arc<dyn FrameStoragePort>>,
     vault_writer: Option<Arc<dyn MemoryVaultWriterPort>>,
+    invocation_evidence: Option<std::path::PathBuf>,
 ) -> Result<(), IpcError> {
     // #4928 round-3 (FIX B): block the grant_consent-during-erase TOCTOU.
     //
@@ -633,6 +635,23 @@ async fn erase_all_local_data(
                 }
             }
 
+            // ── Phase-4: HTTP Chat invocation evidence (#12530) ──────────────
+            // A record of a user-started verification call is local data like
+            // the rest. `None` means no data directory, where no record can
+            // have been written. A failure keeps the marker (R5).
+            if let Some(path) = invocation_evidence.as_deref() {
+                if let Err(e) = crate::ai_invocation_evidence::erase_evidence(path) {
+                    tracing::error!(err = %e, "GDPR Art.17 Phase-4 failed: invocation evidence remains");
+                    if let Err(meta_err) = storage.set_meta_checked(PENDING_LOCAL_ERASE_KEY, "1") {
+                        tracing::error!(err = %meta_err, "GDPR: retry marker write failed");
+                    }
+                    return Err(IpcError::new(
+                        "storage.failed",
+                        "HTTP Chat verification record could not be deleted",
+                    ));
+                }
+            }
+
             // On Phase-2 + Phase-3 success, clear the retry marker if present
             // (recover from a prior partial deletion).
             if let Err(e) = storage.delete_meta_checked(PENDING_LOCAL_ERASE_KEY) {
@@ -675,6 +694,7 @@ pub(crate) async fn retry_pending_local_erase(
     storage: Arc<SqliteStorage>,
     frame_storage: Option<Arc<dyn FrameStoragePort>>,
     vault_writer: Option<Arc<dyn MemoryVaultWriterPort>>,
+    invocation_evidence: Option<std::path::PathBuf>,
 ) {
     // If there is no marker, return immediately (normal startup path).
     if storage.get_meta(PENDING_LOCAL_ERASE_KEY).is_none() {
@@ -683,7 +703,14 @@ pub(crate) async fn retry_pending_local_erase(
 
     tracing::warn!("GDPR Art.17: detected incomplete local-erasure marker — starting retry");
 
-    match erase_all_local_data(storage.clone(), frame_storage, vault_writer).await {
+    match erase_all_local_data(
+        storage.clone(),
+        frame_storage,
+        vault_writer,
+        invocation_evidence,
+    )
+    .await
+    {
         Ok(()) => {
             tracing::info!("GDPR Art.17: retry succeeded — deleting retry marker");
             // Phase-2 succeeded, so the marker is deleted (already handled inside
@@ -1116,9 +1143,11 @@ mod tests {
     /// After revoke, erase_all_local_data empties SQLite and calls delete_all_frames (#4801).
     #[tokio::test]
     async fn erase_all_local_data_sqlite_empty_and_frames_deleted() {
-        let (storage, _dir) = open_storage_with_data();
+        let (storage, dir) = open_storage_with_data();
         let storage = Arc::new(storage);
         let mock_fs = MockFrameStorage::success();
+        let evidence = dir.path().join("http_chat_invocation_evidence.json");
+        std::fs::write(&evidence, "{}").expect("seed #12530 evidence");
 
         assert!(
             count_rows(&storage, "events") > 0,
@@ -1129,9 +1158,11 @@ mod tests {
             storage.clone(),
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
             Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
+            Some(evidence.clone()),
         )
         .await
         .expect("erase_all_local_data must succeed");
+        assert!(!evidence.exists(), "the verification record must be erased");
 
         assert_eq!(
             count_rows(&storage, "events"),
@@ -1167,6 +1198,7 @@ mod tests {
             storage.clone(),
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
             Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
+            None,
         )
         .await
         .expect("erase must succeed");
@@ -1179,6 +1211,33 @@ mod tests {
         assert!(
             storage.get_meta(PENDING_LOCAL_ERASE_KEY).is_none(),
             "the marker must be cleared after a fully-successful erase"
+        );
+    }
+
+    /// #12530 Phase-4: a verification record that cannot be deleted fails the
+    /// erasure (R5) and keeps the retry marker.
+    #[tokio::test]
+    async fn erase_fails_loud_when_the_invocation_evidence_remains() {
+        let (storage, dir) = open_storage_with_data();
+        let storage = Arc::new(storage);
+        let evidence = dir.path().join("http_chat_invocation_evidence.json");
+        std::fs::create_dir(&evidence).expect("a record that remove_file cannot delete");
+
+        let result = erase_all_local_data(
+            storage.clone(),
+            Some(MockFrameStorage::success() as Arc<dyn FrameStoragePort>),
+            Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
+            Some(evidence),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ref e) if e.code == "storage.failed"),
+            "{result:?}"
+        );
+        assert_eq!(
+            storage.get_meta(PENDING_LOCAL_ERASE_KEY),
+            Some("1".to_string())
         );
     }
 
@@ -1195,6 +1254,7 @@ mod tests {
             storage.clone(),
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
             Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
+            None,
         )
         .await;
 
@@ -1238,6 +1298,7 @@ mod tests {
             storage.clone(),
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
             Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
+            None,
         )
         .await;
 
@@ -1269,6 +1330,7 @@ mod tests {
             storage.clone(),
             Some(mock_fs.clone() as Arc<dyn FrameStoragePort>),
             Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
+            None,
         )
         .await;
 
@@ -1307,6 +1369,7 @@ mod tests {
             storage.clone(),
             None,
             Some(MockVaultWriter::ok() as Arc<dyn MemoryVaultWriterPort>),
+            None,
         )
         .await;
 
@@ -1352,6 +1415,7 @@ mod vault_phase3_tests {
             storage.clone(),
             Some(mock_fs as Arc<dyn FrameStoragePort>),
             Some(vault.clone() as Arc<dyn MemoryVaultWriterPort>),
+            None,
         )
         .await
         .expect("erase must succeed with a complete vault erase");
@@ -1380,6 +1444,7 @@ mod vault_phase3_tests {
             storage.clone(),
             Some(mock_fs as Arc<dyn FrameStoragePort>),
             Some(vault.clone() as Arc<dyn MemoryVaultWriterPort>),
+            None,
         )
         .await;
 
@@ -1406,6 +1471,7 @@ mod vault_phase3_tests {
         let result = erase_all_local_data(
             storage.clone(),
             Some(mock_fs as Arc<dyn FrameStoragePort>),
+            None,
             None,
         )
         .await;

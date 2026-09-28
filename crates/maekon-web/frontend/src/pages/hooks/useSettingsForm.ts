@@ -43,6 +43,7 @@ import {
   surfaceKnownModel,
   surfaceUnknownModelPolicy,
 } from '../../features/providerSurfaces'
+import { invalidateAiReadinessSnapshotCache } from '../../hooks/useAiReadinessSnapshot'
 import { useToast } from '../../hooks/useToast'
 import { translateError, type WireErrorLocale } from '../../i18n/translateError'
 import {
@@ -412,6 +413,11 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
     onSuccess: (savedSettings) => {
       queryClient.setQueryData(['settings'], savedSettings)
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      // #11735: readiness is derived from live config/consent and must be
+      // refetched after a settings save instead of retaining a stale provider
+      // or runtime blocker for another five minutes.
+      queryClient.invalidateQueries({ queryKey: ['feature-capabilities'] })
+      invalidateAiReadinessSnapshotCache()
       const sanitized = sanitizeLoadedSettings(savedSettings)
       lastLoadedSettingsRef.current = JSON.stringify(sanitized)
       setFormData(sanitized)

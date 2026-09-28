@@ -444,6 +444,7 @@ fn add_tag_to_frame_idempotent() {
 
 #[test]
 fn daily_digest_save_and_get_roundtrip() {
+    use maekon_core::models::ai_summary::{AiSummaryArtifact, AiSummaryProviderClass};
     use maekon_core::models::daily_digest::{
         DailyDigest, DailyInsight, DailyStatistics, DigestHighlight, HighlightType,
     };
@@ -451,6 +452,12 @@ fn daily_digest_save_and_get_roundtrip() {
     let storage = SqliteStorage::open_in_memory(30).unwrap();
     let today = Utc::now().date_naive();
 
+    let generated_at = Utc::now();
+    let ai_narrative = AiSummaryArtifact::generated(
+        "Great focus day!".to_string(),
+        AiSummaryProviderClass::Loopback,
+        generated_at,
+    );
     let digest = DailyDigest {
         date: today,
         insight: Some(DailyInsight {
@@ -466,7 +473,9 @@ fn daily_digest_save_and_get_roundtrip() {
             deep_work_hours: 4.2,
             ..DailyStatistics::default()
         },
-        generated_at: Utc::now(),
+        generated_at,
+        digest_provenance: "heuristic".to_string(),
+        ai_narrative: ai_narrative.clone(),
     };
 
     storage.save_daily_digest(&digest).unwrap();
@@ -480,6 +489,8 @@ fn daily_digest_save_and_get_roundtrip() {
     assert_eq!(insight.narrative, "Great focus day!");
     assert_eq!(insight.highlights.len(), 1);
     assert!((loaded.statistics.deep_work_hours - 4.2).abs() < f32::EPSILON);
+    assert_eq!(loaded.digest_provenance, "heuristic");
+    assert_eq!(loaded.ai_narrative, ai_narrative);
 }
 
 #[test]
@@ -498,6 +509,8 @@ fn daily_digest_list_ordering() {
             timeline: vec![],
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         };
         storage.save_daily_digest(&digest).unwrap();
     }

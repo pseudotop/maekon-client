@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use chrono::Utc;
 use maekon_api_contracts::support::{ResourceUsageSnapshotDto, RuntimeLogSnapshotDto};
@@ -8,6 +9,12 @@ use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use maekon_core::resource_budget;
 use tauri::command;
 
+use crate::ai_invocation_evidence::{
+    evidence_path, http_chat_invocation_verified, session_factory_credential,
+};
+use crate::ai_readiness::{
+    build_ai_readiness_snapshot_with_local_preflight, probe_local_chat_preflight,
+};
 use crate::feature_capabilities::{
     build_feature_capability_snapshot,
     probe_provider_surface_endpoint as probe_provider_surface_endpoint_impl,
@@ -15,9 +22,11 @@ use crate::feature_capabilities::{
 };
 use crate::ipc_error::IpcError;
 use crate::runtime_state::{
-    AppState, ConfigRuntimeState, SecretBackendCapabilities, SecretBackendState,
+    AiSessionRuntimeState, AppState, ConfigRuntimeState, SecretBackendCapabilities,
+    SecretBackendState,
 };
 use crate::services::log_helpers;
+use crate::session_manager::SessionManagerImpl;
 
 const DEFAULT_LOG_LINE_LIMIT: usize = 200;
 const MAX_LOG_LINE_LIMIT: usize = 500;
@@ -202,10 +211,56 @@ pub async fn get_secret_backend_capabilities(
 /// Generic feature capability + maturity snapshot for desktop runtime surfaces.
 #[command]
 pub async fn get_feature_capabilities(
-    state: tauri::State<'_, FeatureCapabilityState>,
+    feature_state: tauri::State<'_, FeatureCapabilityState>,
+    app_state: tauri::State<'_, AppState>,
+    config_state: tauri::State<'_, ConfigRuntimeState>,
+    ai_state: tauri::State<'_, AiSessionRuntimeState>,
 ) -> Result<FeatureCapabilitySnapshot, IpcError> {
-    let secret_backend = state.0.clone();
-    Ok(build_feature_capability_snapshot(&secret_backend).await)
+    Ok(feature_capability_snapshot(
+        &feature_state,
+        &app_state,
+        &config_state,
+        ai_state.manager_impl(),
+    )
+    .await)
+}
+
+/// The snapshot `get_feature_capabilities` returns. `session_manager` is the
+/// factory HTTP Chat sessions come from, so recorded invocation evidence is
+/// checked against the credential a session would send (#12530).
+pub(crate) async fn feature_capability_snapshot(
+    feature_state: &FeatureCapabilityState,
+    app_state: &AppState,
+    config_state: &ConfigRuntimeState,
+    session_manager: Option<Arc<SessionManagerImpl>>,
+) -> FeatureCapabilitySnapshot {
+    let secret_backend = feature_state.0.clone();
+    let mut snapshot = build_feature_capability_snapshot(&secret_backend).await;
+    let current_config = config_state.config_manager().get();
+    let evidence_path = evidence_path();
+    let (local_chat_preflight, http_chat_verified) = tokio::join!(
+        probe_local_chat_preflight(&current_config.ai_provider),
+        http_chat_invocation_verified(
+            &current_config.ai_provider,
+            |surface_id, url| session_factory_credential(
+                session_manager.as_deref(),
+                surface_id,
+                url
+            ),
+            evidence_path.as_deref(),
+        ),
+    );
+    let consent =
+        ConsentGate::from_ref(app_state.capture.consent_manager.as_ref()).permissions_snapshot();
+    snapshot.ai_readiness = Some(build_ai_readiness_snapshot_with_local_preflight(
+        &snapshot,
+        &current_config,
+        &app_state.config,
+        &consent,
+        Some(local_chat_preflight),
+        http_chat_verified,
+    ));
+    snapshot
 }
 
 /// Probe the currently configured provider endpoint for a direct/self-hosted surface.

@@ -25,6 +25,13 @@
     "allow-show-main-window",
     "allow-request-app-quit",
     "allow-toggle-capture-pause",
-    "allow-set-indicator-visible"
+    "allow-set-indicator-visible",
+    "allow-request-current-context-suggestions",
+    "allow-list-task-candidates",
+    "allow-list-todos",
+    "allow-confirm-task-candidate",
+    "allow-dismiss-task-candidate",
+    "allow-transition-todo",
+    "allow-record-frontend-log"
   ]
 }

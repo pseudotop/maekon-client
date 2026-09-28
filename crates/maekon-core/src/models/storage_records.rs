@@ -411,6 +411,8 @@ pub struct SegmentSummaryRecord {
     pub content_activities_json: String,
     pub context_switch_count: u32,
     pub llm_summary: Option<String>,
+    #[serde(default)]
+    pub ai_summary: crate::models::ai_summary::AiSummaryArtifact,
 }
 
 /// Minimal segment detail for enriching vector search results.

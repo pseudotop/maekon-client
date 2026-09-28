@@ -5,6 +5,10 @@
 //! 2. File permissions: 0o600 (owner read/write only) on Unix, owner-only DACL on Windows.
 //!    The file is created with restrictive permissions **atomically** — no world-readable
 //!    window between creation and chmod (TOCTOU fix, issue #5991).
+//! 3. OS keychain (#8040, `load_or_create_sealed`): where the keychain survives
+//!    a reboot (macOS, Windows) it holds the only copy and the key file is
+//!    removed. On Linux the kernel keyring is a cache and the key file stays as
+//!    the durable copy (#12534).
 //!
 //! # At-rest encryption (wired)
 //! This module owns key generation / storage / loading. The 32-byte key it
@@ -68,6 +72,38 @@ pub(crate) const MASTER_KEY_KEYCHAIN_NAMESPACE: &str = "master_key";
 /// renamed the file, and the escape hatch would then probe a path that never
 /// exists and hand out a new key over live data.
 pub const SQLCIPHER_DB_FILENAME: &str = "maekon.db";
+
+/// #12534: which copy of the master key has to survive a reboot.
+///
+/// `keyring` reaches a different store on each platform, and they do not all
+/// persist. The Linux store is the kernel keyring (keyutils, the
+/// `linux-native` feature), which upstream documents as "completely in-memory"
+/// and cleared by a reboot. rc.8 to rc.10 treated it like the macOS Keychain:
+/// they kept the key only there, deleted `.db_key`, and every Linux reboot
+/// orphaned the database.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DurableCopy {
+    /// The OS keychain persists across reboots (macOS Keychain, Windows
+    /// Credential Manager). The sealed entry is the durable copy, and the
+    /// plaintext `.db_key` is removed once the seal is verified (#8040).
+    Keychain,
+    /// The OS keychain is only a cache. The 0600 `.db_key` stays on disk as
+    /// the durable copy, and the keychain entry is re-sealed from it on the
+    /// first launch after a reboot.
+    KeyFile,
+}
+
+impl DurableCopy {
+    /// The policy of this build. Only a store known to survive a reboot may
+    /// hold the sole copy of the key. Every other target keeps the file,
+    /// because losing that bet orphans the data while keeping the file only
+    /// costs what the pre-#8040 scheme already accepted.
+    const PLATFORM: Self = if cfg!(any(target_os = "macos", target_os = "windows")) {
+        Self::Keychain
+    } else {
+        Self::KeyFile
+    };
+}
 
 /// Derives a stable, data-dir-scoped keychain entry identifier for the
 /// at-rest master key. Multiple maekon profiles/installs on the same OS user
@@ -150,25 +186,46 @@ impl EncryptionKey {
     /// same directory as the SQLCipher database and encrypted frame files it
     /// protects.
     ///
+    /// #12534: which copy has to survive a reboot depends on the platform
+    /// (`DurableCopy`). On macOS and Windows it is the keychain entry, and the
+    /// plaintext file is removed once the key is sealed. On Linux the kernel
+    /// keyring is only a cache, and `.db_key` stays on disk.
+    ///
     /// Precedence:
-    /// 1. Keychain already holds the key → use it (and remove any stray
-    ///    plaintext `.db_key` left over from an interrupted migration).
-    /// 2. No keychain entry, but a legacy plaintext `.db_key` exists →
-    ///    migrate: seal the file's key into the keychain and read it straight
-    ///    back to confirm the round trip (`seal`). Only on a VERIFIED round
-    ///    trip is the plaintext file deleted. ANY failure (keychain write
-    ///    error, readback mismatch, or the keychain being unreachable at all)
-    ///    keeps the file in place — existing data must stay decryptable —
-    ///    and this launch continues on the file-sourced key; migration
-    ///    retries on the next launch.
-    /// 3. No keychain entry, no file (fresh install) → generate a new key and
-    ///    seal it directly in the keychain. If the keychain itself is
-    ///    unavailable (expected on headless Linux/CI without a keyring
-    ///    backend), fall back to the pre-#8040 plaintext-file scheme, logged
-    ///    explicitly.
+    /// 1. Keychain already holds the key → use it. macOS/Windows: remove any
+    ///    stray plaintext `.db_key` left over from an interrupted migration.
+    ///    Linux: `.db_key` must hold the same key. Write it if it is missing,
+    ///    and fail closed if it holds a different one.
+    /// 2. No keychain entry, but a `.db_key` exists → seal the file's key
+    ///    into the keychain and read it straight back to confirm the round
+    ///    trip (`seal`). macOS/Windows: only on a VERIFIED round trip is the
+    ///    plaintext file deleted. Linux: the file is kept either way, because
+    ///    this is the normal first launch after a reboot. ANY failure
+    ///    (keychain write error, readback mismatch, or the keychain being
+    ///    unreachable at all) keeps the file in place — existing data must
+    ///    stay decryptable — and this launch continues on the file-sourced
+    ///    key; sealing retries on the next launch.
+    /// 3. No keychain entry, no file → if a SQLCipher database already
+    ///    exists, its key is gone: fail closed instead of minting a key that
+    ///    cannot open it (#12534). Otherwise (fresh install) generate a new
+    ///    key and seal it in the keychain, and on Linux also write `.db_key`.
+    ///    If the keychain itself is unavailable (expected on headless
+    ///    Linux/CI without a keyring backend), fall back to the pre-#8040
+    ///    plaintext-file scheme, logged explicitly.
     pub fn load_or_create_sealed(
         app_data_dir: &Path,
         keychain: &dyn MasterKeyVault,
+    ) -> Result<Self, StorageError> {
+        Self::load_or_create_sealed_with(app_data_dir, keychain, DurableCopy::PLATFORM)
+    }
+
+    /// `load_or_create_sealed` with the retention policy as a parameter, so
+    /// tests drive both policies on any host. Production reaches this only
+    /// through `load_or_create_sealed`, which passes `DurableCopy::PLATFORM`.
+    fn load_or_create_sealed_with(
+        app_data_dir: &Path,
+        keychain: &dyn MasterKeyVault,
+        durable: DurableCopy,
     ) -> Result<Self, StorageError> {
         let key_path = app_data_dir.join(".db_key");
         let entry = master_key_keychain_entry(app_data_dir);
@@ -176,7 +233,9 @@ impl EncryptionKey {
         match keychain.retrieve(MASTER_KEY_KEYCHAIN_NAMESPACE, &entry) {
             Ok(Some(hex)) => {
                 let key = Self::from_hex_string(&hex)?;
-                if key_path.exists() {
+                if durable == DurableCopy::KeyFile {
+                    key.ensure_durable_key_file(&key_path)?;
+                } else if key_path.exists() {
                     match std::fs::remove_file(&key_path) {
                         Ok(()) => tracing::info!(
                             "#8040: removed redundant plaintext {key_path:?} — the OS \
@@ -192,8 +251,15 @@ impl EncryptionKey {
             }
             Ok(None) if key_path.exists() => {
                 // Migration path: legacy plaintext key, no keychain entry yet.
+                // #12534: under `DurableCopy::KeyFile` this is also every first
+                // launch after a reboot, and the file is the copy that survived.
                 let file_key = Self::load_from_file(&key_path)?;
                 match file_key.seal(keychain, &entry) {
+                    Ok(()) if durable == DurableCopy::KeyFile => tracing::info!(
+                        "#12534: master key sealed in the OS keychain from {key_path:?}; the \
+                         file stays as the durable copy (the Linux kernel keyring does not \
+                         survive a reboot)"
+                    ),
                     Ok(()) => match std::fs::remove_file(&key_path) {
                         Ok(()) => tracing::info!(
                             "#8040: master key migrated from plaintext file to the OS \
@@ -214,8 +280,32 @@ impl EncryptionKey {
                 Ok(file_key)
             }
             Ok(None) => {
-                // Fresh install: no keychain entry, no file.
-                Self::seal_fresh_key(keychain, &entry, &key_path)
+                // No keychain entry and no key file. That is a fresh install
+                // only if nothing is encrypted here yet.
+                //
+                // #12534: rc.8 to rc.10 kept a fresh install's key only in the
+                // keychain, which on Linux is the kernel keyring, and a reboot
+                // clears it. The next launch landed here beside the database
+                // that key encrypted, minted a new key, and sealed it. The
+                // database then failed as "file is not a database", and the
+                // wrong key sat in the keychain as if it were the real one.
+                //
+                // Same principle as the timeout arm (#9598) and `load_or_create`
+                // (#10985): with ciphertext present and its key gone, a new key
+                // recovers nothing. Fail closed and seal nothing, so the only
+                // way forward is the user's backup or a deliberate reset.
+                let db_path = app_data_dir.join(SQLCIPHER_DB_FILENAME);
+                if db_path.exists() {
+                    return Err(StorageError::Internal(format!(
+                        "refusing to generate a new at-rest master key: {db_path:?} exists, \
+                         but neither the OS keychain nor {key_path:?} holds its key. The \
+                         Linux kernel keyring is cleared on reboot, so a key kept only there \
+                         does not survive a restart. A new key cannot open that database. \
+                         Restore {key_path:?} from a backup, or move {app_data_dir:?} aside \
+                         to start over with empty local data (#12534)."
+                    )));
+                }
+                Self::seal_fresh_key(keychain, &entry, &key_path, durable)
             }
             Err(e @ StorageError::SecretStoreTimeout(_)) => {
                 // #9588 review B1: a TIMEOUT means the keychain item may EXIST
@@ -256,7 +346,7 @@ impl EncryptionKey {
                     // and fall back to the plaintext-file scheme if the keychain
                     // is still unreachable. The wedge latch makes that attempt
                     // fail fast rather than burn another full timeout.
-                    return Self::seal_fresh_key(keychain, &entry, &key_path);
+                    return Self::seal_fresh_key(keychain, &entry, &key_path, durable);
                 }
 
                 tracing::error!(
@@ -290,13 +380,28 @@ impl EncryptionKey {
     /// timeout escape hatch cannot drift: both mean "no existing ciphertext,
     /// provision a key", and a second copy would be the place where one of them
     /// quietly stopped writing the fallback file.
+    ///
+    /// #12534: under `DurableCopy::KeyFile` the file is written even when the
+    /// seal succeeds. Sealing comes first, so a failed write leaves at most a
+    /// keychain entry with no data under it, and the next launch writes the
+    /// file from that entry (`ensure_durable_key_file`).
     fn seal_fresh_key(
         keychain: &dyn MasterKeyVault,
         entry: &str,
         key_path: &PathBuf,
+        durable: DurableCopy,
     ) -> Result<Self, StorageError> {
         let key = Self::generate()?;
         match key.seal(keychain, entry) {
+            Ok(()) if durable == DurableCopy::KeyFile => {
+                key.save_to_file(key_path)?;
+                tracing::info!(
+                    "#12534: new master key generated, sealed in the OS keychain, and \
+                     written to {key_path:?} as the durable copy (the Linux kernel keyring \
+                     does not survive a reboot)"
+                );
+                Ok(key)
+            }
             Ok(()) => {
                 tracing::info!(
                     "#8040: new master key generated and sealed in the OS keychain \
@@ -315,6 +420,52 @@ impl EncryptionKey {
                 Ok(key)
             }
         }
+    }
+
+    /// #12534 (`DurableCopy::KeyFile`): the keychain returned this key; make
+    /// sure the durable copy on disk is the same key.
+    ///
+    /// - No file: write it from the keychain value. This rescues profiles
+    ///   that rc.8 to rc.10 sealed only into the kernel keyring and that have
+    ///   not rebooted since. A failed write is fatal: the key would stay in
+    ///   memory only, and the next reboot would orphan the database.
+    /// - Same key: nothing to do.
+    /// - Different key: fail closed and change neither copy. Only the
+    ///   database can tell which key is right, and each side has a realistic
+    ///   story. The file is right after the user restores a backup while the
+    ///   keyring still caches a key an older build minted. The keyring is
+    ///   right when a downgrade to a pre-keychain build wrote a fresh file
+    ///   beside the sealed key. Preferring either one opens the data with the
+    ///   wrong key in the other story, and overwriting either copy can
+    ///   destroy the only right one. Stopping costs the user one deliberate
+    ///   step, and the message names that step for either copy.
+    fn ensure_durable_key_file(&self, key_path: &PathBuf) -> Result<(), StorageError> {
+        if !key_path.exists() {
+            self.save_to_file(key_path).map_err(|e| {
+                StorageError::Internal(format!(
+                    "the at-rest master key is only in the OS keychain, and writing its \
+                     durable copy to {key_path:?} failed: {e}. The Linux kernel keyring does \
+                     not survive a reboot, so fix that path before restarting the machine \
+                     (#12534)."
+                ))
+            })?;
+            tracing::info!(
+                "#12534: wrote the durable copy of the master key to {key_path:?} from the \
+                 OS keychain"
+            );
+            return Ok(());
+        }
+        if Self::load_from_file(key_path)?.as_bytes() == self.as_bytes() {
+            return Ok(());
+        }
+        Err(StorageError::Internal(format!(
+            "refusing to choose between two different at-rest master keys: the OS keychain \
+             and {key_path:?} disagree, and nothing was changed. To keep the keychain's key, \
+             move {key_path:?} aside and start again; it is rewritten from the keychain. Do \
+             that before rebooting, because the Linux kernel keyring does not survive a \
+             reboot. To keep the file's key (for example a restored backup), reboot to clear \
+             the kernel keyring and start again (#12534)."
+        )))
     }
 
     /// Writes this key's hex encoding into the keychain and reads it straight

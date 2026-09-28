@@ -10,6 +10,7 @@ import type {
   AutomationStatus,
   BackupArchive,
   BackupParams,
+  ChatHttpVerificationResult,
   ClaimListResponse,
   CoachingStatsToday,
   CoachingTemplateListDto,
@@ -1361,6 +1362,15 @@ export async function probeProviderSurfaceEndpoint(args: {
     endpoint: args.endpoint,
     allowExternalEgress: args.allow_external_egress ?? false,
   })
+}
+
+/**
+ * #12530: one user-started call that sends a fixed message to the configured
+ * API-key Chat provider. On `verified` the backend records the evidence that
+ * `chat.http_api` readiness reads; callers refresh readiness afterwards.
+ */
+export async function verifyChatHttpProvider(): Promise<ChatHttpVerificationResult> {
+  return tauriInvoke<ChatHttpVerificationResult>('verify_chat_http_provider')
 }
 
 // ── Pomodoro Timer ─────────────────────────────────────────────

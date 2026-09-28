@@ -62,6 +62,8 @@ impl Scheduler {
         // E20-24 (#4816): live suggestion queue for the event-driven analysis producer.
         #[cfg(feature = "local-suggestions")]
         let event_suggestion_queue1 = self.suggestion_manager.as_ref().map(|m| m.queue().clone());
+        #[cfg(feature = "local-suggestions")]
+        let event_suggestion_manager1 = self.suggestion_manager.clone();
         #[cfg(not(feature = "local-suggestions"))]
         let event_suggestion_queue1: Option<
             std::sync::Arc<tokio::sync::Mutex<maekon_suggestion::queue::SuggestionQueue>>,
@@ -807,18 +809,32 @@ impl Scheduler {
                                         event_on_changed
                                             .as_ref()
                                             .map(|f| f as &(dyn Fn(usize) + Send + Sync));
-                                    handle_event_analysis(
+                                    let local_analysis_status = handle_event_analysis(
                                         &context_analyzer_now,
                                         &storage1,
                                         &app_name,
                                         &focus_window_title,
                                         focus_ocr_hint.as_deref(),
+                                        // Pass the live authority rather than the tick snapshot:
+                                        // the helper re-reads consent and the feature switch at
+                                        // the final analyzer boundary.
+                                        consent_manager1.as_ref(),
+                                        config_manager1.as_ref(),
+                                        config_snapshot
+                                            .as_ref()
+                                            .is_some_and(|cfg| cfg.analysis.enabled),
                                         event_queue_for_push,
                                         event_gates,
                                         event_on_changed_ref,
                                         notif1.as_ref(),
                                         focus_mode.is_active(),
                                     ).await;
+                                    #[cfg(feature = "local-suggestions")]
+                                    if let Some(manager) = event_suggestion_manager1.as_ref() {
+                                        manager.record_local_analysis(local_analysis_status).await;
+                                    }
+                                    #[cfg(not(feature = "local-suggestions"))]
+                                    let _ = local_analysis_status;
                                 }
 
                                 // ── Take input snapshot once for both pipelines ──

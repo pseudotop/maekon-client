@@ -261,14 +261,11 @@ Maekon은 동시에 하나의 인스턴스만 실행됩니다.
 - **Windows**: 명명된 파이프 (Named Pipe)
 - **Linux**: D-Bus name `com.maekon.app.SingleInstance`
 
-**알려진 한계 — Wayland tray-only 시작 시**:
+**알려진 한계 — Wayland에서 윈도우 없이 시작된 경우**:
 
-첫 번째 인스턴스가 메인 윈도우를 한 번도 표시하지 않고 tray-only 모드로 시작된 경우(Wayland 일부 환경), 두 번째 실행(예: dock 아이콘 클릭)이 포커스 신호를 보내도 윈도우가 표시되지 않을 수 있습니다.
+첫 번째 인스턴스가 메인 윈도우를 한 번도 표시하지 않고 시작된 경우(Wayland 일부 환경), 두 번째 실행(예: dock 아이콘 클릭)이 포커스 신호를 보내도 윈도우가 표시되지 않을 수 있습니다.
 
-이는 PR-B1 risk register §13에서 known limitation으로 수용된 사항입니다. 이 동작이 발생하면:
-
-1. 트레이 아이콘 클릭 → "Show window" 메뉴 항목 선택
-2. 또는 터미널에서 `maekon --show-window` 실행 (후속 PR에서 `window.create()` fallback 추가 예정)
+이는 PR-B1 risk register §13에서 known limitation으로 수용된 사항입니다. Linux에는 트레이 아이콘이 없고, Maekon에는 `--show-window` 옵션이 없습니다. 이 동작이 발생하면 실행 중인 Maekon 프로세스를 (예: 시스템 모니터에서) 종료한 뒤 다시 실행하세요.
 
 ---
 

@@ -3,6 +3,7 @@ mod intent;
 mod port_impl;
 mod preset;
 mod types;
+pub mod wbs;
 
 pub use types::{
     AutomationAction, AutomationCommand, CommandResult, GuiExecutionResult, MouseButton,

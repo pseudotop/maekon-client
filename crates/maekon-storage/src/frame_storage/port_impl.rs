@@ -7,6 +7,17 @@ use std::path::{Path, PathBuf};
 
 #[async_trait]
 impl FrameStoragePort for FrameFileStorage {
+    async fn save_frame_authorized(
+        &self,
+        timestamp: DateTime<Utc>,
+        data: &[u8],
+        permit: &maekon_core::ports::vision::CapturePermit,
+    ) -> Result<PathBuf, CoreError> {
+        self.save_frame_authorized(timestamp, data, permit)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn save_frame(
         &self,
         timestamp: DateTime<Utc>,

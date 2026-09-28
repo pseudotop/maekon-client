@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! #9700 + #9708: restoring a backup into a POPULATED database must not
 //! mis-attach or orphan frame-tag relations — on EITHER of the row's two
 //! foreign keys.

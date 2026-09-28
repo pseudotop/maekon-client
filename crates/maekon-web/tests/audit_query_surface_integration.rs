@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Audit query surface integration tests (Task 9.3).
 //!
 //! Per plan L3602 / spec §9.2 L1403-1405. Covers D25 `entries_by_command_id`

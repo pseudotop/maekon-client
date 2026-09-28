@@ -1,4 +1,56 @@
 {
+  "wbsAssignee": {
+    "title": "Recomendación de responsable de la WBS",
+    "start": "Revisar responsables",
+    "restart": "Iniciar una nueva revisión",
+    "backToSuggestions": "Volver a las sugerencias",
+    "consent": "Usar la tarea seleccionada y la información de responsables de {{document}} para recomendar candidatos. Solo se escribirá el responsable que seleccione en la celda correspondiente.",
+    "accept": "Permitir y cargar candidatos",
+    "cancel": "Finalizar esta revisión",
+    "loading": "Cargando candidatos…",
+    "applying": "Comprobando y aplicando su selección…",
+    "target": "Destino: fila {{row}}, columna {{column}}",
+    "synthetic": "Datos sintéticos de demostración",
+    "empty": "No hay responsables que cumplan los requisitos.",
+    "refresh": "Volver a revisar la fila actual",
+    "checkExecution": "Volver a comprobar este resultado",
+    "appliedVerified": "Se escribió el responsable seleccionado y se verificó el valor de la celda.",
+    "notVerified": "El resultado no está completamente verificado. Compruebe la celda antes de intentar otra asignación.",
+    "unavailable": "No se pudo completar esta acción. Es posible que aún deba comprobar si hubo algún cambio.",
+    "automationDisabled": "Compruebe que la automatización esté activada. Si estaba desactivada al iniciar Maekon, actívela y reinicie Maekon.",
+    "consentRequired": "Se necesita consentimiento para revisar responsables. Compruebe la configuración de privacidad antes de iniciar otra revisión.",
+    "consentChanged": "El consentimiento cambió y esta revisión se detuvo. Compruebe la configuración de privacidad e inicie otra revisión.",
+    "policyBlocked": "La política actual no permite esta acción de la WBS.",
+    "sandboxUnsupported": "Esta acción de la WBS no está disponible en el entorno protegido actual.",
+    "configurationChanged": "La configuración cambió durante esta revisión. Compruébela e inicie otra revisión.",
+    "expired": "Esta revisión ha caducado. Compruebe la fila seleccionada e inicie otra revisión.",
+    "requestUnavailable": "No se pudo iniciar o continuar esta revisión. Compruebe el documento y la conexión e inténtelo de nuevo.",
+    "outcomeUnknown": "Es posible que la celda se haya actualizado. Compruebe este resultado antes de intentar otra asignación.",
+    "readbackUnavailable": "No se pudo verificar el valor de la celda. Compruebe este resultado antes de intentar otra asignación.",
+    "nativeLabel": "Actualización de la celda",
+    "readbackLabel": "Verificación de la celda",
+    "auditLabel": "Registro de ejecución",
+    "native": {
+      "not_started": "Sin iniciar",
+      "written_unverified": "Actualización aceptada",
+      "cancelled_before_start": "Cancelada antes de actualizar",
+      "already_attempted": "Intentada anteriormente",
+      "outcome_unknown": "Resultado desconocido",
+      "rejected": "Rechazada"
+    },
+    "readback": {
+      "not_read": "Sin comprobar",
+      "matches": "Coincide con el valor seleccionado",
+      "mismatch": "El valor no coincide",
+      "unavailable": "No se pudo comprobar"
+    },
+    "audit": {
+      "not_started": "Sin solicitar",
+      "start_accepted": "Solicitud de registro de inicio aceptada",
+      "completion_accepted": "Solicitud de registro de finalización aceptada",
+      "completion_rejected": "Falló la solicitud de registro de finalización"
+    }
+  },
   "common": {
     "refresh": "Actualizar",
     "retry": "Reintentar",
@@ -103,7 +155,8 @@
     "groupSystem": "Sistema",
     "tasks": "Tareas",
     "contextHome": "Contexto",
-    "assignmentEmailDraft": "Borrador de correo de asignación"
+    "assignmentEmailDraft": "Borrador de correo de asignación",
+    "wbsXlsxDraft": "Borrador WBS XLSX"
   },
   "dashboard": {
     "metricsError": "Error al cargar las métricas del sistema",
@@ -1821,7 +1874,24 @@
     "managedOAuthSurfaceDescription": "Esta superficie utiliza OAuth gestionado por el proveedor. Maekon no solicita una clave API ni un endpoint editable aquí.",
     "subprocessSurfaceDescription": "Esta superficie se ejecuta a través de un CLI del proveedor instalado. La autenticación y los derechos de suscripción permanecen con el CLI del proveedor.",
     "subprocessExecutableHint": "Candidatos de ejecutables detectados: {{executables}}",
-    "modelDiscoveryUnsupportedSurface": "El descubrimiento de modelos no está disponible para la superficie del proveedor seleccionada."
+    "modelDiscoveryUnsupportedSurface": "El descubrimiento de modelos no está disponible para la superficie del proveedor seleccionada.",
+    "chatVerification": {
+      "title": "Verificar la conexión del chat por API",
+      "description": "El chat con clave de API queda sin verificar hasta que un mensaje va y vuelve. Maekon envía un mensaje de prueba fijo, nunca tu contenido ni datos de la pantalla, y la respuesta cuenta para el presupuesto diario de tokens.",
+      "action": "Verificar conexión",
+      "verifying": "Verificando…",
+      "saveFirst": "Guarda primero los cambios. La verificación usa la configuración guardada.",
+      "result": {
+        "verified": "Conexión verificada. El chat con clave de API está listo.",
+        "notConfigured": "No hay ningún proveedor de chat con clave de API listo para verificar. Elige un proveedor, guarda su clave de API y vuelve a intentarlo.",
+        "consentRequired": "Activa «Procesamiento de texto con IA y proveedores externos» en Privacidad → Consentimiento y vuelve a intentarlo.",
+        "restartRequired": "El cambio de proveedor guardado se aplica cuando Maekon se reinicia. Reinicia Maekon y vuelve a verificar.",
+        "budgetExhausted": "Se agotó el presupuesto diario de tokens de IA. Vuelve a intentarlo cuando se restablezca.",
+        "providerError": "El proveedor no completó una respuesta. Revisa la clave de API y el modelo, y vuelve a intentarlo.",
+        "timeout": "El proveedor no respondió en 30 segundos. Vuelve a intentarlo.",
+        "failed": "Maekon no pudo realizar la verificación. Vuelve a intentarlo."
+      }
+    }
   },
   "focus": {
     "title": "Concentración",
@@ -1947,7 +2017,7 @@
     "dashboard": {
       "active": {
         "title": "Recopilando datos",
-        "description": "Maekon está recopilando datos de actividad en segundo plano. Abre cualquier aplicación y sigue trabajando: tus primeras métricas suelen aparecer en un minuto, y tu primera recovery card aparece en el panel de seguimiento en la parte superior de tu pantalla en unos 15 minutos."
+        "description": "Maekon está recopilando datos de actividad en segundo plano. Abre cualquier aplicación y sigue trabajando: tus primeras métricas suelen aparecer en un minuto. Para obtener un siguiente paso sugerido, pulsa «Encontrar mi siguiente paso» en el panel de seguimiento de la parte superior de tu pantalla."
       },
       "paused": {
         "title": "Captura de actividad en pausa",
@@ -2163,6 +2233,78 @@
     "reauthRequired": "Reautenticación requerida",
     "reauthDescription": "Su sesión OAuth ha expirado. Por favor, reconéctese.",
     "switchToCli": "Usar {{surface}} en su lugar"
+  },
+  "aiReadiness": {
+    "readyTitle": "Las funciones de IA están listas",
+    "blockedTitle": "Se requiere configurar la IA",
+    "capability": {
+      "chatSubprocess": "Chat de IA · CLI de suscripción",
+      "chatHttpApi": "Chat de IA · API del proveedor",
+      "chatLocalLlm": "Chat de IA · modelo local",
+      "ocrCapture": "Captura OCR",
+      "ocrSuggestionAnalysis": "Sugerencias de IA derivadas de OCR",
+      "segmentSummary": "Resúmenes de segmentos con IA",
+      "dailyNarrative": "Narrativa diaria con IA"
+    },
+    "reason": {
+      "ready": "Listo",
+      "compiled_capability_missing": "Esta compilación no incluye la capacidad necesaria.",
+      "runtime_flag_disabled": "La función necesaria está desactivada.",
+      "consent_required": "No se ha otorgado el consentimiento de privacidad necesario.",
+      "access_mode_mismatch": "El modo de acceso a IA no coincide con esta ruta del proveedor.",
+      "endpoint_or_profile_required": "Selecciona un endpoint o perfil del proveedor.",
+      "provider_not_detected": "No se detectó el proveedor seleccionado.",
+      "provider_auth_required": "Se requiere autenticar el proveedor.",
+      "provider_auth_unverified": "La autenticación del proveedor no está verificada.",
+      "provider_invocation_unavailable": "No se puede invocar al proveedor.",
+      "provider_invocation_unverified": "La invocación del proveedor no está verificada.",
+      "model_unavailable": "El modelo seleccionado no está disponible.",
+      "model_availability_unverified": "La disponibilidad del modelo no está verificada.",
+      "hot_rewire_required": "Vuelve a aplicar la opción para reconectar el servicio de IA en ejecución.",
+      "restart_required": "Reinicia Maekon para aplicar esta opción.",
+      "privacy_gate_unavailable": "La puerta de privacidad no está disponible.",
+      "egress_gate_unavailable": "La puerta de política de datos externos no está disponible.",
+      "budget_gate_unavailable": "La puerta de presupuesto de IA no está disponible.",
+      "audit_gate_unavailable": "La puerta de auditoría de IA no está disponible."
+    },
+    "action": {
+      "none": "No se requiere ninguna acción",
+      "openAiSettings": "Abrir ajustes de IA",
+      "openPrivacyConsent": "Revisar el consentimiento de privacidad",
+      "enableFeature": "Activar la función necesaria",
+      "installProvider": "Instalar un proveedor compatible",
+      "authenticateProvider": "Iniciar sesión en el proveedor",
+      "verifyProviderInvocation": "Verificar la invocación del proveedor",
+      "selectModel": "Seleccionar y verificar un modelo",
+      "applyHotRewire": "Volver a aplicar el ajuste para reconectar la IA",
+      "restartApp": "Reiniciar Maekon para aplicar este ajuste",
+      "reviewPrivacy": "Revisar la protección de privacidad",
+      "reviewEgress": "Revisar la política de datos externos",
+      "reviewBudget": "Revisar el presupuesto de uso de IA",
+      "reviewAudit": "Revisar la protección de auditoría"
+    }
+  },
+  "summaryProvenance": {
+    "digest": { "heuristic": "Resumen heurístico" },
+    "aiSegmentSummary": "Resumen de segmento con IA",
+    "aiSegmentUnavailable": "Resumen de segmento con IA no disponible",
+    "aiDailyNarrative": "Narrativa diaria con IA",
+    "dailyNarrativeUnavailable": "Narrativa diaria con IA no disponible",
+    "provider": {
+      "loopback": "Modelo loopback en este dispositivo",
+      "subprocess": "CLI de suscripción",
+      "external_api": "API de proveedor externo",
+      "unknown": "Clase de proveedor no disponible"
+    },
+    "failure": {
+      "pipeline_disabled": "La canalización de resumen con IA estaba desactivada.",
+      "below_minimum_duration": "El segmento era más corto que el mínimo configurado.",
+      "provider_unavailable": "No había un proveedor compatible disponible.",
+      "provider_failed": "El proveedor no pudo generar el resumen.",
+      "invalid_response": "La respuesta del proveedor no era un resumen válido.",
+      "capacity_limited": "La cola de resúmenes estaba llena.",
+      "not_generated": "No se generó una narrativa con IA; el resumen heurístico sigue disponible."
+    }
   },
   "featureCapability": {
     "preferredPath": "Ruta preferida",
@@ -2391,11 +2533,11 @@
   "onboarding": {
     "step3Search": "Busca todo lo que has visto",
     "aiFeatures": {
-      "optInHint": "Opcional: activa el embedding local, la búsqueda semántica con IA y la narrativa del resumen diario con IA. Todo se procesa en el dispositivo y se aplica tras reiniciar Maekon.",
-      "enableButton": "Activar funciones de IA",
+      "optInHint": "Opcional: prepara la memoria por niveles, el embedding, la búsqueda semántica y los resúmenes con IA. El procesamiento puede usar loopback, una CLI de suscripción o una API externa según tu configuración. El consentimiento de aprendizaje de patrones y un reinicio siguen siendo necesarios.",
+      "enableButton": "Preparar funciones de IA",
       "enabling": "Activando…",
-      "enabled": "Funciones de IA activadas",
-      "enabledNote": "Tras reiniciar, el embedding local, la búsqueda semántica y la narrativa del resumen diario con IA estarán activos.",
+      "prepared": "Configuración de IA guardada",
+      "preparedNote": "Guardar la configuración no significa que esté lista. Completa los requisitos de proveedor y el consentimiento separado de aprendizaje de patrones, y reinicia Maekon.",
       "error": "No se pudieron activar las funciones de IA: {{error}}"
     },
     "step1Title": "Bienvenido a Maekon",
@@ -2481,7 +2623,7 @@
       "egressNote": "La voz a texto en la nube permanece desactivada hasta que elijas un proveedor y configures credenciales en Ajustes."
     },
     "stepIndicatorLabel": "Indicador de paso",
-    "step4RecoveryCardHint": "Mientras trabajas, Maekon busca un buen momento para ayudar. Tu primera recovery card — un próximo paso sugerido respaldado por lo que había en pantalla — suele aparecer en el panel de seguimiento en la parte superior de tu pantalla en unos 15 minutos.",
+    "step4RecoveryCardHint": "Cuando quieras retomar lo que estabas haciendo, pulsa «Encontrar mi siguiente paso» en el pequeño panel de seguimiento de la parte superior de tu pantalla. Maekon lee lo que hay en pantalla y propone tu siguiente paso como una recovery card. Necesitas un proveedor de IA configurado en Ajustes.",
     "step4SuggestionsShortcut": "Las tarjetas de recuperación aparecen en el panel de sugerencias — ábrelo cuando quieras con {{shortcut}}.",
     "readyCollectionOffTitle": "Comenzando con la recopilación desactivada",
     "readyCollectionOffDesc": "Omitiste el consentimiento, así que Maekon no está recopilando nada. Tu cronología y sugerencias permanecerán vacías. Actívalo ahora o más tarde en Configuración > Privacidad.",
@@ -2518,6 +2660,11 @@
     "create_failed_title": "No se pudo crear la sesión",
     "create_failed": "No se pudo crear la sesión de IA.",
     "provider_not_configured": "{{provider}} no está configurado. Añade sus credenciales en Ajustes → IA y automatización y vuelve a intentarlo.",
+    "no_ready_provider": "No hay ningún proveedor de IA listo",
+    "provider_unavailable": "El proveedor no está disponible",
+    "local_runtime_unavailable": "No se puede conectar con Ollama. Inicia Ollama, comprueba el endpoint configurado y vuelve a intentarlo.",
+    "local_runtime_invalid": "El endpoint local configurado no es Ollama. Selecciona el LLM local solo para un endpoint de Ollama.",
+    "local_model_missing": "El modelo de Ollama seleccionado no está instalado. Instala o selecciona un modelo disponible y vuelve a intentarlo.",
     "load_failed_title": "No se pudieron cargar las sesiones",
     "load_failed": "No se pudieron cargar las sesiones de IA.",
     "refresh_failed": "No se pudieron actualizar las sesiones de IA.",
@@ -2651,6 +2798,38 @@
     "closePanelLabel": "Cerrar panel de sugerencias",
     "badgeNew": "nuevo",
     "historyLoadError": "No se pudo cargar el historial.",
+    "localAnalysis": {
+      "status": {
+        "generated": "Sugerencias locales generadas",
+        "no_candidate": "No se encontró ningún candidato local",
+        "throttled": "El análisis local está en espera",
+        "provider_offline": "El proveedor de análisis local no está disponible",
+        "policy_blocked": "El análisis local está desactivado",
+        "consent_required": "Se requiere consentimiento para el análisis local"
+      },
+      "reason": {
+        "generated": "Sugerencias locales generadas",
+        "no_valid_candidate": "No se encontró ningún candidato local válido",
+        "not_admitted": "Los candidatos locales no pasaron los filtros de revisión",
+        "no_input": "No había actividad local disponible para analizar",
+        "context_unchanged": "El contexto local no ha cambiado",
+        "analysis_throttled": "El análisis local espera su próxima ejecución permitida",
+        "provider_unavailable": "El proveedor de análisis local seleccionado no está disponible",
+        "analysis_disabled": "La generación de sugerencias de actividad local está desactivada",
+        "capture_policy_blocked": "La política de captura bloquea el análisis local",
+        "suggestion_queue_unavailable": "La cola de revisión de sugerencias locales no está disponible",
+        "consent_required": "Se requiere consentimiento para el análisis local",
+        "provider_consent_required": "El proveedor de análisis requiere consentimiento",
+        "provider_policy_blocked": "La política bloquea el proveedor de análisis"
+      },
+      "producer": {
+        "periodic": "análisis periódico",
+        "app_switch": "análisis al cambiar de aplicación"
+      },
+      "provenance": "{{source}} · {{producer}} · {{time}}",
+      "counts": "{{candidateCount}} generadas · {{queueCount}} en revisión",
+      "timeUnavailable": "Hora no disponible"
+    },
     "badgeLabel": "{{count}} sugerencias nuevas"
   },
   "suggestionStats": {
@@ -2953,24 +3132,24 @@
   },
   "advancedTab": {
     "aiFeaturesMaster": "Activar funciones de IA",
-    "aiFeaturesMasterDescription": "Activa el embedding local, la búsqueda semántica con IA y la narrativa del resumen diario con IA en un solo paso. Todo se procesa en el dispositivo. Se aplica tras reiniciar Maekon.",
+    "aiFeaturesMasterDescription": "Prepara juntos la memoria por niveles, el embedding, la búsqueda semántica y los resúmenes con IA. No concede el consentimiento de aprendizaje de patrones. La ubicación del procesamiento depende del proveedor seleccionado.",
     "llmSummary": "Narrativa del resumen diario con IA",
-    "llmSummaryDescription": "Usa el LLM en el dispositivo para redactar un resumen de tu día en lenguaje natural (requiere embedding). Se aplica tras reiniciar.",
+    "llmSummaryDescription": "Usa el proveedor LLM seleccionado para crear resúmenes de segmentos y una narrativa diaria (requiere memoria por niveles y embedding). Cada resultado muestra la ubicación de procesamiento.",
     "maxConcurrentSessions": "Sesiones concurrentes máximas",
     "idleTimeoutSeconds": "Tiempo de espera por inactividad (segundos)",
     "sessionTimeoutSeconds": "Tiempo de espera de sesión (segundos)",
     "maxRetries": "Reintentos máximos",
     "maxHistoryTurns": "Máximo de turnos de historial",
     "healthCheckIntervalSeconds": "Intervalo de comprobación de estado (segundos)",
-    "enableSuggestions": "Habilitar sugerencias",
-    "enableSuggestionsDescription": "Recibe sugerencias impulsadas por IA basadas en tu actividad",
+    "enableSuggestions": "Recibir sugerencias del servidor",
+    "enableSuggestionsDescription": "Recibe sugerencias del flujo del servidor ONESHIM con la sesión iniciada",
     "showBorder": "Mostrar borde",
     "showBorderDescription": "Muestra un borde de color alrededor de la pantalla durante la monitorización",
     "showPanel": "Mostrar panel",
     "showPanelDescription": "Muestra el panel de estado de seguimiento",
     "borderOpacity": "Opacidad del borde (0.0 - 1.0)",
-    "enableAnalysis": "Habilitar análisis",
-    "enableAnalysisDescription": "Ejecuta análisis con LLM en segmentos de actividad",
+    "enableAnalysis": "Generar sugerencias de actividad local",
+    "enableAnalysisDescription": "Analiza la actividad local consentida y el contexto OCR con el proveedor LLM seleccionado",
     "analysisIntervalSeconds": "Intervalo de análisis (segundos)",
     "minConfidence": "Confianza mínima (0.0 - 1.0)",
     "maxSuggestions": "Sugerencias máximas",
@@ -3272,8 +3451,10 @@
       "noCandidateDetail": "Se revisó tu pantalla, pero no se propuso ninguna acción.",
       "providerOfflineTitle": "Asistente sin conexión",
       "providerOfflineDetail": "El proveedor de sugerencias no está disponible ahora mismo.",
-      "noSessionTitle": "Sin sesión del asistente",
-      "noSessionDetail": "Abre el chat e inicia una sesión. Si aún no has configurado un proveedor de IA, hazlo primero en Ajustes.",
+      "noProviderTitle": "Ningún proveedor de IA listo",
+      "noProviderDetail": "Abre Ajustes y termina de configurar un proveedor de IA; luego vuelve a intentarlo.",
+      "openChatTitle": "Abre primero un chat",
+      "openChatDetail": "Tu proveedor de IA funciona como una aplicación de línea de comandos, y esta función no puede iniciarla con sus herramientas desactivadas. Abre un chat y vuelve a intentarlo, o configura un proveedor por API o local en Ajustes.",
       "noContextTitle": "Poca información en pantalla",
       "noContextDetail": "No había suficiente contexto actual para sugerir un paso."
     }
@@ -3341,6 +3522,67 @@
       "noHandler": "No hay una aplicación de correo registrada. Configura una aplicación predeterminada y vuelve a intentarlo.",
       "handoff": "El sistema no pudo abrir la redacción. El borrador local sigue guardado.",
       "bridge": "La entrega al sistema solo está disponible en la aplicación de escritorio Maekon."
+    }
+  },
+  "wbsXlsxDraft": {
+    "title": "Borrador WBS XLSX",
+    "description": "Crea una hoja local desde un único recibo confirmado de asignación sintética.",
+    "synthetic": "Demostración con datos sintéticos",
+    "syntheticAria": "Demostración con datos sintéticos. No se usan datos reales de clientes.",
+    "nativeBoundary": {
+      "title": "Límite de archivos nativo",
+      "body": "El servidor resuelve la organización, el mapeo y la asignación. Los diálogos nativos eligen la plantilla y el archivo de salida; WebView no entrega rutas ni bearer tokens."
+    },
+    "source": { "title": "Asignación confirmada", "receipt": "ID del recibo de asignación" },
+    "actions": { "generate": "Elegir plantilla y crear borrador", "running": "Preparando…" },
+    "states": {
+      "running": {
+        "title": "Preparando el borrador sintético",
+        "body": "Se comprueba la puerta del servidor antes de elegir archivos."
+      },
+      "error": {
+        "title": "No se pudo crear el borrador",
+        "body": "Comprueba la sesión, la vigencia del recibo, la seguridad de la plantilla y el servicio; luego reintenta."
+      },
+      "unsafeWorkbook": {
+        "title": "Falló la comprobación de seguridad del libro",
+        "body": "No se conservó ninguna salida. Revisa la plantilla y la ubicación de salida, y vuelve a intentarlo. Código: {{code}}"
+      },
+      "localReceipt": {
+        "title": "No se pudo guardar el recibo local",
+        "body": "Puede existir un archivo local, pero no se declara éxito porque falló su recibo duradero. Revisa la salida seleccionada, repara el almacenamiento local y vuelve a intentarlo. Código: {{code}}"
+      },
+      "cancelled": {
+        "title": "No se creó ningún archivo",
+        "body": "Se canceló el selector nativo. No se creó salida ni recibo."
+      },
+      "rejected": {
+        "title": "La puerta del servidor rechazó el borrador",
+        "body": "No se escribió el libro. Motivo: {{reason}}"
+      },
+      "headerDrift": {
+        "title": "Cambió el encabezado de la plantilla",
+        "body": "No se escribió la salida. Primera columna distinta: {{column}}"
+      },
+      "produced": {
+        "title": "Borrador XLSX sintético creado",
+        "body": "Revisa el archivo local y los hashes fijados antes de usarlo como evidencia de demostración.",
+        "uploadPending": "El recibo local es duradero; la carga al servidor queda pendiente.",
+        "uploaded": "El recibo local también se añadió al servidor."
+      }
+    },
+    "fields": {
+      "assignmentReceipt": "Recibo de asignación",
+      "outputReceipt": "Recibo de salida XLSX",
+      "assignment": "Asignación",
+      "mapping": "Mapeo TMD",
+      "assignmentHash": "Hash de asignación",
+      "sourceHash": "Hash de instantánea fuente",
+      "mappingHash": "Hash de contenido del mapeo",
+      "workbookStructureHash": "Hash estructural del libro seleccionado",
+      "templateHash": "Hash de plantilla aprobada",
+      "outputHash": "SHA-256 de salida",
+      "outputPath": "Archivo guardado"
     }
   },
   "contextHome": {

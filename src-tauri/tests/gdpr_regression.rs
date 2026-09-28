@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! GDPR regression tests — transactional deletion, rollback, FTS5 coverage.
 //!
 //! Uses `SqliteStorage::open_in_memory(30)` to run against a fully-migrated

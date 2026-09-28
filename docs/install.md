@@ -4,7 +4,7 @@
 
 This guide provides terminal-first installation for Maekon release binaries.
 
-> This source snapshot targets prerelease `v0.0.1-rc.10`. Use the pinned
+> This source snapshot targets prerelease `v0.0.1-rc.11`. Use the pinned
 > commands only after the matching GitHub Release publishes its artifacts.
 > GitHub's `latest` stable download URL is unavailable until the first stable
 > release.
@@ -20,7 +20,7 @@ current names for installer, updater, and existing-user compatibility.
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
+MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
 ```
 
 ### Windows (PowerShell)
@@ -30,7 +30,7 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
 ```
 
 ## Latest Stable Install
@@ -61,7 +61,7 @@ powershell -ExecutionPolicy Bypass -File $tmp -RequireSignature
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
   https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
+MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
 ```
 
 ### Windows
@@ -71,7 +71,7 @@ $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/main/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
 ```
 
 ## Integrity Verification
@@ -146,11 +146,11 @@ powershell -ExecutionPolicy Bypass -File $tmp
 If you already cloned this repository:
 
 ```bash
-MAEKON_VERSION=v0.0.1-rc.10 ./scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.11 ./scripts/install.sh
 ./scripts/uninstall.sh
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.10
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.0.1-rc.11
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
 ```

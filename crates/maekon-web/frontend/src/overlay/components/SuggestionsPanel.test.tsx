@@ -12,10 +12,23 @@ vi.mock('./Toast', () => ({
   showToast: (message: string, type?: string) => showToastMock(message, type),
 }))
 
+vi.mock('../../components/AiReadinessNotice', () => ({
+  AiReadinessNotice: ({ onAction }: { onAction?: (route: string) => void }) => (
+    <button type="button" onClick={() => onAction?.('/settings/ai-automation')}>
+      readiness action
+    </button>
+  ),
+}))
+
 // Replay recording is a side effect, so make it a noop.
 vi.mock('../suggestionReplay', () => ({
   buildSuggestionReplayEvent: () => ({}),
   recordSuggestionReplayEvent: vi.fn().mockResolvedValue(undefined),
+}))
+
+const navigateMainWindowMock = vi.fn()
+vi.mock('../mainWindowNavigation', () => ({
+  navigateMainWindow: (...args: unknown[]) => navigateMainWindowMock(...args),
 }))
 
 // Mutable variable to control the current locale.
@@ -57,7 +70,8 @@ function makeSuggestion(): SuggestionViewDto {
 describe('SuggestionsPanel error localization (ADR-019 Follow-up #3)', () => {
   beforeEach(() => {
     showToastMock.mockClear()
-    invokeMock.mockReset()
+    invokeMock.mockReset().mockResolvedValue(undefined)
+    navigateMainWindowMock.mockReset().mockResolvedValue(undefined)
     currentLanguage = 'en'
     // The refresh useEffect calls onRefresh, so keep it a harmless resolve.
   })
@@ -139,5 +153,50 @@ describe('SuggestionsPanel visual hierarchy (#8474)', () => {
     }
 
     await waitFor(() => expect(screen.queryByText('Refreshing suggestions...')).not.toBeInTheDocument())
+  })
+})
+
+describe('SuggestionsPanel readiness navigation (#11735)', () => {
+  it('restores the main window and emits the selected in-app route', async () => {
+    const onClose = vi.fn()
+    render(
+      <SuggestionsPanel open suggestions={[makeSuggestion()]} onClose={onClose} onRefresh={() => Promise.resolve()} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'readiness action' }))
+
+    await waitFor(() => expect(navigateMainWindowMock).toHaveBeenCalledWith('/settings/ai-automation'))
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
+  })
+})
+
+describe('SuggestionsPanel local analysis status (#11737)', () => {
+  it('shows the latest metadata-only local generation status on the active review surface', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'get_suggestion_stats') {
+        return Promise.resolve({
+          latest_local_analysis: {
+            status: 'generated',
+            reason: 'generated',
+            producer: 'app_switch',
+            source: 'llm_local',
+            observed_at: '2026-09-02T08:30:00Z',
+            candidate_count: 1,
+            queue_count: 1,
+            missing_permissions: [],
+          },
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    render(
+      <SuggestionsPanel open suggestions={[makeSuggestion()]} onClose={() => {}} onRefresh={() => Promise.resolve()} />,
+    )
+
+    expect(await screen.findByText('Local suggestions generated')).toBeInTheDocument()
+    expect(screen.getByTestId('local-analysis-status')).toHaveAttribute('data-status', 'generated')
+    expect(screen.getByTestId('local-analysis-status')).toHaveAttribute('data-candidate-count', '1')
+    expect(screen.getByTestId('local-analysis-status')).toHaveAttribute('data-queue-count', '1')
   })
 })

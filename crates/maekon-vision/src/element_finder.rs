@@ -270,7 +270,7 @@ impl ElementFinder for OcrElementFinder {
 
         debug!(
             provider = self.ocr_provider.provider_name(),
-            text = ?text,
+            text_len = ?text.map(str::len),
             role = ?role,
             "OCR element search started"
         );
@@ -713,6 +713,76 @@ mod tests {
         fn name(&self) -> &str {
             "failing"
         }
+    }
+
+    /// #12515: the OCR search log names the query only by its length.
+    #[tokio::test]
+    async fn ocr_search_log_carries_query_length_not_query_text() {
+        /// Records each event's fields as ` name=value` text, one event per line.
+        #[derive(Clone, Default)]
+        struct FieldCapture(Arc<std::sync::Mutex<String>>);
+
+        struct FieldLine<'a>(&'a mut String);
+
+        impl tracing::field::Visit for FieldLine<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write as _;
+                let _ = write!(self.0, " {}={:?}", field.name(), value);
+            }
+        }
+
+        impl tracing::Subscriber for FieldCapture {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut line = String::new();
+                event.record(&mut FieldLine(&mut line));
+                line.push('\n');
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_str(&line);
+            }
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        const QUERY: &str = "Jane Roe account 4471";
+        let capture = FieldCapture::default();
+        let _guard = tracing::subscriber::set_default(capture.clone());
+
+        let provider = maekon_core::ports::ocr_provider::FakeOcrProvider::new(vec![OcrResult {
+            text: QUERY.to_string(),
+            x: 10,
+            y: 10,
+            width: 120,
+            height: 20,
+            confidence: 0.9,
+        }]);
+        let finder = OcrElementFinder::new(Arc::new(provider));
+        finder.set_image(vec![0_u8; 4], "png".to_string()).await;
+        finder
+            .find_element(Some(QUERY), Some("button"), None)
+            .await
+            .expect("the fake provider answers");
+
+        let logs = capture.0.lock().unwrap().clone();
+        assert!(logs.contains("OCR element search started"), "{logs}");
+        assert!(
+            !logs.contains("Jane Roe"),
+            "query text reached the log: {logs}"
+        );
+        assert!(
+            logs.contains(&format!("text_len=Some({})", QUERY.len())),
+            "{logs}"
+        );
     }
 
     #[tokio::test]

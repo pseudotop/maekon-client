@@ -14,6 +14,211 @@ use tempfile::TempDir;
 use tests_fixtures::*;
 
 #[tokio::test]
+async fn daily_token_budget_settings_roundtrip_survives_restart_and_explicit_zero() {
+    use axum::body::{to_bytes, Body};
+    use axum::extract::connect_info::MockConnectInfo;
+    use axum::http::{Request, StatusCode};
+    use std::net::SocketAddr;
+    use tower::ServiceExt;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("config.json");
+    let config_manager = ConfigManager::with_path(config_path.clone()).expect("config manager");
+    let mut state = test_state_with_config_manager(config_manager.clone(), None);
+    let token = crate::test_local_auth::TEST_LOCAL_AUTH_TOKEN;
+    state.auth.local_auth_token = Some(Arc::from(token));
+    let app = crate::WebServer::build_router(state)
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 45000))));
+    let unauthenticated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("unauthenticated response");
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    // #12096: use the authenticated production route that silently dropped the field.
+    for budget in [
+        4096_u64,
+        9_007_199_254_740_991,
+        9_007_199_254_740_993,
+        u64::MAX,
+        0,
+    ] {
+        // First save the selected value, then resubmit an unchanged GET response.
+        for replace_budget in [true, false] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/settings")
+                        .header("x-local-auth", token)
+                        .body(Body::empty())
+                        .expect("GET settings"),
+                )
+                .await
+                .expect("settings response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut json: serde_json::Value = serde_json::from_slice(
+                &to_bytes(response.into_body(), 1024 * 1024)
+                    .await
+                    .expect("settings body"),
+            )
+            .expect("settings JSON");
+            if replace_budget {
+                json["ai_session"]["daily_token_budget"] = serde_json::json!(budget.to_string());
+            } else {
+                assert_eq!(json["ai_session"]["daily_token_budget"], budget.to_string());
+            }
+            let saved = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/settings")
+                        .header("x-local-auth", token)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&json).expect("settings payload"),
+                        ))
+                        .expect("POST settings"),
+                )
+                .await
+                .expect("save settings response");
+            assert_eq!(saved.status(), StatusCode::OK);
+
+            assert_eq!(config_manager.get().ai_session.daily_token_budget, budget);
+            let restarted = ConfigManager::with_path(config_path.clone()).expect("reload config");
+            assert_eq!(restarted.get().ai_session.daily_token_budget, budget);
+            let readback = crate::services::settings_assembler::config_to_settings(
+                &restarted.get(),
+                CredentialBackendKind::OsSecretStore,
+            );
+            assert_eq!(
+                serde_json::to_value(readback).expect("readback JSON")["ai_session"]
+                    ["daily_token_budget"],
+                budget.to_string()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn daily_token_budget_is_preserved_when_clients_omit_or_null_the_field() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("config.json");
+    let config_manager = ConfigManager::with_path(config_path.clone()).expect("config manager");
+    let mut config = config_manager.get();
+    config.ai_session.daily_token_budget = u64::MAX;
+    config_manager.update(config).expect("set existing budget");
+    let state = test_state_with_config_manager(config_manager.clone(), None);
+    let service = crate::services::settings_web_service::SettingsCommandService::new(
+        test_context_from_state(&state),
+    );
+
+    for (explicit_null, max_retries) in [(false, 0), (true, 1)] {
+        let mut json = serde_json::to_value(AppSettings::default()).expect("settings JSON");
+        json["ai_session"]
+            .as_object_mut()
+            .expect("session object")
+            .remove("daily_token_budget");
+        if explicit_null {
+            json["ai_session"]["daily_token_budget"] = serde_json::Value::Null;
+        }
+        json["ai_session"]["max_retries"] = serde_json::json!(max_retries);
+        let request = serde_json::from_value::<AppSettings>(json).expect("legacy settings request");
+        service
+            .update_settings(&request)
+            .await
+            .expect("save legacy settings");
+
+        let restarted = ConfigManager::with_path(config_path.clone()).expect("reload config");
+        assert_eq!(restarted.get().ai_session.daily_token_budget, u64::MAX);
+        assert_eq!(restarted.get().ai_session.max_retries, max_retries);
+    }
+}
+
+#[tokio::test]
+async fn daily_token_budget_invalid_wire_values_leave_config_unchanged() {
+    use axum::body::Body;
+    use axum::extract::connect_info::MockConnectInfo;
+    use axum::http::{Request, StatusCode};
+    use std::net::SocketAddr;
+    use tower::ServiceExt;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("config.json");
+    let config_manager = ConfigManager::with_path(config_path.clone()).expect("config manager");
+    let mut config = config_manager.get();
+    config.ai_session.daily_token_budget = u64::MAX;
+    config.ai_session.max_retries = 3;
+    config_manager.update(config).expect("set existing budget");
+    let original_file = std::fs::read(&config_path).expect("original config");
+    let original_config = serde_json::to_value(config_manager.get()).expect("original settings");
+    let mut state = test_state_with_config_manager(config_manager.clone(), None);
+    let token = crate::test_local_auth::TEST_LOCAL_AUTH_TOKEN;
+    state.auth.local_auth_token = Some(Arc::from(token));
+    let app = crate::WebServer::build_router(state)
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 45000))));
+
+    for invalid in [
+        serde_json::json!(0),
+        serde_json::json!(4096),
+        serde_json::json!(9_007_199_254_740_993_u64),
+        serde_json::json!(u64::MAX),
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!(""),
+        serde_json::json!("-1"),
+        serde_json::json!("+1"),
+        serde_json::json!("1.5"),
+        serde_json::json!("1e3"),
+        serde_json::json!(" 4096"),
+        serde_json::json!("4096 "),
+        serde_json::json!("18446744073709551616"),
+    ] {
+        let mut json = serde_json::to_value(AppSettings::default()).expect("settings JSON");
+        json["ai_session"]["daily_token_budget"] = invalid.clone();
+        json["ai_session"]["max_retries"] = serde_json::json!(0);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings")
+                    .header("x-local-auth", token)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json).expect("invalid settings payload"),
+                    ))
+                    .expect("POST invalid settings"),
+            )
+            .await
+            .expect("invalid settings response");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid budget must be rejected before mutation: {invalid}"
+        );
+        assert_eq!(
+            serde_json::to_value(config_manager.get()).expect("unchanged settings"),
+            original_config
+        );
+        assert_eq!(
+            std::fs::read(&config_path).expect("unchanged config file"),
+            original_file
+        );
+        let restarted = ConfigManager::with_path(config_path.clone()).expect("reload config");
+        assert_eq!(restarted.get().ai_session.daily_token_budget, u64::MAX);
+        assert_eq!(restarted.get().ai_session.max_retries, 3);
+    }
+}
+
+#[tokio::test]
 async fn update_settings_validates_input_without_config_manager() {
     let state = test_state_without_config_manager();
     let context = test_context_from_state(&state);
