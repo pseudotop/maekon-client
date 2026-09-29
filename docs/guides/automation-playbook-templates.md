@@ -50,7 +50,7 @@ Practical guidance:
 
 ## Operational guardrails
 
-- Keep sandbox enabled for repeatable policy boundaries.
+- The sandbox is off by default. Turning it on adds OS isolation where the platform supports it; the policy gates and the audit log apply either way.
 - Use `scene_action_override` only for time-bound exceptions.
 - Track `success_rate`, `blocked_rate`, and `p95_elapsed_ms` in Automation KPI cards.
 

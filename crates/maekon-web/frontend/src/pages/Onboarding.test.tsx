@@ -1,8 +1,9 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../__tests__/helpers/render-helpers'
 import type { ConsentPermissions } from '../api/contracts'
+import * as aiReadinessModule from '../hooks/useAiReadinessSnapshot'
 import en from '../i18n/locales/en.json'
 import Onboarding from './Onboarding'
 
@@ -54,6 +55,8 @@ describe('Onboarding', () => {
     })
   })
 
+  afterEach(() => vi.restoreAllMocks())
+
   it('persists completion when the user skips setup', async () => {
     mockInvoke.mockResolvedValue(undefined)
     const onComplete = vi.fn()
@@ -90,6 +93,7 @@ describe('Onboarding', () => {
   // #9631: the first-run bundle includes ocr_processing — without it, frames
   // carry no text and /search reads as broken to a new user.
   it('grant CTA → calls set_consent with the 7 monitoring-bundle fields true and the rest false', async () => {
+    const invalidateSpy = vi.spyOn(aiReadinessModule, 'invalidateAiReadinessSnapshotCache')
     // The consent IPC returns a grant snapshot (other invokes return undefined).
     mockInvoke.mockImplementation((cmd: string, args?: unknown) => {
       if (cmd === 'set_consent') {
@@ -130,6 +134,7 @@ describe('Onboarding', () => {
           memory_vault_mirror: false,
         },
       })
+      expect(invalidateSpy).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -270,6 +275,7 @@ describe('Onboarding', () => {
   })
 
   it('clicking Enable coaching calls get_consent → set_consent → fetchSettings → updateSettings', async () => {
+    const invalidateSpy = vi.spyOn(aiReadinessModule, 'invalidateAiReadinessSnapshotCache')
     // IPC stubs: get_consent returns a minimal snapshot; set_consent echoes it.
     const basePermissions: ConsentPermissions = {
       screen_capture: true,
@@ -320,6 +326,7 @@ describe('Onboarding', () => {
       expect(mockUpdateSettings).toHaveBeenCalledWith(
         expect.objectContaining({ coaching: expect.objectContaining({ enabled: true }) }),
       )
+      expect(invalidateSpy).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -392,16 +399,29 @@ describe('Onboarding', () => {
     expect(screen.getByText(en.onboarding.step3Search)).toBeInTheDocument()
     // Opt-in button present; confirmed state not yet shown.
     expect(screen.getByTestId('onboarding-aifeatures-enable')).toBeInTheDocument()
-    expect(screen.queryByTestId('onboarding-aifeatures-enabled')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('onboarding-aifeatures-prepared')).not.toBeInTheDocument()
   })
 
-  it('clicking Enable AI features → fetchSettings → updateSettings flips the analysis trio true, then confirms', async () => {
+  it('prepares all four summary flags without claiming runtime readiness', async () => {
+    const invalidateSpy = vi.spyOn(aiReadinessModule, 'invalidateAiReadinessSnapshotCache')
     mockInvoke.mockResolvedValue(undefined)
     mockFetchSettings.mockResolvedValue({
-      analysis: { enabled: false, embedding_enabled: false, llm_summary_enabled: false, interval_secs: 60 },
+      analysis: {
+        enabled: false,
+        tiered_memory_enabled: false,
+        embedding_enabled: false,
+        llm_summary_enabled: false,
+        interval_secs: 60,
+      },
     })
     mockUpdateSettings.mockResolvedValue({
-      analysis: { enabled: true, embedding_enabled: true, llm_summary_enabled: true, interval_secs: 60 },
+      analysis: {
+        enabled: true,
+        tiered_memory_enabled: true,
+        embedding_enabled: true,
+        llm_summary_enabled: true,
+        interval_secs: 60,
+      },
     })
 
     renderWithProviders(<Onboarding onComplete={vi.fn()} />)
@@ -414,12 +434,15 @@ describe('Onboarding', () => {
         expect.objectContaining({
           analysis: expect.objectContaining({
             enabled: true,
+            tiered_memory_enabled: true,
             embedding_enabled: true,
             llm_summary_enabled: true,
           }),
         }),
       )
-      expect(screen.getByTestId('onboarding-aifeatures-enabled')).toBeInTheDocument()
+      expect(screen.getByTestId('onboarding-aifeatures-prepared')).toBeInTheDocument()
+      expect(screen.getByText(en.onboarding.aiFeatures.preparedNote)).toBeInTheDocument()
+      expect(invalidateSpy).toHaveBeenCalledTimes(1)
     })
   })
 

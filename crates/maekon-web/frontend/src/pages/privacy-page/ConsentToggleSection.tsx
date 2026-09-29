@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next'
 import { CONSENT_QUERY_KEY, getConsent, setConsent, withdrawConsent } from '../../api/client'
 import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../api/contracts'
 import { Alert, Button, Card, CardTitle, Checkbox } from '../../components/ui'
+import { invalidateAiReadinessSnapshotCache } from '../../hooks/useAiReadinessSnapshot'
 import { addToast } from '../../hooks/useToast'
 import { describeIpcError } from '../../i18n/tauriIpcErrors'
 import { colors, typography } from '../../styles/tokens'
@@ -147,6 +148,7 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
     mutationFn: (permissions: ConsentPermissions) => setConsent(permissions),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: CONSENT_QUERY_KEY })
+      invalidateAiReadinessSnapshotCache()
       onConsentChanged?.()
     },
   })
@@ -156,6 +158,7 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
     onSuccess: () => {
       setShowWithdrawModal(false)
       queryClient.invalidateQueries({ queryKey: CONSENT_QUERY_KEY })
+      invalidateAiReadinessSnapshotCache()
       onConsentChanged?.()
     },
     // #9505: without this, a withdraw failure (e.g. `storage.unavailable` from

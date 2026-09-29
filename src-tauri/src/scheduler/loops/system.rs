@@ -471,6 +471,10 @@ impl Scheduler {
         &self,
         aggregation_interval: Duration,
         llm_summarizer: Option<Arc<maekon_analysis::LlmSegmentSummarizer>>,
+        llm_summary_provider_class: Option<maekon_core::models::ai_summary::AiSummaryProviderClass>,
+        llm_summary_unavailable_reason: Option<
+            maekon_core::models::ai_summary::AiSummaryFailureReason,
+        >,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
         let sqlite6 = self.sqlite_storage.clone();
@@ -1005,6 +1009,17 @@ impl Scheduler {
                                             prev_digest.as_ref(),
                                             &regimes,
                                         );
+                                        for entry in &mut digest.timeline {
+                                            if let Some(record) = segment_records
+                                                .iter()
+                                                .find(|record| record.segment_id == entry.segment_id)
+                                            {
+                                                entry.ai_summary = maekon_core::models::ai_summary::AiSummaryArtifact {
+                                                    text: record.llm_summary.clone(),
+                                                    ..record.ai_summary.clone()
+                                                };
+                                            }
+                                        }
 
                                         // Generate LLM narrative insight if provider is available.
                                         if let Some(ref summarizer) = llm_summarizer {
@@ -1016,11 +1031,15 @@ impl Scheduler {
                                                 Box::new(move |text: &str| {
                                                     maekon_vision::privacy::sanitize_title_with_level(text, pii_level)
                                                 });
-                                            let insight_gen = maekon_analysis::DailyInsightGenerator::new(
+                                            let insight_gen = maekon_analysis::DailyInsightGenerator::new_with_provider_class(
                                                 summarizer.analysis_provider(),
                                                 pii_filter,
+                                                summarizer.provider_class(),
                                             );
-                                            match insight_gen.generate(&digest).await {
+                                            let (insight, artifact) =
+                                                insight_gen.generate_with_artifact(&digest).await;
+                                            digest.ai_narrative = artifact;
+                                            match insight {
                                                 Some(insight) => {
                                                     debug!("LLM daily insight generated for {}", date_str);
                                                     digest.insight = Some(insight);
@@ -1029,6 +1048,13 @@ impl Scheduler {
                                                     debug!("LLM daily insight unavailable for {}", date_str);
                                                 }
                                             }
+                                        } else {
+                                            digest.ai_narrative = maekon_core::models::ai_summary::AiSummaryArtifact::unavailable(
+                                                llm_summary_provider_class,
+                                                llm_summary_unavailable_reason.unwrap_or(
+                                                    maekon_core::models::ai_summary::AiSummaryFailureReason::ProviderUnavailable,
+                                                ),
+                                            );
                                         }
 
                                         let saved = {
@@ -1941,9 +1967,12 @@ mod memory_graph_tests {
                 dominant_app: "VS Code".to_string(),
                 content_summary: vec![],
                 annotation: None,
+                ai_summary: Default::default(),
             }],
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 

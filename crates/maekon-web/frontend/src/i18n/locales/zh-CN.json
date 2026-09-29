@@ -1,4 +1,56 @@
 {
+  "wbsAssignee": {
+    "title": "WBS负责人推荐",
+    "start": "查看负责人",
+    "restart": "开始新的确认",
+    "backToSuggestions": "返回建议",
+    "consent": "使用 {{document}} 中所选任务及负责人信息推荐候选人。仅将您选择的负责人填入对应单元格。",
+    "accept": "允许并加载候选人",
+    "cancel": "结束此次确认",
+    "loading": "正在加载候选人…",
+    "applying": "正在检查并应用您的选择…",
+    "target": "目标：第 {{row}} 行，第 {{column}} 列",
+    "synthetic": "合成演示数据",
+    "empty": "没有符合条件的负责人。",
+    "refresh": "重新查看当前行",
+    "checkExecution": "再次检查此结果",
+    "appliedVerified": "已填入所选负责人，并确认单元格值与其一致。",
+    "notVerified": "结果尚未完全确认。再次分配前，请检查单元格。",
+    "unavailable": "未能完成此操作。可能仍需检查是否发生了更改。",
+    "automationDisabled": "请确认已启用自动化。如果Maekon启动时自动化处于关闭状态，请启用后重启Maekon。",
+    "consentRequired": "查看负责人需要获得同意。请先检查隐私设置，再开始新的确认。",
+    "consentChanged": "同意状态已更改，此次确认已停止。请检查隐私设置并开始新的确认。",
+    "policyBlocked": "当前策略不允许执行此WBS操作。",
+    "sandboxUnsupported": "当前受保护环境不支持此WBS操作。",
+    "configurationChanged": "确认过程中设置已更改。请检查设置并开始新的确认。",
+    "expired": "此次确认已过期。请检查所选行并开始新的确认。",
+    "requestUnavailable": "未能开始或继续此次确认。请检查文档和连接后重试。",
+    "outcomeUnknown": "单元格可能已更新。再次分配前，请检查此结果。",
+    "readbackUnavailable": "无法确认单元格值。再次分配前，请检查此结果。",
+    "nativeLabel": "单元格更新",
+    "readbackLabel": "单元格验证",
+    "auditLabel": "执行记录",
+    "native": {
+      "not_started": "尚未开始",
+      "written_unverified": "已收到更新确认",
+      "cancelled_before_start": "更新前已取消",
+      "already_attempted": "此前已尝试",
+      "outcome_unknown": "结果未知",
+      "rejected": "已拒绝"
+    },
+    "readback": {
+      "not_read": "尚未检查",
+      "matches": "与所选值一致",
+      "mismatch": "值不一致",
+      "unavailable": "无法检查"
+    },
+    "audit": {
+      "not_started": "尚未请求",
+      "start_accepted": "开始记录请求已接受",
+      "completion_accepted": "完成记录请求已接受",
+      "completion_rejected": "完成记录请求失败"
+    }
+  },
   "common": {
     "refresh": "刷新",
     "retry": "重试",
@@ -103,7 +155,8 @@
     "groupSystem": "系统",
     "tasks": "任务",
     "contextHome": "上下文主页",
-    "assignmentEmailDraft": "分配邮件草稿"
+    "assignmentEmailDraft": "分配邮件草稿",
+    "wbsXlsxDraft": "WBS XLSX 草稿"
   },
   "dashboard": {
     "metricsError": "加载系统指标失败",
@@ -1821,7 +1874,24 @@
     "managedOAuthSurfaceDescription": "此接口使用提供商托管的OAuth。Maekon不会在此处要求API密钥或可编辑的端点。",
     "subprocessSurfaceDescription": "此接口通过已安装的提供商CLI运行。认证和订阅权益由提供商CLI继续管理。",
     "subprocessExecutableHint": "检测到的可执行文件候选: {{executables}}",
-    "modelDiscoveryUnsupportedSurface": "所选提供商接口不支持模型发现。"
+    "modelDiscoveryUnsupportedSurface": "所选提供商接口不支持模型发现。",
+    "chatVerification": {
+      "title": "验证 API 聊天连接",
+      "description": "使用 API 密钥的聊天在一条消息成功往返之前保持未验证状态。Maekon 只发送固定的测试消息，不包含你的内容或屏幕数据，回复会计入每日令牌预算。",
+      "action": "验证连接",
+      "verifying": "正在验证…",
+      "saveFirst": "请先保存更改。验证使用已保存的设置。",
+      "result": {
+        "verified": "连接已验证。现在可以使用 API 密钥聊天。",
+        "notConfigured": "没有可验证的 API 密钥聊天提供商。请选择提供商并保存其 API 密钥，然后重试。",
+        "consentRequired": "请在隐私 → 同意中启用“AI 文本处理和外部提供商”，然后重试。",
+        "restartRequired": "已保存的提供商更改将在 Maekon 重启后生效。请重启 Maekon，然后重新验证。",
+        "budgetExhausted": "今日的 AI 令牌预算已用完。请在预算重置后重试。",
+        "providerError": "提供商未能完成回复。请检查 API 密钥和模型，然后重试。",
+        "timeout": "提供商未在 30 秒内回复。请重试。",
+        "failed": "Maekon 无法执行验证。请重试。"
+      }
+    }
   },
   "focus": {
     "title": "专注度",
@@ -1947,7 +2017,7 @@
     "dashboard": {
       "active": {
         "title": "正在收集数据",
-        "description": "Maekon 正在后台收集活动数据。打开任意应用继续工作——首批指标通常一分钟内出现，第一张 recovery card 会在约 15 分钟内出现在屏幕顶部的跟踪面板中。"
+        "description": "Maekon 正在后台收集活动数据。打开任意应用继续工作——首批指标通常一分钟内出现。需要下一步建议时，请在屏幕顶部的跟踪面板中点击“找到下一步”。"
       },
       "paused": {
         "title": "活动收集已暂停",
@@ -2163,6 +2233,78 @@
     "reauthRequired": "需要重新认证",
     "reauthDescription": "您的OAuth会话已过期。请重新连接。",
     "switchToCli": "改用 {{surface}}"
+  },
+  "aiReadiness": {
+    "readyTitle": "AI 功能已就绪",
+    "blockedTitle": "需要配置 AI",
+    "capability": {
+      "chatSubprocess": "AI 聊天 · 订阅 CLI",
+      "chatHttpApi": "AI 聊天 · 提供商 API",
+      "chatLocalLlm": "AI 聊天 · 本地模型",
+      "ocrCapture": "OCR 捕获",
+      "ocrSuggestionAnalysis": "基于 OCR 的 AI 建议",
+      "segmentSummary": "AI 片段摘要",
+      "dailyNarrative": "AI 每日叙述"
+    },
+    "reason": {
+      "ready": "可用",
+      "compiled_capability_missing": "此构建未包含所需功能。",
+      "runtime_flag_disabled": "所需功能已关闭。",
+      "consent_required": "尚未授予所需的隐私同意。",
+      "access_mode_mismatch": "所选 AI 访问模式与此提供商路径不匹配。",
+      "endpoint_or_profile_required": "请选择提供商 endpoint 或 profile。",
+      "provider_not_detected": "未检测到所选提供商。",
+      "provider_auth_required": "需要进行提供商身份验证。",
+      "provider_auth_unverified": "尚未验证提供商身份验证。",
+      "provider_invocation_unavailable": "无法调用提供商。",
+      "provider_invocation_unverified": "尚未验证提供商调用能力。",
+      "model_unavailable": "所选模型不可用。",
+      "model_availability_unverified": "尚未验证模型是否可用。",
+      "hot_rewire_required": "请重新应用设置以重连运行中的 AI 服务。",
+      "restart_required": "请重启 Maekon 以应用此设置。",
+      "privacy_gate_unavailable": "隐私 gate 不可用。",
+      "egress_gate_unavailable": "外部数据策略 gate 不可用。",
+      "budget_gate_unavailable": "AI 使用预算 gate 不可用。",
+      "audit_gate_unavailable": "AI 审计 gate 不可用。"
+    },
+    "action": {
+      "none": "无需操作",
+      "openAiSettings": "打开 AI 设置",
+      "openPrivacyConsent": "检查隐私同意",
+      "enableFeature": "启用所需功能",
+      "installProvider": "安装受支持的提供商",
+      "authenticateProvider": "登录提供商",
+      "verifyProviderInvocation": "验证提供商调用",
+      "selectModel": "选择并验证模型",
+      "applyHotRewire": "重新应用设置以重新连接 AI",
+      "restartApp": "重启 Maekon 以应用此设置",
+      "reviewPrivacy": "检查隐私门控",
+      "reviewEgress": "检查外部数据策略",
+      "reviewBudget": "检查 AI 使用预算",
+      "reviewAudit": "检查审计门控"
+    }
+  },
+  "summaryProvenance": {
+    "digest": { "heuristic": "规则摘要" },
+    "aiSegmentSummary": "AI 片段摘要",
+    "aiSegmentUnavailable": "AI 片段摘要不可用",
+    "aiDailyNarrative": "AI 每日叙述",
+    "dailyNarrativeUnavailable": "AI 每日叙述不可用",
+    "provider": {
+      "loopback": "此设备上的回环模型",
+      "subprocess": "订阅 CLI 子进程",
+      "external_api": "外部提供商 API",
+      "unknown": "提供商类型不可用"
+    },
+    "failure": {
+      "pipeline_disabled": "处理此项目时 AI 摘要管线已关闭。",
+      "below_minimum_duration": "此片段短于配置的最小时长。",
+      "provider_unavailable": "没有可用的兼容摘要提供商。",
+      "provider_failed": "提供商无法生成摘要。",
+      "invalid_response": "提供商响应不能作为有效 AI 摘要。",
+      "capacity_limited": "摘要队列已满。",
+      "not_generated": "未生成 AI 叙述；规则摘要仍然可用。"
+    }
   },
   "featureCapability": {
     "preferredPath": "推荐路径",
@@ -2391,11 +2533,11 @@
   "onboarding": {
     "step3Search": "搜索你看过的一切",
     "aiFeatures": {
-      "optInHint": "可选：开启本地嵌入、AI 语义搜索和 AI 每日摘要叙述。全部在设备端处理，重启 Maekon 后生效。",
-      "enableButton": "启用 AI 功能",
+      "optInHint": "可选：准备分层记忆、嵌入、语义搜索和 AI 摘要设置。处理位置会按 AI 设置使用回环、订阅 CLI 或外部 API。仍需单独授予模式学习同意并重启。",
+      "enableButton": "准备 AI 功能",
       "enabling": "正在启用…",
-      "enabled": "已启用 AI 功能",
-      "enabledNote": "重启后，本地嵌入、语义搜索和 AI 每日摘要叙述将生效。",
+      "prepared": "AI 配置已保存",
+      "preparedNote": "仅保存配置并不代表已就绪。请完成提供商和单独的模式学习同意要求，然后重启 Maekon。",
       "error": "无法启用 AI 功能：{{error}}"
     },
     "step1Title": "欢迎使用 Maekon",
@@ -2481,7 +2623,7 @@
       "egressNote": "在设置中选择提供商并配置凭据之前，云端语音转文字将保持关闭。"
     },
     "stepIndicatorLabel": "步骤指示器",
-    "step4RecoveryCardHint": "在您工作时，Maekon 会寻找合适的时机提供帮助。您的第一张 recovery card——基于屏幕内容的下一步建议——通常会在约 15 分钟内出现在屏幕顶部的小型跟踪面板中。",
+    "step4RecoveryCardHint": "想接着之前的工作继续时，请在屏幕顶部的小型跟踪面板中点击“找到下一步”。Maekon 会读取当前屏幕，并以 recovery card 的形式提出下一步建议。需要先在设置中配置 AI 提供方。",
     "step4SuggestionsShortcut": "恢复卡片会显示在建议面板中 — 随时按 {{shortcut}} 打开。",
     "readyCollectionOffTitle": "将在未开启采集的情况下启动",
     "readyCollectionOffDesc": "你跳过了同意，因此 Maekon 未采集任何内容。时间线和建议将保持为空。可以现在开启，或稍后在 设置 > 隐私 中开启。",
@@ -2518,6 +2660,11 @@
     "create_failed_title": "无法创建会话",
     "create_failed": "创建 AI 会话失败。",
     "provider_not_configured": "{{provider}} 尚未配置。请在设置 → AI 与自动化中添加凭据，然后重试。",
+    "no_ready_provider": "没有可用的 AI 提供商",
+    "provider_unavailable": "提供商不可用",
+    "local_runtime_unavailable": "无法连接到 Ollama。请启动 Ollama 并检查已配置的端点，然后重试。",
+    "local_runtime_invalid": "已配置的本地端点不是 Ollama。仅当端点为 Ollama 时才能选择本地 LLM。",
+    "local_model_missing": "所选 Ollama 模型尚未安装。请安装或选择可用模型，然后重试。",
     "load_failed_title": "无法加载会话",
     "load_failed": "加载 AI 会话失败。",
     "refresh_failed": "刷新 AI 会话失败。",
@@ -2651,6 +2798,38 @@
     "closePanelLabel": "关闭建议面板",
     "badgeNew": "新",
     "historyLoadError": "无法加载历史记录。",
+    "localAnalysis": {
+      "status": {
+        "generated": "已生成本地建议",
+        "no_candidate": "未找到本地候选建议",
+        "throttled": "本地分析正在等待",
+        "provider_offline": "本地分析提供商不可用",
+        "policy_blocked": "本地分析已禁用",
+        "consent_required": "本地分析需要获得同意"
+      },
+      "reason": {
+        "generated": "已生成本地建议",
+        "no_valid_candidate": "未找到有效的本地候选建议",
+        "not_admitted": "本地候选建议未通过审核筛选",
+        "no_input": "没有可供分析的本地活动",
+        "context_unchanged": "本地上下文未发生变化",
+        "analysis_throttled": "本地分析正在等待下一次允许运行",
+        "provider_unavailable": "所选本地分析提供商不可用",
+        "analysis_disabled": "本地活动建议生成功能已禁用",
+        "capture_policy_blocked": "捕获策略阻止了本地分析",
+        "suggestion_queue_unavailable": "本地建议审核队列不可用",
+        "consent_required": "本地分析需要获得同意",
+        "provider_consent_required": "分析提供商需要获得同意",
+        "provider_policy_blocked": "策略阻止了分析提供商"
+      },
+      "producer": {
+        "periodic": "定期分析",
+        "app_switch": "应用切换分析"
+      },
+      "provenance": "{{source}} · {{producer}} · {{time}}",
+      "counts": "已生成 {{candidateCount}} 条 · 待审核 {{queueCount}} 条",
+      "timeUnavailable": "时间不可用"
+    },
     "badgeLabel": "{{count}} 条新建议"
   },
   "suggestionStats": {
@@ -2953,24 +3132,24 @@
   },
   "advancedTab": {
     "aiFeaturesMaster": "启用 AI 功能",
-    "aiFeaturesMasterDescription": "一步开启本地嵌入、AI 语义搜索和 AI 每日摘要叙述，全部在设备端处理。重启 Maekon 后生效。",
+    "aiFeaturesMasterDescription": "同时准备分层记忆、嵌入、语义搜索和 AI 摘要设置。不会自动授予模式学习同意。处理位置取决于所选提供商。",
     "llmSummary": "AI 每日摘要叙述",
-    "llmSummaryDescription": "使用设备端 LLM 用自然语言总结你的一天（需要嵌入）。重启后生效。",
+    "llmSummaryDescription": "使用所选 LLM 提供商生成片段摘要和每日叙述（需要分层记忆和嵌入）。每个结果都会显示处理位置。",
     "maxConcurrentSessions": "最大并发会话数",
     "idleTimeoutSeconds": "空闲超时（秒）",
     "sessionTimeoutSeconds": "会话超时（秒）",
     "maxRetries": "最大重试次数",
     "maxHistoryTurns": "最大历史轮次",
     "healthCheckIntervalSeconds": "健康检查间隔（秒）",
-    "enableSuggestions": "启用建议",
-    "enableSuggestionsDescription": "根据您的活动接收 AI 驱动的建议",
+    "enableSuggestions": "接收服务器建议",
+    "enableSuggestionsDescription": "从已登录的 ONESHIM 服务器流接收建议",
     "showBorder": "显示边框",
     "showBorderDescription": "监控时在屏幕周围显示彩色边框",
     "showPanel": "显示面板",
     "showPanelDescription": "显示追踪状态面板",
     "borderOpacity": "边框不透明度（0.0 - 1.0）",
-    "enableAnalysis": "启用分析",
-    "enableAnalysisDescription": "对活动片段运行 LLM 分析",
+    "enableAnalysis": "生成本地活动建议",
+    "enableAnalysisDescription": "使用所选 LLM 提供商分析已获同意的本地活动和 OCR 上下文",
     "analysisIntervalSeconds": "分析间隔（秒）",
     "minConfidence": "最低置信度（0.0 - 1.0）",
     "maxSuggestions": "最大建议数",
@@ -3272,8 +3451,10 @@
       "noCandidateDetail": "已查看您的屏幕，但未提出操作。",
       "providerOfflineTitle": "助手离线",
       "providerOfflineDetail": "建议提供方目前不可用。",
-      "noSessionTitle": "没有助手会话",
-      "noSessionDetail": "打开聊天并创建一个会话。如果尚未配置 AI 提供方，请先在设置中完成配置。",
+      "noProviderTitle": "没有可用的 AI 提供方",
+      "noProviderDetail": "请在设置中完成 AI 提供方的配置，然后重试。",
+      "openChatTitle": "请先打开聊天",
+      "openChatDetail": "当前的 AI 提供方以命令行应用运行，此功能无法在关闭其工具的情况下启动它。请先打开聊天再重试，或在设置中配置 API 或本地提供方。",
       "noContextTitle": "屏幕信息不足",
       "noContextDetail": "当前上下文不足以建议下一步。"
     }
@@ -3333,6 +3514,52 @@
       "noHandler": "没有处理撰写链接的邮件应用。请配置默认邮件应用后重试。",
       "handoff": "系统无法打开撰写窗口。本地草稿仍已保存。",
       "bridge": "系统交接仅在Maekon桌面应用中可用。"
+    }
+  },
+  "wbsXlsxDraft": {
+    "title": "WBS XLSX 草稿",
+    "description": "从一条已确认的合成分配回执创建本地电子表格草稿。",
+    "synthetic": "合成数据演示",
+    "syntheticAria": "这是合成数据演示，不使用真实客户数据。",
+    "nativeBoundary": {
+      "title": "原生文件边界",
+      "body": "组织、映射和分配由服务器解析。输入模板和输出文件由原生对话框选择；WebView 不传递路径或 bearer token。"
+    },
+    "source": { "title": "已确认分配", "receipt": "分配回执 ID" },
+    "actions": { "generate": "选择模板并创建草稿", "running": "准备中…" },
+    "states": {
+      "running": { "title": "正在准备合成草稿", "body": "在原生文件选择前检查服务器门禁。" },
+      "error": { "title": "无法创建草稿", "body": "请检查登录、回执新鲜度、模板安全性和服务状态，然后重试。" },
+      "unsafeWorkbook": {
+        "title": "工作簿安全检查失败",
+        "body": "未保留输出。请检查所选模板和输出位置后重试。代码：{{code}}"
+      },
+      "localReceipt": {
+        "title": "无法保存本地回执",
+        "body": "本地文件可能已存在，但由于持久回执保存失败，因此不声明成功。请检查所选输出、修复本地存储后重试。代码：{{code}}"
+      },
+      "cancelled": { "title": "未创建文件", "body": "已取消原生选择器，未创建输出或回执。" },
+      "rejected": { "title": "服务器门禁拒绝了草稿", "body": "未写入工作簿。原因：{{reason}}" },
+      "headerDrift": { "title": "模板表头已变化", "body": "未写入输出。首个不匹配列：{{column}}" },
+      "produced": {
+        "title": "已创建合成 XLSX 草稿",
+        "body": "作为演示证据使用前，请检查本地文件和以下固定哈希。",
+        "uploadPending": "本地回执已持久保存；服务器上传待重试。",
+        "uploaded": "本地回执也已追加到服务器。"
+      }
+    },
+    "fields": {
+      "assignmentReceipt": "分配回执",
+      "outputReceipt": "XLSX 输出回执",
+      "assignment": "分配",
+      "mapping": "TMD 映射",
+      "assignmentHash": "分配哈希",
+      "sourceHash": "源快照哈希",
+      "mappingHash": "映射内容哈希",
+      "workbookStructureHash": "所选工作簿结构哈希",
+      "templateHash": "已批准模板哈希",
+      "outputHash": "输出 SHA-256",
+      "outputPath": "已保存文件"
     }
   },
   "contextHome": {

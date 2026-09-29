@@ -3,6 +3,7 @@ use super::fs::FrameFileStorage;
 use super::util::list_date_dirs;
 use crate::error::StorageError;
 use chrono::{DateTime, Utc};
+use maekon_core::ports::vision::{CaptureAccess, CapturePermit};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -152,6 +153,67 @@ async fn write_frame_atomic(
     )))
 }
 
+/// Keep the permit check inside the same blocking job that owns file creation
+/// and writes. Revocation while queued must prevent even the first byte.
+async fn write_frame_authorized(
+    counter: Arc<AtomicU32>,
+    day_dir: PathBuf,
+    time_str: String,
+    data: Vec<u8>,
+    permit: CapturePermit,
+) -> Result<String, StorageError> {
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let data = zeroize::Zeroizing::new(data);
+        for _ in 0..FRAME_WRITE_MAX_RETRIES {
+            permit.check(CaptureAccess::Retain)?;
+            let filename = format!(
+                "{time_str}-{:010}.webp",
+                counter.fetch_add(1, Ordering::SeqCst)
+            );
+            let path = day_dir.join(&filename);
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = match options.open(&path) {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            };
+            // This exact path is owned by this successful create_new call.
+            // Never delete a colliding file or another producer's output.
+            let result = (|| -> Result<(), StorageError> {
+                #[cfg(windows)]
+                if let Err(e) = crate::encryption::set_owner_only_dacl(&path) {
+                    warn!("frame file: failed to set owner-only DACL: {e}");
+                }
+                permit.check(CaptureAccess::Retain)?;
+                file.write_all(&data)?;
+                file.flush()?;
+                permit.check(CaptureAccess::Retain)?;
+                Ok(())
+            })();
+            drop(file);
+            if let Err(error) = result {
+                if let Err(cleanup) = std::fs::remove_file(&path) {
+                    warn!("rejected frame cleanup failed: {cleanup}");
+                }
+                return Err(error);
+            }
+            return Ok(filename);
+        }
+        Err(StorageError::Internal(
+            "authorized frame filename retries exhausted".into(),
+        ))
+    })
+    .await
+    .map_err(|e| StorageError::Internal(format!("authorized frame write task failed: {e}")))?
+}
+
 impl FrameFileStorage {
     /// Save a frame image to disk.
     ///
@@ -162,10 +224,33 @@ impl FrameFileStorage {
         timestamp: DateTime<Utc>,
         webp_data: &[u8],
     ) -> Result<PathBuf, StorageError> {
+        self.save_frame_with_permit(timestamp, webp_data, None)
+            .await
+    }
+
+    pub async fn save_frame_authorized(
+        &self,
+        timestamp: DateTime<Utc>,
+        webp_data: &[u8],
+        permit: &CapturePermit,
+    ) -> Result<PathBuf, StorageError> {
+        self.save_frame_with_permit(timestamp, webp_data, Some(permit))
+            .await
+    }
+
+    async fn save_frame_with_permit(
+        &self,
+        timestamp: DateTime<Utc>,
+        webp_data: &[u8],
+        permit: Option<&CapturePermit>,
+    ) -> Result<PathBuf, StorageError> {
         // #4928: acquire the frame barrier (shared read) — serializes against the
         // write taken by delete_all_files. If a delete is in progress, wait here;
         // after the delete, the write is skipped because deletion_flag is set.
         let _barrier = self.frame_barrier.read().await;
+        if let Some(permit) = permit {
+            permit.check(CaptureAccess::Retain)?;
+        }
         // #4928: if the erasure block signal (`deletion_flag || erasing`) is set,
         // skip the write as a no-op rather than writing a file (the return value
         // is an empty PathBuf). #4928 round-3 (FIX B): `erasing` blocks the
@@ -201,8 +286,18 @@ impl FrameFileStorage {
         };
 
         let written_len = data_to_write.len() as u64;
-        let filename =
-            write_frame_atomic(&self.frame_counter, &day_dir, &time_str, &data_to_write).await?;
+        let filename = if let Some(permit) = permit {
+            write_frame_authorized(
+                self.frame_counter.clone(),
+                day_dir,
+                time_str,
+                data_to_write,
+                permit.clone(),
+            )
+            .await?
+        } else {
+            write_frame_atomic(&self.frame_counter, &day_dir, &time_str, &data_to_write).await?
+        };
 
         self.cached_size_bytes
             .fetch_add(written_len, Ordering::Relaxed);
@@ -509,5 +604,164 @@ impl FrameFileStorage {
         }
 
         results
+    }
+}
+
+#[cfg(test)]
+mod capture_boundary_tests {
+    use super::*;
+    use maekon_core::ports::vision::{capture_denied, CaptureGuard};
+    use std::sync::atomic::AtomicBool;
+
+    struct Revocable(Arc<AtomicBool>);
+    impl CaptureGuard for Revocable {
+        fn check(&self, _: CaptureAccess) -> Result<(), maekon_core::error::CoreError> {
+            if self.0.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err(capture_denied("synthetic revocation"))
+            }
+        }
+    }
+
+    struct QueuedGuard {
+        allowed: Arc<AtomicBool>,
+        directory: PathBuf,
+        observed_created_file: Arc<AtomicBool>,
+    }
+
+    impl CaptureGuard for QueuedGuard {
+        fn check(&self, _: CaptureAccess) -> Result<(), maekon_core::error::CoreError> {
+            if self.allowed.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if std::fs::read_dir(&self.directory).unwrap().next().is_some() {
+                self.observed_created_file.store(true, Ordering::Release);
+            }
+            Err(capture_denied("synthetic revocation"))
+        }
+    }
+
+    #[tokio::test]
+    async fn authorized_port_roundtrip_preserves_encryption() {
+        use crate::encryption::EncryptionKey;
+        use maekon_core::ports::frame_storage::FrameStoragePort;
+
+        let dir = tempfile::tempdir().unwrap();
+        let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
+        let storage =
+            FrameFileStorage::with_encryption(dir.path().to_path_buf(), 100, 7, Some(key))
+                .await
+                .unwrap();
+        let permit = CapturePermit::new(Arc::new(Revocable(Arc::new(AtomicBool::new(true)))));
+        let data = b"RIFF\x00\x00\x00\x00WEBPVP8 synthetic frame";
+        let port: &dyn FrameStoragePort = &storage;
+        let path = port
+            .save_frame_authorized(Utc::now(), data, &permit)
+            .await
+            .unwrap();
+        assert!(!path.as_os_str().is_empty());
+        assert_eq!(port.load_frame(&path).await.unwrap(), data);
+        assert_eq!(port.load_latest_frame().await.unwrap().unwrap().0, data);
+
+        let wrong = FrameFileStorage::with_encryption(
+            dir.path().to_path_buf(),
+            100,
+            7,
+            Some(Arc::new(EncryptionKey::from_bytes([0x43; 32]))),
+        )
+        .await
+        .unwrap();
+        let error = wrong.load_frame(&path).await.unwrap_err();
+        assert!(matches!(error, StorageError::Encryption(_)), "{error}");
+    }
+
+    #[tokio::test]
+    async fn authorized_write_preserves_collisions_and_other_io_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let permit = CapturePermit::new(Arc::new(Revocable(Arc::new(AtomicBool::new(true)))));
+        let existing = dir.path().join("collision-0000000000.webp");
+        std::fs::write(&existing, b"previous producer").unwrap();
+        let counter = Arc::new(AtomicU32::new(0));
+        let name = write_frame_authorized(
+            counter.clone(),
+            dir.path().to_path_buf(),
+            "collision".into(),
+            b"new producer".to_vec(),
+            permit.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&existing).unwrap(), b"previous producer");
+        assert_eq!(
+            std::fs::read(dir.path().join(name)).unwrap(),
+            b"new producer"
+        );
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let error = write_frame_authorized(
+            attempts.clone(),
+            dir.path().join("missing-parent"),
+            "invalid".into(),
+            b"synthetic".to_vec(),
+            permit,
+        )
+        .await
+        .unwrap_err();
+        match error {
+            StorageError::Io(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+            error => panic!("expected the original I/O error, got {error}"),
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn queued_frame_write_checks_revocation_before_file_creation() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let allowed = Arc::new(AtomicBool::new(true));
+            let observed_created_file = Arc::new(AtomicBool::new(false));
+            let permit = CapturePermit::new(Arc::new(QueuedGuard {
+                allowed: allowed.clone(),
+                directory: dir.path().to_path_buf(),
+                observed_created_file: observed_created_file.clone(),
+            }));
+            let counter = Arc::new(AtomicU32::new(0));
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            });
+            started_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let pending = write_frame_authorized(
+                counter.clone(), dir.path().to_path_buf(), "queued".into(), b"synthetic-frame".to_vec(), permit.clone(),
+            );
+            tokio::pin!(pending);
+            tokio::select! {
+                biased;
+                result = &mut pending => panic!("write escaped the occupied blocking queue: {result:?}"),
+                () = tokio::task::yield_now() => {}
+            }
+            allowed.store(false, Ordering::Release);
+            release_tx.send(()).unwrap();
+            blocker.await.unwrap();
+            let error = pending.await.unwrap_err();
+            assert!(error.to_string().contains("synthetic revocation"), "{error}");
+            assert!(!observed_created_file.load(Ordering::Acquire));
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+            allowed.store(true, Ordering::Release);
+            let filename = write_frame_authorized(
+                counter, dir.path().to_path_buf(), "positive".into(), b"synthetic-frame".to_vec(), permit,
+            ).await.unwrap();
+            assert_eq!(std::fs::read(dir.path().join(filename)).unwrap(), b"synthetic-frame");
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        });
     }
 }

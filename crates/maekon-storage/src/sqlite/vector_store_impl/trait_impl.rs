@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use maekon_core::error::CoreError;
 use maekon_core::models::embedding::{EmbeddingMetadata, SearchFilters, SearchResult};
+use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::vector_index::VectorIndex;
 use maekon_core::ports::vector_store::VectorStore;
 use maekon_core::quantization::{QuantizedVector, ScalarQuantizer};
@@ -72,6 +73,193 @@ pub(crate) fn compute_nprobe(n_clusters: usize) -> usize {
     proportional.max(MIN_NPROBE).min(n_clusters)
 }
 
+impl SqliteVectorStore {
+    async fn store_f32_with_activity_consent(
+        &self,
+        vector: Vec<f32>,
+        metadata: EmbeddingMetadata,
+        consent_manager: Option<Arc<dyn ConsentManagerPort>>,
+    ) -> Result<Option<u64>, CoreError> {
+        if vector.is_empty() {
+            return Err(CoreError::InvalidArguments {
+                code: maekon_core::error_codes::ValidationCode::InvalidArguments,
+                message: "Cannot store empty f32 vector".to_string(),
+            });
+        }
+
+        let new_dims = vector.len();
+        let blob = f32_vec_to_bytes(&vector);
+        let content_type_str = content_type_to_str(&metadata.content_type).to_string();
+        let timestamp_str = metadata.timestamp.to_rfc3339();
+        let dims_cache = self.corpus_dims_cache.clone();
+        let clock = self.clock.clone();
+        self.with_conn(move |conn| {
+            let write = || -> Result<u64, StorageError> {
+                let cached = dims_cache.load(Ordering::Relaxed);
+                // Empty input was rejected above, so the zero sentinel also differs
+                // from every valid incoming dimension.
+                if cached as usize != new_dims {
+                    corpus_dims_guard(conn, new_dims)?;
+                    dims_cache.store(new_dims as u32, Ordering::Relaxed);
+                }
+
+                let hlc = clock
+                    .next(conn)
+                    .map_err(|e| StorageError::Internal(format!("hlc stamp (store): {e}")))?;
+                conn.execute(
+                    "INSERT INTO embedding_vectors (segment_id, content_type, content_label, original_text, vector, model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        &metadata.segment_id,
+                        &content_type_str,
+                        &metadata.content_label,
+                        &metadata.original_text,
+                        &blob,
+                        &metadata.model_id,
+                        &timestamp_str,
+                        hlc.wall_ms,
+                        hlc.counter,
+                        hlc.device_id,
+                    ],
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!("Failed to store embedding vector: {e}"))
+                })?;
+
+                let row_id = conn.last_insert_rowid();
+                debug!(
+                    "Stored embedding vector for segment {} (type={}, row_id={})",
+                    metadata.segment_id, content_type_str, row_id
+                );
+                Ok(row_id as u64)
+            };
+
+            if let Some(consent_manager) = consent_manager {
+                let mut result = None;
+                let permitted = consent_manager
+                    .run_if_activity_pattern_learning_permitted(&mut || result = Some(write()));
+                if !permitted {
+                    return Ok(None);
+                }
+                return result
+                    .unwrap_or_else(|| {
+                        Err(StorageError::Internal(
+                            "authorized vector-store action did not run".to_string(),
+                        ))
+                    })
+                    .map(Some);
+            }
+
+            write().map(Some)
+        })
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn store_quantized_with_activity_consent(
+        &self,
+        vector_f32: Vec<f32>,
+        vector_int8: &QuantizedVector,
+        metadata: EmbeddingMetadata,
+        skip_float32: bool,
+        consent_manager: Option<Arc<dyn ConsentManagerPort>>,
+    ) -> Result<Option<u64>, CoreError> {
+        if vector_int8.data.is_empty() {
+            return Err(CoreError::InvalidArguments {
+                code: maekon_core::error_codes::ValidationCode::InvalidArguments,
+                message: "Cannot store empty INT8 vector".to_string(),
+            });
+        }
+        if !skip_float32 && vector_f32.len() != vector_int8.data.len() {
+            return Err(CoreError::InvalidArguments {
+                code: maekon_core::error_codes::ValidationCode::InvalidArguments,
+                message: format!(
+                    "Vector dimension mismatch: f32 has {}, INT8 has {}",
+                    vector_f32.len(),
+                    vector_int8.data.len()
+                ),
+            });
+        }
+
+        let new_dims = vector_int8.data.len();
+        let f32_blob = if skip_float32 {
+            Vec::new()
+        } else {
+            f32_vec_to_bytes(&vector_f32)
+        };
+        let int8_blob = i8_vec_to_bytes(&vector_int8.data);
+        let scale = vector_int8.scale;
+        let offset = vector_int8.offset;
+        let content_type_str = content_type_to_str(&metadata.content_type).to_string();
+        let timestamp_str = metadata.timestamp.to_rfc3339();
+        let dims_cache = self.corpus_dims_cache.clone();
+        let clock = self.clock.clone();
+        self.with_conn(move |conn| {
+            let write = || -> Result<u64, StorageError> {
+                let cached = dims_cache.load(Ordering::Relaxed);
+                // Nonempty INT8 input makes the zero sentinel a cache miss as well.
+                if cached as usize != new_dims {
+                    corpus_dims_guard(conn, new_dims)?;
+                    dims_cache.store(new_dims as u32, Ordering::Relaxed);
+                }
+
+                let hlc = clock.next(conn).map_err(|e| {
+                    StorageError::Internal(format!("hlc stamp (store_quantized): {e}"))
+                })?;
+                conn.execute(
+                    "INSERT INTO embedding_vectors (segment_id, content_type, content_label, original_text, vector, model_id, timestamp, vector_int8, quant_scale, quant_offset, hlc_wall_ms, hlc_counter, origin_device_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    params![
+                        &metadata.segment_id,
+                        &content_type_str,
+                        &metadata.content_label,
+                        &metadata.original_text,
+                        &f32_blob,
+                        &metadata.model_id,
+                        &timestamp_str,
+                        &int8_blob,
+                        scale,
+                        offset,
+                        hlc.wall_ms,
+                        hlc.counter,
+                        hlc.device_id,
+                    ],
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!("Failed to store quantized vector: {e}"))
+                })?;
+
+                let row_id = conn.last_insert_rowid();
+                debug!(
+                    "Stored quantized vector for segment {} (type={}, skip_f32={}, row_id={})",
+                    metadata.segment_id, content_type_str, skip_float32, row_id
+                );
+                Ok(row_id as u64)
+            };
+
+            if let Some(consent_manager) = consent_manager {
+                let mut result = None;
+                let permitted = consent_manager
+                    .run_if_activity_pattern_learning_permitted(&mut || result = Some(write()));
+                if !permitted {
+                    return Ok(None);
+                }
+                return result
+                    .unwrap_or_else(|| {
+                        Err(StorageError::Internal(
+                            "authorized quantized vector-store action did not run".to_string(),
+                        ))
+                    })
+                    .map(Some);
+            }
+
+            write().map(Some)
+        })
+        .await
+        .map_err(Into::into)
+    }
+}
+
 #[async_trait]
 impl VectorStore for SqliteVectorStore {
     async fn store(&self, vector: Vec<f32>, metadata: EmbeddingMetadata) -> Result<(), CoreError> {
@@ -85,68 +273,19 @@ impl VectorStore for SqliteVectorStore {
         vector: Vec<f32>,
         metadata: EmbeddingMetadata,
     ) -> Result<u64, CoreError> {
-        if vector.is_empty() {
-            return Err(CoreError::InvalidArguments {
-                code: maekon_core::error_codes::ValidationCode::InvalidArguments,
-                message: "Cannot store empty f32 vector".to_string(),
-            });
-        }
+        self.store_f32_with_activity_consent(vector, metadata, None)
+            .await?
+            .ok_or_else(|| StorageError::Internal("vector insert returned no row ID".into()).into())
+    }
 
-        let new_dims = vector.len();
-        let blob = f32_vec_to_bytes(&vector);
-        let content_type_str = content_type_to_str(&metadata.content_type).to_string();
-        let timestamp_str = metadata.timestamp.to_rfc3339();
-
-        // Write-side corpus dimension guard (#5755 FLAG-DIM-768).
-        // Hot path: if the in-process cache matches new_dims, skip the DB round-trip.
-        // The cache is DIMS_CACHE_UNSET (0) until the first write establishes it.
-        let dims_cache = self.corpus_dims_cache.clone();
-        let clock = self.clock.clone();
-        self.with_conn(move |conn| {
-            let cached = dims_cache.load(Ordering::Relaxed);
-            if cached == DIMS_CACHE_UNSET || cached as usize != new_dims {
-                // Cache miss or transition: run the full guard (DB read + conditional write).
-                corpus_dims_guard(conn, new_dims)?;
-                // Update the in-process cache to the new dimension so subsequent
-                // writes skip the DB round-trip on the hot path.
-                dims_cache.store(new_dims as u32, Ordering::Relaxed);
-            }
-
-            // F0/#5186: stamp a monotonic HLC so this row propagates via cross-device sync.
-            let hlc = clock
-                .next(conn)
-                .map_err(|e| StorageError::Internal(format!("hlc stamp (store): {e}")))?;
-            conn.execute(
-                "INSERT INTO embedding_vectors (segment_id, content_type, content_label, original_text, vector, model_id, timestamp, hlc_wall_ms, hlc_counter, origin_device_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    metadata.segment_id,
-                    content_type_str,
-                    metadata.content_label,
-                    metadata.original_text,
-                    blob,
-                    metadata.model_id,
-                    timestamp_str,
-                    hlc.wall_ms,
-                    hlc.counter,
-                    hlc.device_id,
-                ],
-            )
-            .map_err(|e| StorageError::Internal(format!("Failed to store embedding vector: {e}")))?;
-
-            // #6113: read the inserted rowid INSIDE the same write lock, before it
-            // is released. A separate last_insert_id() read could observe a
-            // different rowid if another write interleaved (TOCTOU).
-            let row_id = conn.last_insert_rowid();
-
-            debug!(
-                "Stored embedding vector for segment {} (type={}, row_id={})",
-                metadata.segment_id, content_type_str, row_id
-            );
-            Ok(row_id as u64)
-        })
-        .await
-        .map_err(Into::into)
+    async fn store_returning_id_if_activity_pattern_learning_permitted(
+        &self,
+        vector: Vec<f32>,
+        metadata: EmbeddingMetadata,
+        consent_manager: Arc<dyn ConsentManagerPort>,
+    ) -> Result<Option<u64>, CoreError> {
+        self.store_f32_with_activity_consent(vector, metadata, Some(consent_manager))
+            .await
     }
 
     async fn search(
@@ -504,93 +643,35 @@ impl VectorStore for SqliteVectorStore {
         metadata: EmbeddingMetadata,
         skip_float32: bool,
     ) -> Result<u64, CoreError> {
-        // Validate INT8 vector is non-empty before persisting.
-        if vector_int8.data.is_empty() {
-            return Err(CoreError::InvalidArguments {
-                code: maekon_core::error_codes::ValidationCode::InvalidArguments,
-                message: "Cannot store empty INT8 vector".to_string(),
-            });
-        }
-
-        // Validate f32/INT8 dimension consistency when f32 is being stored.
-        if !skip_float32 && vector_f32.len() != vector_int8.data.len() {
-            return Err(CoreError::InvalidArguments {
-                code: maekon_core::error_codes::ValidationCode::InvalidArguments,
-                message: format!(
-                    "Vector dimension mismatch: f32 has {}, INT8 has {}",
-                    vector_f32.len(),
-                    vector_int8.data.len()
-                ),
-            });
-        }
-
-        // The canonical dimension for a quantized row is the INT8 length.
-        // For skip_float32 rows, vector_f32 is empty so INT8 is the only signal.
-        let new_dims = vector_int8.data.len();
-
-        // When skip_float32 is true, store an empty BLOB instead of the f32 data.
-        // The column has a NOT NULL constraint (pre-existing schema), so we use
-        // an empty vec rather than NULL. An empty BLOB is distinguishable from
-        // a real vector (which always has len >= 4).
-        let f32_blob: Vec<u8> = if skip_float32 {
-            Vec::new()
-        } else {
-            f32_vec_to_bytes(&vector_f32)
-        };
-        let int8_blob = i8_vec_to_bytes(&vector_int8.data);
-        let scale = vector_int8.scale;
-        let offset = vector_int8.offset;
-        let content_type_str = content_type_to_str(&metadata.content_type).to_string();
-        let timestamp_str = metadata.timestamp.to_rfc3339();
-
-        // Write-side corpus dimension guard (#5755 FLAG-DIM-768).
-        let dims_cache = self.corpus_dims_cache.clone();
-        let clock = self.clock.clone();
-        self.with_conn(move |conn| {
-            let cached = dims_cache.load(Ordering::Relaxed);
-            if cached == DIMS_CACHE_UNSET || cached as usize != new_dims {
-                corpus_dims_guard(conn, new_dims)?;
-                dims_cache.store(new_dims as u32, Ordering::Relaxed);
-            }
-
-            // F0/#5186: stamp a monotonic HLC so this new row propagates via sync.
-            let hlc = clock
-                .next(conn)
-                .map_err(|e| StorageError::Internal(format!("hlc stamp (store_quantized): {e}")))?;
-            conn.execute(
-                "INSERT INTO embedding_vectors (segment_id, content_type, content_label, original_text, vector, model_id, timestamp, vector_int8, quant_scale, quant_offset, hlc_wall_ms, hlc_counter, origin_device_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    metadata.segment_id,
-                    content_type_str,
-                    metadata.content_label,
-                    metadata.original_text,
-                    f32_blob,
-                    metadata.model_id,
-                    timestamp_str,
-                    int8_blob,
-                    scale,
-                    offset,
-                    hlc.wall_ms,
-                    hlc.counter,
-                    hlc.device_id,
-                ],
-            )
-            .map_err(|e| StorageError::Internal(format!("Failed to store quantized vector: {e}")))?;
-
-            // #6113: read the inserted rowid INSIDE the same write lock, before it
-            // is released. A separate last_insert_id() read could observe a
-            // different rowid if another write interleaved (TOCTOU).
-            let row_id = conn.last_insert_rowid();
-
-            debug!(
-                "Stored quantized vector for segment {} (type={}, skip_f32={}, row_id={})",
-                metadata.segment_id, content_type_str, skip_float32, row_id
-            );
-            Ok(row_id as u64)
+        self.store_quantized_with_activity_consent(
+            vector_f32,
+            vector_int8,
+            metadata,
+            skip_float32,
+            None,
+        )
+        .await?
+        .ok_or_else(|| {
+            StorageError::Internal("quantized vector insert returned no row ID".into()).into()
         })
+    }
+
+    async fn store_quantized_returning_id_if_activity_pattern_learning_permitted(
+        &self,
+        vector_f32: Vec<f32>,
+        vector_int8: &QuantizedVector,
+        metadata: EmbeddingMetadata,
+        skip_float32: bool,
+        consent_manager: Arc<dyn ConsentManagerPort>,
+    ) -> Result<Option<u64>, CoreError> {
+        self.store_quantized_with_activity_consent(
+            vector_f32,
+            vector_int8,
+            metadata,
+            skip_float32,
+            Some(consent_manager),
+        )
         .await
-        .map_err(Into::into)
     }
 
     async fn search_quantized(

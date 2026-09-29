@@ -26,7 +26,7 @@ Maekon은 ONESHIM 없이도 독립 사용 가능한 Apache-2.0 local-first 데�
 
 ## Source Build 빠른 시작
 
-공개 저장소는 준비되었고, 이 source snapshot은 `v0.0.1-rc.10` release
+공개 저장소는 준비되었고, 이 source snapshot은 `v0.0.1-rc.11` release
 candidate를 대상으로 합니다. 같은 GitHub Release와 자산이 실제로 존재할 때만
 게시된 버전으로 취급합니다. GitHub의 `latest` release endpoint는 prerelease를
 포함하지 않으므로 릴리즈 바이너리 테스트는 설치 문서의 버전 고정 명령을
@@ -57,8 +57,8 @@ cp target/debug/maekon-sandbox-worker \
 ## Maekon을 선택하는 이유
 
 - **활동을 통제 가능한 업무 인사이트로 정리**: 컨텍스트, 타임라인, 집중 패턴, 방해 요소, 승인된 자동화 경로를 한 곳에서 추적합니다.
-- **가벼운 온디바이스 처리**: Edge 처리(델타 인코딩, 썸네일, OCR)로 전송량을 줄이고 빠른 응답 속도를 유지합니다.
-- **Global Alpha에서 데스크톱 스택 평가**: Prerelease에는 크로스 플랫폼 소스, 업데이트 기반, 시스템 트레이 통합, 로컬 웹 대시보드가 포함됩니다. 사용 전 exact build와 플랫폼을 검증하세요.
+- **가벼운 온디바이스 처리**: Edge 처리(델타 인코딩, 썸네일, macOS·Windows의 로컬 OCR)로 전송량을 줄이고 빠른 응답 속도를 유지합니다.
+- **Global Alpha에서 데스크톱 스택 평가**: Prerelease에는 크로스 플랫폼 소스, 업데이트 기반, 시스템 트레이 통합(macOS·Windows), 로컬 웹 대시보드가 포함됩니다. 사용 전 exact build와 플랫폼을 검증하세요.
 
 ### 시장 포지셔닝 (2026)
 
@@ -96,7 +96,7 @@ Connected 모드는 opt-in 프리뷰 경로로만 제공됩니다.
 
 - PII 필터링 수준(Off/Basic/Standard/Strict)이 비전 파이프라인에 적용됩니다
 - 로컬 데이터는 SQLite에 저장되며, 보존 정책으로 관리됩니다
-- 자동화는 실행 정책, 샌드박스 프로필, 로컬 감사 로그를 통과합니다
+- 자동화는 기본으로 꺼져 있습니다. 켜면 액션이 Maekon의 정책 게이트를 거치고 로컬 감사 로그에 남습니다. OS 샌드박스 격리는 선택 사항이며 OS마다 다릅니다([플랫폼별 제한](#플랫폼별-제한) 참고)
 - 보안 보고 및 대응 정책: [SECURITY.md](./SECURITY.md)
 - Alpha 피드백·프라이버시 요청·참여 철회(현재 접수 상태): [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - Standalone 무결성 베이스라인: [docs/security/standalone-integrity-baseline.ko.md](./docs/security/standalone-integrity-baseline.ko.md)
@@ -119,7 +119,7 @@ Connected 모드는 opt-in 프리뷰 경로로만 제공됩니다.
 | 메모리 그래프가 축적한 사용자에 대한 믿음(claims)은 열람 및 원클릭 철회가 가능합니다 (Privacy → Claims) | claims 라우트: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | 동의는 fail-closed입니다: 유효한 동의가 없으면 캡처하지 않습니다 | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
 | 비전 파이프라인의 적용 대상 경로는 문서화된 저장 또는 egress 단계 전에 설정된 PII 필터를 적용합니다 | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
-| 지원되는 자동화 실행 경로는 정책·샌드박스·감사 구성 요소를 거치도록 설계됩니다 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+| 자동화 액션은 명령 게이트와 로컬 감사 로그를 거칩니다. OS 샌드박스 격리는 켰을 때만 적용됩니다 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
 
 ### 소스 동기화 정책
 
@@ -129,12 +129,12 @@ Connected 모드는 opt-in 프리뷰 경로로만 제공됩니다.
 
 ### 핵심 기능
 - **실시간 컨텍스트 모니터링**: 활성 창, 시스템 리소스, 사용자 활동을 추적합니다
-- **Edge 이미지 처리**: 스크린샷 캡처, 델타 인코딩, 썸네일, OCR 지원
-- **정책 기반 자동화**: 승인된 액션을 정책 검사, 샌드박스 격리, 감사 로그 경로로 실행합니다
+- **Edge 이미지 처리**: 스크린샷 캡처, 델타 인코딩, 썸네일, OCR 지원(로컬 OCR은 macOS·Windows)
+- **정책 기반 자동화**: 기본으로 꺼져 있습니다. 승인된 액션을 정책 검사를 거쳐 실행하고 로컬 감사 로그에 남깁니다. OS 샌드박스 격리는 선택 사항이며 OS마다 다릅니다
 - **서버 연동 기능 (프리뷰 / Opt-in)**: 검토 가능한 다음 행동 후보와 피드백 동기화는 단계적 검증용으로 제공되며 기본 Standalone 경로는 아닙니다
-- **시스템 트레이**: 백그라운드에서 실행되며 빠른 접근이 가능합니다
+- **시스템 트레이**(macOS·Windows): 백그라운드에서 실행되며 빠른 접근이 가능합니다. Linux에는 아직 트레이가 없습니다.
 - **자동 업데이트**: GitHub Releases 기반 자동 업데이트 — pre-1.0 동안 업데이트는 프리릴리스 채널로 배포되며 기본 설치본이 이를 따릅니다. 첫 stable 릴리스와 함께 stable 채널이 열립니다
-- **크로스 플랫폼**: macOS, Windows, Linux를 지원합니다
+- **크로스 플랫폼**: macOS, Windows, Linux에서 실행됩니다. Linux는 기능이 더 적습니다([플랫폼별 제한](#플랫폼별-제한) 참고)
 
 ### 로컬 웹 대시보드 (http://localhost:10090)
 - **대시보드**: 실시간 시스템 지표, CPU/메모리 차트, 앱 사용 시간
@@ -153,7 +153,22 @@ Connected 모드는 opt-in 프리뷰 경로로만 제공됩니다.
 ## 요구 사항
 
 - Rust 1.88.0 이상
-- macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
+- macOS 10.15+ / Windows 10+ / Linux x64(X11 권장. Wayland에서는 트래킹 패널, 오버레이, "다음 할 일 찾기"를 쓸 수 없습니다)
+
+### 플랫폼별 제한
+
+모든 기능이 모든 OS에서 동작하지는 않습니다. 아래 표는 현재 소스를 기준으로 합니다. "미확인"은 아직 release build에서 확인하지 않았다는 뜻입니다.
+
+| 기능 | macOS | Windows | Linux (X11) | Linux (Wayland) |
+| --- | --- | --- | --- | --- |
+| 시스템 트레이 | 지원 | 지원 | 없음 | 없음 |
+| 트래킹 패널과 "다음 할 일 찾기" | 지원 | 지원 | 지원(미확인) | 없음 |
+| 오버레이 | 지원 | 지원 | 지원(미확인) | 없음 |
+| 로컬 OCR | 지원(Vision) | 지원(Windows OCR) | 없음 | 없음 |
+| 전역 단축키 | 지원 | 지원 | 지원 | 없음(미확인) |
+| 자격 증명 저장 | 키체인 | 자격 증명 관리자 | 커널 키링. 재부팅 뒤 유지는 미확인 | X11과 같음 |
+
+자동화와 OS 샌드박스는 둘 다 기본으로 꺼져 있습니다. 샌드박스를 켜면 격리 강도는 OS에 따라 다릅니다.
 
 ## 개발자 빠른 시작 (소스에서 빌드)
 
@@ -243,31 +258,31 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 
 ### 빠른 설치 (터미널)
 
-> 이 source snapshot의 prerelease 대상은 `v0.0.1-rc.10`입니다. 같은 GitHub
+> 이 source snapshot의 prerelease 대상은 `v0.0.1-rc.11`입니다. 같은 GitHub
 > Release에 자산이 게시된 뒤에만 아래 명령을 실행하세요. `latest` stable URL은
 > 첫 stable 릴리즈 전까지 사용할 수 없습니다.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
 ```
 
 ### 릴리즈 아티팩트
 
 [Releases](https://github.com/pseudotop/maekon-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
 
-release-candidate source 버전은 `v0.0.1-rc.10`입니다. 아래 표는 설치 프로그램,
+release-candidate source 버전은 `v0.0.1-rc.11`입니다. 아래 표는 설치 프로그램,
 업데이터, checksum, signature 흐름에서 기대하는 자산 이름을 문서화하며, 실제
 게시 여부는 같은 GitHub Release를 정본으로 판단합니다.
 

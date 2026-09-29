@@ -1,4 +1,15 @@
-import { ArrowLeft, Check, Clock, FileSearch, MessageSquarePlus, Pencil, RefreshCw, ShieldAlert, X } from 'lucide-react'
+import {
+  ArrowLeft,
+  Check,
+  Clock,
+  FileSearch,
+  MessageSquare,
+  Pencil,
+  RefreshCw,
+  Settings,
+  ShieldAlert,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { type RecoveryResult, useContextRecovery } from '../hooks/useContextRecovery'
@@ -19,15 +30,29 @@ import { type TaskCandidateView, type TodoState, useDurableTasks } from '../hook
 const LOCAL_SCENE_SOURCE = 'LOCAL_CURRENT_SCENE'
 
 /**
- * Reason string for "no active or idle assistant session exists" (#9813).
+ * Reason string for "no chat provider is ready" (#12521).
  *
- * Minted by `select_session` returning `None` in
- * `src-tauri/src/commands/suggestions/current_context.rs`. Named here rather
- * than inlined because the whole point of this slice is that it is NOT a
- * provider outage, and a bare string literal sitting next to the outage list
- * is how it got folded into one in the first place.
+ * Minted by `open_recovery_session` in
+ * `src-tauri/src/commands/suggestions/helpers.rs`. With no chat session
+ * running, the request opens a temporary one itself, so the user no longer has
+ * to open Chat first; this reason means no provider path is ready to open.
+ * Named here rather than inlined because it is NOT a provider outage (#9813),
+ * and a bare string literal sitting next to the outage list is how the old
+ * no-session reason got folded into one in the first place.
  */
-const NO_SESSION_REASON = 'active_session_unavailable'
+const PROVIDER_NOT_READY_REASON = 'chat_provider_not_ready'
+
+/**
+ * Reason string for "only a provider CLI could answer" (#12712).
+ *
+ * Minted by `recovery_session_config` next to the reason above. Recovery keeps
+ * tools off, and the session factory refuses a CLI session with tools off
+ * (#12094), so the request cannot open one itself. An open Chat session is
+ * reused, which makes opening Chat the step that works. Before #12712 this
+ * case reached the panel as `provider_unavailable` and read as a temporary
+ * outage that retrying would never fix.
+ */
+const CLI_NEEDS_OPEN_CHAT_REASON = 'chat_cli_needs_open_chat'
 
 const TODO_NEXT_STATES: Record<TodoState, TodoState[]> = {
   CONFIRMED: ['IN_PROGRESS', 'DONE', 'CANCELLED'],
@@ -450,24 +475,38 @@ function outcomeCopy(result: RecoveryResult, t: ReturnType<typeof useTranslation
     default: {
       // analysis_unavailable splits three ways, not two.
       //
-      // #9813: `active_session_unavailable` used to sit in `providerReasons`
-      // below, so a user with no assistant session was told "the suggestion
-      // provider is unavailable right now" — a sentence asserting two things
-      // the reason never said: that a provider exists, and that its failure is
-      // temporary. For someone who has not set one up, both are false, and the
-      // only instruction it carries is "wait", for a recovery that never comes.
+      // #9813: a missing assistant used to sit in `providerReasons` below, so
+      // the user was told "the suggestion provider is unavailable right now" —
+      // a sentence asserting two things the reason never said: that a provider
+      // exists, and that its failure is temporary. For someone who has not set
+      // one up, both are false, and the only instruction it carries is "wait",
+      // for a recovery that never comes.
       //
-      // The reason means exactly one thing: `select_session` found no active or
-      // idle session (`src-tauri/src/commands/suggestions/current_context.rs`).
-      // So that is what this branch says, and it names what creates one.
-      if (result.reason === NO_SESSION_REASON) {
+      // #12521: the request now opens its own session, so the only thing this
+      // reason can mean is that no chat provider is ready. The branch says so
+      // and names the one step that fixes it; sending the user to open Chat
+      // would no longer help.
+      if (result.reason === PROVIDER_NOT_READY_REASON) {
         return {
-          testid: 'recovery-outcome-no-session',
-          icon: <MessageSquarePlus size={14} />,
-          title: t('recovery.outcome.noSessionTitle', 'No assistant session'),
+          testid: 'recovery-outcome-no-provider',
+          icon: <Settings size={14} />,
+          title: t('recovery.outcome.noProviderTitle', 'No AI provider ready'),
           detail: t(
-            'recovery.outcome.noSessionDetail',
-            'Open Chat and start a session. If you have not set up an AI provider yet, do that first in Settings.',
+            'recovery.outcome.noProviderDetail',
+            'Open Settings and finish setting up an AI provider, then try again.',
+          ),
+        }
+      }
+      // #12712: a ready provider CLI that recovery cannot open by itself. The
+      // provider works; the step that helps is opening Chat, not waiting.
+      if (result.reason === CLI_NEEDS_OPEN_CHAT_REASON) {
+        return {
+          testid: 'recovery-outcome-open-chat',
+          icon: <MessageSquare size={14} />,
+          title: t('recovery.outcome.openChatTitle', 'Open a Chat first'),
+          detail: t(
+            'recovery.outcome.openChatDetail',
+            'Your AI provider runs as a command-line app, which this step cannot start with its tools turned off. Open a Chat and try again, or set up an API or local provider in Settings.',
           ),
         }
       }

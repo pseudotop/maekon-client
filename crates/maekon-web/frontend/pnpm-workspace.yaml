@@ -3,6 +3,9 @@ allowBuilds:
   esbuild: true
   geckodriver: false
 overrides:
+  # #12049: patch GHSA-w9m9-85wc-3x92 without changing the CSS parser major
+  # or holding future patched releases at this version.
+  'postcss-selector-parser@>=6.1.0 <6.1.3': 6.1.3
   serialize-javascript: 7.0.5
   '@babel/core': 7.29.6
   form-data: 4.0.6
@@ -10,7 +13,10 @@ overrides:
   # become the vulnerable version (GHSA-5p4m-2wfm-xmqj, < 4.3.1). A pin that
   # stops being re-measured turns into the thing holding the vulnerability in
   # place — Dependabot cannot raise it while this override stands.
-  js-yaml: 4.3.1
+  # #12497: exactly that happened — the 4.3.1 pin became GHSA-2883-xcg3-v3hh
+  # (< 4.3.2). Lift only the vulnerable range, as #12049 does above, so later
+  # patched releases are not held at this version.
+  'js-yaml@<4.3.2': 4.3.2
   ws: 8.21.0
   # #11396: not previously pinned. 10.2.0 is covered by three advisories
   # (GHSA-mwp4-54f8-5fhr, -22jq-vg5j-6vgg, -4xrf-jv44-h6hh); 10.3.1 clears all

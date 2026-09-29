@@ -70,6 +70,10 @@ pub struct FeatureCapability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FeatureCapabilitySnapshot {
     pub features: Vec<FeatureCapability>,
+    /// #11735: privacy-safe AI capability readiness derived from the same
+    /// bounded provider probes as this snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_readiness: Option<maekon_core::ai_readiness::AiReadinessSnapshot>,
     /// COMPILE-capability flag (#7600): whether this binary was built with the
     /// `audio` cargo feature. `maekon-audio` (cpal capture + Whisper STT) is
     /// compiled OUT of the shipped `grpc,windows-sandbox` release build, so
@@ -119,6 +123,11 @@ pub struct FeatureCapabilitySnapshot {
     /// degradation (no dependable active-window path, tracking panel
     /// unsupported) from a healthy X11 session.
     pub linux_session_type: Option<String>,
+    /// RUNTIME-capability flag (#12700): whether this build registers the WBS
+    /// assignee commands the overlay invokes (`WBS_ASSIGNEE_COMMANDS_REGISTERED`).
+    /// The overlay shows its WBS toggle and panel only when this is `true`,
+    /// instead of offering a control whose every call Tauri rejects.
+    pub wbs_assignee_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -198,6 +207,16 @@ fn linux_session_type() -> Option<String> {
     }
 }
 
+/// Whether this build registers the WBS assignee commands the overlay invokes
+/// through `frontend/src/api/wbsAssignee.ts` (`wbs_offer_document_consent` …
+/// `wbs_cancel_session`). The WBS controller lives in `maekon-automation`, but
+/// the Tauri commands and their overlay ACL have not landed yet (#12210), so
+/// every call would fail as an unknown command. `ipc_command_contract` fails
+/// unless this matches the `generate_handler!` / `APP_COMMANDS` registration:
+/// the change that registers those commands must also set this to `true`
+/// (#12700).
+const WBS_ASSIGNEE_COMMANDS_REGISTERED: bool = false;
+
 pub async fn build_feature_capability_snapshot(
     secret_backend: &SecretBackendCapabilities,
 ) -> FeatureCapabilitySnapshot {
@@ -222,6 +241,7 @@ async fn build_feature_capability_snapshot_with_probes(
                 platform_capability_flags();
             return FeatureCapabilitySnapshot {
                 features: Vec::new(),
+                ai_readiness: None,
                 audio_compiled: cfg!(feature = "audio"),
                 ocr_available,
                 power_status_available,
@@ -229,6 +249,7 @@ async fn build_feature_capability_snapshot_with_probes(
                 automation_sandbox_available: maekon_automation::sandbox::native_sandbox_available(
                 ),
                 linux_session_type: linux_session_type(),
+                wbs_assignee_available: WBS_ASSIGNEE_COMMANDS_REGISTERED,
             };
         }
     };
@@ -257,12 +278,14 @@ async fn build_feature_capability_snapshot_with_probes(
         platform_capability_flags();
     FeatureCapabilitySnapshot {
         features,
+        ai_readiness: None,
         audio_compiled: cfg!(feature = "audio"),
         ocr_available,
         power_status_available,
         active_window_available,
         automation_sandbox_available: maekon_automation::sandbox::native_sandbox_available(),
         linux_session_type: linux_session_type(),
+        wbs_assignee_available: WBS_ASSIGNEE_COMMANDS_REGISTERED,
     }
 }
 
@@ -1406,6 +1429,7 @@ mod tests {
                     candidate_name: "codex".to_string(),
                     executable_path: "C:\\Users\\alice\\AppData\\Local\\Programs\\Codex\\codex.exe"
                         .to_string(),
+                    executable_hint: "codex.exe".to_string(),
                     version_status:
                         crate::subprocess_provider::SubprocessCliVersionStatus::NotChecked,
                     dependency_status: SubprocessCliDependencyStatus::Ready,
@@ -1420,17 +1444,23 @@ mod tests {
                 setup_docs_url: None,
                 configuration_env_vars: vec![],
             }],
+            ai_readiness: None,
             audio_compiled: false,
             ocr_available: false,
             power_status_available: false,
             active_window_available: false,
             automation_sandbox_available: false,
             linux_session_type: None,
+            wbs_assignee_available: false,
         };
 
         let diagnostics = provider_cli_diagnostics_from_snapshot(&snapshot);
 
         assert_eq!(diagnostics.len(), 1);
+        let serialized = serde_json::to_string(&snapshot).expect("serialize capability snapshot");
+        assert!(!serialized.contains("alice"));
+        assert!(!serialized.contains("executable_path"));
+        assert!(serialized.contains("\"executable_hint\":\"codex.exe\""));
         assert_eq!(
             diagnostics[0].surface_id,
             "provider_surface.openai.subprocess_cli"
@@ -1502,6 +1532,24 @@ mod tests {
     #[test]
     fn platform_capability_flags_is_pure_and_stable() {
         assert_eq!(platform_capability_flags(), platform_capability_flags());
+    }
+
+    /// #12700: the overlay offers WBS only when `wbs_assignee_available` is
+    /// true, so the snapshot must carry the registration constant rather than
+    /// a value of its own. `ipc_command_contract` ties the constant to the
+    /// actual command registration.
+    #[tokio::test]
+    async fn snapshot_wbs_assignee_available_follows_command_registration() {
+        let snapshot = build_feature_capability_snapshot(&backend_caps(true, &["openai"])).await;
+        assert_eq!(
+            snapshot.wbs_assignee_available,
+            WBS_ASSIGNEE_COMMANDS_REGISTERED
+        );
+        let serialized = serde_json::to_value(&snapshot).expect("serialize capability snapshot");
+        assert_eq!(
+            serialized["wbs_assignee_available"],
+            serde_json::Value::Bool(WBS_ASSIGNEE_COMMANDS_REGISTERED)
+        );
     }
 
     #[tokio::test]

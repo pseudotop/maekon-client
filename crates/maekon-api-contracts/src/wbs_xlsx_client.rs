@@ -1,11 +1,61 @@
 //! Wire DTOs for standalone WBS XLSX projection and receipt APIs (#10358).
 
 use maekon_core::models::wbs_xlsx::{
-    LocalWbsXlsxReceipt, RollupCellGroup, UploadedWbsXlsxReceipt, WbsXlsxOutcome,
+    LocalWbsXlsxReceipt, RollupCellGroup, UploadedWbsXlsxReceipt, WbsXlsxHandoff, WbsXlsxOutcome,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::effective_mapping::EffectiveMappingDto;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WbsXlsxHandoffDto {
+    pub contract_version: String,
+    pub assignment_receipt_contract_version: String,
+    pub organization_id: String,
+    pub assignment_receipt_id: String,
+    pub assignment_id: String,
+    pub assignment_hash: String,
+    pub source_snapshot_id: String,
+    pub source_snapshot_version: String,
+    pub source_snapshot_hash: String,
+    pub wbs_item_id: String,
+    pub wbs_template_id: String,
+    pub mapping_id: String,
+    pub mapping_version_id: String,
+    pub mapping_content_hash: String,
+    pub approved_template_hash: String,
+    pub synthetic: bool,
+    pub source_kind: String,
+    pub seed_namespace: String,
+    pub seed_revision: String,
+}
+
+impl From<WbsXlsxHandoffDto> for WbsXlsxHandoff {
+    fn from(value: WbsXlsxHandoffDto) -> Self {
+        Self {
+            contract_version: value.contract_version,
+            assignment_receipt_contract_version: value.assignment_receipt_contract_version,
+            organization_id: value.organization_id,
+            assignment_receipt_id: value.assignment_receipt_id,
+            assignment_id: value.assignment_id,
+            assignment_hash: value.assignment_hash,
+            source_snapshot_id: value.source_snapshot_id,
+            source_snapshot_version: value.source_snapshot_version,
+            source_snapshot_hash: value.source_snapshot_hash,
+            wbs_item_id: value.wbs_item_id,
+            wbs_template_id: value.wbs_template_id,
+            mapping_id: value.mapping_id,
+            mapping_version_id: value.mapping_version_id,
+            mapping_content_hash: value.mapping_content_hash,
+            approved_template_hash: value.approved_template_hash,
+            synthetic: value.synthetic,
+            source_kind: value.source_kind,
+            seed_namespace: value.seed_namespace,
+            seed_revision: value.seed_revision,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -147,6 +197,37 @@ mod tests {
         );
         assert!(
             matches!(&row["name"], maekon_core::models::wbs_xlsx::ProjectionCellValue::Text(value) if value == "분석")
+        );
+    }
+
+    #[test]
+    fn handoff_rejects_unknown_authority_fields() {
+        let body = serde_json::json!({
+            "contract_version": "wbs-xlsx-handoff.v1",
+            "assignment_receipt_contract_version": "assignment-confirm.v1",
+            "organization_id": "org-1",
+            "assignment_receipt_id": "ercv-1",
+            "assignment_id": "asg-1",
+            "assignment_hash": "a".repeat(64),
+            "source_snapshot_id": "snapshot-1",
+            "source_snapshot_version": "assignment-board.v1:1",
+            "source_snapshot_hash": "b".repeat(64),
+            "wbs_item_id": "item-1",
+            "wbs_template_id": "template-1",
+            "mapping_id": "map-1",
+            "mapping_version_id": "map-version-1",
+            "mapping_content_hash": "c".repeat(64),
+            "approved_template_hash": "d".repeat(64),
+            "synthetic": true,
+            "source_kind": "wd_brokerage_seed",
+            "seed_namespace": "wd-brokerage",
+            "seed_revision": "wd-01.4",
+            "bearer": "forbidden"
+        });
+        let error = serde_json::from_value::<WbsXlsxHandoffDto>(body).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `bearer`"),
+            "unexpected decode error: {error}"
         );
     }
 }

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! ADR-023 Phase-2 belief revision (D1/D2) end-to-end against a real
 //! `SqliteStorage` + a mock LOCAL provider. Verifies relation edges, atomic
 //! supersede-with-provenance, threshold gating, NoOp/disabled degradation, and

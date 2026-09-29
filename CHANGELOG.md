@@ -7,8 +7,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.11] - 2026-09-27
+
+### Upgrading from rc.10
+
+- Installs of rc.10 or earlier that kept the default update channel are not
+  offered this release, because the fix that lets them see pre-releases ships
+  in it (see Fixed). Download it from the release page, or first choose
+  Pre-release (RC) in Settings → General → Update channel.
+- macOS: install this release from the DMG or PKG. The in-app updater replaces
+  only the executable inside the app, which has not been verified to keep the
+  app's code signature intact.
+- The local database moves to schema version 57. Before upgrading it, Maekon
+  copies the old database to `maekon.backup.v56.<timestamp>` next to it. rc.10
+  and earlier refuse to open the upgraded database, so going back needs that
+  copy or a separate data directory.
+- If you used Chat through a provider CLI in rc.10 without choosing
+  "Installed provider CLI" as the access mode, choose it in Settings → AI &
+  Automation and restart Maekon. Chat now opens only on the path that matches
+  the access mode (see Changed).
+
+### Added
+
+- Settings → AI & Automation shows whether each AI feature can run, and if not,
+  why: Chat through an installed provider CLI, a provider API, or a local
+  model, OCR capture, AI suggestions from screen text, AI segment summaries,
+  and the AI daily narrative. Each blocked feature names the reason, such as a
+  missing consent, a setting that is off, a mismatched access mode, or a
+  pending restart, and links to the setting that fixes it. Chat, the Day view,
+  and the suggestions panel show the same notices. Checking this status never
+  sends a prompt or uses tokens.
+- Settings → AI & Automation can check an API-key Chat provider with one test
+  message. Maekon sends a fixed message, never your content or screen data, and
+  the reply counts toward the daily token budget. After a reply, Chat over that
+  API key is ready until the key, model, or provider changes.
+- The suggestions panel shows what local suggestion generation last did, for
+  example made suggestions, found nothing, provider unavailable, turned off, or
+  consent needed. Each suggestion shows where it came from and when it was
+  made.
+- AI segment summaries and the AI daily narrative can use an installed
+  provider CLI, with no API key or endpoint. The Day view labels the daily
+  digest "Heuristic digest" and shows an AI daily narrative only when a
+  provider actually wrote one, with the kind of provider and when it wrote it.
+  Timeline segments label AI summaries the same way, and otherwise say why no
+  AI text is available.
+
+### Changed
+
+- Chat opens a session only when the chosen provider path is ready, and shows
+  the provider and its status before you start. Each path needs its matching
+  access mode in Settings → AI & Automation: "Installed provider CLI",
+  "Direct endpoints" (API key), or "Local model". Access mode and provider
+  changes apply after a restart. Chat through a provider CLI or API also needs
+  the "AI text processing and external providers" consent in Privacy → Data
+  Controls. For a local model, Chat checks that Ollama is running and the
+  model is installed before it opens a session, instead of failing on your
+  first message. Local model Chat supports Ollama only.
+- "Find my next step" no longer needs an open Chat session. When none is open,
+  it starts a short-lived session without tools over an API-key or local
+  provider, asks once about what is on screen, and closes it. That session is
+  not listed in Chat and counts toward the daily token budget. Onboarding and
+  the Day view no longer promise a card within about 15 minutes, and confirmed
+  or dismissed candidates no longer stay in the review list as "(no title)".
+- In Settings → Advanced, "Enable suggestions" is now "Receive server
+  suggestions", because it only controls suggestions from a signed-in ONESHIM
+  server, and "Enable analysis" is now "Generate local activity suggestions".
+  Local suggestions from screen text need that setting plus the Activity
+  monitoring, OCR text processing, and Pattern Learning & Coaching consents,
+  and turning any of them off stops the next analysis request.
+
 ### Fixed
 
+- Update checks with default settings now find new releases. Every Maekon
+  release so far is a pre-release, and default installs checked only the
+  stable channel, so they never found an update. Until Maekon reaches 1.0, the
+  Stable setting follows pre-releases, and Settings → General → Update channel
+  shows Pre-release (RC).
+- Chat over a provider API key now uses the key saved in Settings → AI &
+  Automation. In rc.10 every such session failed with "<provider> is not
+  configured", even after the key was saved. Chat also starts on the provider
+  saved in Settings rather than the first in the list, and reads the key from
+  the store it was saved in, so a changed secret backend no longer hides the
+  key or sends an old copy.
+- AI suggestions through an installed Codex or Claude CLI can be read. Through
+  rc.10 Maekon asked these CLIs for the wrong answer format, so none of their
+  suggestions could be used.
+- "Enable AI features" in Settings → Advanced now also turns on tiered memory,
+  which AI summaries need. Through rc.10 it left tiered memory off, so no AI
+  summary was produced. Its description and the onboarding step no longer say
+  processing happens on this device, because it follows the provider you
+  choose. The onboarding button is now "Prepare AI features" and no longer
+  reports that AI features are on.
+- Timeline screenshot previews load in the desktop app. In rc.8 to rc.10 the
+  app's content security policy blocked them, so Timeline listed captured
+  frames but showed every preview as unavailable. Previews also use the port
+  Maekon is actually running on.
+- macOS: Maekon no longer keeps transparent full-screen helper windows open.
+  Screen-recording apps listed them as sources that recorded only black. As a
+  result, the border around the screen and the pointer highlight that marked
+  active capture are gone on macOS; the menu bar icon, the tracking panel, and
+  the main window still show capture status. The tracking panel is also marked
+  to be left out of screen recordings, and it is not shown if macOS rejects
+  that setting.
+- macOS: Maekon no longer writes a file inside its own app bundle about 30
+  seconds after each launch. That file broke the app's code signature, which
+  could make macOS stop honoring a Screen Recording permission you had granted.
+- Quitting Maekon no longer keeps the app running for about five extra
+  seconds, and Maekon finishes saving the current work session's end time
+  before it exits.
+- Windows: the MSI setup wizard's titles no longer overlap its banner, and its
+  text uses the standard Windows font at a readable size. The MSI now comes in
+  Korean and English (`maekon-app-ko-KR-*.msi`, `maekon-app-en-US-*.msi`)
+  instead of a single English MSI; the license text is still in English.
 - macOS startup now continues with console and telemetry logging when the user
   log directory cannot be created or opened, instead of panicking before the
   desktop window appears.
@@ -16,6 +126,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nested code before sealing the app, and rejects installers when the final
   DMG or PKG app has an unbound `Info.plist`, malformed entitlements, or an
   invalid architecture-specific signature.
+- Linux: the local database key now survives a reboot. The kernel keyring only
+  caches it, and the key is kept in an owner-only `.db_key` file in the data
+  directory. If you used rc.8 to rc.10 on Linux and have not rebooted since,
+  the first launch of this release writes that file from the keyring. Data
+  already lost to a reboot on rc.8 to rc.10 cannot be recovered without a
+  `.db_key` backup. When the key of an existing database is gone, the app now
+  stops with a clear message instead of creating a new key.
+- Linux: the app's web view now fills its window. The GTK4 port gave it zero
+  height, which in a headless test session left the window blank and its
+  controls unclickable. This was not checked on a real desktop, so earlier
+  Linux builds may have shown the same blank window.
+- Linux: the overlay and the tracking window open again after they close. On
+  GTK4 a closed window stayed registered under its name, so it could not be
+  shown again until the app restarted.
+
+### Security
+
+- In the "Local model" access mode, which Settings describes as on-device
+  only, analysis for suggestions, coaching, and summaries now refuses a main
+  or fallback endpoint that is not on this device, and the AI status reports
+  an access-mode mismatch. Through rc.10 a remote endpoint left in the
+  configuration could still receive these requests in that mode when the "AI
+  text processing and external providers" consent was on.
+- A Chat session over a provider CLI that asks for tools to be off, or for a
+  sandbox or approval policy that CLI cannot apply, now fails before the CLI
+  starts. Earlier builds started the CLI without checking that it would honour
+  those settings.
+- With automation turned on, log files no longer contain on-screen text that
+  an automation step clicked, waited for, or searched for with OCR, including
+  in "element not found" warnings; only the text's length is logged. At the
+  default log level some of these messages wrote that text to the local log
+  files, which Maekon deletes after seven days.
+
+### Known issues
+
+- Automation and its OS sandbox are both off by default. When the sandbox is
+  on, built-in automation runs with the strictest profile the OS can enforce
+  rather than the profile selected in Settings, and on Windows its actions can
+  still run inside the app's own process when no memory or CPU limits are set.
+- Linux has no system tray and no local OCR. On Wayland the tracking panel, the
+  overlay, and "Find my next step" are unavailable, and active-window
+  detection, global shortcuts, and automation input work only with X11 or
+  XWayland apps.
+- Linux: stored provider keys are kept in the kernel keyring, which the kernel
+  clears on reboot. This release fixes only the local database key (see
+  Fixed).
+- Windows: the installers and executables are not Authenticode-signed yet, so
+  SmartScreen may warn when you run them.
+- "Find my next step" opens its own session only over an API-key or local
+  provider. If a provider CLI is the only one set up, open a Chat first; the
+  panel says so instead of reporting the assistant as offline.
+- Chat through a provider API is not available in the "Direct OAuth
+  (experimental)" access mode, and Chat reports an access-mode mismatch. Use
+  "Direct endpoints" with an API key, or "Installed provider CLI".
+- A saved API key is sent only to its provider's standard address, so it is
+  not used for Chat through a custom proxy or gateway. Provider API settings
+  saved without a provider choice, by an older build or a hand-edited
+  configuration, are not used for Chat until you save the provider again in
+  Settings → AI & Automation.
+- A local model name typed as a Chat override must match Ollama's list
+  exactly, including its tag, such as `llama3.2:latest`; an untagged name is
+  reported as not installed.
+- Some messages say the "AI text processing and external providers" consent is
+  under Privacy → Consent. It is under Privacy → Data Controls.
+- AI suggestions from screen text and AI summaries have been tested with
+  stand-in providers and test data, not yet end to end with a real provider in
+  an installed build.
+- Provider CLIs are updated by their vendors, not by Maekon. After updating
+  one or changing PATH, restart Maekon if Settings shows "Restart required"
+  for it. To report a CLI problem, open Support & Diagnostics, press Refresh,
+  and attach the copied diagnostics rather than raw CLI output.
+
+### Corrections to earlier release notes
+
+- The rc.7 notes said capture, recent context, a reviewed next step, and a
+  durable to-do "work end to end". In the published rc.8 to rc.10 builds the
+  tracking panel was not allowed to call those commands, so the loop could not
+  complete. This release fixes that. The loop still needs a ready AI provider
+  and screen-capture consent, and it is not available on Wayland.
+- The rc.7 notes listed a read-only Google Calendar connector and Skill Pack
+  activation. Neither can be reached in the app: the connector is only built in
+  tests, and the extension and Skill Pack commands were retired.
+- Earlier README text said automation runs with "sandbox isolation". Isolation
+  is opt-in and its strength varies by OS; see Platform limitations in the
+  README.
 
 ## [0.0.1-rc.10] - 2026-08-24
 

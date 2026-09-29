@@ -295,6 +295,7 @@ fn fold_stats(items: impl Iterator<Item = (String, String, Option<String>)>) -> 
         acceptance_rate,
         by_type: by_type_vec,
         by_source: by_source_vec,
+        latest_local_analysis: None,
     }
 }
 
@@ -320,7 +321,10 @@ pub async fn get_suggestion_stats(
             });
             (type_key, source_key, feedback)
         });
-        return Ok(fold_stats(tuples));
+        let mut stats = fold_stats(tuples);
+        drop(history);
+        stats.latest_local_analysis = mgr.latest_local_analysis().await;
+        return Ok(stats);
     }
 
     // Fallback — read up to 10 000 rows from SQLite and fold. (#5699)

@@ -1317,3 +1317,47 @@ mod run_action_tests {
         }
     }
 }
+
+/// #12521: what the panel receives when the request could not open a session.
+mod recovery_unavailable_result {
+    use super::super::current_context::{recovery_unavailable, CurrentContextSuggestionStatus};
+    use super::super::helpers::RecoverySessionUnavailable;
+
+    #[test]
+    fn each_reason_keeps_its_status_and_names_only_its_permission() {
+        use CurrentContextSuggestionStatus::{AnalysisUnavailable, ConsentRequired};
+        let cases = [
+            (
+                RecoverySessionUnavailable::ProviderNotReady,
+                AnalysisUnavailable,
+                "chat_provider_not_ready",
+                Vec::<&str>::new(),
+            ),
+            (
+                RecoverySessionUnavailable::ExternalTextConsent,
+                ConsentRequired,
+                "external_text_consent_required",
+                vec!["full_text_extraction"],
+            ),
+            (
+                RecoverySessionUnavailable::ProviderUnavailable,
+                AnalysisUnavailable,
+                "provider_unavailable",
+                Vec::new(),
+            ),
+            (
+                RecoverySessionUnavailable::CliNeedsOpenChat,
+                AnalysisUnavailable,
+                "chat_cli_needs_open_chat",
+                Vec::new(),
+            ),
+        ];
+        for (unavailable, status, reason, missing) in cases {
+            let result = recovery_unavailable(unavailable, 3);
+            assert_eq!(result.status, status, "{unavailable:?}");
+            assert_eq!(result.reason, Some(reason));
+            assert_eq!(result.missing_permissions, missing, "{unavailable:?}");
+            assert_eq!((result.admitted_count, result.queue_count), (0, 3));
+        }
+    }
+}

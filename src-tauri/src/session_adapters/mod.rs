@@ -1,5 +1,8 @@
 pub(crate) mod claude_normalizer;
 pub(crate) mod claude_session;
+pub(crate) mod invocation_policy;
+#[cfg(test)]
+pub(crate) mod policy_tests;
 pub(crate) mod prompt_payload;
 pub(crate) mod subprocess_session;
 pub(crate) mod task_guard;

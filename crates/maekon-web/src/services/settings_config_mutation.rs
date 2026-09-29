@@ -553,6 +553,7 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
             max_retries,
             max_history_turns,
             health_check_interval_secs,
+            daily_token_budget,
             max_output_tokens,
             thinking,
         } = &settings.ai_session;
@@ -562,6 +563,9 @@ fn apply_extended_settings(config: &mut AppConfig, settings: &AppSettings) {
         config.ai_session.max_retries = *max_retries;
         config.ai_session.max_history_turns = *max_history_turns;
         config.ai_session.health_check_interval_secs = *health_check_interval_secs;
+        if let Some(budget) = daily_token_budget {
+            config.ai_session.daily_token_budget = *budget;
+        }
         config.ai_session.max_output_tokens = *max_output_tokens;
         config.ai_session.thinking = thinking.clone();
     }

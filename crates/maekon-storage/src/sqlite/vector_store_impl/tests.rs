@@ -1783,6 +1783,94 @@ async fn corpus_dims_quantized_first_write_recorded() {
     );
 }
 
+/// A warm quantized store must preserve matching rows and retire them when
+/// the corpus changes dimension, including when only INT8 bytes are retained.
+#[tokio::test]
+async fn corpus_dims_quantized_transition_marks_old_rows_stale() {
+    use maekon_core::quantization::ScalarQuantizer;
+
+    for skip_float32 in [false, true] {
+        let conn = setup_db();
+        let store = SqliteVectorStore::new(conn.clone());
+        let old_vector = vec![0.1_f32, 0.2, 0.3];
+        let old_quantized = ScalarQuantizer::quantize(&old_vector).unwrap();
+        let old_f32 = if skip_float32 { Vec::new() } else { old_vector };
+        for segment in ["old-a", "old-b"] {
+            store
+                .store_quantized(
+                    old_f32.clone(),
+                    &old_quantized,
+                    meta_for(segment),
+                    skip_float32,
+                )
+                .await
+                .unwrap();
+        }
+
+        // Read persisted state, not the private cache or branch expression.
+        // Every connection guard is dropped before the next async write.
+        let read_state = || {
+            let guard = conn.test_lock();
+            let dims: String = guard
+                .query_row(
+                    "SELECT value FROM app_meta WHERE key = 'embedding_corpus_dims'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut statement = guard
+                .prepare(
+                    "SELECT segment_id, is_stale, vector, vector_int8 FROM embedding_vectors ORDER BY id",
+                )
+                .unwrap();
+            let rows: Vec<(String, i64, Vec<f32>, Vec<i8>)> = statement
+                .query_map([], |row| {
+                    let f32_blob: Vec<u8> = row.get(2)?;
+                    let int8_blob: Vec<u8> = row.get(3)?;
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        bytes_to_f32_vec(&f32_blob),
+                        bytes_to_i8_vec(&int8_blob),
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            (dims, rows)
+        };
+        let mut expected = vec![
+            (
+                "old-a".to_string(),
+                0,
+                old_f32.clone(),
+                old_quantized.data.clone(),
+            ),
+            ("old-b".to_string(), 0, old_f32, old_quantized.data),
+        ];
+        assert_eq!(read_state(), ("3".to_string(), expected.clone()));
+
+        // Keep the same store: recreating it here would test only a cold cache.
+        let new_vector = vec![0.1_f32, 0.2, 0.3, 0.4, 0.5];
+        let new_quantized = ScalarQuantizer::quantize(&new_vector).unwrap();
+        let new_f32 = if skip_float32 { Vec::new() } else { new_vector };
+        store
+            .store_quantized(
+                new_f32.clone(),
+                &new_quantized,
+                meta_for("new"),
+                skip_float32,
+            )
+            .await
+            .unwrap();
+        for row in &mut expected {
+            row.1 = 1;
+        }
+        expected.push(("new".to_string(), 0, new_f32, new_quantized.data));
+        assert_eq!(read_state(), ("5".to_string(), expected));
+    }
+}
+
 /// F (#5987): Batched bulk stale-mark — corpus_dims_guard marks ALL rows stale
 /// when the dimension transitions, even when the row count exceeds the batch size.
 ///
@@ -2409,6 +2497,228 @@ async fn store_quantized_returning_id_matches_inserted_row() {
     };
     assert_eq!(seg_for(id1), "q-a");
     assert_eq!(seg_for(id2), "q-b");
+}
+
+/// #11969: the SQLite adapter must use the consent authority's synchronous
+/// critical section at the actual INSERT boundary for both storage formats.
+#[tokio::test]
+async fn activity_consent_gated_store_allows_then_rejects_f32_and_quantized_rows() {
+    use maekon_core::consent::{ConsentManager, ConsentPermissions};
+    use maekon_core::ports::consent_manager::ConsentManagerPort;
+    use maekon_core::quantization::ScalarQuantizer;
+
+    let conn = setup_db();
+    let store = SqliteVectorStore::new(conn.clone());
+    let consent_dir = tempfile::tempdir().unwrap();
+    let manager = Arc::new(ConsentManager::new(consent_dir.path().join("consent.json")));
+    manager
+        .grant_consent(
+            ConsentPermissions {
+                activity_pattern_learning: true,
+                ..Default::default()
+            },
+            30,
+        )
+        .unwrap();
+    let consent: Arc<dyn ConsentManagerPort> = manager.clone();
+
+    let f32_id = store
+        .store_returning_id_if_activity_pattern_learning_permitted(
+            vec![1.0, 0.0, 0.0],
+            meta_for("allowed-f32"),
+            consent.clone(),
+        )
+        .await
+        .unwrap();
+    let vector = vec![0.1, 0.5, 0.9];
+    let quantized = ScalarQuantizer::quantize(&vector).unwrap();
+    let quantized_id = store
+        .store_quantized_returning_id_if_activity_pattern_learning_permitted(
+            vector,
+            &quantized,
+            meta_for("allowed-quantized"),
+            false,
+            consent.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(f32_id.is_some());
+    assert!(quantized_id.is_some());
+
+    manager
+        .grant_consent(ConsentPermissions::default(), 30)
+        .unwrap();
+    let denied_f32 = store
+        .store_returning_id_if_activity_pattern_learning_permitted(
+            vec![0.0, 1.0, 0.0],
+            meta_for("denied-f32"),
+            consent.clone(),
+        )
+        .await
+        .unwrap();
+    let vector = vec![0.9, 0.5, 0.1];
+    let quantized = ScalarQuantizer::quantize(&vector).unwrap();
+    let denied_quantized = store
+        .store_quantized_returning_id_if_activity_pattern_learning_permitted(
+            vector,
+            &quantized,
+            meta_for("denied-quantized"),
+            false,
+            consent,
+        )
+        .await
+        .unwrap();
+    assert!(denied_f32.is_none());
+    assert!(denied_quantized.is_none());
+
+    let stored: i64 = conn
+        .test_lock()
+        .query_row("SELECT COUNT(*) FROM embedding_vectors", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(stored, 2);
+}
+
+#[test]
+fn queued_activity_consent_store_rechecks_on_blocking_worker() {
+    use maekon_core::consent::{ConsentManager, ConsentPermissions};
+    use maekon_core::error::CoreError;
+    use maekon_core::ports::consent_manager::ConsentManagerPort;
+    use maekon_core::quantization::ScalarQuantizer;
+    use std::future::{poll_fn, Future};
+    use std::sync::{atomic::Ordering, mpsc};
+    use std::task::Poll;
+    use std::time::Duration;
+
+    async fn insert(
+        store: &SqliteVectorStore,
+        quantized: bool,
+        manager: Arc<dyn ConsentManagerPort>,
+    ) -> Result<Option<u64>, CoreError> {
+        let vector = vec![1.0, 0.0, 0.0];
+        if quantized {
+            let int8 = ScalarQuantizer::quantize(&vector).unwrap();
+            store
+                .store_quantized_returning_id_if_activity_pattern_learning_permitted(
+                    vector,
+                    &int8,
+                    meta_for("queued-quantized"),
+                    false,
+                    manager,
+                )
+                .await
+        } else {
+            store
+                .store_returning_id_if_activity_pattern_learning_permitted(
+                    vector,
+                    meta_for("queued-f32"),
+                    manager,
+                )
+                .await
+        }
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for quantized in [false, true] {
+            let conn = setup_db();
+            let store = SqliteVectorStore::new(conn.clone());
+            let consent_dir = tempfile::tempdir().unwrap();
+            let manager = Arc::new(ConsentManager::new(consent_dir.path().join("consent.json")));
+            let permissions = ConsentPermissions {
+                activity_pattern_learning: true,
+                ..Default::default()
+            };
+            manager.grant_consent(permissions.clone(), 30).unwrap();
+
+            let durable_state = || {
+                let guard = conn.test_lock();
+                let mut statement = guard
+                    .prepare("SELECT key, value FROM app_meta ORDER BY key")
+                    .unwrap();
+                let metadata: Vec<(String, String)> = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap();
+                let hlc: (i64, i64) = guard
+                    .query_row(
+                        "SELECT last_wall_ms, last_counter FROM hlc_clock WHERE id = 0",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                (metadata, hlc)
+            };
+            let durable_before = durable_state();
+
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let mut insertion = Box::pin(insert(&store, quantized, manager.clone()));
+            // #11969: prove the write is queued while permission is still valid,
+            // then withdraw it before the only blocking worker can acquire it.
+            poll_fn(|cx| {
+                assert!(insertion.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            manager
+                .grant_consent(ConsentPermissions::default(), 30)
+                .unwrap();
+            release_tx.send(()).unwrap();
+            blocker.await.unwrap();
+            assert!(tokio::time::timeout(Duration::from_secs(5), insertion)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_none());
+            let row_count = || {
+                conn.test_lock()
+                    .query_row("SELECT COUNT(*) FROM embedding_vectors", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap()
+            };
+            assert_eq!(row_count(), 0);
+            assert_eq!(
+                store.corpus_dims_cache.load(Ordering::Acquire),
+                super::DIMS_CACHE_UNSET
+            );
+            assert_eq!(
+                durable_state(),
+                durable_before,
+                "denied writes must preserve app_meta and the durable HLC floor"
+            );
+
+            // The same store must still write after permission is restored.
+            manager.grant_consent(permissions, 30).unwrap();
+            assert!(insert(&store, quantized, manager).await.unwrap().is_some());
+            assert_eq!(row_count(), 1);
+            let (metadata_after, hlc_after) = durable_state();
+            assert_eq!(
+                metadata_after
+                    .iter()
+                    .find(|(key, _)| key == super::CORPUS_DIMS_META_KEY)
+                    .map(|(_, value)| value.as_str()),
+                Some("3")
+            );
+            assert_ne!(metadata_after, durable_before.0);
+            assert!(
+                hlc_after > durable_before.1,
+                "authorized writes must advance the durable HLC floor"
+            );
+        }
+    });
 }
 
 /// Concurrent writers must each receive their own rowid. This is the core of

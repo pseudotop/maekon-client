@@ -67,25 +67,8 @@ const ACTIVE_ROOT_KEY: &str = "::active_root";
 /// store that this allowlist would drop is silent unledgered egress.
 use maekon_core::vault_cloud_sync::CLOUD_PROVIDER_LABELS;
 
-/// Per-root cycle/erase serialization (process-global). Writer instances are
-/// deliberately interchangeable (see `vault_wiring`), so instance-level state
-/// cannot serialize them — two concurrent cycles on one root would race the
-/// shared tmp path and could pin a hash row that mismatches the file that
-/// actually won the rename. Keyed by canonical root; erase takes the same
-/// lock so a cycle can never interleave file writes with Art.17 deletion.
-static VAULT_ROOT_LOCKS: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
-> = std::sync::OnceLock::new();
-
-fn root_lock(canonical_root: &Path) -> Arc<tokio::sync::Mutex<()>> {
-    let map = VAULT_ROOT_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut guard = map.lock().expect("vault root lock map poisoned");
-    Arc::clone(
-        guard
-            .entry(canonical_root.to_path_buf())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-    )
-}
+mod root_locks;
+use root_locks::root_lock;
 
 /// ADR-033 writer. `consent = None` means "consent authority unavailable"
 /// (permanent fail-closed no-op, never a bypass); `default_root = None`
@@ -277,9 +260,9 @@ impl MemoryVaultWriterPort for VaultMirrorWriter {
         let canonical_root = root.canonicalize().map_err(io_err)?;
 
         // Serialize with any concurrent cycle/erase on this root (see
-        // VAULT_ROOT_LOCKS — instances are interchangeable, so the lock is
+        // root_locks — instances are interchangeable, so the lock is
         // process-global and root-keyed).
-        let lock = root_lock(&canonical_root);
+        let lock = root_lock(&canonical_root)?;
         let _cycle_guard = lock.lock().await;
 
         let mut stats = VaultCycleStats::default();
@@ -296,7 +279,7 @@ impl MemoryVaultWriterPort for VaultMirrorWriter {
             if *previous_root != current_root_str {
                 let prev = PathBuf::from(previous_root);
                 let (_deleted, failures) =
-                    erase_root_generated(&prev, self.vault_state.as_ref()).await;
+                    erase_root_generated(&prev, self.vault_state.as_ref()).await?;
                 if !failures.is_empty() {
                     // Keep the old row so the NEXT cycle retries the cleanup.
                     old_root_clean = false;
@@ -534,7 +517,8 @@ impl MemoryVaultWriterPort for VaultMirrorWriter {
         // user folder.
         let mut report = VaultEraseReport::default();
         for root in roots {
-            let (deleted, failures) = erase_root_generated(&root, self.vault_state.as_ref()).await;
+            let (deleted, failures) =
+                erase_root_generated(&root, self.vault_state.as_ref()).await?;
             report.deleted += deleted;
             report.failures.extend(failures);
             // Tidy empty generated dirs on the default root only.
@@ -591,21 +575,22 @@ impl VaultMirrorWriter {
 /// Shared per-root Art.17 / root-change erase pass (ADR-033 §4): delete every
 /// marker-bearing generated file (claims/README/day files AND orphaned
 /// `.maekon-tmp` artifacts) under `root`, marker + containment guarded, and
-/// drop their hash rows. Returns (deleted_count, failures).
+/// drop their hash rows. Returns (deleted_count, failures), or an error when
+/// serialization is unavailable before any generated file or hash is changed.
 async fn erase_root_generated(
     root: &Path,
     vault_state: &dyn VaultMirrorStatePort,
-) -> (usize, Vec<VaultEraseFailure>) {
+) -> Result<(usize, Vec<VaultEraseFailure>), CoreError> {
     let Ok(canonical_root) = root.canonicalize() else {
-        return (0, Vec::new()); // root does not exist — nothing generated
+        return Ok((0, Vec::new())); // root does not exist — nothing generated
     };
     // Serialize against any in-flight cycle on THIS root (the erase half of
-    // the VAULT_ROOT_LOCKS contract): Phase-3's "erasure complete" must be a
+    // the root_locks contract): Phase-3's "erasure complete" must be a
     // real synchronization point, not a scan racing a concurrent writer. No
     // lock-order inversion is possible: both the cycle (current root) and its
     // old-root cleanup derive roots from the same global config, and erase
     // acquires one root at a time.
-    let lock = root_lock(&canonical_root);
+    let lock = root_lock(&canonical_root)?;
     let _erase_guard = lock.lock().await;
     let mut targets: Vec<(String, PathBuf)> = vec![
         (CLAIMS_FILE.to_string(), canonical_root.join(CLAIMS_FILE)),
@@ -656,7 +641,7 @@ async fn erase_root_generated(
             }),
         }
     }
-    (deleted, failures)
+    Ok((deleted, failures))
 }
 
 #[cfg(test)]
@@ -874,6 +859,8 @@ pub(super) mod tests {
             timeline: vec![],
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 
@@ -1319,6 +1306,8 @@ mod review_fix_tests {
             timeline: vec![],
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 }
@@ -1336,6 +1325,8 @@ mod b3_root_change_tests {
             timeline: vec![],
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use std::sync::Arc;
 use tauri::AppHandle;
-use tracing::info;
 
 mod audio_wiring;
 #[cfg(feature = "server")]
@@ -318,8 +317,8 @@ impl AppRuntimeLaunchBuilder {
             let builder = provider.configure_agent_builder(builder);
             builder
         };
-        agent_runtime.spawn_on(&handle, core_resources.background_runtime.shutdown_rx());
-        info!("Agent started");
+        let shutdown_rx = core_resources.background_runtime.shutdown_rx();
+        agent_runtime.spawn_on(&background_runtime, shutdown_rx)?;
 
         // #7932 Part B: the ONE shared Arc<PolicyClient> injected into BOTH the
         // Codex approval decider (via build_session_manager) AND the automation
@@ -332,7 +331,8 @@ impl AppRuntimeLaunchBuilder {
             &handle,
             sqlite_storage.clone(),
             &config,
-            &data_dir_path,
+            #[cfg(feature = "analysis")]
+            &provider,
             shared_regime_state.clone(),
             capture_consent_manager.clone(),
             breaker_registry.clone(),

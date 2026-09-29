@@ -92,6 +92,7 @@ pub struct SuggestionStatsDto {
     pub acceptance_rate: f64,
     pub by_type: Vec<TypeCountDto>,
     pub by_source: Vec<SourceStatsDto>,
+    pub latest_local_analysis: Option<crate::local_analysis_status::LocalAnalysisStatus>,
 }
 
 #[derive(Serialize)]

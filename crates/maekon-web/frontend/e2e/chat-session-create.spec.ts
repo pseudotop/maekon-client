@@ -26,6 +26,63 @@ function mockTauriIpc(page: Page, opts?: { createDelay?: number }) {
           if (cmd === 'list_ai_sessions') {
             return Promise.resolve([])
           }
+          if (cmd === 'get_feature_capabilities') {
+            return Promise.resolve({
+              features: [
+                {
+                  feature_id: 'provider_surface.openai.subprocess_cli',
+                  maturity: 'stable',
+                  availability: 'available',
+                  provider_cli_readiness: 'invocation_ready',
+                  provider_cli_discovery: {
+                    candidate_name: 'Codex CLI',
+                    executable_hint: 'codex',
+                    version_status: 'not_checked',
+                    dependency_status: 'ready',
+                    status_reason: null,
+                    env_refresh_required: false,
+                  },
+                  preferred: true,
+                  requires: [],
+                  status_reason: null,
+                  status_copy_key: null,
+                  setup_copy_key: null,
+                  setup_docs_url: null,
+                  configuration_env_vars: [],
+                },
+              ],
+              ai_readiness: {
+                contract_version: 1,
+                capabilities: [
+                  {
+                    capability_id: 'chat.subprocess',
+                    status: 'ready',
+                    reason_code: 'ready',
+                    action: 'none',
+                    action_copy_key: 'aiReadiness.action.none',
+                    dimensions: {
+                      compiled_capability: true,
+                      selected_access_mode: 'provider_subscription_cli',
+                      access_mode_compatible: true,
+                      endpoint_or_profile_configured: true,
+                      provider_detection: 'detected',
+                      provider_auth: 'ready',
+                      provider_invocation: 'ready',
+                      model_availability: 'not_required',
+                      runtime_flag_enabled: true,
+                      consent: [],
+                      apply_requirement: 'runtime_applied',
+                      apply_pending: false,
+                      privacy_gate: 'enforced_at_invocation',
+                      egress_gate: 'enforced_at_invocation',
+                      budget_gate: 'enforced_at_invocation',
+                      audit_gate: 'enforced_at_invocation',
+                    },
+                  },
+                ],
+              },
+            })
+          }
           // #9517: the real command is `get_token_usage` (the old
           // `get_token_usage_today` name never existed, so this mock was dead
           // and the real call fell through to the catch-all null). Payload
@@ -88,6 +145,8 @@ test.describe('Chat session creation via EmptyState CTA', () => {
 
     await page.goto('/chat')
     await expect(page.getByRole('heading', { name: emptyChatTitle })).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId('chat-provider-readiness')).toHaveAttribute('data-transport', 'subprocess')
+    await expect(page.getByTestId('chat-provider-readiness')).toContainText('Codex CLI')
 
     // Click the CTA button
     await page.getByRole('button', { name: emptyChatAction }).click()
@@ -128,10 +187,14 @@ test.describe('Chat session creation via EmptyState CTA', () => {
     // First click changes the label from "New Session" to "Loading..."
     await page.getByRole('button', { name: emptyChatAction }).click()
 
-    // The button is now labeled "Loading..." — try clicking it again
+    // The button is now labeled "Loading..." and must be disabled, which is
+    // the user-observable duplicate-create guard. Playwright intentionally
+    // refuses a normal click on disabled controls, so asserting disabled is
+    // the faithful interaction check rather than waiting for an impossible
+    // second click.
     const loadingBtn = page.getByRole('button', { name: loadingText })
     await expect(loadingBtn).toBeVisible({ timeout: 2000 })
-    await loadingBtn.click()
+    await expect(loadingBtn).toBeDisabled()
 
     // Wait for the creation to complete
     await expect(page.locator('form textarea')).toBeVisible({ timeout: 5000 })

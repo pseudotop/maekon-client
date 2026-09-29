@@ -1,3 +1,5 @@
+pub mod wbs;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

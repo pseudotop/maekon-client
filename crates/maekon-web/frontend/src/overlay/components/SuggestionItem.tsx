@@ -38,6 +38,21 @@ export const SuggestionItem = memo(function SuggestionItem({ item, onAction, onR
   const action = item.action ?? null
   // Mirror SuggestionsPanel's wire-error localization (ADR-019 Follow-up #3).
   const errorLocale: WireErrorLocale = i18n.language?.startsWith('ko') ? 'ko' : 'en'
+  const sourceLabel =
+    item.source === 'server'
+      ? t('suggestions.sourceServer')
+      : item.source === 'local'
+        ? t('suggestions.sourceLocal')
+        : item.source === 'rule'
+          ? t('suggestions.sourceRules')
+          : item.source
+  const createdAt = new Date(item.created_at)
+  const createdAtLabel = Number.isNaN(createdAt.getTime())
+    ? item.created_at
+    : new Intl.DateTimeFormat(i18n.language, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }).format(createdAt)
 
   async function handleRun() {
     if (running || !action) return
@@ -160,7 +175,10 @@ export const SuggestionItem = memo(function SuggestionItem({ item, onAction, onR
       </div>
       <div className="mt-2 flex justify-end text-[10px] text-content-tertiary">
         <span>
-          {Math.round(item.confidence_score * 100)}% &middot; {item.source}
+          {Math.round(item.confidence_score * 100)}% &middot; {sourceLabel} &middot;{' '}
+          <time data-testid="suggestion-created-at" dateTime={item.created_at} title={createdAtLabel}>
+            {createdAtLabel}
+          </time>
         </span>
       </div>
     </li>

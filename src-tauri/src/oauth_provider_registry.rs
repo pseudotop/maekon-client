@@ -299,7 +299,8 @@ fn build_google_managed_oauth_provider(
 // ToS invariant: managed_oauth_provider_factories registers only openai + google.
 // Anthropic subscription OAuth relay is prohibited under the ADR-025/#4884 ToS policy.
 // Before adding an "anthropic" vendor to this array, follow the ADR-019 §5 8-step checklist.
-#[cfg(all(test, feature = "analysis"))]
+#[cfg(test)]
+#[cfg(feature = "analysis")]
 mod tests {
     use super::*;
     use maekon_core::config::{

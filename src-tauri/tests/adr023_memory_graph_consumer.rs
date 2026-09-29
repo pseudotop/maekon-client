@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! ADR-023 Phase-1 consumer slice (#4441 boxes 3-4) end-to-end.
 //!
 //! Drives the **real offline aggregation path** — `SegmentSummary` →

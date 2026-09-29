@@ -26,6 +26,9 @@
     "allow-get-suggestion-daily-stats",
     "allow-confirm-automation-command",
     "allow-run-suggestion-action",
-    "allow-respond-codex-approval"
+    "allow-respond-codex-approval",
+    "allow-get-feature-capabilities",
+    "allow-show-main-window",
+    "allow-record-frontend-log"
   ]
 }

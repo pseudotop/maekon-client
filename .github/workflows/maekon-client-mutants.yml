@@ -1,0 +1,166 @@
+name: Maekon Mutation Score
+
+# #12757: RC-AUTO-003 is evidence about the exact PUBLIC commit to be tagged.
+# A private parent-repository score cannot establish that public-commit claim.
+# Whole maekon-core only, with the checked-in cargo-mutants target limitations.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact public main commit to score (40 hexadecimal characters)
+        required: true
+        type: string
+      shards:
+        description: Shard count (two concurrent jobs, two workers each)
+        required: true
+        default: '8'
+        type: choice
+        options: ['2', '4', '8', '16']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-maekon-mutation-score
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '1'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+  RUSTC_WRAPPER: ''
+
+jobs:
+  plan:
+    name: Plan exact public commit
+    if: >-
+      github.repository == 'pseudotop/maekon-client' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'pseudotop' &&
+      github.triggering_actor == 'pseudotop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      resolved_sha: ${{ steps.plan.outputs.resolved_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate immutable dispatch identity
+        id: plan
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SHARDS: ${{ inputs.shards }}
+        run: >-
+          python3 scripts/aggregate-public-mutants.py plan
+          --source-sha "$SOURCE_SHA" --shards "$SHARDS"
+
+  shard:
+    name: Mutation shard ${{ matrix.shard }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.resolved_sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+        with:
+          toolchain: stable
+      - name: Install pinned mutation tool
+        run: cargo install cargo-mutants --locked --version 27.1.0
+      - name: Enumerate and execute whole-core slice
+        env:
+          SOURCE_SHA: ${{ needs.plan.outputs.resolved_sha }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ inputs.shards }}
+          TMPDIR: ${{ runner.temp }}/mutants-scratch
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/mutants-shard-$SHARD"
+          mkdir -p "$out" "$TMPDIR"
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cargo mutants -p maekon-core --no-shuffle --shard "$SHARD/$SHARDS" \
+            --list --json > "$out/enumeration.json"
+          cargo mutants -p maekon-core --no-shuffle --shard "$SHARD/$SHARDS" \
+            -j 2 --timeout 120 --output "$out" > "$out/run.log" 2>&1 &
+          pid=$!
+          while kill -0 "$pid" 2>/dev/null; do
+            sleep 60
+            for kind in caught missed timeout unviable; do
+              if [ -f "$out/mutants.out/$kind.txt" ]; then
+                echo "[shard $SHARD] $kind=$(wc -l < "$out/mutants.out/$kind.txt")"
+              fi
+            done
+          done
+          # Surviving mutants also yield nonzero; validated outcomes decide the score.
+          result=0
+          wait "$pid" || result=$?
+          python3 scripts/aggregate-public-mutants.py record-shard \
+            --source-sha "$SOURCE_SHA" --shards "$SHARDS" --shard "$SHARD" \
+            --started-at "$started_at" --exit-code "$result" --output "$out"
+      - name: Preserve raw outcomes and baseline logs, including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutants-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    name: Aggregate score
+    needs: [plan, shard]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.resolved_sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+        with:
+          toolchain: stable
+      - name: Install pinned mutation tool
+        run: cargo install cargo-mutants --locked --version 27.1.0
+      - name: Download this run's shard evidence
+        uses: actions/download-artifact@448e3f862ab3ef47aa50ff917776823c9946035b # v5.0.0
+        with:
+          pattern: mutants-shard-*
+          path: ${{ runner.temp }}/shards
+      - name: Independently enumerate and verify the complete result
+        env:
+          SOURCE_SHA: ${{ needs.plan.outputs.resolved_sha }}
+          SHARDS: ${{ inputs.shards }}
+          SHARD_RESULT: ${{ needs.shard.result }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mutants-aggregate"
+          cargo mutants -p maekon-core --no-shuffle --list --json \
+            > "$RUNNER_TEMP/mutants-aggregate/enumeration.json"
+          python3 scripts/aggregate-public-mutants.py aggregate \
+            --source-sha "$SOURCE_SHA" --shards "$SHARDS" --shard-result "$SHARD_RESULT" \
+            --shards-dir "$RUNNER_TEMP/shards" \
+            --enumeration "$RUNNER_TEMP/mutants-aggregate/enumeration.json" \
+            --output "$RUNNER_TEMP/mutants-aggregate"
+      - name: Preserve aggregate receipt, including failed scores
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-score-receipt
+          path: ${{ runner.temp }}/mutants-aggregate
+          if-no-files-found: error
+          retention-days: 90

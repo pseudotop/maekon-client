@@ -136,6 +136,24 @@ pub trait ConsentManagerPort: Send + Sync {
         self.effective_permissions().activity_pattern_learning
     }
 
+    /// Run a synchronous mutation while activity-pattern learning remains
+    /// authorized.
+    ///
+    /// The default implementation preserves object safety for lightweight
+    /// test doubles. Mutable production authorities MUST override this method
+    /// so the permission check and `action` execute under the same read guard;
+    /// otherwise a field-level consent update can complete between the check
+    /// and the mutation (#11969).
+    ///
+    /// `action` must not call back into this consent authority.
+    fn run_if_activity_pattern_learning_permitted(&self, action: &mut dyn FnMut()) -> bool {
+        if !self.activity_pattern_learning_permitted() {
+            return false;
+        }
+        action();
+        true
+    }
+
     /// Convenience: `effective_permissions().memory_graph_retrieval_ranking`
     /// (ADR-032 Mode A — Tier 10).
     fn memory_graph_retrieval_ranking_permitted(&self) -> bool {
@@ -264,6 +282,74 @@ impl ConsentGate {
 mod tests {
     use super::*;
     use crate::consent::ConsentManager;
+
+    // Uses the port's default critical section, unlike the real authority's
+    // locking override. This makes the fallback's own guard observable (#11969).
+    struct DefaultCriticalSection(ConsentManager);
+
+    impl ConsentManagerPort for DefaultCriticalSection {
+        fn check_consent(&self) -> ConsentStatus {
+            self.0.check_consent()
+        }
+        fn current_consent(&self) -> Option<ConsentRecord> {
+            self.0.current_consent()
+        }
+        fn effective_permissions(&self) -> ConsentPermissions {
+            self.0.effective_permissions()
+        }
+        fn status_and_permissions(&self) -> (ConsentStatus, ConsentPermissions) {
+            self.0.status_and_permissions()
+        }
+        fn grant_consent(
+            &self,
+            permissions: ConsentPermissions,
+            days: u32,
+        ) -> Result<(), CoreError> {
+            self.0.grant_consent(permissions, days)
+        }
+        fn revoke_consent(&self) -> Result<(), CoreError> {
+            self.0.revoke_consent()
+        }
+        fn has_pending_deletion(&self) -> bool {
+            self.0.has_pending_deletion()
+        }
+        fn pending_erasure_id(&self) -> Option<String> {
+            self.0.pending_erasure_id()
+        }
+        fn clear_pending_deletion(&self) {
+            self.0.clear_pending_deletion();
+        }
+        fn deletion_flag(&self) -> Arc<AtomicBool> {
+            self.0.deletion_flag()
+        }
+        fn erasing(&self) -> Arc<AtomicBool> {
+            self.0.erasing()
+        }
+    }
+
+    #[test]
+    fn default_activity_pattern_critical_section_observes_grant_and_withdrawal() {
+        let dir = tempfile::tempdir().unwrap();
+        let authority =
+            DefaultCriticalSection(ConsentManager::new(dir.path().join("consent.json")));
+        let port: &dyn ConsentManagerPort = &authority;
+        for permitted in [false, true, false] {
+            port.grant_consent(
+                ConsentPermissions {
+                    activity_pattern_learning: permitted,
+                    ..Default::default()
+                },
+                30,
+            )
+            .unwrap();
+            let mut writes = 0;
+            assert_eq!(
+                port.run_if_activity_pattern_learning_permitted(&mut || writes += 1),
+                permitted
+            );
+            assert_eq!(writes, usize::from(permitted));
+        }
+    }
 
     /// `Arc<ConsentManager>` coerces to `Arc<dyn ConsentManagerPort>` (proves
     /// object-safety / dyn-compatibility — the whole point of dropping the

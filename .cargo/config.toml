@@ -3,3 +3,8 @@ incremental = true
 
 [env]
 SCCACHE_CACHE_SIZE = "6G"
+
+# #11996: Static SQLCipher and numkong otherwise both define DllMain on MSVC.
+# SQLCipher retains its explicit shutdown hook and atexit handler. cc combines
+# this target-specific value with CFLAGS; explicit caller overrides still win.
+CFLAGS_x86_64_pc_windows_msvc = { value = "-DSQLCIPHER_OMIT_DLLMAIN", force = false }

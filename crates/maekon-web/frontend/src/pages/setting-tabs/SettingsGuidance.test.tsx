@@ -113,7 +113,7 @@ function featureSnapshotForCli(
         provider_cli_discovery: dependencyStatus
           ? {
               candidate_name: 'codex',
-              executable_path: 'C:/Tools/Codex/codex.exe',
+              executable_hint: 'codex.exe',
               version_status: 'not_checked',
               dependency_status: dependencyStatus,
               status_reason: dependencyStatus === 'missing' ? 'cli_dependency_missing' : null,
