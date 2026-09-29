@@ -5,6 +5,8 @@ use maekon_core::error::CoreError;
 use maekon_core::models::embedding::{EmbeddingMetadata, SearchResult};
 use maekon_core::ports::vector_index::IndexMeta;
 use maekon_core::quantization::QuantizedVector;
+#[cfg(feature = "hnsw")]
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 
 // ── Mock VectorStore ───────────────────────────────────────────

@@ -1,0 +1,39 @@
+name: Signing Keypair Rehearsal
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signing-keypair-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  rehearse:
+    if: >-
+      github.repository == 'pseudotop/maekon-client' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'pseudotop' &&
+      github.triggering_actor == 'pseudotop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Exercise signing gate and negative controls
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
+          MAEKON_UPDATE_PUBLIC_KEY: ${{ secrets.MAEKON_UPDATE_PUBLIC_KEY }}
+        run: python3 scripts/rehearse-update-signing-keypair.py --receipt "$RUNNER_TEMP/signing-keypair-rehearsal.json"
+      - name: Preserve sanitized rehearsal receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signing-keypair-rehearsal-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/signing-keypair-rehearsal.json
+          if-no-files-found: error
+          retention-days: 7

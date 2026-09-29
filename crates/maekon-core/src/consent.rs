@@ -661,6 +661,24 @@ impl crate::ports::consent_manager::ConsentManagerPort for ConsentManager {
         ConsentManager::grant_consent(self, permissions, data_retention_days)
     }
 
+    #[allow(clippy::significant_drop_tightening)]
+    fn run_if_activity_pattern_learning_permitted(&self, action: &mut dyn FnMut()) -> bool {
+        // #11969: hold the same state read guard from the live permission
+        // decision through the synchronous mutation. Field-level consent
+        // updates require the writer guard, so they cannot complete between
+        // this check and the protected write boundary.
+        let st = self.state.read();
+        let permitted = Self::check_consent_locked(&st) == ConsentStatus::Valid
+            && st
+                .current_consent
+                .as_ref()
+                .is_some_and(|record| record.permissions.activity_pattern_learning);
+        if permitted {
+            action();
+        }
+        permitted
+    }
+
     fn revoke_consent(&self) -> Result<(), CoreError> {
         ConsentManager::revoke_consent(self)
     }
@@ -1776,8 +1794,111 @@ mod mutation_guard_tests {
     fn capture_permission() -> ConsentPermissions {
         ConsentPermissions {
             screen_capture: true,
+            activity_pattern_learning: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn activity_pattern_critical_section_blocks_field_update_until_write_finishes() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let (dir, manager) = manager();
+        let manager = Arc::new(manager);
+        manager
+            .grant_consent(capture_permission(), 30)
+            .expect("initial activity-pattern grant");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let action_manager = manager.clone();
+        let protected_write = std::thread::spawn(move || {
+            action_manager.run_if_activity_pattern_learning_permitted(&mut || {
+                assert!(
+                    action_manager.state.try_write().is_none(),
+                    "the protected action must hold the consent-state read lock"
+                );
+                entered_tx.send(()).expect("signal protected write entry");
+                release_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("release protected write");
+            })
+        });
+
+        // #11969: a skipped action must fail promptly, not leave the test
+        // blocked forever at a barrier (observed in run 34055073098).
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("permitted action must run");
+        let (attempted_tx, attempted_rx) = mpsc::channel();
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let update_manager = manager.clone();
+        let field_update = std::thread::spawn(move || {
+            attempted_tx.send(()).expect("signal update attempt");
+            update_manager
+                .grant_consent(ConsentPermissions::default(), 30)
+                .expect("field-level withdrawal");
+            completed_tx.send(()).expect("signal update completion");
+        });
+        attempted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("field update started");
+        let early_completion = completed_rx.recv_timeout(Duration::from_millis(100));
+
+        release_tx.send(()).expect("release protected write");
+        assert!(protected_write.join().expect("protected write thread"));
+        if early_completion.is_err() {
+            completed_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("field update completes after write release");
+        }
+        field_update.join().expect("field update thread");
+        assert!(
+            manager.state.try_write().is_some(),
+            "the read lock must be released"
+        );
+        assert_eq!(
+            early_completion,
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "field update must not complete while the protected write is running"
+        );
+        assert!(!manager.activity_pattern_learning_permitted());
+        drop(dir);
+    }
+
+    #[test]
+    fn activity_pattern_write_requires_both_valid_consent_and_the_specific_permission() {
+        let (_dir, manager) = manager();
+        let assert_action = |expected| {
+            let mut writes = 0;
+            assert_eq!(
+                manager.run_if_activity_pattern_learning_permitted(&mut || writes += 1),
+                expected
+            );
+            assert_eq!(writes, usize::from(expected));
+        };
+
+        assert_action(false);
+        manager
+            .grant_consent(ConsentPermissions::default(), 30)
+            .unwrap();
+        assert_eq!(manager.check_consent(), ConsentStatus::Valid);
+        assert_action(false);
+        manager.grant_consent(capture_permission(), 30).unwrap();
+        assert_action(true);
+
+        // An expired record retains the raw permission, but cannot authorize a write.
+        manager.state.write().current_consent =
+            Some(record_expiring_at(Utc::now() - chrono::Duration::days(1)));
+        assert_eq!(manager.check_consent(), ConsentStatus::Expired);
+        assert!(
+            manager
+                .current_consent()
+                .unwrap()
+                .permissions
+                .activity_pattern_learning
+        );
+        assert_action(false);
     }
 
     /// Every port method must OBSERVABLY follow the manager's real state.
@@ -1812,6 +1933,11 @@ mod mutation_guard_tests {
             port.effective_permissions().screen_capture,
             "effective_permissions must reflect the grant"
         );
+        let mut protected_action_called = false;
+        assert!(port.run_if_activity_pattern_learning_permitted(&mut || {
+            protected_action_called = true;
+        }));
+        assert!(protected_action_called);
         let (status, perms) = port.status_and_permissions();
         assert_eq!(status, ConsentStatus::Valid);
         assert!(perms.screen_capture);
@@ -1823,6 +1949,11 @@ mod mutation_guard_tests {
         );
 
         port.revoke_consent().expect("revoke");
+        let mut revoked_action_called = false;
+        assert!(!port.run_if_activity_pattern_learning_permitted(&mut || {
+            revoked_action_called = true;
+        }));
+        assert!(!revoked_action_called);
         assert!(
             port.has_pending_deletion(),
             "revoke must arm the pending-deletion flag"

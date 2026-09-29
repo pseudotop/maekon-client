@@ -173,6 +173,8 @@ pub(super) fn build_analysis_pipeline(
                 regime_detection_interval_hours: tm_config.regime_detection_interval_hours,
                 last_drift_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 llm_summarizer: embedding.llm_summarizer.take(),
+                llm_summary_provider_class: embedding.llm_summary_provider_class,
+                llm_summary_unavailable_reason: embedding.llm_summary_unavailable_reason,
                 embedding_pipeline: embedding.embedding_pipeline.take(),
                 text_search,
                 gui_pipeline_state: None,

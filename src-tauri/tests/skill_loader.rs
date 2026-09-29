@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Integration tests for SKILL.md file discovery and frontmatter parsing.
 //!
 //! #7734: imports the real `FileSkillLoader::parse_frontmatter` from the

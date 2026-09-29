@@ -533,11 +533,16 @@ mod gtk {
     let gesture = GestureClick::new();
     gesture.set_button(0);
 
-    let webview_c = webview.clone();
+    // Weak: the gesture is owned by this webview, and GTK4 destroy never breaks a strong
+    // self-capture cycle, so the webview would never be finalized (#12652).
+    let webview_c = webview.downgrade();
     gesture.connect_pressed(move |gesture, _n_press, x, y| {
       if gesture.current_button() != 1 {
         return;
       }
+      let Some(webview_c) = webview_c.upgrade() else {
+        return;
+      };
 
       if let Some(window) = webview_c
         .parent()

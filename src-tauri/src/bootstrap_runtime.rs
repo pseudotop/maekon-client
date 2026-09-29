@@ -19,15 +19,45 @@ use crate::server_runtime_context::ServerBootstrapContext;
 
 const BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(test)]
+mod shutdown_tests;
+
+struct BackgroundShutdownTask {
+    name: &'static str,
+    handle: tokio::task::JoinHandle<()>,
+}
+
 pub(crate) struct ManagedBackgroundRuntime {
     handle: Handle,
     shutdown_tx: watch::Sender<bool>,
+    shutdown_tasks: Arc<Mutex<Vec<BackgroundShutdownTask>>>,
     join_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl ManagedBackgroundRuntime {
     pub(crate) fn handle(&self) -> Handle {
         self.handle.clone()
+    }
+
+    // #12092: keep scheduler persistence alive after its shutdown signal.
+    pub(crate) fn track_shutdown_task(
+        &self,
+        name: &'static str,
+        handle: tokio::task::JoinHandle<()>,
+    ) -> Result<()> {
+        let mut tasks = match self.shutdown_tasks.lock() {
+            Ok(tasks) => tasks,
+            Err(poisoned) => {
+                warn!("shutdown task lock poisoned; recovering inner data");
+                poisoned.into_inner()
+            }
+        };
+        if *self.shutdown_tx.borrow() {
+            handle.abort();
+            anyhow::bail!("cannot register a task after background shutdown begins");
+        }
+        tasks.push(BackgroundShutdownTask { name, handle });
+        Ok(())
     }
 
     pub(crate) fn shutdown_blocking(&self) {
@@ -208,19 +238,52 @@ fn spawn_background_runtime_with_timeout(
     let runtime = Runtime::new()?;
     let handle = runtime.handle().clone();
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let shutdown_tasks = Arc::new(Mutex::new(Vec::<BackgroundShutdownTask>::new()));
+    let pending_shutdown_tasks = shutdown_tasks.clone();
     let join_handle = std::thread::spawn(move || {
-        runtime.block_on(async move {
+        let remaining_timeout = runtime.block_on(async move {
             while !*shutdown_rx.borrow() {
                 if shutdown_rx.changed().await.is_err() {
                     break;
                 }
             }
+            // Draining and runtime teardown share the existing single budget.
+            // A completed task is not itself proof of a successful DB write;
+            // storage failures keep their existing diagnostics.
+            let started = std::time::Instant::now();
+            let tasks = {
+                let mut pending = match pending_shutdown_tasks.lock() {
+                    Ok(pending) => pending,
+                    Err(poisoned) => {
+                        warn!("shutdown task lock poisoned; recovering inner data");
+                        poisoned.into_inner()
+                    }
+                };
+                std::mem::take(&mut *pending)
+            };
+            for mut task in tasks {
+                let remaining = shutdown_timeout.saturating_sub(started.elapsed());
+                match tokio::time::timeout(remaining, &mut task.handle).await {
+                    Ok(Ok(())) => {
+                        info!(task = task.name, outcome = "completed", "background task shutdown");
+                    }
+                    Ok(Err(error)) => {
+                        warn!(task = task.name, outcome = "join_failed", cancelled = error.is_cancelled(), error = %error, "background task shutdown");
+                    }
+                    Err(_) => {
+                        task.handle.abort();
+                        warn!(task = task.name, outcome = "timed_out", timeout_secs = shutdown_timeout.as_secs_f64(), "background task shutdown remains unfinished");
+                    }
+                }
+            }
+            shutdown_timeout.saturating_sub(started.elapsed())
         });
-        runtime.shutdown_timeout(shutdown_timeout);
+        runtime.shutdown_timeout(remaining_timeout);
     });
     Ok(Arc::new(ManagedBackgroundRuntime {
         handle,
         shutdown_tx,
+        shutdown_tasks,
         join_handle: Mutex::new(Some(join_handle)),
     }))
 }

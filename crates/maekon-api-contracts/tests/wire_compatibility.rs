@@ -19,6 +19,7 @@ use maekon_api_contracts::ai_providers::{
     ProviderModelCapabilityProfile, ProviderModelCapabilityRules,
     ProviderModelCatalogTransportSpec, ProviderModelSupportStatus, ProviderTransportSpec,
 };
+use maekon_api_contracts::settings::AiSessionSettings;
 use serde_json::{json, Value};
 
 fn decode_value<T>(value: Value, context: &str) -> T
@@ -178,4 +179,49 @@ fn provider_model_capability_rules_decodes_empty_object_to_default() {
     assert_eq!(dto.ocr, empty_profile);
     assert_eq!(dto.image_input, empty_profile);
     assert_eq!(dto.structured_output, empty_profile);
+}
+
+#[test]
+fn daily_token_budget_rejects_non_decimal_or_out_of_range_wire_values() {
+    let invalid_type = "expected a string";
+    let invalid_digits = "daily_token_budget must contain only ASCII decimal digits";
+    let out_of_range = "daily_token_budget is outside the u64 range";
+    for (invalid, expected_reason) in [
+        (serde_json::json!(0), invalid_type),
+        (serde_json::json!(4096), invalid_type),
+        (serde_json::json!(9_007_199_254_740_993_u64), invalid_type),
+        (serde_json::json!(u64::MAX), invalid_type),
+        (serde_json::json!(-1), invalid_type),
+        (serde_json::json!(1.5), invalid_type),
+        (serde_json::json!(""), invalid_digits),
+        (serde_json::json!("-1"), invalid_digits),
+        (serde_json::json!("+1"), invalid_digits),
+        (serde_json::json!("1.5"), invalid_digits),
+        (serde_json::json!("1e3"), invalid_digits),
+        (serde_json::json!(" 4096"), invalid_digits),
+        (serde_json::json!("4096 "), invalid_digits),
+        (serde_json::json!("4_096"), invalid_digits),
+        (
+            serde_json::json!("\u{ff14}\u{ff10}\u{ff19}\u{ff16}"),
+            invalid_digits,
+        ),
+        (serde_json::json!("18446744073709551616"), out_of_range),
+        (serde_json::json!(true), invalid_type),
+        (serde_json::json!([]), invalid_type),
+        (serde_json::json!({}), invalid_type),
+    ] {
+        let mut json = serde_json::to_value(AiSessionSettings::default()).expect("settings JSON");
+        json["daily_token_budget"] = invalid.clone();
+        let error = serde_json::from_value::<AiSessionSettings>(json)
+            .expect_err("invalid daily token budget");
+        assert_eq!(
+            error.classify(),
+            serde_json::error::Category::Data,
+            "invalid budget: {invalid}"
+        );
+        assert!(
+            error.to_string().contains(expected_reason),
+            "invalid budget {invalid}: expected {expected_reason:?}, got {error}"
+        );
+    }
 }

@@ -9,7 +9,7 @@ Maekon 을 standalone 우선 모드로 운영하기 위한 실전 체크리스�
 1. `cargo run -p maekon-app -- --offline` 실행.
 2. `http://localhost:10090` 대시보드 접속.
 3. Settings에서 다음을 기본값으로 유지:
-- 샌드박스 활성화(`Standard` 또는 `Strict`),
+- OS 격리가 필요하면 자동화 샌드박스를 켭니다(`Standard` 또는 `Strict`). 기본으로 꺼져 있고 격리 강도는 OS마다 다릅니다,
 - `external_data_policy`는 `PiiFilterStandard` 이상,
 - `allow_unredacted_external_ocr=false`.
 

@@ -41,7 +41,18 @@ impl LifecycleManager {
     }
 
     pub async fn wait_for_signal(&self) {
-        self.wait_first_signal().await;
+        self.wait_for_signal_with(self.wait_first_signal()).await;
+    }
+
+    async fn wait_for_signal_with(
+        &self,
+        first_signal: impl std::future::Future<Output = std::io::Result<()>>,
+    ) {
+        if let Err(error) = first_signal.await {
+            warn!("Signal listener failed; requesting graceful shutdown: {error}");
+            self.shutdown();
+            return;
+        }
         info!("Shutting down gracefully... press Ctrl+C again to force exit");
         self.shutdown();
 
@@ -49,14 +60,12 @@ impl LifecycleManager {
         self.wait_second_signal().await;
     }
 
-    async fn wait_first_signal(&self) {
+    async fn wait_first_signal(&self) -> std::io::Result<()> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigint = signal(SignalKind::interrupt())
-                .unwrap_or_else(|error| panic!("Failed to register SIGINT handler: {error}"));
-            let mut sigterm = signal(SignalKind::terminate())
-                .unwrap_or_else(|error| panic!("Failed to register SIGTERM handler: {error}"));
+            let mut sigint = signal(SignalKind::interrupt())?;
+            let mut sigterm = signal(SignalKind::terminate())?;
 
             tokio::select! {
                 _ = sigint.recv() => {
@@ -70,11 +79,10 @@ impl LifecycleManager {
 
         #[cfg(not(unix))]
         {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to register Ctrl+C handler");
+            tokio::signal::ctrl_c().await?;
             info!("Ctrl+C received");
         }
+        Ok(())
     }
 
     async fn wait_second_signal(&self) {
@@ -142,5 +150,43 @@ mod tests {
         let rx = lm.subscribe();
         lm.shutdown();
         assert!(*rx.borrow());
+    }
+
+    #[tokio::test]
+    async fn first_signal_stays_pending_until_a_signal_arrives() {
+        let manager = LifecycleManager::new();
+        let first_signal = manager.wait_first_signal();
+        tokio::pin!(first_signal);
+
+        let first_poll = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(std::future::Future::poll(first_signal.as_mut(), context))
+        })
+        .await;
+
+        assert!(
+            first_poll.is_pending(),
+            "listener completed without a signal: {first_poll:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn listener_failure_requests_shutdown_without_waiting_for_another_signal() {
+        let manager = LifecycleManager::new();
+        let receiver = manager.subscribe();
+        let failure = async {
+            Err(std::io::Error::other(
+                "synthetic signal registration failure",
+            ))
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.wait_for_signal_with(failure),
+        )
+        .await
+        .expect("listener failure must not wait for a second signal");
+        assert!(
+            *receiver.borrow(),
+            "listeners must observe the shutdown request"
+        );
     }
 }

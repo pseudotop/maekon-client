@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! TDD-red integration tests for the tracking-schedule REST handlers.
 //!
 //! Plan ref: §3.3 A.15

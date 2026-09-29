@@ -57,7 +57,7 @@ After the fast PR lane merges, a release build is compiled on all four targets t
 |--------|--------|
 | `x86_64-unknown-linux-gnu` | `ubuntu-latest` |
 | `aarch64-apple-darwin` | `macos-latest` |
-| `x86_64-apple-darwin` | `macos-14` |
+| `x86_64-apple-darwin` | `macos-15-intel` |
 | `x86_64-pc-windows-msvc` | `windows-latest` |
 
 A GUI bootstrap smoke test runs on macOS and Windows: the binary is launched for 3 seconds and inspected for Rust panics or tokio runtime failures.

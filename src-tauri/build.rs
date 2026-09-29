@@ -1,3 +1,8 @@
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+#[cfg(not(test))]
 const APP_COMMANDS: &[&str] = &[
     "get_app_build_info",
     "login",
@@ -17,6 +22,7 @@ const APP_COMMANDS: &[&str] = &[
     "request_desktop_screen_capture_permission",
     "open_desktop_permission_settings",
     "probe_provider_surface_endpoint",
+    "verify_chat_http_provider",
     "get_allowed_setting_keys",
     "oauth_start_flow",
     "oauth_flow_status",
@@ -152,6 +158,85 @@ const APP_COMMANDS: &[&str] = &[
     "generate_tmd_xlsx",
 ];
 
+fn git_output(package_dir: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .current_dir(package_dir)
+        // Build identity belongs to this package, even when the caller has a
+        // different repository selected through its process environment.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .args(args)
+        .output()
+        .ok()?;
+    successful_git_stdout(output)
+}
+
+// Visible to the integration harness so it exercises the real status guard.
+pub(crate) fn successful_git_stdout(output: std::process::Output) -> Option<String> {
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn git_path(package_dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(git_output(
+        package_dir,
+        &["rev-parse", "--path-format=absolute", "--git-path", name],
+    )?);
+    path.is_absolute().then_some(path)
+}
+
+// Shared with integration tests instead of duplicating the build resolver.
+pub(crate) fn git_build_metadata(package_dir: &Path) -> (String, Vec<PathBuf>) {
+    let revision = git_output(package_dir, &["rev-parse", "--short=9", "HEAD"])
+        .unwrap_or_else(|| "unknown".to_owned());
+    let mut watched = BTreeSet::new();
+    let mut watch_existing = |path: PathBuf| {
+        if path.exists() {
+            watched.insert(path);
+        }
+    };
+
+    // #12181: Cargo treats nonexistent rerun inputs as stale on every build.
+    // Let Git resolve metadata in nested checkouts and linked worktrees.
+    if let Some(head) = git_path(package_dir, "HEAD") {
+        if let Some(directory) = head.parent() {
+            watch_existing(directory.join("commondir"));
+        }
+        watch_existing(head);
+    }
+    if let Some(root) = git_output(package_dir, &["rev-parse", "--show-toplevel"]) {
+        let pointer = PathBuf::from(root).join(".git");
+        if pointer.is_file() {
+            watch_existing(pointer);
+        }
+    }
+    if let Some(reference) = git_output(package_dir, &["symbolic-ref", "--quiet", "HEAD"])
+        .and_then(|name| git_path(package_dir, &name))
+    {
+        if reference.exists() {
+            watch_existing(reference);
+        } else {
+            // A packed or unborn ref can become loose without changing HEAD
+            // or packed-refs. Observe its nearest existing parent as well.
+            if let Some(parent) = reference.ancestors().skip(1).find(|path| path.exists()) {
+                watch_existing(parent.to_path_buf());
+            }
+            if let Some(packed) = git_path(package_dir, "packed-refs") {
+                watch_existing(packed);
+            }
+        }
+    }
+    (revision, watched.into_iter().collect())
+}
+
+#[cfg(not(test))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=MAEKON_BUILD_APP_FLAVOR");
     if let Ok(flavor) = std::env::var("MAEKON_BUILD_APP_FLAVOR") {
@@ -176,18 +261,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let build_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     println!("cargo:rustc-env=BUILD_DATE={build_date}");
 
-    let git_sha = std::process::Command::new("git")
-        .args(["rev-parse", "--short=9", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|out| String::from_utf8(out.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
+    let package_dir = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR")
+            .ok_or("CARGO_MANIFEST_DIR is required to resolve the package build identity")?,
+    );
+    let (git_sha, git_watches) = git_build_metadata(&package_dir);
     println!("cargo:rustc-env=GIT_SHA={git_sha}");
-
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/index");
+    for path in git_watches {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
     println!("cargo:rerun-if-changed=src/main.rs");
 
     // #8044: link LocalAuthentication.framework on macOS so `LAContext` is

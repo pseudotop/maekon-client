@@ -152,7 +152,9 @@ pub enum SubprocessCliDependencyStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SubprocessCliDiscoveryReport {
     pub candidate_name: String,
+    #[serde(skip_serializing)]
     pub executable_path: String,
+    pub executable_hint: String,
     pub version_status: SubprocessCliVersionStatus,
     pub dependency_status: SubprocessCliDependencyStatus,
     pub status_reason: Option<String>,

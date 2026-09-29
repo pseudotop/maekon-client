@@ -8,6 +8,9 @@ use tracing::{debug, info, warn};
 use super::super::shared_regime_state::SharedRegimeState;
 use super::super::Scheduler;
 
+#[cfg(feature = "local-suggestions")]
+use crate::local_analysis_status::record_periodic_status;
+
 impl Scheduler {
     /// Periodic LLM analysis loop — runs `analyze_if_changed()` on each tick
     /// and forces a full `analyze()` every `full_interval_secs`.
@@ -54,6 +57,8 @@ impl Scheduler {
         // previously they were only persisted to SQLite and never reached the queue.
         #[cfg(feature = "local-suggestions")]
         let suggestion_queue = self.suggestion_manager.as_ref().map(|m| m.queue().clone());
+        #[cfg(feature = "local-suggestions")]
+        let local_analysis_manager = self.suggestion_manager.clone();
         // #7914: shared FeedbackScorer handle (SAME Arc the feedback command
         // records into). Plumbed so the periodic-LLM producer applies the SAME
         // learned relevance gate as the server SSE path — previously the scorer
@@ -115,34 +120,14 @@ impl Scheduler {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
-                        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
-                        // consent record AND on a missing ConsentManager (#7728).
-                        let consent = ConsentGate::from_ref(consent_mgr_a.as_ref()).permissions_snapshot();
-                        let paused = capture_paused_a.load(Ordering::Relaxed);
-                        let permitted = config_manager.as_ref()
-                            .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
-                            .unwrap_or(false);
-                        if !permitted {
-                            debug!("analysis loop: capture gate closed (TS/consent/paused) — skipping tick");
-                            continue;
-                        }
-
-                        // Read current config from ConfigManager (the single source
-                        // of truth also written to by the HTTP `PUT /settings` endpoint).
+                        // Read the live analysis flag first so an explicitly
+                        // disabled feature has one exact product status even if
+                        // consent or capture policy is also closed (#11737).
                         let current_config = config_manager
                             .as_ref()
                             .map(|cm| cm.get().analysis)
                             .unwrap_or_else(|| config.clone());
 
-                        // #7652: reconcile the shared analyzer slot against the LIVE
-                        // `enabled` flag before deciding whether to skip this tick —
-                        // this is the runtime-enable/runtime-disable mechanism itself.
-                        // Before this fix, a `None` slot at spawn time made this whole
-                        // task exit permanently (see the `#[cfg(not(feature = "analysis"))]`
-                        // guard above for the equivalent-behavior fast path this
-                        // superseded), so a later `analysis.enabled = true` Settings
-                        // save was never observed without an app restart.
                         #[cfg(feature = "analysis")]
                         reconcile_analyzer_slot(
                             &analyzer_slot,
@@ -153,13 +138,67 @@ impl Scheduler {
 
                         if !current_config.enabled {
                             debug!("analysis loop: disabled via runtime config, skipping tick");
+                            #[cfg(feature = "local-suggestions")]
+                            record_periodic_status(
+                                local_analysis_manager.as_ref(),
+                                crate::local_analysis_status::LocalAnalysisStatusKind::PolicyBlocked,
+                                "analysis_disabled",
+                                0,
+                            ).await;
                             continue;
                         }
 
-                        let analyzer = match analyzer_slot.read().clone() {
+                        // D13: 4-term composite gate (CONS-PC02 / §3.3 A.9).
+                        // ConsentGate is fail-closed both on a stale (Expired/UpdateRequired)
+                        // consent record AND on a missing ConsentManager (#7728).
+                        let consent = ConsentGate::from_ref(consent_mgr_a.as_ref()).permissions_snapshot();
+                        let missing = crate::local_analysis_status::missing_local_analysis_permissions(&consent);
+                        if !missing.is_empty() {
+                            #[cfg(feature = "local-suggestions")]
+                            if let Some(manager) = local_analysis_manager.as_ref() {
+                                let queue_count = manager.queue().lock().await.len();
+                                manager
+                                    .record_local_analysis(
+                                        crate::local_analysis_status::LocalAnalysisStatus::consent_required(
+                                        crate::local_analysis_status::LocalAnalysisProducer::Periodic,
+                                        missing,
+                                        queue_count,
+                                    ),
+                                    )
+                                    .await;
+                            }
+                            continue;
+                        }
+                        let paused = capture_paused_a.load(Ordering::Relaxed);
+                        let permitted = config_manager.as_ref()
+                            .map(|cm| crate::scheduler::capture_permitted_now(&cm.snapshot(), &consent, paused))
+                            .unwrap_or(false);
+                        if !permitted {
+                            debug!("analysis loop: capture gate closed (TS/consent/paused) — skipping tick");
+                            #[cfg(feature = "local-suggestions")]
+                            record_periodic_status(
+                                local_analysis_manager.as_ref(),
+                                crate::local_analysis_status::LocalAnalysisStatusKind::PolicyBlocked,
+                                "capture_policy_blocked",
+                                0,
+                            ).await;
+                            continue;
+                        }
+
+                        // Materialize the option before any branch awaits so the
+                        // parking_lot read guard cannot cross an await boundary.
+                        let available_analyzer = analyzer_slot.read().clone();
+                        let analyzer = match available_analyzer {
                             Some(a) => a,
                             None => {
-                                debug!("analysis loop: enabled via runtime config but no analyzer is available yet (no BYOK provider configured) — waiting");
+                                debug!("analysis loop: enabled but no analysis provider is available yet — waiting");
+                                #[cfg(feature = "local-suggestions")]
+                                record_periodic_status(
+                                    local_analysis_manager.as_ref(),
+                                    crate::local_analysis_status::LocalAnalysisStatusKind::ProviderOffline,
+                                    "provider_unavailable",
+                                    0,
+                                ).await;
                                 continue;
                             }
                         };
@@ -195,9 +234,24 @@ impl Scheduler {
                                 // Proceed anyway — fail-open
                             }
                         }
-
+                        // Re-read revocable authority after the coexistence await.
+                        if let Some(block) = super::analysis_invocation_guard::periodic_invocation_block(
+                            config_manager.as_ref(),
+                            config.enabled,
+                            consent_mgr_a.as_ref(),
+                            capture_paused_a.load(Ordering::Relaxed),
+                        ) {
+                            #[cfg(feature = "local-suggestions")]
+                            super::analysis_invocation_guard::record_periodic_invocation_block(
+                                local_analysis_manager.as_ref(),
+                                block,
+                            )
+                            .await;
+                            #[cfg(not(feature = "local-suggestions"))]
+                            let _ = block;
+                            continue;
+                        }
                         let force_full = last_full.elapsed() >= full_interval;
-
                         // Wrap the actual analyze() call in a wall-clock span so the
                         // sample reflects real feature execution time (§4 anti-theater),
                         // not the gate checks above.
@@ -208,20 +262,21 @@ impl Scheduler {
                             time_feature(
                                 perf_recorder.as_ref(),
                                 LOCAL_SUGGESTIONS,
-                                analyzer.analyze(),
+                                analyzer.analyze_with_outcome(),
                             )
                             .await
                         } else {
                             time_feature(
                                 perf_recorder.as_ref(),
                                 LOCAL_SUGGESTIONS,
-                                analyzer.analyze_if_changed(),
+                                analyzer.analyze_if_changed_with_outcome(),
                             )
                             .await
                         };
-
                         match result {
-                            Ok(suggestions) => {
+                            Ok(maekon_analysis::AnalysisRunOutcome::Generated(suggestions)) => {
+                                #[cfg(feature = "local-suggestions")]
+                                let candidate_count = suggestions.len();
                                 if !suggestions.is_empty() {
                                     info!(
                                         count = suggestions.len(),
@@ -271,7 +326,7 @@ impl Scheduler {
                                         on_changed
                                             .as_ref()
                                             .map(|f| f as &(dyn Fn(usize) + Send + Sync));
-                                    super::helpers::enqueue_and_surface(
+                                    let admitted = super::helpers::enqueue_and_surface(
                                         q,
                                         suggestions.clone(),
                                         gates,
@@ -280,14 +335,80 @@ impl Scheduler {
                                         focus_a.is_active(),
                                     )
                                     .await;
+                                    if let Some(manager) = local_analysis_manager.as_ref() {
+                                        let (status, reason) = if admitted == 0 {
+                                            (
+                                                crate::local_analysis_status::LocalAnalysisStatusKind::NoCandidate,
+                                                "not_admitted",
+                                            )
+                                        } else {
+                                            (
+                                                crate::local_analysis_status::LocalAnalysisStatusKind::Generated,
+                                                "generated",
+                                            )
+                                        };
+                                        record_periodic_status(
+                                            Some(manager),
+                                            status,
+                                            reason,
+                                            candidate_count,
+                                        ).await;
+                                    }
                                 }
+                            }
+                            Ok(maekon_analysis::AnalysisRunOutcome::NoCandidate) => {
+                                #[cfg(feature = "local-suggestions")]
+                                record_periodic_status(
+                                    local_analysis_manager.as_ref(),
+                                    crate::local_analysis_status::LocalAnalysisStatusKind::NoCandidate,
+                                    "no_valid_candidate",
+                                    0,
+                                ).await;
+                            }
+                            Ok(maekon_analysis::AnalysisRunOutcome::Throttled) => {
+                                #[cfg(feature = "local-suggestions")]
+                                record_periodic_status(
+                                    local_analysis_manager.as_ref(),
+                                    crate::local_analysis_status::LocalAnalysisStatusKind::Throttled,
+                                    "analysis_throttled",
+                                    0,
+                                ).await;
+                            }
+                            Ok(maekon_analysis::AnalysisRunOutcome::NoInput) => {
+                                #[cfg(feature = "local-suggestions")]
+                                record_periodic_status(
+                                    local_analysis_manager.as_ref(),
+                                    crate::local_analysis_status::LocalAnalysisStatusKind::NoCandidate,
+                                    "no_input",
+                                    0,
+                                ).await;
+                            }
+                            Ok(maekon_analysis::AnalysisRunOutcome::Unchanged) => {
+                                #[cfg(feature = "local-suggestions")]
+                                record_periodic_status(
+                                    local_analysis_manager.as_ref(),
+                                    crate::local_analysis_status::LocalAnalysisStatusKind::NoCandidate,
+                                    "context_unchanged",
+                                    0,
+                                ).await;
                             }
                             Err(e) => {
                                 // AnalysisError doesn't expose code() directly; convert
                                 // through the existing From<AnalysisError> for CoreError
                                 // to surface the wire code to telemetry.
                                 let core: maekon_core::error::CoreError = e.into();
-                                warn!(err.code = %core.code(), "analysis failure: {core}");
+                                warn!(err.code = %core.code(), "analysis provider unavailable");
+                                #[cfg(feature = "local-suggestions")]
+                                if let Some(manager) = local_analysis_manager.as_ref() {
+                                    let queue_count = manager.queue().lock().await.len();
+                                    manager.record_local_analysis(
+                                        crate::local_analysis_status::LocalAnalysisStatus::from_error(
+                                            &core,
+                                            crate::local_analysis_status::LocalAnalysisProducer::Periodic,
+                                            queue_count,
+                                        ),
+                                    ).await;
+                                }
                             }
                         }
                     }

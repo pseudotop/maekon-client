@@ -25,7 +25,7 @@ Maekon 是一款 Apache-2.0 local-first 桌面代理，可在不依赖 ONESHIM �
 
 ## Source Build 快速开始
 
-公开仓库已经可用，此 source snapshot 面向 `v0.0.1-rc.10` release candidate。只有对应的 GitHub Release 和资产实际存在时，才应视为已经发布。GitHub 的 `latest` endpoint 不包含 prerelease，因此验证 release binary 时请使用安装文档中的版本固定命令。开发和 debug build 请从本地 source checkout 运行。
+公开仓库已经可用，此 source snapshot 面向 `v0.0.1-rc.11` release candidate。只有对应的 GitHub Release 和资产实际存在时，才应视为已经发布。GitHub 的 `latest` endpoint 不包含 prerelease，因此验证 release binary 时请使用安装文档中的版本固定命令。开发和 debug build 请从本地 source checkout 运行。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -51,8 +51,8 @@ Release 安装命令记录在下面的安装文档中。如需 prerelease 版本
 ## 为什么选择 Maekon
 
 - **将活动整理为受治理的工作洞察**: 在同一个地方追踪上下文、时间线、专注趋势、中断情况和已批准的自动化路径。
-- **设备端轻量运行**: 边缘处理（增量编码、缩略图、OCR）减少传输量，保持快速响应。
-- **在 Global Alpha 中评估桌面技术栈**: Prerelease 包含跨平台源码、更新基础、系统托盘集成和本地 Web 仪表盘；使用前请验证具体 build 与平台。
+- **设备端轻量运行**: 边缘处理（增量编码、缩略图，以及 macOS 和 Windows 上的本地 OCR）减少传输量，保持快速响应。
+- **在 Global Alpha 中评估桌面技术栈**: Prerelease 包含跨平台源码、更新基础、系统托盘集成（macOS、Windows）和本地 Web 仪表盘；使用前请验证具体 build 与平台。
 
 ## 适用人群
 
@@ -79,7 +79,7 @@ Release 安装命令记录在下面的安装文档中。如需 prerelease 版本
 
 - PII 过滤级别（关闭/基本/标准/严格）在视觉管线中应用
 - 本地数据存储在 SQLite 中，并通过保留策略进行管理
-- 自动化需要策略验证、沙箱配置和本地审计日志
+- 自动化默认关闭。开启后，动作会经过 Maekon 的策略门控并记录到本地审计日志；OS 沙箱隔离为可选项，且因操作系统而异（参见[平台限制](#平台限制)）
 - 安全报告与响应策略: [SECURITY.md](./SECURITY.md)
 - Alpha 反馈、隐私请求或退出参与（当前接收状态）: [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - 独立模式完整性基线: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
@@ -103,7 +103,7 @@ Release 安装命令记录在下面的安装文档中。如需 prerelease 版本
 | 记忆图谱积累的关于你的信念 (claims) 可浏览并可一键撤回 (Privacy → Claims) | claims 路由: [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | 同意是 fail-closed 的: 没有有效授权就不捕获 | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
 | 视觉管线中的适用路径会在其文档化存储或 egress 步骤前应用已配置的 PII 过滤 | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
-| 支持的自动化执行路径按设计经过策略、沙箱和审计组件 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+| 自动化动作经过命令门控和本地审计日志；OS 沙箱隔离仅在开启时生效 | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
 
 ### 源码同步策略
 
@@ -113,12 +113,12 @@ Release 安装命令记录在下面的安装文档中。如需 prerelease 版本
 
 ### 核心功能
 - **实时上下文监控**: 追踪活动窗口、系统资源和用户活动
-- **边缘图像处理**: 截图捕获、增量编码、缩略图和 OCR
-- **策略门控自动化**: 将已批准的动作通过策略检查、沙箱隔离和审计日志执行
+- **边缘图像处理**: 截图捕获、增量编码、缩略图和 OCR（本地 OCR 仅限 macOS 和 Windows）
+- **策略门控自动化**: 默认关闭。已批准的动作经过策略检查后执行，并记录到本地审计日志；OS 沙箱隔离为可选项，且因操作系统而异
 - **联网服务器功能（预览/可选）**: 可审核的下一步行动候选和反馈同步可用于分阶段验证，并非默认独立路径
-- **系统托盘**: 在后台运行，支持快速访问
+- **系统托盘**（macOS、Windows）: 在后台运行，支持快速访问。Linux 暂无托盘。
 - **自动更新**: 基于 GitHub Releases 的自动更新 — 在 pre-1.0 阶段，更新通过预发布通道分发，默认安装会跟随该通道；首个稳定版发布后将开放稳定通道
-- **跨平台**: 支持 macOS、Windows 和 Linux
+- **跨平台**: 可在 macOS、Windows 和 Linux 上运行；Linux 上的功能较少（参见[平台限制](#平台限制)）
 
 ### 本地 Web 仪表盘 (http://localhost:10090)
 - **仪表盘**: 实时系统指标、CPU/内存图表、应用使用时长
@@ -137,7 +137,22 @@ Release 安装命令记录在下面的安装文档中。如需 prerelease 版本
 ## 系统要求
 
 - Rust 1.88.0 或更高版本
-- macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
+- macOS 10.15+ / Windows 10+ / Linux x64（推荐 X11；在 Wayland 上无法使用跟踪面板、叠加层和“找到下一步”）
+
+### 平台限制
+
+并非所有功能在所有操作系统上都可用。下表基于当前源码；“未验证”表示尚未在 release build 上确认。
+
+| 功能 | macOS | Windows | Linux (X11) | Linux (Wayland) |
+| --- | --- | --- | --- | --- |
+| 系统托盘 | 支持 | 支持 | 无 | 无 |
+| 跟踪面板与“找到下一步” | 支持 | 支持 | 支持（未验证） | 无 |
+| 叠加层 | 支持 | 支持 | 支持（未验证） | 无 |
+| 本地 OCR | 支持（Vision） | 支持（Windows OCR） | 无 | 无 |
+| 全局快捷键 | 支持 | 支持 | 支持 | 无（未验证） |
+| 凭据存储 | 钥匙串 | 凭据管理器 | 内核密钥环；重启后是否保留未验证 | 与 X11 相同 |
+
+自动化及其 OS 沙箱默认都处于关闭状态。开启沙箱后，隔离强度因操作系统而异。
 
 ## 开发者快速开始（从源码构建）
 
@@ -242,22 +257,22 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 
 ### 快速安装（终端）
 
-请在对应 GitHub Release 发布资产后，再运行以下固定到 `v0.0.1-rc.10` 的命令。
+请在对应 GitHub Release 发布资产后，再运行以下固定到 `v0.0.1-rc.11` 的命令。
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
 ```
 
 ### 发布产物

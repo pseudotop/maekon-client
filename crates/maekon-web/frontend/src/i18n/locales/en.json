@@ -103,7 +103,8 @@
     "groupSystem": "System",
     "tasks": "Tasks",
     "contextHome": "Context home",
-    "assignmentEmailDraft": "Assignment email draft"
+    "assignmentEmailDraft": "Assignment email draft",
+    "wbsXlsxDraft": "WBS XLSX draft"
   },
   "dashboard": {
     "metricsError": "Failed to load system metrics",
@@ -1821,7 +1822,24 @@
     "modelDiscoveryNoModels": "No models were returned for this provider configuration.",
     "modelDiscoveryMissingConfig": "Configure remote endpoint, provider, and API key first.",
     "modelDiscoveryMissingKey": "Enter full API key to discover models.",
-    "modelDiscoveryUnsupportedSurface": "Model discovery is not available for the selected provider surface."
+    "modelDiscoveryUnsupportedSurface": "Model discovery is not available for the selected provider surface.",
+    "chatVerification": {
+      "title": "Verify the API chat connection",
+      "description": "Chat over an API key stays unverified until one message goes through. Maekon sends a fixed test message, never your content or screen data, and the reply counts toward the daily token budget.",
+      "action": "Verify connection",
+      "verifying": "Verifying…",
+      "saveFirst": "Save your changes first. The check uses the saved settings.",
+      "result": {
+        "verified": "Connection verified. Chat over an API key is ready.",
+        "notConfigured": "No API-key chat provider is ready to verify. Choose a provider and save its API key, then try again.",
+        "consentRequired": "Turn on AI text processing and external providers in Privacy → Consent, then try again.",
+        "restartRequired": "Your saved provider change applies after Maekon restarts. Restart Maekon, then verify again.",
+        "budgetExhausted": "Today's AI token budget is used up. Try again after it resets.",
+        "providerError": "The provider did not complete a reply. Check the API key and model, then try again.",
+        "timeout": "The provider did not reply within 30 seconds. Try again.",
+        "failed": "Maekon could not run the check. Try again."
+      }
+    }
   },
   "settingsOAuth": {
     "title": "Connection",
@@ -1850,6 +1868,78 @@
     "reauthRequired": "Re-authentication required",
     "reauthDescription": "Your OAuth session has expired. Please reconnect.",
     "switchToCli": "Use {{surface}} instead"
+  },
+  "aiReadiness": {
+    "readyTitle": "AI features are ready",
+    "blockedTitle": "AI setup required",
+    "capability": {
+      "chatSubprocess": "AI Chat · subscription CLI",
+      "chatHttpApi": "AI Chat · provider API",
+      "chatLocalLlm": "AI Chat · local model",
+      "ocrCapture": "OCR capture",
+      "ocrSuggestionAnalysis": "OCR-derived AI suggestions",
+      "segmentSummary": "AI segment summaries",
+      "dailyNarrative": "AI daily narrative"
+    },
+    "reason": {
+      "ready": "Ready",
+      "compiled_capability_missing": "This build does not include the required capability.",
+      "runtime_flag_disabled": "The required feature is disabled.",
+      "consent_required": "The required privacy consent has not been granted.",
+      "access_mode_mismatch": "The selected AI access mode does not match this provider path.",
+      "endpoint_or_profile_required": "Select a provider endpoint or profile.",
+      "provider_not_detected": "The selected provider was not detected.",
+      "provider_auth_required": "Provider authentication is required.",
+      "provider_auth_unverified": "Provider authentication has not been verified.",
+      "provider_invocation_unavailable": "The provider cannot be invoked.",
+      "provider_invocation_unverified": "Provider invocation has not been verified.",
+      "model_unavailable": "The selected model is unavailable.",
+      "model_availability_unverified": "Model availability has not been verified.",
+      "hot_rewire_required": "Apply the setting again to rewire the running AI service.",
+      "restart_required": "Restart Maekon to apply this setting.",
+      "privacy_gate_unavailable": "The privacy gate is unavailable.",
+      "egress_gate_unavailable": "The external-data policy gate is unavailable.",
+      "budget_gate_unavailable": "The AI usage budget gate is unavailable.",
+      "audit_gate_unavailable": "The AI audit gate is unavailable."
+    },
+    "action": {
+      "none": "No action needed",
+      "openAiSettings": "Open AI settings",
+      "openPrivacyConsent": "Review privacy consent",
+      "enableFeature": "Enable the required feature",
+      "installProvider": "Install a supported provider",
+      "authenticateProvider": "Sign in to the provider",
+      "verifyProviderInvocation": "Verify provider invocation",
+      "selectModel": "Select and verify a model",
+      "applyHotRewire": "Apply the setting again to rewire AI",
+      "restartApp": "Restart Maekon to apply this setting",
+      "reviewPrivacy": "Review the privacy gate",
+      "reviewEgress": "Review the external-data policy",
+      "reviewBudget": "Review the AI usage budget",
+      "reviewAudit": "Review the audit gate"
+    }
+  },
+  "summaryProvenance": {
+    "digest": { "heuristic": "Heuristic digest" },
+    "aiSegmentSummary": "AI segment summary",
+    "aiSegmentUnavailable": "AI segment summary unavailable",
+    "aiDailyNarrative": "AI daily narrative",
+    "dailyNarrativeUnavailable": "AI daily narrative unavailable",
+    "provider": {
+      "loopback": "Loopback model on this device",
+      "subprocess": "Subscription CLI subprocess",
+      "external_api": "External provider API",
+      "unknown": "Provider class unavailable"
+    },
+    "failure": {
+      "pipeline_disabled": "The AI summary pipeline was disabled when this item was processed.",
+      "below_minimum_duration": "This segment was shorter than the configured AI summary minimum.",
+      "provider_unavailable": "No compatible summary provider was available.",
+      "provider_failed": "The provider could not generate a summary. No provider error body was retained.",
+      "invalid_response": "The provider returned a response that could not be accepted as an AI summary.",
+      "capacity_limited": "The summary queue was at capacity when this segment closed.",
+      "not_generated": "No AI narrative was generated; the heuristic digest remains available."
+    }
   },
   "featureCapability": {
     "preferredPath": "Preferred path",
@@ -2087,7 +2177,7 @@
     "dashboard": {
       "active": {
         "title": "Warming Up",
-        "description": "Maekon is collecting activity data in the background. Open any app and keep working — your first metrics usually appear within a minute, and your first recovery card surfaces in the tracking panel at the top of your screen within about 15 minutes."
+        "description": "Maekon is collecting activity data in the background. Open any app and keep working — your first metrics usually appear within a minute. For a suggested next step, press “Find my next step” in the tracking panel at the top of your screen."
       },
       "paused": {
         "title": "Activity Capture Is Paused",
@@ -2391,11 +2481,11 @@
   "onboarding": {
     "step3Search": "Search everything you've seen",
     "aiFeatures": {
-      "optInHint": "Optional: turn on local embedding, AI semantic search, and the AI daily-digest narrative. Everything runs on-device and takes effect after you restart Maekon.",
-      "enableButton": "Enable AI features",
+      "optInHint": "Optional: prepare tiered memory, embedding, semantic search, and AI summaries. Provider processing may be loopback, subscription CLI, or external API according to your AI settings. Separate Pattern Learning consent and a restart are still required.",
+      "enableButton": "Prepare AI features",
       "enabling": "Enabling…",
-      "enabled": "AI features enabled",
-      "enabledNote": "Local embedding, semantic search, and the AI daily-digest narrative will be active after you restart Maekon.",
+      "prepared": "AI configuration saved",
+      "preparedNote": "Configuration alone is not readiness. Complete the provider and separate Pattern Learning consent requirements below, then restart Maekon.",
       "error": "Could not enable AI features: {{error}}"
     },
     "step1Title": "Welcome to Maekon",
@@ -2481,7 +2571,7 @@
       "egressNote": "Cloud speech-to-text stays off until you choose a provider and configure credentials in Settings."
     },
     "stepIndicatorLabel": "Step indicator",
-    "step4RecoveryCardHint": "As you work, Maekon watches for a good moment to help. Your first recovery card — a suggested next step backed by what was on screen — usually appears in the small tracking panel at the top of your screen within about 15 minutes.",
+    "step4RecoveryCardHint": "When you want to pick up where you left off, press “Find my next step” in the small tracking panel at the top of your screen. Maekon reads what is on screen and proposes your next step as a recovery card. This needs an AI provider set up in Settings.",
     "step4SuggestionsShortcut": "Recovery cards appear in the suggestions panel — open it anytime with {{shortcut}}.",
     "readyCollectionOffTitle": "Starting with collection off",
     "readyCollectionOffDesc": "You skipped consent, so Maekon is not collecting anything. Your timeline and suggestions will stay empty. Turn it on now, or later in Settings > Privacy.",
@@ -2495,6 +2585,11 @@
     "create_failed_title": "Could not create a session",
     "create_failed": "Failed to create an AI session.",
     "provider_not_configured": "{{provider}} is not configured. Add its credential in Settings → AI & Automation, then try again.",
+    "no_ready_provider": "No ready AI provider",
+    "provider_unavailable": "Provider unavailable",
+    "local_runtime_unavailable": "Ollama is not reachable. Start Ollama and verify the configured endpoint, then try again.",
+    "local_runtime_invalid": "The configured local endpoint is not Ollama. Choose Local LLM only for an Ollama endpoint.",
+    "local_model_missing": "The selected Ollama model is not installed. Install or select an available model, then try again.",
     "load_failed_title": "Could not load sessions",
     "load_failed": "Failed to load AI sessions.",
     "refresh_failed": "Failed to refresh AI sessions.",
@@ -2651,6 +2746,38 @@
     "closePanelLabel": "Close suggestions panel",
     "badgeNew": "new",
     "historyLoadError": "Could not load history.",
+    "localAnalysis": {
+      "status": {
+        "generated": "Local suggestions generated",
+        "no_candidate": "No local candidate found",
+        "throttled": "Local analysis is waiting",
+        "provider_offline": "Local analysis provider unavailable",
+        "policy_blocked": "Local analysis is disabled",
+        "consent_required": "Consent required for local analysis"
+      },
+      "reason": {
+        "generated": "Local suggestions generated",
+        "no_valid_candidate": "No valid local candidate found",
+        "not_admitted": "Local candidates did not pass review filters",
+        "no_input": "No local activity was available to analyze",
+        "context_unchanged": "Local context has not changed",
+        "analysis_throttled": "Local analysis is waiting for its next allowed run",
+        "provider_unavailable": "The selected local analysis provider is unavailable",
+        "analysis_disabled": "Local activity suggestion generation is disabled",
+        "capture_policy_blocked": "Local analysis is blocked by capture policy",
+        "suggestion_queue_unavailable": "The local suggestion review queue is unavailable",
+        "consent_required": "Consent required for local analysis",
+        "provider_consent_required": "The analysis provider requires consent",
+        "provider_policy_blocked": "The analysis provider is blocked by policy"
+      },
+      "producer": {
+        "periodic": "periodic analysis",
+        "app_switch": "app-switch analysis"
+      },
+      "provenance": "{{source}} · {{producer}} · {{time}}",
+      "counts": "{{candidateCount}} generated · {{queueCount}} in review",
+      "timeUnavailable": "Time unavailable"
+    },
     "badgeLabel": "{{count}} new suggestions"
   },
   "suggestionStats": {
@@ -2953,24 +3080,24 @@
   },
   "advancedTab": {
     "aiFeaturesMaster": "Enable AI features",
-    "aiFeaturesMasterDescription": "Turns on local embedding, AI semantic search, and the AI daily-digest narrative in one step — all processed on-device. Takes effect after you restart Maekon.",
+    "aiFeaturesMasterDescription": "Prepares tiered memory, embedding, semantic search, and AI summaries together. It does not grant Pattern Learning consent. Processing location follows the selected provider; restart Maekon after all readiness checks pass.",
     "llmSummary": "AI daily-digest narrative",
-    "llmSummaryDescription": "Use the on-device LLM to write a natural-language summary of your day (requires embedding). Takes effect after restart.",
+    "llmSummaryDescription": "Use the selected LLM provider to write segment summaries and a daily narrative (requires tiered memory and embedding). Provider location is shown with each result. Takes effect after restart.",
     "maxConcurrentSessions": "Max concurrent sessions",
     "idleTimeoutSeconds": "Idle timeout (seconds)",
     "sessionTimeoutSeconds": "Session timeout (seconds)",
     "maxRetries": "Max retries",
     "maxHistoryTurns": "Max history turns",
     "healthCheckIntervalSeconds": "Health check interval (seconds)",
-    "enableSuggestions": "Enable suggestions",
-    "enableSuggestionsDescription": "Receive AI-powered suggestions based on your activity",
+    "enableSuggestions": "Receive server suggestions",
+    "enableSuggestionsDescription": "Receive suggestions from the signed-in ONESHIM server stream",
     "showBorder": "Show border",
     "showBorderDescription": "Display a colored border around the screen when monitoring",
     "showPanel": "Show panel",
     "showPanelDescription": "Display the tracking status panel",
     "borderOpacity": "Border opacity (0.0 - 1.0)",
-    "enableAnalysis": "Enable analysis",
-    "enableAnalysisDescription": "Run LLM analysis on activity segments",
+    "enableAnalysis": "Generate local activity suggestions",
+    "enableAnalysisDescription": "Analyze consented local activity and OCR context with the selected LLM provider",
     "analysisIntervalSeconds": "Analysis interval (seconds)",
     "minConfidence": "Min confidence (0.0 - 1.0)",
     "maxSuggestions": "Max suggestions",
@@ -3272,8 +3399,10 @@
       "noCandidateDetail": "Your screen was reviewed but no action was proposed.",
       "providerOfflineTitle": "Assistant offline",
       "providerOfflineDetail": "The suggestion provider is unavailable right now.",
-      "noSessionTitle": "No assistant session",
-      "noSessionDetail": "Open Chat and start a session. If you have not set up an AI provider yet, do that first in Settings.",
+      "noProviderTitle": "No AI provider ready",
+      "noProviderDetail": "Open Settings and finish setting up an AI provider, then try again.",
+      "openChatTitle": "Open a Chat first",
+      "openChatDetail": "Your AI provider runs as a command-line app, which this step cannot start with its tools turned off. Open a Chat and try again, or set up an API or local provider in Settings.",
       "noContextTitle": "Not enough on screen",
       "noContextDetail": "There wasn't enough current context to suggest a step."
     }
@@ -3341,6 +3470,64 @@
       "noHandler": "No mail application is registered for compose links. Install or configure a default mail app, then try again.",
       "handoff": "The OS could not open the compose window. Your local draft is still saved; retry when ready.",
       "bridge": "OS handoff is available only in the Maekon desktop app."
+    }
+  },
+  "wbsXlsxDraft": {
+    "title": "WBS XLSX draft",
+    "description": "Create a local spreadsheet from one confirmed synthetic assignment receipt.",
+    "synthetic": "Synthetic data demo",
+    "syntheticAria": "Synthetic data demo. No real customer data is used.",
+    "nativeBoundary": {
+      "title": "Native file boundary",
+      "body": "Maekon resolves the organization, mapping, and assignment on the server. Native dialogs choose the input template and output file; the WebView never supplies paths or a bearer token."
+    },
+    "source": { "title": "Confirmed assignment", "receipt": "Assignment receipt ID" },
+    "actions": { "generate": "Choose template and create draft", "running": "Preparing…" },
+    "states": {
+      "running": {
+        "title": "Preparing the synthetic draft",
+        "body": "The server gate is being checked before native file selection."
+      },
+      "error": {
+        "title": "Draft could not be created",
+        "body": "Check the signed-in account, receipt freshness, template safety, and service availability, then retry."
+      },
+      "unsafeWorkbook": {
+        "title": "Workbook safety check failed",
+        "body": "No output was kept. Recheck the selected template and output location, then retry. Code: {{code}}"
+      },
+      "localReceipt": {
+        "title": "Local receipt could not be saved",
+        "body": "A local file may exist, but no success is claimed because its durable receipt failed. Check the selected output, repair local storage, and retry. Code: {{code}}"
+      },
+      "cancelled": {
+        "title": "No file created",
+        "body": "The native picker was cancelled. No output artifact or receipt was created."
+      },
+      "rejected": { "title": "Server gate rejected the draft", "body": "No workbook was written. Reason: {{reason}}" },
+      "headerDrift": {
+        "title": "Template header changed",
+        "body": "No output workbook was written. First mismatching column: {{column}}"
+      },
+      "produced": {
+        "title": "Synthetic XLSX draft created",
+        "body": "Review the local file and the pinned hashes below before using it as demo evidence.",
+        "uploadPending": "The local receipt is durable; server upload remains pending and will retry.",
+        "uploaded": "The local receipt was also appended to the server."
+      }
+    },
+    "fields": {
+      "assignmentReceipt": "Assignment receipt",
+      "outputReceipt": "XLSX output receipt",
+      "assignment": "Assignment",
+      "mapping": "TMD mapping",
+      "assignmentHash": "Assignment hash",
+      "sourceHash": "Source snapshot hash",
+      "mappingHash": "Mapping content hash",
+      "workbookStructureHash": "Selected workbook structure hash",
+      "templateHash": "Approved template hash",
+      "outputHash": "Output SHA-256",
+      "outputPath": "Saved file"
     }
   },
   "contextHome": {
@@ -3418,6 +3605,58 @@
         "bridge": "This transition is available only in the Maekon desktop app.",
         "unavailable": "The Console transition is temporarily unavailable."
       }
+    }
+  },
+  "wbsAssignee": {
+    "title": "WBS assignee recommendation",
+    "start": "Review assignees",
+    "restart": "Start a new review",
+    "backToSuggestions": "Back to suggestions",
+    "consent": "Use the selected task and assignee information in {{document}} to recommend candidates. Only the assignee you select will be applied to its cell.",
+    "accept": "Allow and load candidates",
+    "cancel": "End this review",
+    "loading": "Loading candidates…",
+    "applying": "Checking and applying your selection…",
+    "target": "Target: row {{row}}, column {{column}}",
+    "synthetic": "Synthetic demo data",
+    "empty": "No eligible assignee is available.",
+    "refresh": "Review the current row again",
+    "checkExecution": "Check this result again",
+    "appliedVerified": "The selected assignee was applied and its cell value was verified.",
+    "notVerified": "The result is not fully verified. Check the cell before trying another assignment.",
+    "unavailable": "This action could not be completed. A change may still need to be checked.",
+    "automationDisabled": "Check that automation is enabled. If it was off when Maekon started, restart Maekon after enabling it.",
+    "consentRequired": "Consent is required to review assignees. Check your privacy settings before starting a new review.",
+    "consentChanged": "Consent changed, so this review stopped. Check your privacy settings and start a new review.",
+    "policyBlocked": "The current policy does not allow this WBS action.",
+    "sandboxUnsupported": "This WBS action is unavailable in the current protected environment.",
+    "configurationChanged": "Settings changed during this review. Check them and start a new review.",
+    "expired": "This review has expired. Check the selected row and start a new review.",
+    "requestUnavailable": "Could not start or continue this review. Check the document and connection, then try again.",
+    "outcomeUnknown": "The cell update may have occurred. Check this result before attempting another assignment.",
+    "readbackUnavailable": "The cell value could not be verified. Check this result before attempting another assignment.",
+    "nativeLabel": "Cell update",
+    "readbackLabel": "Cell verification",
+    "auditLabel": "Execution record",
+    "native": {
+      "not_started": "Not started",
+      "written_unverified": "Update acknowledged",
+      "cancelled_before_start": "Cancelled before updating",
+      "already_attempted": "Previously attempted",
+      "outcome_unknown": "Outcome unknown",
+      "rejected": "Rejected"
+    },
+    "readback": {
+      "not_read": "Not checked",
+      "matches": "Selected value matches",
+      "mismatch": "Value does not match",
+      "unavailable": "Could not check"
+    },
+    "audit": {
+      "not_started": "Not requested",
+      "start_accepted": "Start record request accepted",
+      "completion_accepted": "Completion record request accepted",
+      "completion_rejected": "Completion record request failed"
     }
   }
 }

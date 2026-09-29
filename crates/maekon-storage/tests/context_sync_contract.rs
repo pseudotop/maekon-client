@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use chrono::Utc;
 use maekon_core::error::CoreError;
+use maekon_core::error_codes::InternalCode;
 use maekon_core::models::work_context::{
     ContextSourceDescriptor, ContextSourcePage, ContextSourceRecord, DataClassification, Lifecycle,
     RevisionModel, SourceObjectIdentity, WorkContextKind,
@@ -21,6 +22,7 @@ use maekon_core::ports::work_context::{
     AccountStatus, ContextSourcePort, SourceHealth, SyncOutcome, SyncRequest, WorkContextStorePort,
 };
 use maekon_core::services::context_sync::{run_sync, CancelFlag, StopReason, SyncPlan};
+use maekon_storage::error::StorageError;
 use maekon_storage::sqlite::SqliteStorage;
 use tempfile::TempDir;
 
@@ -66,8 +68,12 @@ impl FakeConnector {
         }
     }
 
-    fn call_count(&self) -> u32 {
-        *self.calls.lock().unwrap()
+    fn call_count(&self) -> Result<u32, CoreError> {
+        let calls = self.calls.lock().map_err(|_| CoreError::Internal {
+            code: InternalCode::Generic,
+            message: "fixture call counter lock poisoned".into(),
+        })?;
+        Ok(*calls)
     }
 }
 
@@ -100,8 +106,14 @@ impl ContextSourcePort for FakeConnector {
     }
 
     async fn sync(&self, _request: SyncRequest) -> Result<SyncOutcome, CoreError> {
-        *self.calls.lock().unwrap() += 1;
-        let mut q = self.scripted.lock().unwrap();
+        *self.calls.lock().map_err(|_| CoreError::Internal {
+            code: InternalCode::Generic,
+            message: "fixture call counter lock poisoned".into(),
+        })? += 1;
+        let mut q = self.scripted.lock().map_err(|_| CoreError::Internal {
+            code: InternalCode::Generic,
+            message: "fixture script queue lock poisoned".into(),
+        })?;
         if q.is_empty() {
             // When the script is exhausted, an empty drained page.
             return Ok(page(vec![], None, false));
@@ -155,14 +167,12 @@ impl ContextSourcePort for NonAdvertisableConnector {
     }
 }
 
-async fn store() -> (TempDir, SqliteStorage) {
-    let dir = TempDir::new().unwrap();
+async fn store() -> Result<(TempDir, SqliteStorage), StorageError> {
+    let dir = TempDir::new()?;
     let path = dir.path().join("wctx.db");
-    let s = SqliteStorage::open(&path, 30, None).unwrap();
-    s.begin_access_epoch("inst_1", "acct_1", Utc::now())
-        .await
-        .unwrap();
-    (dir, s)
+    let s = SqliteStorage::open(&path, 30, None)?;
+    s.begin_access_epoch("inst_1", "acct_1", Utc::now()).await?;
+    Ok((dir, s))
 }
 
 fn plan(max_pages: u32) -> SyncPlan {
@@ -180,7 +190,7 @@ fn plan(max_pages: u32) -> SyncPlan {
 
 #[tokio::test]
 async fn paginates_until_drained() {
-    let (_d, s) = store().await;
+    let (_d, s) = store().await.expect("create work-context fixture");
     let conn = FakeConnector::new(vec![
         page(
             vec![record("a", 1, "a", Lifecycle::Active)],
@@ -205,7 +215,7 @@ async fn paginates_until_drained() {
 
 #[tokio::test]
 async fn duplicate_page_delivery_does_not_double_insert() {
-    let (_d, s) = store().await;
+    let (_d, s) = store().await.expect("create work-context fixture");
     // Re-deliver the same record across two pages (at-least-once).
     let conn = FakeConnector::new(vec![
         page(
@@ -225,7 +235,7 @@ async fn duplicate_page_delivery_does_not_double_insert() {
 
 #[tokio::test]
 async fn reordered_delivery_keeps_the_higher_revision() {
-    let (_d, s) = store().await;
+    let (_d, s) = store().await.expect("create work-context fixture");
     // Revision 2 arrives first, revision 1 (stale) arrives later.
     let conn = FakeConnector::new(vec![
         page(
@@ -246,7 +256,7 @@ async fn reordered_delivery_keeps_the_higher_revision() {
 
 #[tokio::test]
 async fn rate_limited_surfaces_typed_health_without_raw_body() {
-    let (_d, s) = store().await;
+    let (_d, s) = store().await.expect("create work-context fixture");
     let conn = FakeConnector::new(vec![
         page(
             vec![record("a", 1, "a", Lifecycle::Active)],
@@ -283,7 +293,7 @@ async fn unauthorized_health_should_not_retry() {
 
 #[tokio::test]
 async fn crash_before_commit_replays_from_the_same_cursor() {
-    let (_d, s) = store().await;
+    let (_d, s) = store().await.expect("create work-context fixture");
     // First run: commits only one page and stops on budget exhaustion (a stand-in for a crash).
     let conn1 = FakeConnector::new(vec![page(
         vec![record("a", 1, "a", Lifecycle::Active)],
@@ -315,7 +325,7 @@ async fn crash_before_commit_replays_from_the_same_cursor() {
 
 #[tokio::test]
 async fn cancellation_stops_at_the_next_page_boundary() {
-    let (_d, s) = store().await;
+    let (_d, s) = store().await.expect("create work-context fixture");
     let cancel = CancelFlag::new();
     // Set cancellation in advance — stops immediately at the first page boundary.
     cancel.cancel();
@@ -330,13 +340,13 @@ async fn cancellation_stops_at_the_next_page_boundary() {
     assert_eq!(summary.stop_reason, StopReason::Cancelled);
     assert_eq!(summary.pages_committed, 0);
     // The connector was never called — cancellation comes before the network.
-    assert_eq!(conn.call_count(), 0);
+    assert_eq!(conn.call_count().expect("read fixture call count"), 0);
     assert_eq!(s.list_projectable(100).await.unwrap().len(), 0);
 }
 
 #[tokio::test]
 async fn page_budget_bounds_unlimited_collection() {
-    let (_d, s) = store().await;
+    let (_d, s) = store().await.expect("create work-context fixture");
     // The provider gives has_more=true forever — without a budget, an infinite loop.
     let conn = FakeConnector::new(vec![
         page(
@@ -367,7 +377,7 @@ async fn page_budget_bounds_unlimited_collection() {
 async fn non_advertisable_connector_is_refused_before_any_sync() {
     // I6/§5: a non-advertisable connector is refused immediately after discover and
     // pulls no pages at all — proving `is_advertisable` is a real gate, not a dead pure function.
-    let (_d, s) = store().await;
+    let (_d, s) = store().await.expect("create work-context fixture");
     let conn = NonAdvertisableConnector;
     let summary = run_sync(&conn, &s, &plan(10), &CancelFlag::new(), Utc::now())
         .await
@@ -380,7 +390,7 @@ async fn non_advertisable_connector_is_refused_before_any_sync() {
 
 #[tokio::test]
 async fn delete_tombstone_removes_a_previously_active_record() {
-    let (_d, s) = store().await;
+    let (_d, s) = store().await.expect("create work-context fixture");
     let conn = FakeConnector::new(vec![
         page(
             vec![record("a", 1, "a", Lifecycle::Active)],

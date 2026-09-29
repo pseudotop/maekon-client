@@ -44,9 +44,40 @@ pub fn decode_to_rgba(bytes: &[u8], format: &str) -> Result<(u32, u32, Vec<u8>),
     }
 }
 
+/// Swap the red and blue bytes of every whole pixel in place, turning RGBA8
+/// into the BGRA8 layout `OcrEngine::RecognizeAsync` accepts on Windows.
+///
+/// Lives here rather than in `windows.rs` so any development host tests it
+/// (#12500). A trailing partial pixel, which `decode_to_rgba` never returns,
+/// is left untouched, as the previous `chunks_exact_mut(4)` loop did.
+pub fn rgba_to_bgra_in_place(pixels: &mut [u8]) {
+    let (whole_pixels, _partial) = pixels.as_chunks_mut::<4>();
+    for pixel in whole_pixels {
+        pixel.swap(0, 2);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgba_to_bgra_swaps_red_and_blue_and_keeps_alpha() {
+        let mut pixels = vec![10, 20, 30, 255, 1, 2, 3, 0];
+        rgba_to_bgra_in_place(&mut pixels);
+        assert_eq!(pixels, [30, 20, 10, 255, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn rgba_to_bgra_leaves_a_trailing_partial_pixel_and_empty_input_alone() {
+        // Same contract as the `chunks_exact_mut(4)` loop it replaces.
+        let mut pixels = vec![10, 20, 30, 40, 7, 8, 9];
+        rgba_to_bgra_in_place(&mut pixels);
+        assert_eq!(pixels, [30, 20, 10, 40, 7, 8, 9]);
+        let mut empty: Vec<u8> = Vec::new();
+        rgba_to_bgra_in_place(&mut empty);
+        assert!(empty.is_empty());
+    }
 
     /// Encode a tiny known RGBA image to WebP (same encoder
     /// `encoder::encode_webp` uses in the capture pipeline), then decode it

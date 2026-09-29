@@ -43,6 +43,7 @@ pub mod privacy;
 pub mod privacy_gateway;
 pub mod processor;
 pub mod ring_buffer;
+pub mod screen_regions;
 pub mod thumbnail;
 pub mod timeline;
 pub mod trigger;

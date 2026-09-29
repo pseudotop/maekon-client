@@ -86,15 +86,42 @@ impl ChannelAuditPersistence {
     ) -> Self {
         let capacity = capacity.max(1);
         let (sender, mut receiver) = tokio::sync::mpsc::channel::<AuditEntry>(capacity);
-        // Drain on a blocking thread (spawned via the provided handle, so it does
-        // not depend on an ambient runtime context) so the inner (SQLite)
-        // callback never touches the reactor. `blocking_recv` parks the blocking
-        // thread, not a reactor worker, and returns `None` once all senders drop
-        // (i.e. the logger is torn down), letting the task exit cleanly.
+        // #12079: Tauri state can retain senders beyond runtime shutdown. A
+        // runtime-owned sentinel is cancelled with the async scheduler, before
+        // a multi-thread runtime waits for its blocking pool. Its dropped sender wakes the drain
+        // without polling, including when the sentinel was never first polled.
+        let (runtime_alive, mut runtime_stopped) = tokio::sync::oneshot::channel::<()>();
+        let runtime_watch = handle.spawn(async move {
+            std::future::pending::<()>().await;
+            drop(runtime_alive);
+        });
+        let drain_handle = handle.clone();
         handle.spawn_blocking(move || {
+            // Only channel futures run here: no reactor-backed timers or I/O
+            // after shutdown. SQLite callbacks still run on this blocking thread.
+            drain_handle.block_on(async {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut runtime_stopped => {
+                            receiver.close();
+                            break;
+                        }
+                        entry = receiver.recv() => {
+                            match entry {
+                                Some(entry) => inner.persist(&entry),
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            });
+            // Closing rejects new writes while retaining every accepted entry.
+            // The runtime retains its existing wait bound for a slow callback.
             while let Some(entry) = receiver.blocking_recv() {
                 inner.persist(&entry);
             }
+            runtime_watch.abort();
             tracing::debug!("audit persistence drain task exiting (channel closed)");
         });
         Self {
@@ -415,5 +442,142 @@ mod tests {
         let mut got = seen.lock().unwrap().clone();
         got.sort();
         assert_eq!(got, vec!["c-1".to_string(), "c-2".to_string()]);
+    }
+
+    // #12079: Tauri-managed loggers outlive the background runtime. Compare
+    // that ownership order with the old tests, which dropped the sender first.
+    fn observe_runtime_shutdown(retain_sender: bool) -> Duration {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let inner: Arc<dyn AuditPersistence> = Arc::new(move |entry: &AuditEntry| {
+            seen_tx.send(entry.command_id.clone()).unwrap();
+        });
+        let wrapper = ChannelAuditPersistence::new(inner, runtime.handle().clone());
+        wrapper.persist_checked(&make_entry("ready")).unwrap();
+        assert_eq!(
+            seen_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "ready"
+        );
+        wrapper.persist_checked(&make_entry("queued-1")).unwrap();
+        wrapper.persist_checked(&make_entry("queued-2")).unwrap();
+        let retained = if retain_sender {
+            Some(wrapper)
+        } else {
+            drop(wrapper);
+            None
+        };
+        let started = std::time::Instant::now();
+        runtime.shutdown_timeout(Duration::from_secs(2));
+        let elapsed = started.elapsed();
+        // Accepted records must survive shutdown, including the buffered tail.
+        assert_eq!(
+            seen_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "queued-1"
+        );
+        assert_eq!(
+            seen_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "queued-2"
+        );
+        drop(retained);
+        eprintln!(
+            "retained_sender={retain_sender} shutdown_ms={}",
+            elapsed.as_millis()
+        );
+        elapsed
+    }
+
+    #[test]
+    fn shutdown_with_retained_sender_does_not_wait_for_runtime_timeout() {
+        assert!(observe_runtime_shutdown(true) < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn shutdown_after_dropping_sender_is_the_removal_control() {
+        assert!(observe_runtime_shutdown(false) < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn dropping_unpolled_current_thread_runtime_releases_retained_sender() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let inner: Arc<dyn AuditPersistence> = Arc::new(move |_: &AuditEntry| {
+            seen_tx.send(()).unwrap();
+        });
+        let wrapper = ChannelAuditPersistence::new(inner, runtime.handle().clone());
+        wrapper.persist_checked(&make_entry("ready")).unwrap();
+        seen_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Tokio's current-thread shutdown_timeout stops its scheduler only
+        // after the blocking-pool wait. Its normal Drop stops the scheduler
+        // first. The app uses a multi-thread runtime, covered separately above.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let teardown = std::thread::spawn(move || {
+            drop(runtime);
+            done_tx.send(()).unwrap();
+        });
+        let result = done_rx.recv_timeout(Duration::from_secs(2));
+        let late_write = wrapper.persist_checked(&make_entry("late"));
+        // Release the test-owned sender even on regression, avoiding a hung test.
+        drop(wrapper);
+        teardown.join().unwrap();
+        result.expect("normal current-thread runtime drop must release the audit drain");
+        assert_eq!(late_write, Err(AuditPersistError::ChannelClosed));
+    }
+
+    #[test]
+    fn shutdown_drains_a_buffered_tail_after_a_slow_callback_without_extending_timeout() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let inner: Arc<dyn AuditPersistence> = Arc::new(move |entry: &AuditEntry| {
+            if entry.command_id == "blocked" {
+                entered_tx.send(()).unwrap();
+                // Bound the control even if the test fails before releasing it.
+                let _ = release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5));
+            }
+            seen_tx.send(entry.command_id.clone()).unwrap();
+        });
+        let wrapper = ChannelAuditPersistence::with_capacity(inner, runtime.handle().clone(), 2);
+        wrapper.persist_checked(&make_entry("blocked")).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        wrapper.persist_checked(&make_entry("tail-1")).unwrap();
+        wrapper.persist_checked(&make_entry("tail-2")).unwrap();
+        assert_eq!(
+            wrapper.persist_checked(&make_entry("overflow")),
+            Err(AuditPersistError::ChannelFull)
+        );
+        let started = std::time::Instant::now();
+        runtime.shutdown_timeout(Duration::from_millis(50));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(
+            seen_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        release_tx.send(()).unwrap();
+        // Both tail entries were provably buffered during runtime shutdown.
+        for expected in ["blocked", "tail-1", "tail-2"] {
+            assert_eq!(
+                seen_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            wrapper.persist_checked(&make_entry("late")),
+            Err(AuditPersistError::ChannelClosed)
+        );
+        assert_eq!(wrapper.dropped_count(), 2);
     }
 }

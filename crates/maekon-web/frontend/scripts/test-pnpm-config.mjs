@@ -52,7 +52,8 @@ const expectedOverrides = {
   'serialize-javascript': '7.0.5',
   '@babel/core': '7.29.6',
   'form-data': '4.0.6',
-  'js-yaml': '4.3.1',
+  // #12497: the 4.3.1 pin itself became vulnerable (GHSA-2883-xcg3-v3hh).
+  'js-yaml@<4.3.2': '4.3.2',
   ws: '8.21.0',
   'ip-address': '10.3.1',
   'cheerio>undici': '7.29.0',

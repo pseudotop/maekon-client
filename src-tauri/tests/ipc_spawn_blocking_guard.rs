@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Async-safety deadlock guards for IPC commands that were blocking the tokio
 //! reactor thread before the F-RR-06 / #5640 spawn_blocking migration.
 //!

@@ -581,9 +581,18 @@ impl<T: 'static> EventLoop<T> {
                             });
 
                             let tx_clone = event_tx.clone();
-                            let window_for_motion = window.clone();
+                            // GTK4 `gtk_window_destroy()` only drops GTK's toplevel reference; it
+                            // does not dispose the window the way GTK3 `gtk_widget_destroy()` did.
+                            // A strong clone captured by a controller that the window owns is a
+                            // reference cycle, so the window is never disposed, `destroy` never
+                            // fires and `WindowEvent::Destroyed` is never sent — the runtime then
+                            // keeps a dead window under its label (#12652). Capture weak refs.
+                            let window_for_motion = window.downgrade();
                             let fullscreen_for_motion = fullscreen.clone();
                             motion_controller.connect_motion(move |_, x, y| {
+              let Some(window_for_motion) = window_for_motion.upgrade() else {
+                return;
+              };
               if !window_for_motion.is_decorated()
                 && window_for_motion.is_resizable()
                 && !window_for_motion.is_maximized()
@@ -633,7 +642,8 @@ impl<T: 'static> EventLoop<T> {
 
                             let tx_clone = event_tx.clone();
                             let click_controller = gtk::GestureClick::builder().button(0).build();
-                            let window_for_click = window.clone();
+                            // Weak for the same reason as `window_for_motion` (#12652).
+                            let window_for_click = window.downgrade();
                             let fullscreen_for_click = fullscreen.clone();
                             click_controller.connect_pressed(move |gesture, _, x, y| {
                                 let button = gesture.current_button();
@@ -658,6 +668,9 @@ impl<T: 'static> EventLoop<T> {
                 );
                                 }
 
+                                let Some(window_for_click) = window_for_click.upgrade() else {
+                                    return;
+                                };
                                 if (is_wayland || !window_for_click.is_decorated())
                                     && window_for_click.is_resizable()
                                     && !window_for_click.is_maximized()

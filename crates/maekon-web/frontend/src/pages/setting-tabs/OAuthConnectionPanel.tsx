@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type {
@@ -16,6 +17,7 @@ import {
   providerSurfaceMaturity,
   providerSurfaceStatusCopyKey,
 } from '../../features/featureCapabilities'
+import { invalidateAiReadinessSnapshotCache } from '../../hooks/useAiReadinessSnapshot'
 import { iconSize, typography } from '../../styles/tokens'
 import { isOAuthPanelAvailable } from './oauth-panel-support'
 
@@ -69,6 +71,7 @@ export default function OAuthConnectionPanel({
   onUsePreferredCli,
 }: OAuthConnectionPanelProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const [state, setState] = useState<PanelState>({ phase: 'loading' })
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -78,6 +81,11 @@ export default function OAuthConnectionPanel({
       pollRef.current = null
     }
   }, [])
+
+  const notifyAuthenticationChanged = useCallback(() => {
+    invalidateAiReadinessSnapshotCache()
+    void queryClient.invalidateQueries({ queryKey: ['feature-capabilities'] })
+  }, [queryClient])
 
   const toErrorState = useCallback(
     (error: unknown): PanelState => {
@@ -192,6 +200,7 @@ export default function OAuthConnectionPanel({
           if (flowState.status === 'completed') {
             clearPoll()
             await refreshStatus()
+            notifyAuthenticationChanged()
           } else if (flowState.status === 'failed') {
             clearPoll()
             setState(toErrorState(flowState.error))
@@ -207,7 +216,7 @@ export default function OAuthConnectionPanel({
     } catch (err) {
       setState(toErrorState(err))
     }
-  }, [providerId, clearPoll, refreshStatus, t, toErrorState])
+  }, [providerId, clearPoll, notifyAuthenticationChanged, refreshStatus, t, toErrorState])
 
   const handleCancel = useCallback(async () => {
     if (state.phase === 'connecting') {
@@ -224,11 +233,12 @@ export default function OAuthConnectionPanel({
   const handleDisconnect = useCallback(async () => {
     try {
       await oauthRevoke(providerId)
+      notifyAuthenticationChanged()
       setState({ phase: 'disconnected' })
     } catch (err) {
       setState(toErrorState(err))
     }
-  }, [providerId, toErrorState])
+  }, [notifyAuthenticationChanged, providerId, toErrorState])
 
   return (
     <Card variant="default" padding="md" className="space-y-3">

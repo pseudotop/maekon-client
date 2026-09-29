@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+use maekon_core::models::ai_summary::{
+    AiSummaryArtifact, AiSummaryFailureReason, AiSummaryProviderClass,
+};
 use maekon_core::models::tiered_memory::SegmentSummary;
 use maekon_core::ports::analysis_provider::AnalysisProvider;
 
@@ -17,12 +20,13 @@ Respond with ONLY the summary text."#;
 ///
 /// Uses the `AnalysisProvider::summarize_text()` method to call the LLM.
 /// Applies PII filtering to content activity labels before sending.
-/// Returns `None` if disabled, segment too short, or LLM call fails.
+/// Returns a privacy-safe artifact for generated and unavailable outcomes.
 pub struct LlmSegmentSummarizer {
     analysis_provider: Arc<dyn AnalysisProvider>,
     pii_filter: PiiFilter,
     enabled: bool,
     min_segment_duration_secs: u64,
+    provider_class: AiSummaryProviderClass,
 }
 
 impl LlmSegmentSummarizer {
@@ -32,11 +36,28 @@ impl LlmSegmentSummarizer {
         enabled: bool,
         min_duration: u64,
     ) -> Self {
+        Self::new_with_provider_class(
+            provider,
+            pii_filter,
+            enabled,
+            min_duration,
+            AiSummaryProviderClass::Unknown,
+        )
+    }
+
+    pub fn new_with_provider_class(
+        provider: Arc<dyn AnalysisProvider>,
+        pii_filter: PiiFilter,
+        enabled: bool,
+        min_duration: u64,
+        provider_class: AiSummaryProviderClass,
+    ) -> Self {
         Self {
             analysis_provider: provider,
             pii_filter,
             enabled,
             min_segment_duration_secs: min_duration,
+            provider_class,
         }
     }
 
@@ -48,11 +69,26 @@ impl LlmSegmentSummarizer {
         self.analysis_provider.clone()
     }
 
+    pub fn provider_class(&self) -> AiSummaryProviderClass {
+        self.provider_class
+    }
+
     /// Generate an LLM summary for a closed segment.
-    /// Returns `None` if disabled, segment too short, or LLM call fails.
-    pub async fn summarize(&self, summary: &SegmentSummary) -> Option<String> {
-        if !self.enabled || summary.duration_secs < self.min_segment_duration_secs {
-            return None;
+    /// Returns a privacy-safe artifact for every outcome so the caller can
+    /// persist generated, disabled, short-segment, and provider-failure states
+    /// without retaining raw prompts or provider error bodies.
+    pub async fn summarize(&self, summary: &SegmentSummary) -> AiSummaryArtifact {
+        if !self.enabled {
+            return AiSummaryArtifact::unavailable(
+                Some(self.provider_class),
+                AiSummaryFailureReason::PipelineDisabled,
+            );
+        }
+        if summary.duration_secs < self.min_segment_duration_secs {
+            return AiSummaryArtifact::unavailable(
+                Some(self.provider_class),
+                AiSummaryFailureReason::BelowMinimumDuration,
+            );
         }
 
         let context = self.build_segment_context(summary);
@@ -61,10 +97,29 @@ impl LlmSegmentSummarizer {
             .summarize_text(&context, SEGMENT_SUMMARY_PROMPT)
             .await
         {
-            Ok(text) => Some(text),
+            Ok(text) => {
+                // Provider output may echo user context. Apply the same privacy
+                // filter again immediately before persistence/presentation.
+                let filtered_text = (self.pii_filter)(&text);
+                if filtered_text.trim().is_empty() {
+                    AiSummaryArtifact::unavailable(
+                        Some(self.provider_class),
+                        AiSummaryFailureReason::InvalidResponse,
+                    )
+                } else {
+                    AiSummaryArtifact::generated(
+                        filtered_text.trim().to_string(),
+                        self.provider_class,
+                        chrono::Utc::now(),
+                    )
+                }
+            }
             Err(e) => {
                 tracing::warn!("LLM segment summary failed: {e}");
-                None
+                AiSummaryArtifact::unavailable(
+                    Some(self.provider_class),
+                    AiSummaryFailureReason::ProviderFailed,
+                )
             }
         }
     }
@@ -193,8 +248,64 @@ mod tests {
         let segment = make_segment(1800); // 30 mins
         let result = summarizer.summarize(&segment).await;
 
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), "30-minute coding session in VSCode");
+        assert!(result.is_generated());
+        assert_eq!(
+            result.text.as_deref(),
+            Some("30-minute coding session in VSCode")
+        );
+    }
+
+    #[test]
+    fn exposes_the_configured_provider_class() {
+        let provider = Arc::new(MockAnalysisProvider {
+            response: "unused".to_string(),
+        });
+        let summarizer = LlmSegmentSummarizer::new_with_provider_class(
+            provider,
+            identity_filter(),
+            true,
+            60,
+            AiSummaryProviderClass::ExternalApi,
+        );
+
+        assert_eq!(
+            summarizer.provider_class(),
+            AiSummaryProviderClass::ExternalApi
+        );
+    }
+
+    #[tokio::test]
+    async fn segment_at_minimum_duration_is_eligible() {
+        let provider = Arc::new(MockAnalysisProvider {
+            response: "five-minute focused session".to_string(),
+        });
+        let summarizer = LlmSegmentSummarizer::new(provider, identity_filter(), true, 300);
+
+        let result = summarizer.summarize(&make_segment(300)).await;
+
+        assert!(result.is_generated());
+        assert_eq!(result.text.as_deref(), Some("five-minute focused session"));
+    }
+
+    #[tokio::test]
+    async fn provider_output_is_filtered_before_it_becomes_a_persisted_artifact() {
+        let provider = Arc::new(MockAnalysisProvider {
+            response: "Alice reviewed the launch plan".to_string(),
+        });
+        let summarizer = LlmSegmentSummarizer::new(
+            provider,
+            Box::new(|text| text.replace("Alice", "[REDACTED]")),
+            true,
+            60,
+        );
+
+        let result = summarizer.summarize(&make_segment(1800)).await;
+
+        assert_eq!(
+            result.text.as_deref(),
+            Some("[REDACTED] reviewed the launch plan")
+        );
+        assert!(result.is_generated());
     }
 
     #[tokio::test]
@@ -206,7 +317,10 @@ mod tests {
 
         let segment = make_segment(1800);
         let result = summarizer.summarize(&segment).await;
-        assert!(result.is_none());
+        assert_eq!(
+            result.failure_reason,
+            Some(AiSummaryFailureReason::PipelineDisabled)
+        );
     }
 
     #[tokio::test]
@@ -218,7 +332,10 @@ mod tests {
 
         let segment = make_segment(60); // only 1 minute
         let result = summarizer.summarize(&segment).await;
-        assert!(result.is_none());
+        assert_eq!(
+            result.failure_reason,
+            Some(AiSummaryFailureReason::BelowMinimumDuration)
+        );
     }
 
     #[tokio::test]
@@ -228,7 +345,10 @@ mod tests {
 
         let segment = make_segment(1800);
         let result = summarizer.summarize(&segment).await;
-        assert!(result.is_none());
+        assert_eq!(
+            result.failure_reason,
+            Some(AiSummaryFailureReason::ProviderFailed)
+        );
     }
 
     #[test]

@@ -1,5 +1,9 @@
 //! Unit tests for the autostart module.
 
+// #12500: every consumer of this glob import (the macOS/Linux modules and the
+// unsupported-platform test) is compiled out on Windows, where the import
+// would fail the weekly `-D warnings` first-party lint as unused.
+#[cfg(not(target_os = "windows"))]
 use super::*;
 
 #[cfg(target_os = "macos")]
@@ -149,12 +153,19 @@ mod linux_tests {
     }
 }
 
+// #12441: supported targets must never register/unregister the real user here.
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 #[test]
 fn enable_disable_roundtrip_unsupported_platform() {
-    let _ = enable_autostart();
-    let _ = disable_autostart();
-    let _ = is_autostart_enabled();
+    assert_eq!(enable_autostart(), Ok(()));
+    assert_eq!(disable_autostart(), Ok(()));
+    assert_eq!(is_autostart_enabled(), Ok(false));
 }
+
+// Keep this regression in ordinary app unit runs too. Private CI runs it as
+// an explicit lint target because the app catalog selects individual tests.
+#[path = "../../../crates/maekon-lint/tests/autostart_unit_isolation_gate.rs"]
+mod unit_isolation_gate;
 
 #[cfg(target_os = "linux")]
 mod linux_capability_tests {

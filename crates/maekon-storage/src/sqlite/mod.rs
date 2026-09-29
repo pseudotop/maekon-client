@@ -1,12 +1,15 @@
 mod adaptive_scorer_store_impl;
 mod annotation_storage_impl;
 mod calibration_store_impl;
+mod candidate_decision_audit;
+pub use candidate_decision_audit::SqliteCandidateDecisionAudit;
 pub(crate) mod cjk_shadow;
 mod coaching_effectiveness_store_impl;
 mod coaching_storage;
 mod coaching_storage_port_impl;
 mod dashboard_streaming;
 mod device_identity;
+mod durable_audit;
 pub(crate) mod edge_intelligence;
 mod events;
 pub use events::storage_event_id;
@@ -14,6 +17,8 @@ mod extension_registry_impl;
 mod feedback_scorer_store_impl;
 mod few_shot_storage_impl;
 mod focus_storage_impl;
+mod gateway_candidate_audit;
+pub use gateway_candidate_audit::SqliteGatewayCandidateAudit;
 mod frames;
 mod fts_search_impl;
 pub mod guarded_connection;
@@ -485,19 +490,52 @@ impl SqliteStorage {
     /// happens at erase time and the chain must keep extending during/after the
     /// erase (#4928).
     pub fn save_audit_entry(&self, entry: &maekon_core::models::audit::AuditEntry) {
+        if let Err(e) = self.try_save_audit_entry(entry) {
+            warn!("audit persistence: INSERT failed: {e}");
+        }
+    }
+
+    /// Commit acknowledgment under the connection's existing sync policy.
+    /// Egress gates requiring a synced disk commit use
+    /// [Self::try_save_durable_audit_entry] (#12458).
+    /// Returns false for an ignored duplicate; SQL/read/hash failures propagate.
+    pub fn try_save_audit_entry(
+        &self,
+        entry: &maekon_core::models::audit::AuditEntry,
+    ) -> Result<bool, StorageError> {
+        self.save_audit_entry_with_durability(entry, false)
+    }
+
+    /// Acknowledge one new audit row only after an independent synced WAL
+    /// commit. Reject memory/temporary databases and preserve erase retention.
+    /// The caller must recheck its authorization after this blocking operation.
+    pub fn try_save_durable_audit_entry(
+        &self,
+        entry: &maekon_core::models::audit::AuditEntry,
+    ) -> Result<bool, StorageError> {
+        self.save_audit_entry_with_durability(entry, true)
+    }
+
+    fn save_audit_entry_with_durability(
+        &self,
+        entry: &maekon_core::models::audit::AuditEntry,
+        durable: bool,
+    ) -> Result<bool, StorageError> {
         use crate::audit_chain::{compute_entry_hash, CanonicalRecord, GENESIS_PREV_HASH};
+        use rusqlite::OptionalExtension;
 
         let status_str = format!("{:?}", entry.status);
         let timestamp_str = entry.timestamp.to_rfc3339();
-        let exec_time = entry.execution_time_ms.map(|v| v as i64);
+        let exec_time = entry
+            .execution_time_ms
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| StorageError::Validation {
+                field: "execution_time_ms".into(),
+                message: "Audit duration exceeds the SQLite integer range".into(),
+            })?;
 
-        // The closure returns `StorageError` (not `rusqlite::Error`) so the
-        // canonical-serialization overflow guard in `compute_entry_hash` can
-        // propagate via `?`; `conn.execute` errors auto-convert through the
-        // `#[from] rusqlite::Error` arm. Best-effort write is preserved: any
-        // error (SQLite or overflow) is logged below and the entry is dropped
-        // rather than persisted with a truncated/wrong hash.
-        let res: Result<(), StorageError> = self.conn.retained_write_lock().run(|conn| {
+        let append = |conn: &Connection| {
             // (1) Read the chain tip — the row with the largest seq. Excludes
             //     legacy NULL-chain rows.
             let tip: Option<(i64, String)> = conn
@@ -507,11 +545,16 @@ impl SqliteStorage {
                     [],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .ok();
+                .optional()?;
 
             // (2) Determine next_seq / prev_hash.
             let (next_seq, prev_hash) = match tip {
-                Some((tip_seq, tip_hash)) => (tip_seq + 1, tip_hash),
+                Some((tip_seq, tip_hash)) => (
+                    tip_seq
+                        .checked_add(1)
+                        .ok_or_else(|| StorageError::Internal("audit sequence overflow".into()))?,
+                    tip_hash,
+                ),
                 None => (0, GENESIS_PREV_HASH.to_string()),
             };
 
@@ -550,12 +593,22 @@ impl SqliteStorage {
             )?;
             // affected == 0 → duplicate entry_id no-op. Since no seq was consumed
             // (the INSERT itself was ignored), the chain stays gap-free.
-            let _ = affected;
-            Ok(())
-        });
-        if let Err(e) = res {
-            warn!("audit persistence: INSERT failed: {e}");
-        }
+            Ok(affected == 1)
+        };
+        // Keep configuration, chain-tip read, append and commit under the same
+        // erase-retained lock. Durable writes also hold a database transaction.
+        self.conn.retained_write_lock().run(|conn| {
+            if !conn.is_autocommit() {
+                return Err(StorageError::Internal(
+                    "Audit acknowledgment requires an independent commit".into(),
+                ));
+            }
+            if durable {
+                durable_audit::commit(conn, append)
+            } else {
+                append(conn)
+            }
+        })
     }
 
     /// Persist one AI conversation session audit entry to `session_audit_log`.

@@ -20,6 +20,7 @@ use crate::assembler::{
 };
 use crate::error::AnalysisError;
 use crate::few_shot_selector::FewShotSelector;
+use crate::outcome::AnalysisRunOutcome;
 use crate::pattern_miner::{is_communication_app, PatternMiner};
 use crate::vector_retriever::VectorRetriever;
 
@@ -199,6 +200,13 @@ impl ContextAnalyzer {
 
     /// Full periodic analysis: query events, mine patterns, call LLM.
     pub async fn analyze(&self) -> Result<Vec<Suggestion>, AnalysisError> {
+        self.analyze_with_outcome()
+            .await
+            .map(AnalysisRunOutcome::into_suggestions)
+    }
+
+    /// Full periodic analysis with an explicit metadata-only outcome.
+    pub async fn analyze_with_outcome(&self) -> Result<AnalysisRunOutcome, AnalysisError> {
         // Claim-then-run throttle: atomically check the throttle window AND
         // reserve the in-flight slot before releasing the lock and before the
         // LLM round-trip below. The reservation is an explicit in-flight flag
@@ -209,7 +217,7 @@ impl ContextAnalyzer {
             Some(claim) => claim,
             None => {
                 debug!("Analysis throttled — skipping");
-                return Ok(vec![]);
+                return Ok(AnalysisRunOutcome::Throttled);
             }
         };
 
@@ -236,7 +244,7 @@ impl ContextAnalyzer {
             // No work was done; release the reservation so an empty tick does not
             // count toward the throttle window (#6119).
             self.restore_analysis_claim(claim).await;
-            return Ok(vec![]);
+            return Ok(AnalysisRunOutcome::NoInput);
         }
 
         let patterns = self.pattern_miner.detect(&events);
@@ -365,11 +373,24 @@ impl ContextAnalyzer {
             "Analysis cycle completed"
         );
 
-        Ok(filtered)
+        if filtered.is_empty() {
+            Ok(AnalysisRunOutcome::NoCandidate)
+        } else {
+            Ok(AnalysisRunOutcome::Generated(filtered))
+        }
     }
 
     /// Lightweight check: only call full analysis if patterns changed.
     pub async fn analyze_if_changed(&self) -> Result<Vec<Suggestion>, AnalysisError> {
+        self.analyze_if_changed_with_outcome()
+            .await
+            .map(AnalysisRunOutcome::into_suggestions)
+    }
+
+    /// Change-detected analysis with an explicit metadata-only outcome.
+    pub async fn analyze_if_changed_with_outcome(
+        &self,
+    ) -> Result<AnalysisRunOutcome, AnalysisError> {
         let now = Utc::now();
         let lookback = Duration::seconds(self.config.interval_secs as i64);
         let from = now - lookback;
@@ -393,11 +414,11 @@ impl ContextAnalyzer {
                 new_hash = new_hash,
                 "Patterns changed — triggering full analysis"
             );
-            return self.analyze().await;
+            return self.analyze_with_outcome().await;
         }
 
         debug!("Patterns unchanged — skipping analysis");
-        Ok(vec![])
+        Ok(AnalysisRunOutcome::Unchanged)
     }
 
     /// Triggered by a significant event (e.g., major app switch).
@@ -407,13 +428,25 @@ impl ContextAnalyzer {
         window_title: &str,
         ocr_text: Option<&str>,
     ) -> Result<Vec<Suggestion>, AnalysisError> {
+        self.on_significant_event_with_outcome(app_name, window_title, ocr_text)
+            .await
+            .map(AnalysisRunOutcome::into_suggestions)
+    }
+
+    /// Event-driven analysis with an explicit metadata-only outcome.
+    pub async fn on_significant_event_with_outcome(
+        &self,
+        app_name: &str,
+        window_title: &str,
+        ocr_text: Option<&str>,
+    ) -> Result<AnalysisRunOutcome, AnalysisError> {
         // Claim-then-run throttle (see analyze()): reserve the in-flight slot
         // before the LLM round-trip so a concurrent caller cannot run a
         // duplicate analysis on the shared ContextAnalyzer, independent of
         // `throttle_secs` (#6119, #7079).
         let claim = match self.claim_analysis_slot().await {
             Some(claim) => claim,
-            None => return Ok(vec![]),
+            None => return Ok(AnalysisRunOutcome::Throttled),
         };
 
         let now = Utc::now();
@@ -476,7 +509,11 @@ impl ContextAnalyzer {
         // in-flight reservation (slot already claimed at entry) (#6119, #7079).
         self.complete_analysis_claim(claim).await;
 
-        Ok(filtered)
+        if filtered.is_empty() {
+            Ok(AnalysisRunOutcome::NoCandidate)
+        } else {
+            Ok(AnalysisRunOutcome::Generated(filtered))
+        }
     }
 
     /// Atomically enforce the in-flight + throttle gates AND reserve the slot.
@@ -991,6 +1028,18 @@ mod tests {
         assert!(result2.is_empty(), "Should be throttled");
     }
 
+    #[tokio::test]
+    async fn explicit_outcome_distinguishes_no_candidate_from_throttle() {
+        let suggestions = vec![make_suggestion("Below threshold", 0.3)];
+        let analyzer = make_analyzer(make_events(5), suggestions);
+
+        let first = analyzer.analyze_with_outcome().await.unwrap();
+        assert!(matches!(first, AnalysisRunOutcome::NoCandidate));
+
+        let second = analyzer.analyze_with_outcome().await.unwrap();
+        assert!(matches!(second, AnalysisRunOutcome::Throttled));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_analyze_yields_single_proceed() {
         // Two near-simultaneous analyze() calls on the SHARED analyzer must
@@ -1179,6 +1228,19 @@ mod tests {
             result2.is_empty(),
             "Should return empty when patterns unchanged"
         );
+    }
+
+    #[tokio::test]
+    async fn analyze_if_changed_legacy_wrapper_returns_generated_suggestions() {
+        let analyzer = make_analyzer(
+            make_events(5),
+            vec![make_suggestion("Changed context tip", 0.8)],
+        );
+
+        let suggestions = analyzer.analyze_if_changed().await.unwrap();
+
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].content, "Changed context tip");
     }
 
     #[tokio::test]

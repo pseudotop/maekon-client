@@ -44,7 +44,7 @@ is not a stable release or evidence of production readiness.
 ## Source Build Quick Start
 
 The public repository is live, and this source snapshot is prepared for the
-`v0.0.1-rc.10` release candidate. Treat it as published only when the matching
+`v0.0.1-rc.11` release candidate. Treat it as published only when the matching
 GitHub Release and artifacts exist. Because GitHub's `latest` release endpoint
 excludes prereleases, use the version-pinned installer commands in the install
 guide for release-binary testing. For monorepo development and debug builds,
@@ -75,8 +75,8 @@ signature enforcement, and uninstall:
 ## Why Maekon
 
 - **Turn activity into governed work insight**: Track context, timeline, focus trends, interruptions, and approved automation paths in one place.
-- **Stay lightweight on-device**: Edge processing (delta encoding, thumbnailing, OCR) reduces transfer volume and keeps response fast.
-- **Evaluate the desktop stack in Global Alpha**: The prerelease includes cross-platform source, update plumbing, system-tray integration, and a local web dashboard; verify the exact build and platform before relying on it.
+- **Stay lightweight on-device**: Edge processing (delta encoding, thumbnailing, and local OCR on macOS and Windows) reduces transfer volume and keeps response fast.
+- **Evaluate the desktop stack in Global Alpha**: The prerelease includes cross-platform source, update plumbing, system-tray integration (macOS and Windows), and a local web dashboard; verify the exact build and platform before relying on it.
 
 ### Market positioning (2026)
 
@@ -114,7 +114,7 @@ Standalone mode is the current default evaluation path for Global Alpha.
 
 - PII filtering levels (Off/Basic/Standard/Strict) are applied in the vision pipeline
 - Local data is stored in SQLite and managed with retention controls
-- Automation requires policy validation, sandbox profiles, and local audit logging
+- Automation is off by default. When enabled, actions pass Maekon's policy gates and are written to a local audit log; OS sandbox isolation is opt-in and varies by OS (see [Platform limitations](#platform-limitations))
 - Security reporting and response policy: [SECURITY.md](./SECURITY.md)
 - Alpha feedback, privacy requests, or withdrawal (current intake state): [maekon.dev/alpha-feedback](https://maekon.dev/alpha-feedback)
 - Standalone integrity baseline: [docs/security/standalone-integrity-baseline.md](./docs/security/standalone-integrity-baseline.md)
@@ -137,7 +137,7 @@ The privacy claims above are not marketing copy — each maps to code in this re
 | The memory graph's beliefs (claims) about you are browsable and one-click retractable (Privacy → Claims) | claims routes in [`crates/maekon-web/src/routes.rs`](./crates/maekon-web/src/routes.rs) |
 | Consent is fail-closed: no valid grant means no capture | [`crates/maekon-core/src/consent.rs`](./crates/maekon-core/src/consent.rs) |
 | Covered vision-pipeline paths apply configured PII filtering before their documented storage or egress steps | [`crates/maekon-vision/src/privacy/`](./crates/maekon-vision/src/privacy/) |
-| Supported automation execution paths are designed to route through policy, sandbox, and audit components | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
+| Automation actions pass a command gate and the local audit log; OS sandbox isolation applies only when it is enabled | [`crates/maekon-automation/src/`](./crates/maekon-automation/src/) |
 
 ### Source sync policy
 
@@ -147,12 +147,12 @@ This repository is a **vetted snapshot export** of Maekon's internal source of t
 
 ### Core Features
 - **Real-time Context Monitoring**: Tracks active windows, system resources, and user activity
-- **Edge Image Processing**: Screenshot capture, delta encoding, thumbnails, and OCR
-- **Policy-Gated Automation**: Routes approved actions through policy checks, sandbox isolation, and audit logging
+- **Edge Image Processing**: Screenshot capture, delta encoding, thumbnails, and OCR (local OCR on macOS and Windows)
+- **Policy-Gated Automation**: Off by default. Runs approved actions through policy checks and local audit logging; OS sandbox isolation is opt-in and varies by OS
 - **Connected Server Features (Preview / Opt-in)**: Real-time suggestions and feedback sync are available for staged validation and are not the default standalone path
-- **System Tray**: Runs in the background with quick access
+- **System Tray** (macOS, Windows): Runs in the background with quick access. Linux has no tray yet.
 - **Auto-Update**: Automatic updates based on GitHub Releases — while Maekon is pre-1.0, updates ship on the pre-release channel and default installs follow it; a dedicated stable channel opens with the first stable release
-- **Cross-Platform**: Supports macOS, Windows, and Linux
+- **Cross-Platform**: Runs on macOS, Windows, and Linux; Linux has fewer features (see [Platform limitations](#platform-limitations))
 
 ### Local Web Dashboard (http://localhost:10090)
 - **Dashboard**: Real-time system metrics, CPU/memory charts, app usage time
@@ -171,7 +171,22 @@ This repository is a **vetted snapshot export** of Maekon's internal source of t
 ## Requirements
 
 - Rust 1.88.0 or later
-- macOS 10.15+ / Windows 10+ / Linux (X11/Wayland)
+- macOS 10.15+ / Windows 10+ / Linux x64 (X11 recommended; on Wayland the tracking panel, overlay, and "Find my next step" are unavailable)
+
+### Platform limitations
+
+Not every feature is available on every OS. The table reflects the current source; "not verified" means nobody has checked it on a release build yet.
+
+| Capability | macOS | Windows | Linux (X11) | Linux (Wayland) |
+| --- | --- | --- | --- | --- |
+| System tray | Yes | Yes | No | No |
+| Tracking panel and "Find my next step" | Yes | Yes | Yes (not verified) | No |
+| Overlay | Yes | Yes | Yes (not verified) | No |
+| Local OCR | Yes (Vision) | Yes (Windows OCR) | No | No |
+| Global shortcuts | Yes | Yes | Yes | No (not verified) |
+| Credential storage | Keychain | Credential Manager | Kernel keyring; not verified to survive a reboot | Same as X11 |
+
+Automation and its OS sandbox are both off by default. When the sandbox is on, how much it isolates depends on the OS.
 
 ## Developer Quick Start (Build from Source)
 
@@ -377,31 +392,31 @@ Full install guide:
 
 ### Quick Install (Terminal)
 
-> This source snapshot targets prerelease `v0.0.1-rc.10`. Run the commands below
+> This source snapshot targets prerelease `v0.0.1-rc.11`. Run the commands below
 > only after the matching GitHub Release publishes its assets. GitHub's `latest`
 > stable URL is not available until the first stable release.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.10 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.10/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.10 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
 ```
 
 ### Release Assets
 
 Download from [Releases](https://github.com/pseudotop/maekon-client/releases):
 
-The release-candidate source version is `v0.0.1-rc.10`. This table documents
+The release-candidate source version is `v0.0.1-rc.11`. This table documents
 the expected asset names used by the installer, updater, checksum, and signature
 flows; the matching GitHub Release is the publication authority.
 

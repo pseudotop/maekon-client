@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAiReadinessSnapshot } from '../hooks/useAiReadinessSnapshot'
 import { MOD_KEY } from '../utils/platform'
 import { AutomationConfirmModal } from './components/AutomationConfirmModal'
 import { CaptureFlash } from './components/CaptureFlash'
@@ -16,6 +17,7 @@ import { SuggestionBadge } from './components/SuggestionBadge'
 import { SuggestionsPanel } from './components/SuggestionsPanel'
 import { showToast, ToastContainer } from './components/Toast'
 import { TrackingBorder } from './components/TrackingBorder'
+import { WbsAssigneeTooltip } from './components/WbsAssigneeTooltip'
 import { useOverlayEvents } from './hooks/useOverlayEvents'
 import { redactSuggestionViews } from './suggestionPrivacy'
 import { buildSuggestionReplayEvent, recordSuggestionReplayEvent } from './suggestionReplay'
@@ -95,6 +97,48 @@ function InteractiveOverlaySurface() {
   const { t } = useTranslation()
   const isRich = state.mode === 'rich' || state.mode === 'adaptive'
   const [suggestionsPanelHydrated, setSuggestionsPanelHydrated] = useState(false)
+  const [wbsOpen, setWbsOpen] = useState(false)
+  // #12700: only builds that register the WBS commands offer WBS. A missing or
+  // unreadable capability snapshot keeps it hidden.
+  const wbsAvailable = useAiReadinessSnapshot()?.wbs_assignee_available === true
+  const wbsAvailableRef = useRef(wbsAvailable)
+
+  useEffect(() => {
+    wbsAvailableRef.current = wbsAvailable
+    if (!state.suggestionsPanelOpen || !wbsAvailable) setWbsOpen(false)
+  }, [state.suggestionsPanelOpen, wbsAvailable])
+
+  // Native code projects its trusted anchor only to the native overlay layout.
+  // The WebView receives this bounded open signal and never replays geometry,
+  // document data, candidates, or session authority over IPC.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event')
+        const release = await listen('overlay:wbs', (event: { payload: unknown }) => {
+          const payload = event.payload
+          if (typeof payload !== 'object' || payload === null || !('open' in payload)) return
+          const { open } = payload
+          if (typeof open !== 'boolean') return
+          if (open && !wbsAvailableRef.current) return
+          if (open) dispatch({ type: 'toggle-suggestions-panel', payload: true })
+          setWbsOpen(open)
+        })
+        if (disposed) release()
+        else unlisten = release
+      } catch (error) {
+        console.warn('overlay:wbs listener failed:', error)
+      }
+    })()
+
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [dispatch])
 
   // A tracking-panel open request can lazily create this WebView. Tauri events
   // are not buffered, so hydrate the authoritative native state before the
@@ -241,9 +285,24 @@ function InteractiveOverlaySurface() {
     dispatch({ type: 'toggle-suggestions-panel', payload: true })
   }, [dispatch, state.suggestionSurface.anchor, state.suggestionSurface.placement, state.suggestions])
 
+  const wbsVisible = state.suggestionsPanelOpen && wbsAvailable && wbsOpen
+
   return (
     <div className="relative h-screen w-screen overflow-hidden">
       <PointerContextHighlight pointerContext={state.pointerContext} />
+      {state.suggestionsPanelOpen && wbsAvailable && (
+        <button
+          type="button"
+          data-testid="wbs-toggle"
+          aria-expanded={wbsOpen}
+          disabled={fullScreenModalActive || !!state.detectionScene}
+          onClick={() => setWbsOpen((open) => !open)}
+          className="absolute top-4 right-4 z-panel rounded-lg border border-DEFAULT bg-surface-overlay px-3 py-2 text-content text-xs focus-visible:outline focus-visible:outline-brand disabled:opacity-50"
+        >
+          {t(wbsOpen ? 'wbsAssignee.backToSuggestions' : 'wbsAssignee.title')}
+        </button>
+      )}
+      {wbsVisible && <WbsAssigneeTooltip suspended={fullScreenModalActive || !!state.detectionScene} />}
 
       {/* Detection mode header */}
       {state.detectionScene && (
@@ -282,14 +341,16 @@ function InteractiveOverlaySurface() {
       )}
 
       {/* Suggestions panel (right side, slide in/out) */}
-      <SuggestionsPanel
-        open={state.suggestionsPanelOpen}
-        suggestions={state.suggestions}
-        onClose={handleClosePanel}
-        onRefresh={handleRefreshSuggestions}
-        placement={state.suggestionSurface.placement}
-        anchor={state.suggestionSurface.anchor}
-      />
+      {!wbsVisible && (
+        <SuggestionsPanel
+          open={state.suggestionsPanelOpen}
+          suggestions={state.suggestions}
+          onClose={handleClosePanel}
+          onRefresh={handleRefreshSuggestions}
+          placement={state.suggestionSurface.placement}
+          anchor={state.suggestionSurface.anchor}
+        />
+      )}
 
       {/* Rich mode: goal progress bar at bottom */}
       {isRich && state.goals.length > 0 && <GoalProgressBar goals={state.goals} />}

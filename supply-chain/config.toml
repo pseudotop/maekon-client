@@ -107,15 +107,6 @@ review-by: 2027-08-27
 follow-up: #11510 owner decision (2026-08-27): legitimate residual — Android-only target gate. Not compiled into any shipped artifact: CI targets are x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64/x86_64-apple-darwin, and this dependency sits behind cfg(target_os = "android"). Re-review triggers: (1) the review date above; (2) immediately when an Android target enters the CI matrix — at that point this code compiles and the debt revives. Name-based --filter-graph exclusion was considered and rejected in #11510: it cannot distinguish absent-from-graph from chosen-not-to-look.
 """
 
-[[exemptions.nix]]
-version = "0.30.1"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle22-grace-baseline (cargo vet baseline import without manual audit)
-review-by: 2026-10-31
-follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
-"""
-
 [[exemptions.sysinfo]]
 version = "0.39.6"
 criteria = "safe-to-deploy"

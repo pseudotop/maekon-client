@@ -4,14 +4,14 @@ use async_trait::async_trait;
 use maekon_api_contracts::effective_mapping::{EffectiveMapping422Dto, RequestValidationLocation};
 use maekon_api_contracts::wbs_xlsx_client::{
     EffectiveWbsXlsxProjectionDto, LocalWbsXlsxReceiptDto, ReceiptConflictDto,
-    UploadedWbsXlsxReceiptDto,
+    UploadedWbsXlsxReceiptDto, WbsXlsxHandoffDto,
 };
 use maekon_core::error::CoreError;
 use maekon_core::error_codes::ValidationCode;
 use maekon_core::models::effective_mapping::EffectiveMapping;
 use maekon_core::models::wbs_xlsx::{
     EffectiveWbsXlsxProjection, EffectiveWbsXlsxProjectionResolution, LocalWbsXlsxReceipt,
-    UploadedWbsXlsxReceipt, WbsXlsxProjection,
+    UploadedWbsXlsxReceipt, WbsXlsxHandoff, WbsXlsxProjection,
 };
 use maekon_core::ports::wbs_xlsx_client::WbsXlsxClient;
 use maekon_http_core::resilience::extract_retry_after;
@@ -24,6 +24,36 @@ use crate::http_client::HttpApiClient;
 
 #[async_trait]
 impl WbsXlsxClient for HttpApiClient {
+    async fn resolve_handoff(
+        &self,
+        assignment_receipt_id: &str,
+    ) -> Result<WbsXlsxHandoff, CoreError> {
+        require_identifier(assignment_receipt_id, "assignment_receipt_id")?;
+        let encoded = url::form_urlencoded::byte_serialize(assignment_receipt_id.as_bytes())
+            .collect::<String>();
+        let response = self
+            .authorized_request(
+                reqwest::Method::GET,
+                &format!("/api/v1/wbs/xlsx-handoffs/{encoded}"),
+            )
+            .await
+            .map_err(CoreError::from)?
+            .send()
+            .await
+            .map_err(map_transport_error)?;
+        let status = response.status();
+        let retry_after = extract_retry_after(&response);
+        let body = read_mapping_body(response).await?;
+        if !status.is_success() {
+            return Err(map_failure_status(status.as_u16(), retry_after));
+        }
+        let handoff: WbsXlsxHandoff = serde_json::from_str::<WbsXlsxHandoffDto>(&body)
+            .map_err(|error| invalid_response(format!("invalid handoff response: {error}")))?
+            .into();
+        validate_handoff(&handoff, assignment_receipt_id)?;
+        Ok(handoff)
+    }
+
     async fn resolve_effective_projection(
         &self,
         organization_id: &str,
@@ -135,6 +165,48 @@ impl WbsXlsxClient for HttpApiClient {
         }
         Err(map_failure_status(status.as_u16(), retry_after))
     }
+}
+
+fn validate_handoff(
+    handoff: &WbsXlsxHandoff,
+    assignment_receipt_id: &str,
+) -> Result<(), CoreError> {
+    let hashes = [
+        &handoff.assignment_hash,
+        &handoff.source_snapshot_hash,
+        &handoff.mapping_content_hash,
+        &handoff.approved_template_hash,
+    ];
+    let identifiers = [
+        &handoff.organization_id,
+        &handoff.assignment_id,
+        &handoff.source_snapshot_id,
+        &handoff.source_snapshot_version,
+        &handoff.wbs_item_id,
+        &handoff.wbs_template_id,
+        &handoff.mapping_id,
+        &handoff.mapping_version_id,
+        &handoff.seed_revision,
+    ];
+    if handoff.contract_version != "wbs-xlsx-handoff.v1"
+        || handoff.assignment_receipt_contract_version != "assignment-confirm.v1"
+        || handoff.assignment_receipt_id != assignment_receipt_id
+        || !handoff.synthetic
+        || handoff.source_kind != "wd_brokerage_seed"
+        || handoff.seed_namespace != "wd-brokerage"
+        || identifiers.iter().any(|value| value.trim().is_empty())
+        || hashes.iter().any(|value| {
+            value.len() != 64
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    {
+        return Err(invalid_response(
+            "handoff response does not preserve the receipt-only synthetic contract".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn projection_rejection(
@@ -255,6 +327,37 @@ mod tests {
         .to_string()
     }
 
+    fn handoff_body(receipt_id: &str) -> String {
+        serde_json::json!({
+            "contract_version": "wbs-xlsx-handoff.v1",
+            "assignment_receipt_contract_version": "assignment-confirm.v1",
+            "organization_id": "org-1",
+            "assignment_receipt_id": receipt_id,
+            "assignment_id": "asg-1",
+            "assignment_hash": "a".repeat(64),
+            "source_snapshot_id": "snapshot-1",
+            "source_snapshot_version": "assignment-board.v1:1",
+            "source_snapshot_hash": "b".repeat(64),
+            "wbs_item_id": "item-1",
+            "wbs_template_id": "template-1",
+            "mapping_id": "map-1",
+            "mapping_version_id": "map-version-1",
+            "mapping_content_hash": "c".repeat(64),
+            "approved_template_hash": "d".repeat(64),
+            "synthetic": true,
+            "source_kind": "wd_brokerage_seed",
+            "seed_namespace": "wd-brokerage",
+            "seed_revision": "wd-01.4"
+        })
+        .to_string()
+    }
+
+    fn handoff(receipt_id: &str) -> WbsXlsxHandoff {
+        serde_json::from_str::<WbsXlsxHandoffDto>(&handoff_body(receipt_id))
+            .unwrap()
+            .into()
+    }
+
     fn receipt() -> LocalWbsXlsxReceipt {
         LocalWbsXlsxReceipt {
             receipt_id: "receipt-1".into(),
@@ -273,6 +376,88 @@ mod tests {
             approval_seq: Some(1),
             approved_at: Some("2026-08-16T00:00:00+00:00".into()),
             produced_at: "2026-08-16T00:00:01+00:00".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn handoff_request_carries_only_the_receipt_in_a_fixed_path() {
+        let mut server = mockito::Server::new_async().await;
+        let client = client(&mut server).await;
+        let request = server
+            .mock("GET", "/api/v1/wbs/xlsx-handoffs/ercv-1")
+            .match_header("authorization", "Bearer test_jwt")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(handoff_body("ercv-1"))
+            .create_async()
+            .await;
+
+        let result = client.resolve_handoff("ercv-1").await.unwrap();
+
+        assert_eq!(result.organization_id, "org-1");
+        assert_eq!(result.mapping_id, "map-1");
+        assert_eq!(result.assignment_id, "asg-1");
+        request.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn handoff_response_must_preserve_the_requested_receipt() {
+        let mut server = mockito::Server::new_async().await;
+        let client = client(&mut server).await;
+        let request = server
+            .mock("GET", "/api/v1/wbs/xlsx-handoffs/ercv-1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(handoff_body("ercv-other"))
+            .create_async()
+            .await;
+
+        let error = client.resolve_handoff("ercv-1").await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("receipt-only synthetic contract"));
+        request.assert_async().await;
+    }
+
+    #[test]
+    fn handoff_response_rejects_each_synthetic_contract_violation_independently() {
+        let mut wrong_receipt_contract = handoff("ercv-1");
+        wrong_receipt_contract.assignment_receipt_contract_version = "assignment-confirm.v2".into();
+
+        let mut wrong_source_kind = handoff("ercv-1");
+        wrong_source_kind.source_kind = "customer_upload".into();
+
+        let mut wrong_seed_namespace = handoff("ercv-1");
+        wrong_seed_namespace.seed_namespace = "customer".into();
+
+        let mut empty_identifier = handoff("ercv-1");
+        empty_identifier.mapping_version_id = "  ".into();
+
+        let mut short_hash = handoff("ercv-1");
+        short_hash.mapping_content_hash = "c".repeat(63);
+
+        let mut non_hex_hash = handoff("ercv-1");
+        non_hex_hash.approved_template_hash = "g".repeat(64);
+
+        for (case, handoff) in [
+            ("assignment receipt contract", wrong_receipt_contract),
+            ("source kind", wrong_source_kind),
+            ("seed namespace", wrong_seed_namespace),
+            ("empty identifier", empty_identifier),
+            ("short hash", short_hash),
+            ("non-hex hash", non_hex_hash),
+        ] {
+            let error = match validate_handoff(&handoff, "ercv-1") {
+                Ok(()) => panic!("{case} must be rejected"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("receipt-only synthetic contract"),
+                "unexpected validation error for {case}: {error}"
+            );
         }
     }
 

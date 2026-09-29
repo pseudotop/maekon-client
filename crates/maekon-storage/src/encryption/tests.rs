@@ -306,6 +306,30 @@ mod sealed_key_tests {
         corrupt_readback: bool,
     }
 
+    /// #12534: the decision tree under an explicit policy, so both run on any
+    /// host. The platform choice is pinned by the last test in this module.
+    fn sealed(dir: &Path, v: &FakeVault, d: DurableCopy) -> Result<EncryptionKey, StorageError> {
+        EncryptionKey::load_or_create_sealed_with(dir, v, d)
+    }
+
+    /// A vault holding `fixture_key(fill)` for `dir`, as an earlier launch left it.
+    fn vault_holding(dir: &Path, fill: u8) -> FakeVault {
+        let vault = FakeVault::default();
+        let (entry, hex) = (master_key_keychain_entry(dir), fixture_key(fill).as_hex());
+        vault
+            .store(MASTER_KEY_KEYCHAIN_NAMESPACE, &entry, &hex)
+            .unwrap();
+        vault
+    }
+
+    /// The vault's master-key entry for `dir`, as the next launch reads it.
+    fn sealed_entry(vault: &FakeVault, dir: &Path) -> Option<String> {
+        let entry = master_key_keychain_entry(dir);
+        vault
+            .retrieve(MASTER_KEY_KEYCHAIN_NAMESPACE, &entry)
+            .unwrap()
+    }
+
     impl MasterKeyVault for FakeVault {
         fn store(&self, namespace: &str, key: &str, value: &str) -> Result<(), StorageError> {
             if self.force_store_err {
@@ -478,7 +502,7 @@ mod sealed_key_tests {
         let dir = TempDir::new().unwrap();
         let vault = FakeVault::default();
 
-        let key = EncryptionKey::load_or_create_sealed(dir.path(), &vault).unwrap();
+        let key = sealed(dir.path(), &vault, DurableCopy::Keychain).unwrap();
 
         assert!(
             !dir.path().join(".db_key").exists(),
@@ -519,7 +543,7 @@ mod sealed_key_tests {
         legacy.save_to_file(&dir.path().join(".db_key")).unwrap();
         assert!(dir.path().join(".db_key").exists());
 
-        let key = EncryptionKey::load_or_create_sealed(dir.path(), &vault).unwrap();
+        let key = sealed(dir.path(), &vault, DurableCopy::Keychain).unwrap();
 
         assert_eq!(
             key.as_hex().as_str(),
@@ -677,9 +701,10 @@ mod sealed_key_tests {
         fixture_key(0x11).save_to_file(&key_path).unwrap();
         fs::write(&db_path, b"encrypted-bytes").unwrap();
 
-        // Step 2: a newer build seals the key and removes the plaintext copy.
+        // Step 2: a newer build seals the key and removes the plaintext copy
+        // (macOS/Windows; Linux keeps it since #12534).
         let vault = FakeVault::default();
-        let migrated = EncryptionKey::load_or_create_sealed(dir.path(), &vault).unwrap();
+        let migrated = sealed(dir.path(), &vault, DurableCopy::Keychain).unwrap();
         assert_eq!(
             migrated.as_hex().as_str(),
             fixture_key(0x11).as_hex().as_str()
@@ -727,6 +752,144 @@ mod sealed_key_tests {
         assert!(
             dir.path().join(".db_key").exists(),
             "headless Linux/CI with no keyring must still get the plaintext-file scheme"
+        );
+    }
+
+    /// #12534 positive: under `DurableCopy::KeyFile` a fresh install also
+    /// writes `.db_key`, and after a reboot empties the kernel keyring the same
+    /// key comes back from the file, which stays. Removal controls: dropping
+    /// the write in `seal_fresh_key`, or deleting the file in the migration
+    /// arm, each fail this test.
+    #[test]
+    fn key_file_policy_recovers_the_same_key_after_a_reboot() {
+        let dir = TempDir::new().unwrap();
+        let key_path = dir.path().join(".db_key");
+        let before_reboot = FakeVault::default();
+        let created = sealed(dir.path(), &before_reboot, DurableCopy::KeyFile).unwrap();
+        fs::write(dir.path().join(SQLCIPHER_DB_FILENAME), b"ciphertext").unwrap();
+        assert_eq!(fs::read(&key_path).unwrap(), created.as_bytes());
+        // A relaunch before any reboot finds both copies in agreement.
+        let relaunched = sealed(dir.path(), &before_reboot, DurableCopy::KeyFile).unwrap();
+        assert_eq!(relaunched.as_bytes(), created.as_bytes());
+
+        let rebooted = FakeVault::default();
+        let recovered = sealed(dir.path(), &rebooted, DurableCopy::KeyFile).unwrap();
+
+        assert_eq!(recovered.as_bytes(), created.as_bytes());
+        let resealed = sealed_entry(&rebooted, dir.path());
+        assert_eq!(resealed.as_deref(), Some(created.as_hex().as_str()));
+        assert_eq!(fs::read(&key_path).unwrap(), created.as_bytes());
+    }
+
+    /// #12534 negative: the database's key is in neither the keychain nor
+    /// `.db_key`, as a Linux reboot left rc.8 to rc.10 profiles. No key may be
+    /// minted or sealed beside it under either policy. Removal control: without
+    /// the `Ok(None)` guard both policies seal a fresh key and return it.
+    #[test]
+    fn a_database_whose_key_is_gone_fails_closed_and_seals_nothing() {
+        for durable in [DurableCopy::Keychain, DurableCopy::KeyFile] {
+            let dir = TempDir::new().unwrap();
+            fs::write(dir.path().join(SQLCIPHER_DB_FILENAME), b"ciphertext").unwrap();
+            let rebooted = FakeVault::default();
+
+            let err = sealed(dir.path(), &rebooted, durable).unwrap_err();
+
+            // err is not printed: SecretStore variants can carry secret detail (#12745).
+            assert!(
+                matches!(err, StorageError::Internal(ref msg)
+                    if msg.contains("refusing to generate") && msg.contains("#12534")),
+                "{durable:?}: expected the #12534 refusal"
+            );
+            let sealed_keys = rebooted.entries.lock().unwrap().len();
+            assert_eq!(sealed_keys, 0, "{durable:?}: nothing may be sealed");
+            assert!(!dir.path().join(".db_key").exists(), "{durable:?}");
+        }
+    }
+
+    /// #12534 rescue: rc.8 to rc.10 kept the key only in the kernel keyring.
+    /// Until the next reboot it is still there, and the first launch of a fixed
+    /// build must write it to an owner-only `.db_key` so that reboot is safe.
+    #[test]
+    fn key_file_policy_writes_the_file_from_a_key_only_the_keychain_holds() {
+        let dir = TempDir::new().unwrap();
+        let key_path = dir.path().join(".db_key");
+        fs::write(dir.path().join(SQLCIPHER_DB_FILENAME), b"ciphertext").unwrap();
+
+        let vault = vault_holding(dir.path(), 0x5A);
+
+        let key = sealed(dir.path(), &vault, DurableCopy::KeyFile).unwrap();
+
+        assert_eq!(key.as_bytes(), fixture_key(0x5A).as_bytes());
+        assert_eq!(fs::read(&key_path).unwrap(), fixture_key(0x5A).as_bytes());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the rescued key file must be owner-only");
+        }
+        let rebooted = sealed(dir.path(), &FakeVault::default(), DurableCopy::KeyFile);
+        assert_eq!(rebooted.unwrap().as_bytes(), key.as_bytes());
+    }
+
+    /// #12534: a failed rescue write leaves the key in memory only, and the
+    /// next reboot would orphan the data. Startup must stop and say so.
+    #[test]
+    fn key_file_policy_fails_closed_when_the_durable_copy_cannot_be_written() {
+        let dir = TempDir::new().unwrap();
+        // `save_to_file` does not create directories, so this write fails.
+        let missing = dir.path().join("never-created");
+
+        let vault = vault_holding(&missing, 0x33);
+
+        let err = sealed(&missing, &vault, DurableCopy::KeyFile).unwrap_err();
+
+        // err is not printed: SecretStore variants can carry secret detail (#12745).
+        assert!(
+            matches!(err, StorageError::Internal(ref msg)
+                if msg.contains("durable copy") && msg.contains("before restarting")),
+            "a failed rescue write must be fatal and name the reboot risk"
+        );
+    }
+
+    /// #12534 mismatch: the keychain and `.db_key` hold different keys. Only
+    /// the database can tell which is right, so the key-file policy fails
+    /// closed and changes neither copy (`ensure_durable_key_file`). The
+    /// keychain policy keeps today's macOS/Windows behavior: the keychain is
+    /// authoritative and the stray file is removed.
+    #[test]
+    fn key_file_policy_refuses_to_choose_between_different_keys() {
+        let dir = TempDir::new().unwrap();
+        let key_path = dir.path().join(".db_key");
+        fixture_key(0x22).save_to_file(&key_path).unwrap();
+        let vault = vault_holding(dir.path(), 0x11);
+
+        let err = sealed(dir.path(), &vault, DurableCopy::KeyFile).unwrap_err();
+
+        // err is not printed: SecretStore variants can carry secret detail (#12745).
+        assert!(
+            matches!(err, StorageError::Internal(ref msg) if msg.contains("refusing to choose")),
+            "a disagreement must fail closed"
+        );
+        assert_eq!(fs::read(&key_path).unwrap(), fixture_key(0x22).as_bytes());
+        let unchanged = sealed_entry(&vault, dir.path());
+        assert_eq!(unchanged, Some(fixture_key(0x11).as_hex().to_string()));
+
+        let key = sealed(dir.path(), &vault, DurableCopy::Keychain).unwrap();
+        assert_eq!(key.as_bytes(), fixture_key(0x11).as_bytes());
+        assert!(!key_path.exists(), "macOS/Windows remove the stray file");
+    }
+
+    /// #12534: production passes `DurableCopy::PLATFORM`. Pinned end to end on
+    /// each CI host: only a keychain that survives a reboot (macOS, Windows)
+    /// may be the sole copy after a fresh install.
+    #[test]
+    fn the_public_entry_point_keeps_the_key_file_on_linux_only() {
+        let dir = TempDir::new().unwrap();
+        EncryptionKey::load_or_create_sealed(dir.path(), &FakeVault::default()).unwrap();
+        assert_eq!(
+            dir.path().join(".db_key").exists(),
+            cfg!(not(any(target_os = "macos", target_os = "windows"))),
+            "Linux must keep the durable key file; macOS/Windows must not write one"
         );
     }
 }

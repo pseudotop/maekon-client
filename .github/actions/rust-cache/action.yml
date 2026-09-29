@@ -30,6 +30,10 @@ inputs:
 runs:
   using: composite
   steps:
+    # #12745: macOS Intel and Apple Silicon runners share runner.os, and
+    # ~/.cargo/bin holds architecture-specific binaries. Without runner.arch in
+    # the key and every fallback, the x86_64 build restored the aarch64 test
+    # cache and lost a runnable cargo.
     - name: Cache Rust artifacts
       if: inputs.save == 'true'
       uses: actions/cache@v5
@@ -39,10 +43,10 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-rust-${{ inputs.key }}-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ inputs.key }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-rust-${{ inputs.key }}-
-          ${{ runner.os }}-rust-
+          ${{ runner.os }}-${{ runner.arch }}-rust-${{ inputs.key }}-
+          ${{ runner.os }}-${{ runner.arch }}-rust-
 
     - name: Restore Rust artifacts (read-only)
       if: inputs.save != 'true'
@@ -53,7 +57,7 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-rust-${{ inputs.key }}-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ inputs.key }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-rust-${{ inputs.key }}-
-          ${{ runner.os }}-rust-
+          ${{ runner.os }}-${{ runner.arch }}-rust-${{ inputs.key }}-
+          ${{ runner.os }}-${{ runner.arch }}-rust-

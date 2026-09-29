@@ -2,6 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::ai_summary::AiSummaryArtifact;
 use super::memory_graph::{ClaimStatus, MemoryClaim};
 use super::tiered_memory::WorkType;
 
@@ -13,6 +14,17 @@ pub struct DailyDigest {
     pub timeline: Vec<TimelineEntry>,
     pub statistics: DailyStatistics,
     pub generated_at: DateTime<Utc>,
+    /// The digest timeline/statistics are deterministic local aggregation.
+    /// This label keeps them distinct from the optional AI narrative.
+    #[serde(default = "heuristic_digest_provenance")]
+    pub digest_provenance: String,
+    /// Outcome metadata for the optional AI daily narrative.
+    #[serde(default)]
+    pub ai_narrative: AiSummaryArtifact,
+}
+
+fn heuristic_digest_provenance() -> String {
+    "heuristic".to_string()
 }
 
 /// LLM-generated narrative and key highlights for the day.
@@ -51,6 +63,8 @@ pub struct TimelineEntry {
     pub dominant_app: String,
     pub content_summary: Vec<ContentBrief>,
     pub annotation: Option<DigestHighlight>,
+    #[serde(default)]
+    pub ai_summary: AiSummaryArtifact,
 }
 
 /// Brief description of work content within a timeline entry.
@@ -290,6 +304,8 @@ mod tests {
             timeline: vec![],
             statistics: DailyStatistics::default(),
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         };
         let json = serde_json::to_string(&digest).unwrap();
         let back: DailyDigest = serde_json::from_str(&json).unwrap();
@@ -375,6 +391,7 @@ mod tests {
                 dominant_app: "VS Code".to_string(),
                 content_summary: vec![],
                 annotation: None,
+                ai_summary: Default::default(),
             }],
             statistics: DailyStatistics {
                 deep_work_hours: 4.5,
@@ -391,6 +408,8 @@ mod tests {
                 }),
             },
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 
