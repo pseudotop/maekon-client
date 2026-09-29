@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! #9689: duplicate tag names must surface as 409 Conflict, not 500.
 //!
 //! `tags.name` is `NOT NULL UNIQUE` (migration v01_v08.rs:189). Before this,

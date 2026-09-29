@@ -6,6 +6,7 @@ use tracing::warn;
 
 use maekon_api_contracts::dashboard::{RawContentActivity, RawContentActivityBrief};
 use maekon_core::error::CoreError;
+use maekon_core::models::ai_summary::AiSummaryArtifact;
 use maekon_core::models::daily_digest::{
     self, ContentBrief, DailyDigest, DailyStatistics, DayComparison, TimelineEntry,
 };
@@ -96,6 +97,10 @@ async fn build_daily_digest(
                 dominant_app,
                 content_summary,
                 annotation: None,
+                ai_summary: AiSummaryArtifact {
+                    text: r.llm_summary.clone(),
+                    ..r.ai_summary.clone()
+                },
             }
         })
         .collect();
@@ -108,6 +113,8 @@ async fn build_daily_digest(
         timeline,
         statistics,
         generated_at: Utc::now(),
+        digest_provenance: "heuristic".to_string(),
+        ai_narrative: AiSummaryArtifact::default(),
     }
 }
 
@@ -355,6 +362,7 @@ mod tests {
                 content_activities_json: "[]".to_string(),
                 context_switch_count: 0,
                 llm_summary: None,
+                ai_summary: Default::default(),
             }
         }
 

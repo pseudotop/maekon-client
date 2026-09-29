@@ -12,6 +12,7 @@
 //! the production producer path where provenance comes from the registry.
 
 use chrono::Utc;
+use maekon_core::error::CoreError;
 use maekon_core::models::extension::{
     Contribution, ContributionKind, ExecutionLocation, ExtensionManifest, RuntimeKind,
     SignatureState, SourceKind,
@@ -63,21 +64,20 @@ fn manifest() -> ExtensionManifest {
 }
 
 /// Create the owning `extension_installs` row a catalog entry references.
-async fn setup_install(s: &SqliteStorage) {
+async fn setup_install(s: &SqliteStorage) -> Result<(), CoreError> {
     s.register_package(RegisterPackageRequest {
         install_id: "inst_1".into(),
         manifest: manifest(),
         now: Utc::now(),
     })
-    .await
-    .unwrap();
+    .await?;
     s.install(InstallRequest {
         install_id: "inst_1".into(),
         expected_revision: 1,
         now: Utc::now(),
     })
-    .await
-    .unwrap();
+    .await?;
+    Ok(())
 }
 
 fn entry(skill_id: &str, contribution_id: &str, body: &str) -> SkillPackEntry {
@@ -105,7 +105,7 @@ async fn catalog_entry_and_activation_survive_reopen() {
     // an activation.
     {
         let s = SqliteStorage::open(&path, 30, None).unwrap();
-        setup_install(&s).await;
+        setup_install(&s).await.expect("install fixture package");
         s.register_skill_pack(RegisterSkillPackRequest {
             entry: entry("sk.review", "review.pack", BODY),
             now: Utc::now(),
@@ -161,7 +161,7 @@ async fn activation_table_is_a_singleton_upsert() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("skillpack.db");
     let s = SqliteStorage::open(&path, 30, None).unwrap();
-    setup_install(&s).await;
+    setup_install(&s).await.expect("install fixture package");
 
     s.register_skill_pack(RegisterSkillPackRequest {
         entry: entry("sk.a", "a.pack", "body a"),
@@ -215,7 +215,7 @@ async fn activation_of_unregistered_skill_is_not_found() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("skillpack.db");
     let s = SqliteStorage::open(&path, 30, None).unwrap();
-    setup_install(&s).await;
+    setup_install(&s).await.expect("install fixture package");
 
     // No catalog entry exists — a stale UI selection must not pin a body that
     // was never registered from a verified package.

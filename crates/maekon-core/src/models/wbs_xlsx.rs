@@ -6,6 +6,29 @@ use sha2::{Digest, Sha256};
 use super::effective_mapping::EffectiveMapping;
 use super::effective_mapping::MappingResolutionRejection;
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WbsXlsxHandoff {
+    pub contract_version: String,
+    pub assignment_receipt_contract_version: String,
+    pub organization_id: String,
+    pub assignment_receipt_id: String,
+    pub assignment_id: String,
+    pub assignment_hash: String,
+    pub source_snapshot_id: String,
+    pub source_snapshot_version: String,
+    pub source_snapshot_hash: String,
+    pub wbs_item_id: String,
+    pub wbs_template_id: String,
+    pub mapping_id: String,
+    pub mapping_version_id: String,
+    pub mapping_content_hash: String,
+    pub approved_template_hash: String,
+    pub synthetic: bool,
+    pub source_kind: String,
+    pub seed_namespace: String,
+    pub seed_revision: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ProjectionCellValue {

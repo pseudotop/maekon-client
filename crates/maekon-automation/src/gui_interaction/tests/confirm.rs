@@ -157,7 +157,7 @@ fn build_candidates_truncates_to_max() {
 
 #[test]
 fn sign_and_verify_ticket_roundtrip() {
-    let secret = TEST_HMAC_SECRET.as_bytes();
+    let secret = test_hmac_secret().as_bytes();
     let ticket = GuiExecutionTicket {
         schema_version: "automation.gui.ticket.v1".to_string(),
         ticket_id: "t-1".to_string(),
@@ -197,7 +197,7 @@ fn sign_and_verify_ticket_roundtrip() {
 
 #[test]
 fn verify_ticket_rejects_tampered_nonce() {
-    let secret = TEST_HMAC_SECRET.as_bytes();
+    let secret = test_hmac_secret().as_bytes();
     let ticket = GuiExecutionTicket {
         schema_version: "automation.gui.ticket.v1".to_string(),
         ticket_id: "t-1".to_string(),

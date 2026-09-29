@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! #4928 PHASE 2 — cross-family integration test for the consent-revoke erasure
 //! chokepoint.
 //!

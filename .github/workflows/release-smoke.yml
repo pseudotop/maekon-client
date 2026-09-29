@@ -104,8 +104,12 @@ jobs:
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
+          # #11595: `macos-14` 는 Apple Silicon 이다. x86_64 를 그 위에서 만들면
+          # 크로스빌드가 되어 배포 슬라이스가 Intel 에서 한 번도 실행되지 않는다
+          # (Rosetta 는 AVX 를 지원하지 않아 whisper/GGML 의 x86 SIMD 경로가 영영
+          # 안 돈다). `macos-15-intel` 은 실제 Intel hosted 러너다 — 되돌리지 말 것.
           - name: macos-x64
-            os: macos-14
+            os: macos-15-intel
             target: x86_64-apple-darwin
           - name: windows
             os: windows-latest
@@ -174,6 +178,21 @@ jobs:
       - name: Verify DEB metadata assets
         if: runner.os == 'Linux'
         run: ./scripts/verify-deb-metadata.sh
+
+      # #11595: 라벨이 아니라 **실제 러너 아키텍처**를 본다. `macos-x64` 레인이
+      # Apple Silicon 으로 되돌아가면 x86_64 는 크로스빌드가 되고 실행 검증이
+      # 사라지는데, 레인 이름은 그대로라 아무도 눈치채지 못한다. 그 조용한 퇴행을
+      # 여기서 red 로 만든다.
+      - name: Assert the x86_64 macOS lane runs on real Intel hardware
+        if: matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          arch="$(uname -m)"
+          echo "runner arch: $arch"
+          if [ "$arch" != "x86_64" ]; then
+            echo "::error::x86_64-apple-darwin 레인이 '$arch' 러너에서 돈다 — 크로스빌드로 퇴행했다 (#11595)"
+            exit 1
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable

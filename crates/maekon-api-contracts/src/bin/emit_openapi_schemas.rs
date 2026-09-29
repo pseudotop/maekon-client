@@ -16,7 +16,7 @@
 
 use schemars::SchemaGenerator;
 
-fn main() {
+fn main() -> Result<(), serde_json::Error> {
     let mut generator = SchemaGenerator::default();
 
     // Register every public contract DTO. `subschema_for` accumulates the named
@@ -271,7 +271,7 @@ fn main() {
     generator.subschema_for::<maekon_api_contracts::update::UpdateActionResponse>();
 
     let definitions = generator.definitions();
-    let serialized = serde_json::to_string_pretty(definitions)
-        .expect("schema definitions must serialize to JSON");
+    let serialized = serde_json::to_string_pretty(definitions)?;
     println!("{serialized}");
+    Ok(())
 }

@@ -272,6 +272,10 @@ impl SourceObjectIdentity {
 /// new" and the ledger re-converges on the revision basis. Do not fall back to a
 /// keyless hash.
 pub fn compute_source_object_key(dedupe_key: &[u8], identity: &SourceObjectIdentity) -> String {
+    #[allow(
+        clippy::expect_used,
+        reason = "hmac 0.13 implements new_from_slice as unconditional Ok for arbitrary key lengths"
+    )]
     let mut mac = <HmacSha256 as KeyInit>::new_from_slice(dedupe_key)
         .expect("HMAC-SHA256 accepts keys of any length");
     mac.update(OBJECT_KEY_DOMAIN);
@@ -694,6 +698,15 @@ mod tests {
         vec![7u8; 32]
     }
 
+    /// A key that always differs from `key()`: UUIDv4 fixes byte 6's high
+    /// nibble to 4, so it can never be all 7s. Drawn per run so no second
+    /// fixed value reads as a production HMAC key (#12745).
+    fn other_key() -> Vec<u8> {
+        let mut bytes = uuid::Uuid::new_v4().as_bytes().to_vec();
+        bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+        bytes
+    }
+
     fn identity(remote_id: &str) -> SourceObjectIdentity {
         SourceObjectIdentity {
             extension_id: "com.maekon.calendar".into(),
@@ -737,8 +750,20 @@ mod tests {
     fn object_key_changes_with_the_dedupe_key() {
         // If the key is not mixed in, it is just a hash rather than an HMAC — the dictionary-attack defense disappears.
         let a = compute_source_object_key(&key(), &identity("evt_1"));
-        let b = compute_source_object_key(&[9u8; 32], &identity("evt_1"));
+        let b = compute_source_object_key(&other_key(), &identity("evt_1"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn object_key_is_deterministic_and_matches_canonical_vector() {
+        let identity = identity("evt_1");
+        let first = compute_source_object_key(&key(), &identity);
+
+        assert_eq!(first, compute_source_object_key(&key(), &identity));
+        assert_eq!(
+            first,
+            "6f8eac34004b94e9b951e3fd1270da6d2e8723602cc300a311737ae6b286d8af"
+        );
     }
 
     #[test]

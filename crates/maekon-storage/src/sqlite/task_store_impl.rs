@@ -1201,6 +1201,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reviewable_filter_lists_only_proposed_candidates() {
+        let s = storage();
+        for (id, hash) in [
+            ("tcand_1", "sha256:aaa"),
+            ("tcand_2", "sha256:bbb"),
+            ("tcand_3", "sha256:ccc"),
+        ] {
+            s.ingest_candidate(IngestCandidateRequest {
+                candidate: candidate(id, "ns-1", hash),
+            })
+            .await
+            .unwrap();
+        }
+        s.confirm_candidate(confirm_req("tcand_1", 1, "k1"))
+            .await
+            .unwrap();
+        s.dismiss_candidate(DismissCandidateRequest {
+            candidate_id: "tcand_2".to_string(),
+            expected_revision: 1,
+            idempotency_key: "d2".to_string(),
+            request_hash: "h2".to_string(),
+            receipt_id: "tmut_d2".to_string(),
+            reason: None,
+            now: Utc::now(),
+        })
+        .await
+        .unwrap();
+
+        // The unfiltered listing still returns the terminal, content-cleared rows.
+        let all = s.list_candidates(CandidateFilter::default()).await.unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all
+            .iter()
+            .any(|c| c.state == CandidateState::Confirmed && c.title.is_none()));
+
+        let reviewable = s
+            .list_candidates(CandidateFilter::reviewable())
+            .await
+            .unwrap();
+        let ids: Vec<&str> = reviewable.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["tcand_3"]);
+        assert!(reviewable
+            .iter()
+            .all(|c| c.state == CandidateState::Proposed && c.title.is_some()));
+    }
+
+    #[tokio::test]
     async fn dismiss_clears_content_and_is_terminal() {
         let s = storage();
         s.ingest_candidate(IngestCandidateRequest {

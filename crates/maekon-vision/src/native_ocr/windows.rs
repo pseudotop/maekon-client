@@ -206,9 +206,7 @@ impl WindowsNativeOcr {
         // Alpha values come straight from the decoded image (not
         // premultiplied), so this pairs with `BitmapAlphaMode::Straight`
         // below.
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
+        super::webp_decode::rgba_to_bgra_in_place(&mut pixels);
 
         let writer =
             windows::Storage::Streams::DataWriter::new().map_err(|e| CoreError::OcrError {

@@ -1,4 +1,5 @@
 pub(crate) mod ai_session;
+pub(crate) mod ai_verification;
 pub(crate) mod analysis;
 pub(crate) mod audio;
 pub(crate) mod audit;

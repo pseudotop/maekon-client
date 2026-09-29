@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 
 use crate::error::CoreError;
 use crate::models::activity::{IdlePeriod, ProcessSnapshot, SessionStats};
+use crate::models::ai_summary::AiSummaryArtifact;
 use crate::models::event::Event;
 use crate::models::suggestion::Suggestion;
 use crate::models::system::SystemMetrics;
@@ -57,6 +58,20 @@ pub trait StorageService: Send + Sync {
         segment_id: &str,
         llm_summary: &str,
     ) -> Result<(), CoreError>;
+
+    /// Persist one terminal summary outcome. Implementations that have not yet
+    /// adopted provenance storage retain the legacy generated-text behavior;
+    /// the SQLite production adapter overrides this to store every outcome.
+    async fn update_segment_ai_summary(
+        &self,
+        segment_id: &str,
+        artifact: &AiSummaryArtifact,
+    ) -> Result<(), CoreError> {
+        match artifact.text.as_deref() {
+            Some(text) => self.update_segment_llm_summary(segment_id, text).await,
+            None => Ok(()),
+        }
+    }
 }
 
 /// System metrics, process snapshots, idle periods, and session counters.

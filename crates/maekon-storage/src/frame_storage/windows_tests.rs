@@ -2,14 +2,6 @@ use super::FrameFileStorage;
 use std::path::Path;
 use tempfile::TempDir;
 
-async fn create_test_storage() -> (FrameFileStorage, TempDir) {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FrameFileStorage::new(temp_dir.path().to_path_buf(), 100, 7)
-        .await
-        .unwrap();
-    (storage, temp_dir)
-}
-
 /// Reproduce the legacy `D:AI` state: a present, protected DACL with zero
 /// ACEs. Enumeration and deletion remain denied until the owner replaces it.
 fn set_empty_dacl(path: &Path) {
@@ -54,7 +46,10 @@ fn set_empty_dacl(path: &Path) {
 /// deletion once instead of returning success while leaving captures behind.
 #[tokio::test]
 async fn enforce_retention_repairs_empty_dacl_and_deletes_expired_frames() {
-    let (storage, _temp) = create_test_storage().await;
+    let temp_dir = TempDir::new().expect("create frame fixture directory");
+    let storage = FrameFileStorage::new(temp_dir.path().to_path_buf(), 100, 7)
+        .await
+        .expect("create frame fixture storage");
     let expired_dir = storage.frames_dir().join("2000-01-01");
     tokio::fs::create_dir_all(&expired_dir).await.unwrap();
     tokio::fs::write(expired_dir.join("12-00-00-0000000000.webp"), b"expired")

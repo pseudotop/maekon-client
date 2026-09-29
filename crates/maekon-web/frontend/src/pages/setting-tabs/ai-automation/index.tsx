@@ -1,6 +1,8 @@
 import { useTranslation } from 'react-i18next'
 import type { ProviderSurfaceSpec } from '../../../api/client'
+import { AiReadinessNotice } from '../../../components/AiReadinessNotice'
 import { Alert, Badge, Button, Card, CardTitle, FieldHint, GuidancePanel, Select } from '../../../components/ui'
+import { AI_CAPABILITY_IDS } from '../../../features/aiReadiness'
 import {
   findFeatureCapability,
   maturityBadgeColor,
@@ -31,6 +33,7 @@ import OAuthConnectionPanel from '../OAuthConnectionPanel'
 import { isProviderOAuthAccessMode } from '../oauth-panel-support'
 import ProviderWizard, { type ProviderDef } from '../ProviderWizard'
 import ToggleRow from '../ToggleRow'
+import ChatHttpVerification from './ChatHttpVerification'
 import LlmEndpointConfig from './LlmEndpointConfig'
 import OcrEndpointConfig from './OcrEndpointConfig'
 import ProfileManager from './ProfileManager'
@@ -317,7 +320,7 @@ export default function AiAutomationTab() {
           <p className="text-content-secondary text-xs">
             {t('featureCapability.cliDiscovery.executablePath', {
               candidate: cliDiscovery.candidate_name,
-              path: cliDiscovery.executable_path,
+              path: cliDiscovery.executable_hint,
             })}
           </p>
         )}
@@ -381,6 +384,9 @@ export default function AiAutomationTab() {
 
   return (
     <div className="space-y-6" data-testid="settings-ai-automation-tab">
+      <AiReadinessNotice snapshot={featureCapabilities} capabilityIds={AI_CAPABILITY_IDS} showReady />
+      <ChatHttpVerification snapshot={featureCapabilities} hasUnsavedChanges={settingsForm.hasUnsavedChanges} />
+
       <ProviderWizard onSelect={handleProviderWizardSelect} />
 
       <GuidancePanel

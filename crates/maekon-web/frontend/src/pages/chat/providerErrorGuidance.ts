@@ -5,6 +5,10 @@ interface ChatCreateErrorMessageOptions {
   providerName?: string
   providerNotConfiguredMessage: (providerName: string) => string
   fallback: string
+  transport?: 'subprocess' | 'http_api' | 'local_llm'
+  localRuntimeUnavailableMessage?: string
+  localRuntimeInvalidMessage?: string
+  localModelMissingMessage?: string
 }
 
 const missingCredentialPattern = /no credential available for surface\b/i
@@ -22,6 +26,17 @@ export function isMissingProviderCredentialError(error: unknown): boolean {
 export function chatCreateErrorMessage(error: unknown, options: ChatCreateErrorMessageOptions): string {
   if (options.providerName && isMissingProviderCredentialError(error)) {
     return options.providerNotConfiguredMessage(options.providerName)
+  }
+  if (options.transport === 'local_llm' && isIpcError(error)) {
+    if (error.code === 'not_found.resource_missing' && options.localModelMissingMessage) {
+      return options.localModelMissingMessage
+    }
+    if (error.code === 'service.unavailable' && options.localRuntimeUnavailableMessage) {
+      return options.localRuntimeUnavailableMessage
+    }
+    if (error.code === 'config.invalid' && options.localRuntimeInvalidMessage) {
+      return options.localRuntimeInvalidMessage
+    }
   }
   return errorMessage(error, options.fallback)
 }

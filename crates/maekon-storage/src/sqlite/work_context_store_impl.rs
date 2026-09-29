@@ -32,6 +32,8 @@ use super::work_context_writers::{
 use super::SqliteStorage;
 use crate::error::StorageError;
 
+type RawBlobRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, String);
+
 fn ts(value: &DateTime<Utc>) -> String {
     value.to_rfc3339()
 }
@@ -329,7 +331,7 @@ impl SqliteStorage {
             return Ok(None);
         };
         let read = self.conn.read_lock();
-        let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>, String, String)> = read
+        let row: Option<RawBlobRow> = read
             .conn()
             .query_row(
                 "SELECT r.key_salt, r.nonce, r.ciphertext, r.install_id, e.account_subject_ref

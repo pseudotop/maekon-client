@@ -16,6 +16,7 @@ use maekon_core::models::frame::ImagePayload;
 use maekon_core::ports::ocr_provider::{FakeOcrProvider, OcrResult};
 use maekon_core::ports::vision::CaptureRequest;
 use maekon_vision::processor::EdgeFrameProcessor;
+use std::error::Error;
 use std::sync::Arc;
 
 /// A solid white frame (OCR is faked, so pixel content is irrelevant — only the
@@ -39,17 +40,17 @@ fn high_importance_request(scale_factor: Option<f64>) -> CaptureRequest {
 }
 
 /// Decode the stored full-frame WebP payload into an RGBA image.
-fn decode_stored_frame(payload: &ImagePayload) -> RgbaImage {
+fn decode_stored_frame(payload: &ImagePayload) -> Result<RgbaImage, Box<dyn Error>> {
     match payload {
         ImagePayload::Full { data, .. } => {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(data)
-                .expect("stored frame payload must be valid base64");
-            image::load_from_memory(&bytes)
-                .expect("stored frame must be a decodable image")
-                .to_rgba8()
+                .map_err(|error| format!("stored frame payload must be valid base64: {error}"))?;
+            let decoded = image::load_from_memory(&bytes)
+                .map_err(|error| format!("stored frame must be a decodable image: {error}"))?;
+            Ok(decoded.to_rgba8())
         }
-        other => panic!("expected ImagePayload::Full, got {other:?}"),
+        other => Err(format!("expected ImagePayload::Full, got {other:?}").into()),
     }
 }
 
@@ -60,7 +61,7 @@ fn is_near_black(p: &Rgba<u8>) -> bool {
 /// PII region pixels must be masked in the stored frame; a non-PII region on the
 /// same frame must be preserved.
 #[tokio::test]
-async fn stored_frame_masks_pii_region_and_preserves_non_pii() {
+async fn stored_frame_masks_pii_region_and_preserves_non_pii() -> Result<(), Box<dyn Error>> {
     // Two OCR elements: one PII (email), one benign — far apart so their
     // margin-expanded boxes cannot overlap.
     let provider = Arc::new(FakeOcrProvider::new(vec![
@@ -94,7 +95,7 @@ async fn stored_frame_masks_pii_region_and_preserves_non_pii() {
             .image_payload
             .as_ref()
             .expect("importance >= 0.8 must yield a full-frame payload"),
-    );
+    )?;
 
     // The email element's center pixel must be masked (near-black; WebP is lossy).
     let email_center = stored.get_pixel(120, 35);
@@ -116,12 +117,13 @@ async fn stored_frame_masks_pii_region_and_preserves_non_pii() {
         corner.0[0] > 200,
         "unrelated pixels must be preserved, got {corner:?}"
     );
+    Ok(())
 }
 
 /// PiiFilterLevel::Off is an explicit operator opt-out: no pixel is masked even
 /// when OCR clearly detects PII.
 #[tokio::test]
-async fn stored_frame_is_not_masked_when_level_off() {
+async fn stored_frame_is_not_masked_when_level_off() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(FakeOcrProvider::new(vec![OcrResult {
         text: "admin@company.com".to_string(),
         x: 20,
@@ -138,12 +140,13 @@ async fn stored_frame_is_not_masked_when_level_off() {
         .await
         .expect("processing must succeed");
 
-    let stored = decode_stored_frame(frame.image_payload.as_ref().expect("full-frame payload"));
+    let stored = decode_stored_frame(frame.image_payload.as_ref().expect("full-frame payload"))?;
     let email_center = stored.get_pixel(120, 35);
     assert!(
         email_center.0[0] > 200,
         "PiiFilterLevel::Off must leave the frame unmasked, got {email_center:?}"
     );
+    Ok(())
 }
 
 /// HiDPI coordinate alignment: OCR elements arrive in PHYSICAL source pixels and
@@ -151,7 +154,7 @@ async fn stored_frame_is_not_masked_when_level_off() {
 /// the mask must land on the PHYSICAL region (x≈40..280), NOT the logical region
 /// (x≈20..140) that the exposed `ocr_regions` are scaled to.
 #[tokio::test]
-async fn stored_frame_masks_physical_region_under_hidpi_scale() {
+async fn stored_frame_masks_physical_region_under_hidpi_scale() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(FakeOcrProvider::new(vec![OcrResult {
         text: "admin@company.com".to_string(),
         x: 40,
@@ -172,7 +175,7 @@ async fn stored_frame_masks_physical_region_under_hidpi_scale() {
         .await
         .expect("processing must succeed");
 
-    let stored = decode_stored_frame(frame.image_payload.as_ref().expect("full-frame payload"));
+    let stored = decode_stored_frame(frame.image_payload.as_ref().expect("full-frame payload"))?;
 
     // Physical region center (inside x=40..280, y=40..80) must be masked.
     let physical_center = stored.get_pixel(160, 60);
@@ -197,4 +200,5 @@ async fn stored_frame_masks_physical_region_under_hidpi_scale() {
         frame.ocr_regions[0].bbox.x, 20,
         "exposed region is logical (40/2)"
     );
+    Ok(())
 }

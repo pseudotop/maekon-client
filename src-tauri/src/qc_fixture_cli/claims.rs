@@ -86,7 +86,7 @@ pub(super) async fn seed_claims_fixture(
 
     let now = Utc::now().timestamp();
     let claims = synthetic_claims(now);
-    let segments = synthetic_claim_segments(now);
+    let segments = synthetic_claim_segments(now)?;
     let edges = synthetic_claim_edges(now);
     let storage_service: Arc<dyn StorageService> = storage.clone();
     let memory_graph: Arc<dyn MemoryGraphPort> = storage.clone();
@@ -122,21 +122,24 @@ pub(super) async fn seed_claims_fixture(
     })
 }
 
-fn synthetic_claim_segments(now: i64) -> [SegmentSummary; 3] {
-    [
-        synthetic_claim_segment("qc-cj04-04-segment-a", now - 180),
-        synthetic_claim_segment("qc-cj04-04-segment-b", now - 150),
-        synthetic_claim_segment("qc-cj04-04-segment-c", now - 270),
-    ]
+fn synthetic_claim_segments(now: i64) -> Result<[SegmentSummary; 3]> {
+    Ok([
+        synthetic_claim_segment("qc-cj04-04-segment-a", now - 180)?,
+        synthetic_claim_segment("qc-cj04-04-segment-b", now - 150)?,
+        synthetic_claim_segment("qc-cj04-04-segment-c", now - 270)?,
+    ])
 }
 
-fn synthetic_claim_segment(segment_id: &str, start_epoch_secs: i64) -> SegmentSummary {
+fn synthetic_claim_segment(segment_id: &str, start_epoch_secs: i64) -> Result<SegmentSummary> {
     let start_time = chrono::DateTime::from_timestamp(start_epoch_secs, 0)
-        .expect("fixed QC fixture timestamp must be representable");
-    SegmentSummary {
+        .context("QC claim segment start timestamp is out of range")?;
+    let end_time = start_time
+        .checked_add_signed(Duration::seconds(30))
+        .context("QC claim segment end timestamp is out of range")?;
+    Ok(SegmentSummary {
         segment_id: segment_id.to_string(),
         start_time,
-        end_time: start_time + Duration::seconds(30),
+        end_time,
         duration_secs: 30,
         regime_id: None,
         trigger_reason: TriggerReason::ScoreHigh,
@@ -150,7 +153,7 @@ fn synthetic_claim_segment(segment_id: &str, start_epoch_secs: i64) -> SegmentSu
         content_activities: Vec::new(),
         container: None,
         llm_summary: None,
-    }
+    })
 }
 
 fn synthetic_claims(now: i64) -> [MemoryClaim; 4] {
@@ -253,5 +256,37 @@ fn synthetic_evidence_edge(
         evidence_ref: Some(segment_id.to_string()),
         source: "qc_fixture".to_string(),
         created_at,
+    }
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_claim_timestamps_are_errors_and_valid_segments_keep_their_duration() {
+        let invalid_start = synthetic_claim_segment("synthetic-invalid", i64::MAX).unwrap_err();
+        assert_eq!(
+            invalid_start.to_string(),
+            "QC claim segment start timestamp is out of range"
+        );
+        let invalid_end = synthetic_claim_segment(
+            "synthetic-overflow",
+            chrono::DateTime::<Utc>::MAX_UTC.timestamp(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            invalid_end.to_string(),
+            "QC claim segment end timestamp is out of range"
+        );
+        let segments = synthetic_claim_segments(1_768_780_800).expect("valid fixture timestamps");
+        assert_eq!(
+            segments.map(|segment| (segment.start_time.timestamp(), segment.end_time.timestamp())),
+            [
+                (1_768_780_620, 1_768_780_650),
+                (1_768_780_650, 1_768_780_680),
+                (1_768_780_530, 1_768_780_560)
+            ]
+        );
     }
 }

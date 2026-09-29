@@ -15,7 +15,14 @@ mod session_limit;
 
 // ── Test constants ──────────────────────────────────────────────────
 
-const TEST_HMAC_SECRET: &str = "test-hmac-secret-32-bytes-long!!";
+/// Per-process HMAC secret for ticket tests. Every test signs and verifies with
+/// the same value, so it only has to be shared, not fixed; drawing it per run
+/// keeps a literal from reading as a production secret (#12745). 42 bytes,
+/// above the 32 the old literal carried.
+fn test_hmac_secret() -> &'static str {
+    static SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SECRET.get_or_init(|| format!("test-hmac-{}", uuid::Uuid::new_v4().simple()))
+}
 
 // ── MockElementFinder ───────────────────────────────────────────────
 
@@ -261,7 +268,7 @@ fn make_service_full(
         Arc::new(MockElementFinder::new(scene)),
         probe.clone(),
         overlay.clone(),
-        Some(TEST_HMAC_SECRET.to_string()),
+        Some(test_hmac_secret().to_string()),
     ));
     (service, probe, overlay)
 }
@@ -274,7 +281,7 @@ fn make_service_with_finder(
         finder,
         Arc::new(MockFocusProbe::new(focus)),
         Arc::new(MockOverlayDriver::new()),
-        Some(TEST_HMAC_SECRET.to_string()),
+        Some(test_hmac_secret().to_string()),
     ))
 }
 

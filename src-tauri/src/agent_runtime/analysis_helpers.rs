@@ -20,14 +20,14 @@ use crate::provider_adapters::ExternalOcrPrivacyGuard;
 /// #10050: resolve a CLI-subscription-backed [`AnalysisProvider`], or `None`
 /// when this config/host cannot serve one.
 ///
-/// Returns `None` — leaving every existing path untouched (AC4) — unless BOTH:
+/// Returns `None` unless BOTH:
 /// 1. the user selected [`AiAccessMode::ProviderSubscriptionCli`], and
 /// 2. a provider CLI is installed AND its auth probe says it is usable.
 ///
 /// Condition 2 is what `select_cli_surface_for_capability` enforces, so a CLI
 /// that is present but logged out does not produce a provider that would fail on
-/// every call — the caller falls through to the HTTP path or to `None`, which is
-/// the pre-#10050 behaviour.
+/// every call. In CLI mode an unavailable CLI must remain unavailable; a stale
+/// HTTP endpoint is not permission to switch transports (#12338).
 #[cfg(feature = "analysis")]
 fn build_cli_subscription_analysis_provider(
     config: &AiProviderConfig,
@@ -77,7 +77,7 @@ fn build_cli_subscription_analysis_provider_with_detected(
 
 /// Build an AnalysisProvider with automatic fallback chaining.
 ///
-/// Returns `None` when no primary `llm_api` is configured.
+/// Returns `None` when the selected transport has no usable primary provider.
 /// The returned `Arc<AtomicBool>` tracks primary provider health and can be
 /// stored in AppState for IPC health queries.
 ///
@@ -127,6 +127,27 @@ pub fn build_analysis_provider_with_flag(
     // other adapter targeting the same endpoint (iter-011 consolidation done).
     breaker_registry: Arc<CircuitBreakerRegistry>,
 ) -> Option<(Arc<dyn AnalysisProvider>, Arc<AtomicBool>)> {
+    build_analysis_provider_with_cli_resolver(
+        config,
+        pii_level,
+        privacy_guard,
+        secret_stores,
+        external_flag,
+        breaker_registry,
+        build_cli_subscription_analysis_provider,
+    )
+}
+
+#[cfg(feature = "analysis")]
+fn build_analysis_provider_with_cli_resolver(
+    config: &AiProviderConfig,
+    pii_level: PiiFilterLevel,
+    privacy_guard: Option<ExternalOcrPrivacyGuard>,
+    secret_stores: Option<&SecretStoreSet>,
+    external_flag: Option<Arc<AtomicBool>>,
+    breaker_registry: Arc<CircuitBreakerRegistry>,
+    resolve_cli: impl FnOnce(&AiProviderConfig) -> Option<Arc<dyn AnalysisProvider>>,
+) -> Option<(Arc<dyn AnalysisProvider>, Arc<AtomicBool>)> {
     // #10050 AC1: CLI-subscription path. The sibling ports (`LlmProvider`,
     // `OcrProvider`) already resolve to an installed provider CLI in this mode;
     // analysis used to fall through to the `llm_api?` below and return `None`,
@@ -136,11 +157,33 @@ pub fn build_analysis_provider_with_flag(
     //
     // Checked BEFORE the `llm_api?` bail because a CLI-mode config legitimately
     // has no `llm_api` endpoint at all.
-    if let Some(provider) = build_cli_subscription_analysis_provider(config) {
+    if config.access_mode.normalized_for_ai_surfaces()
+        == maekon_core::config::AiAccessMode::ProviderSubscriptionCli
+    {
+        let provider = resolve_cli(config);
+        if provider.is_none() {
+            if let Some(flag) = &external_flag {
+                flag.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         // The CLI provider is its own primary with no HTTP fallback, so the
         // health flag starts healthy and is not wired to a fallback chain.
         let health_flag = external_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(true)));
-        return Some((provider, health_flag));
+        return provider.map(|provider| (provider, health_flag));
+    }
+
+    // #11969: every HTTP analysis runtime enforces one LocalModel boundary.
+    // Applying it here covers suggestions, work-type refinement,
+    // coaching, and segment/daily summaries instead of relying on each caller
+    // to remember the same primary+fallback check.
+    if !crate::ai_readiness::local_model_analysis_endpoints_are_runtime_compatible(config) {
+        if let Some(flag) = &external_flag {
+            flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        tracing::warn!(
+            "analysis provider disabled: LocalModel HTTP primary and fallback must both be supported loopback endpoints"
+        );
+        return None;
     }
 
     let llm_api = config.llm_api.as_ref()?;
@@ -398,6 +441,66 @@ pub fn build_local_ollama_summary_provider(
 #[cfg(all(test, feature = "analysis"))]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use maekon_core::config::{
+        AiProviderType, ExternalApiEndpoint, ExternalDataPolicy, PrivacyConfig,
+    };
+    use maekon_core::consent::ConsentManager;
+    use maekon_core::error::CoreError;
+    use maekon_core::models::context::{ProcessInfo, WindowInfo};
+    use maekon_core::models::event::ProcessDetail;
+    use maekon_core::ports::consent_manager::ConsentManagerPort;
+    use maekon_core::ports::monitor::ProcessMonitor;
+
+    struct StaticProcessMonitor;
+
+    #[async_trait]
+    impl ProcessMonitor for StaticProcessMonitor {
+        async fn get_active_window(&self) -> Result<Option<WindowInfo>, CoreError> {
+            Ok(None)
+        }
+
+        async fn get_top_processes(&self, _limit: usize) -> Result<Vec<ProcessInfo>, CoreError> {
+            Ok(vec![])
+        }
+
+        async fn get_detailed_processes(
+            &self,
+            _foreground_pid: Option<u32>,
+            _top_n: usize,
+        ) -> Result<Vec<ProcessDetail>, CoreError> {
+            Ok(vec![])
+        }
+    }
+
+    fn local_analysis_guard() -> std::io::Result<(ExternalOcrPrivacyGuard, tempfile::TempDir)> {
+        let temp_dir = tempfile::tempdir()?;
+        let consent_manager: Arc<dyn ConsentManagerPort> =
+            Arc::new(ConsentManager::new(temp_dir.path().join("consent.json")));
+        Ok((
+            ExternalOcrPrivacyGuard::new(
+                consent_manager,
+                PiiFilterLevel::Standard,
+                ExternalDataPolicy::PiiFilterStandard,
+                PrivacyConfig::default(),
+                Arc::new(StaticProcessMonitor),
+                None,
+            ),
+            temp_dir,
+        ))
+    }
+
+    fn local_analysis_endpoint(endpoint: &str) -> ExternalApiEndpoint {
+        ExternalApiEndpoint {
+            endpoint: endpoint.to_string(),
+            api_key: String::new(),
+            model: Some("local-model".to_string()),
+            timeout_secs: 30,
+            provider_type: AiProviderType::Generic,
+            surface_id: None,
+            credential: None,
+        }
+    }
 
     /// build_local_ollama_summary_provider: catalog default (loopback) → Some.
     /// Verifies the new_local_enrichment loopback-accept path fires for the
@@ -413,6 +516,61 @@ mod tests {
             result.is_some(),
             "catalog default loopback endpoint must yield a Some provider"
         );
+    }
+
+    #[test]
+    fn shared_builder_rejects_non_loopback_local_model_primary_and_fallback() {
+        use maekon_core::config::{AiAccessMode, AiProviderConfig};
+
+        let (guard, _temp_dir) = local_analysis_guard().expect("temporary consent fixture");
+        let registry = crate::breaker_registry::CircuitBreakerRegistry::new();
+        let mut config = AiProviderConfig {
+            access_mode: AiAccessMode::LocalModel,
+            llm_api: Some(local_analysis_endpoint(
+                "http://127.0.0.1:8080/v1/chat/completions",
+            )),
+            ..Default::default()
+        };
+        assert!(build_analysis_provider_with_flag(
+            &config,
+            PiiFilterLevel::Standard,
+            Some(guard.clone()),
+            None,
+            None,
+            registry.clone(),
+        )
+        .is_some());
+
+        config.llm_api = Some(local_analysis_endpoint(
+            "https://remote.example.test/v1/chat/completions",
+        ));
+        let primary_health = Arc::new(AtomicBool::new(true));
+        assert!(build_analysis_provider_with_flag(
+            &config,
+            PiiFilterLevel::Standard,
+            Some(guard.clone()),
+            None,
+            Some(primary_health.clone()),
+            registry.clone(),
+        )
+        .is_none());
+        assert!(!primary_health.load(std::sync::atomic::Ordering::Relaxed));
+
+        config.llm_api = Some(local_analysis_endpoint(
+            "http://127.0.0.1:8080/v1/chat/completions",
+        ));
+        config.llm_api_fallback = Some(local_analysis_endpoint(
+            "https://fallback.example.test/v1/chat/completions",
+        ));
+        assert!(build_analysis_provider_with_flag(
+            &config,
+            PiiFilterLevel::Standard,
+            Some(guard),
+            None,
+            None,
+            registry,
+        )
+        .is_none());
     }
 
     /// Fallback must NOT fire when llm_api is Some (guard-missing fail-closed
@@ -480,6 +638,69 @@ mod tests {
             },
             auth_status: crate::subprocess_provider::SubprocessCliAuthStatus::Authenticated,
             auth_detail: Some("cli_authenticated".to_string()),
+        }
+    }
+
+    #[test]
+    fn cli_summary_transport_never_falls_through_to_a_stale_http_endpoint() {
+        use maekon_core::config::AiAccessMode;
+        let (guard, _directory) = local_analysis_guard().expect("isolated privacy guard");
+        for endpoint in [
+            None,
+            Some(local_analysis_endpoint(
+                "http://127.0.0.1:11434/v1/chat/completions",
+            )),
+        ] {
+            let config = AiProviderConfig {
+                access_mode: AiAccessMode::ProviderSubscriptionCli,
+                llm_api: endpoint,
+                ..Default::default()
+            };
+            for available in [true, false] {
+                let health = Arc::new(AtomicBool::new(true));
+                let result = build_analysis_provider_with_cli_resolver(
+                    &config,
+                    PiiFilterLevel::Standard,
+                    Some(guard.clone()),
+                    None,
+                    Some(health.clone()),
+                    crate::breaker_registry::CircuitBreakerRegistry::new(),
+                    |selected| {
+                        let detected = if available {
+                            vec![authenticated_claude_surface()]
+                        } else {
+                            vec![]
+                        };
+                        build_cli_subscription_analysis_provider_with_detected(selected, &detected)
+                    },
+                );
+                if available {
+                    let (provider, returned_health) =
+                        result.expect("CLI is the complete credential");
+                    assert_eq!(provider.provider_name(), "subprocess-claude-code-analysis");
+                    assert!(Arc::ptr_eq(&health, &returned_health));
+                    assert!(health.load(std::sync::atomic::Ordering::Relaxed));
+                } else {
+                    assert!(
+                        result.is_none(),
+                        "an absent CLI must not construct an HTTP fallback"
+                    );
+                    assert!(!health.load(std::sync::atomic::Ordering::Relaxed));
+                }
+            }
+            if config.llm_api.is_some() {
+                let mut http = config;
+                http.access_mode = AiAccessMode::ProviderApiKey;
+                let provider = build_analysis_provider_with_cli_resolver(
+                    &http, PiiFilterLevel::Standard, Some(guard.clone()), None, None,
+                    crate::breaker_registry::CircuitBreakerRegistry::new(),
+                    |_| panic!("HTTP mode must never probe CLIs"),
+                ).expect("the same endpoint and guard can construct an explicitly selected HTTP provider");
+                assert_ne!(
+                    provider.0.provider_name(),
+                    "subprocess-claude-code-analysis"
+                );
+            }
         }
     }
 

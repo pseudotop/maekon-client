@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! E2E smoke tests for the GUI V2 interaction flow (ADR-002).
 //!
 //! These tests wire mock adapters through the same DI chain that the Tauri

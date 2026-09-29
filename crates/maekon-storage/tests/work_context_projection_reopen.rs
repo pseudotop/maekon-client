@@ -6,6 +6,7 @@
 //! on-disk/multi-account boundaries.
 
 use chrono::{Duration, Utc};
+use maekon_core::error::CoreError;
 use maekon_core::models::prompt_assembly::SegmentedPrompt;
 use maekon_core::models::work_context::{
     compute_revision_fingerprint, compute_source_object_key, DataClassification, Lifecycle,
@@ -141,10 +142,8 @@ fn commit(
     }
 }
 
-async fn begin(s: &SqliteStorage, account: &str) -> i64 {
-    s.begin_access_epoch("inst_1", account, Utc::now())
-        .await
-        .unwrap()
+async fn begin(s: &SqliteStorage, account: &str) -> Result<i64, CoreError> {
+    s.begin_access_epoch("inst_1", account, Utc::now()).await
 }
 
 /// After a restart the sanitized projection is still readable, the consented raw is
@@ -161,7 +160,7 @@ async fn projection_and_consented_raw_survive_reopen() {
         let s = SqliteStorage::open(&path, 30, None)
             .unwrap()
             .with_work_context_raw_key(raw_key());
-        let epoch = begin(&s, acct).await;
+        let epoch = begin(&s, acct).await.expect("begin fixture epoch");
         let out = s
             .commit_page(commit(
                 acct,
@@ -212,7 +211,7 @@ async fn raw_without_consent_is_never_persisted() {
         .unwrap()
         .with_work_context_raw_key(raw_key());
     let acct = "acct_A";
-    let epoch = begin(&s, acct).await;
+    let epoch = begin(&s, acct).await.expect("begin fixture epoch");
     let key = source_key(acct, "evt_a");
 
     s.commit_page(commit(
@@ -252,7 +251,7 @@ async fn revoke_crypto_shreds_raw_and_deletes_projection_across_reopen() {
         let s = SqliteStorage::open(&path, 30, None)
             .unwrap()
             .with_work_context_raw_key(raw_key());
-        let epoch = begin(&s, acct).await;
+        let epoch = begin(&s, acct).await.expect("begin fixture epoch");
         s.commit_page(commit(
             acct,
             epoch,
@@ -308,8 +307,8 @@ async fn multi_account_isolation_in_query_and_raw_open() {
         .unwrap()
         .with_work_context_raw_key(raw_key());
     let (a, b) = ("acct_A", "acct_B");
-    let ea = begin(&s, a).await;
-    let eb = begin(&s, b).await;
+    let ea = begin(&s, a).await.expect("begin fixture epoch");
+    let eb = begin(&s, b).await.expect("begin fixture epoch");
 
     s.commit_page(commit(
         a,
@@ -402,7 +401,7 @@ async fn duplicate_page_replay_creates_no_duplicate_projection_or_raw() {
         .unwrap()
         .with_work_context_raw_key(raw_key());
     let acct = "acct_A";
-    let epoch = begin(&s, acct).await;
+    let epoch = begin(&s, acct).await.expect("begin fixture epoch");
 
     let page = || {
         commit(
@@ -433,7 +432,7 @@ async fn accepted_higher_revision_replaces_projection_and_raw() {
         .unwrap()
         .with_work_context_raw_key(raw_key());
     let acct = "acct_A";
-    let epoch = begin(&s, acct).await;
+    let epoch = begin(&s, acct).await.expect("begin fixture epoch");
     let key = source_key(acct, "evt_a");
 
     s.commit_page(commit(
@@ -481,7 +480,7 @@ async fn delete_tombstone_clears_projection_and_raw() {
         .unwrap()
         .with_work_context_raw_key(raw_key());
     let acct = "acct_A";
-    let epoch = begin(&s, acct).await;
+    let epoch = begin(&s, acct).await.expect("begin fixture epoch");
     let key = source_key(acct, "evt_a");
 
     s.commit_page(commit(
@@ -539,7 +538,7 @@ async fn stored_projection_is_injected_only_into_the_untrusted_region() {
         .unwrap()
         .with_work_context_raw_key(raw_key());
     let acct = "acct_A";
-    let epoch = begin(&s, acct).await;
+    let epoch = begin(&s, acct).await.expect("begin fixture epoch");
     let key = source_key(acct, "evt_a");
 
     s.commit_page(commit(
@@ -614,7 +613,7 @@ async fn rekey_drops_raw_but_keeps_ledger_cursor_and_projection() {
         let s = SqliteStorage::open(&path, 30, None)
             .unwrap()
             .with_work_context_raw_key(key_a);
-        let epoch = begin(&s, acct).await;
+        let epoch = begin(&s, acct).await.expect("begin fixture epoch");
         s.commit_page(commit(
             acct,
             epoch,
@@ -673,7 +672,7 @@ async fn raw_past_hard_max_ttl_is_swept() {
         .unwrap()
         .with_work_context_raw_key(raw_key());
     let acct = "acct_A";
-    let epoch = begin(&s, acct).await;
+    let epoch = begin(&s, acct).await.expect("begin fixture epoch");
     let key = source_key(acct, "evt_a");
 
     // Even when a 30-day TTL is requested, clamp_raw_ttl narrows it to 7 days.

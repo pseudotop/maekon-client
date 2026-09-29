@@ -1,3 +1,26 @@
+mod candidate_assessment_factory;
+pub use candidate_assessment_factory::{
+    build_candidate_assessment_runtime, AssessmentRuntimeControl, CandidateAssessmentRuntime,
+};
+mod local_candidate_rules;
+pub use local_candidate_rules::local_exact_label_choice;
+mod candidate_assessment_routing;
+pub use candidate_assessment_routing::{
+    candidate_assessment_route, CandidateAssessmentRoute, JevCandidateAssessment,
+    UnavailableCandidateAssessment,
+};
+#[cfg(test)]
+mod candidate_evaluation_tests;
+mod local_candidate_assessment;
+#[cfg(test)]
+mod local_candidate_privacy_tests;
+pub use local_candidate_assessment::{
+    LocalAssessmentApproval, LocalAssessmentControl, LocalAssessmentLease,
+};
+mod gateway_candidate_control;
+pub use gateway_candidate_control::{
+    GatewayCandidateApproval, GatewayCandidateControl, GatewayCandidateLease,
+};
 mod codex_ui_approval_hook;
 // `FallbackLlmProvider`/`LoopbackLlmProvider` are constructed only by
 // `llm_resolver::resolve_local_model_llm_provider`'s `feature = "analysis"`
@@ -13,6 +36,13 @@ mod fallback_llm;
 // is `#[cfg(feature = "analysis")]`) — same rationale as `fallback_llm` above.
 #[cfg(feature = "analysis")]
 mod guarded_analysis;
+#[cfg(feature = "analysis")]
+mod guarded_candidate_decision;
+#[cfg(feature = "analysis")]
+pub use guarded_candidate_decision::{
+    CandidateDecisionControl, CandidateDecisionPreparer, CandidateShadowApproval,
+    PreparedCandidateDecision,
+};
 mod guarded_conversation;
 mod guarded_llm;
 mod guarded_ocr;
@@ -226,4 +256,36 @@ pub fn resolve_ai_provider_adapters(
             }
         }
     }
+}
+
+/// Build an inert advisory runtime. The trusted caller must separately bind a
+/// fresh snapshot and supply approved shadow-session evidence before any egress.
+/// No GUI command or suggestion consumer is wired by this factory (#12422).
+#[cfg(feature = "analysis")]
+pub fn build_candidate_decision_runtime(
+    privacy: ExternalOcrPrivacyGuard,
+    storage: Arc<maekon_storage::sqlite::SqliteStorage>,
+    secrets: Arc<dyn maekon_core::ports::secret_store::SecretStore>,
+    mode: AiAccessMode,
+) -> Result<
+    (
+        Arc<dyn maekon_core::ports::candidate_decision::CandidateDecisionPort>,
+        CandidateDecisionControl,
+    ),
+    CoreError,
+> {
+    let backend = maekon_network::candidate_decision_client::JevCandidateDecisionClient::new()
+        .map_err(|_| CoreError::Config {
+            code: maekon_core::error_codes::ConfigCode::Invalid,
+            message: "Candidate decision transport initialization failed".into(),
+        })?;
+    let audit = maekon_storage::sqlite::SqliteCandidateDecisionAudit::new(storage);
+    let (provider, control) = guarded_candidate_decision::GuardedCandidateDecision::new(
+        Arc::new(backend),
+        Arc::new(audit),
+        secrets,
+        privacy,
+        mode,
+    );
+    Ok((Arc::new(provider), control))
 }

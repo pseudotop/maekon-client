@@ -5,6 +5,7 @@ mod analysis_setup;
 // `embedding_setup::build_web_search_components`, tapping the same embedding
 // source as this scheduler ingestion path.
 pub(crate) mod embedding_setup;
+mod summary_provider_class;
 mod sync_setup;
 
 use anyhow::Result;
@@ -22,7 +23,6 @@ use maekon_web::RealtimeEvent;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::AppHandle;
-use tokio::runtime::Handle;
 use tokio::sync::{broadcast, watch};
 use tracing::{error, info};
 
@@ -144,13 +144,20 @@ pub(crate) struct AgentRuntimeBundle {
 }
 
 impl AgentRuntimeBundle {
-    pub(crate) fn spawn_on(&self, handle: &Handle, shutdown_rx: watch::Receiver<bool>) {
+    pub(crate) fn spawn_on(
+        &self,
+        runtime: &crate::bootstrap_runtime::ManagedBackgroundRuntime,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> Result<()> {
         let bundle = self.clone();
-        handle.spawn(async move {
+        let task = runtime.handle().spawn(async move {
             if let Err(error) = bundle.run(shutdown_rx).await {
                 error!(error = %error, "Agent error");
             }
         });
+        runtime.track_shutdown_task("agent", task)?;
+        info!("Agent started");
+        Ok(())
     }
 
     async fn run(self, shutdown_rx: watch::Receiver<bool>) -> Result<()> {

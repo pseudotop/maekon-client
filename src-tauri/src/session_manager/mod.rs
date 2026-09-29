@@ -3,7 +3,7 @@
 mod error_recovery;
 pub(crate) mod factory;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -18,7 +18,7 @@ use maekon_core::error::CoreError;
 use maekon_core::models::ai_session::{ConversationSessionInfo, SessionConfig, SessionState};
 use maekon_core::ports::audit_log::AuditLogPort;
 use maekon_core::ports::conversation_session::{ConversationSession, SessionManager};
-use maekon_core::ports::secret_store::SecretStore;
+use maekon_core::ports::secret_store::SecretStoreSet;
 
 use crate::provider_adapters::ConversationContentGuard;
 use crate::session_context::SessionContextAssembler;
@@ -66,11 +66,17 @@ pub struct SessionStateEvent {
 
 pub struct SessionManagerImpl {
     sessions: RwLock<HashMap<String, ManagedSession>>,
+    /// Sessions a use case opened for itself rather than the user (#12521).
+    /// `list_sessions` skips them, so the Chat list and most-recent-session
+    /// pickers never show or reuse them. They stay in `sessions`, so the
+    /// concurrency limit, token budget, reaper, and shutdown still cover them.
+    internal_session_ids: parking_lot::Mutex<HashSet<String>>,
     pub(crate) config: Arc<AiSessionConfig>,
     audit: Arc<dyn AuditLogPort>,
     context_assembler: Option<Arc<SessionContextAssembler>>,
-    /// Secret store for resolving provider credentials (HttpApi sessions).
-    secret_store: Option<Arc<dyn SecretStore>>,
+    /// Provider secret stores, one per backend. An HttpApi session reads its key
+    /// from the store its credential binding names (#12563).
+    secret_stores: SecretStoreSet,
     /// Tauri app handle for emitting session state change events.
     app_handle: Option<AppHandle>,
     /// Privacy guard for external (off-device) chat sessions. When set, external
@@ -120,10 +126,11 @@ impl SessionManagerImpl {
     ) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
+            internal_session_ids: parking_lot::Mutex::new(HashSet::new()),
             config,
             audit,
             context_assembler,
-            secret_store: None,
+            secret_stores: SecretStoreSet::default(),
             app_handle: None,
             privacy_guard: None,
             egress_ledger: None,
@@ -215,9 +222,10 @@ impl SessionManagerImpl {
         self
     }
 
-    /// Attach a secret store for resolving provider credentials.
-    pub fn with_secret_store(mut self, store: Arc<dyn SecretStore>) -> Self {
-        self.secret_store = Some(store);
+    /// Attach the provider secret stores HttpApi sessions resolve credentials
+    /// from — the same set the LLM resolver reads (`ProviderRuntimeContext`).
+    pub fn with_secret_stores(mut self, stores: SecretStoreSet) -> Self {
+        self.secret_stores = stores;
         self
     }
 
@@ -364,13 +372,31 @@ impl SessionManagerImpl {
         }
     }
 
+    /// Creates a session for one internal request (#12521). The caller closes
+    /// it; until then it counts toward the concurrency limit and token budget.
+    ///
+    /// The id is recorded right after admission with no await point between,
+    /// so only a list running on another worker thread in that instant could
+    /// still include it.
+    pub(crate) async fn create_internal_session(
+        &self,
+        config: SessionConfig,
+    ) -> Result<Arc<dyn ConversationSession>, CoreError> {
+        let session = self.create_session_impl(config).await?;
+        self.internal_session_ids
+            .lock()
+            .insert(session.session_id().to_string());
+        Ok(session)
+    }
+
     /// Internal kill that captures previous state for event emission.
-    async fn kill_session_with_reason(
+    pub(crate) async fn kill_session_with_reason(
         &self,
         session_id: &str,
         reason: &str,
     ) -> Result<(), CoreError> {
         let removed = self.sessions.write().await.remove(session_id);
+        self.internal_session_ids.lock().remove(session_id);
         match removed {
             Some(managed) => {
                 managed.session.terminate().await;
@@ -429,9 +455,11 @@ impl SessionManager for SessionManagerImpl {
 
     async fn list_sessions(&self) -> Vec<ConversationSessionInfo> {
         let sessions = self.sessions.read().await;
+        let internal = self.internal_session_ids.lock();
         sessions
-            .values()
-            .map(|managed| {
+            .iter()
+            .filter(|(session_id, _)| !internal.contains(*session_id))
+            .map(|(_, managed)| {
                 let mut info = managed.session.info();
                 // Override adapter's always-Active state with manager's authoritative state
                 info.state = managed.state;
@@ -481,3 +509,6 @@ impl SessionManager for SessionManagerImpl {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod internal_session_tests;

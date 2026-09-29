@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 /// F-RR-01/02: async-safety tests verifying that the delete_data_range + search
 /// handlers do NOT block the tokio worker thread.
 ///
@@ -273,6 +275,8 @@ async fn test_digest_web_entrypoints_do_not_block_worker() {
         timeline: vec![],
         statistics: Default::default(),
         generated_at: chrono::Utc::now(),
+        digest_provenance: "heuristic".to_string(),
+        ai_narrative: Default::default(),
     };
     let saved = tokio::time::timeout(
         Duration::from_secs(5),

@@ -2,7 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use maekon_analysis::TriggerDecision;
-use maekon_core::models::tiered_memory::{TriggerInput, TriggerReason};
+use maekon_core::models::ai_summary::{AiSummaryArtifact, AiSummaryFailureReason};
+use maekon_core::models::tiered_memory::{SegmentSummary, TriggerInput, TriggerReason};
 use maekon_core::ports::storage::StorageService;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -18,6 +19,24 @@ use tracing::{debug, info, warn};
 pub(super) static LLM_SUMMARY_SEMAPHORE: Semaphore = Semaphore::const_new(4);
 
 use super::super::AdaptiveTriggerState;
+
+/// Generate and persist exactly one outcome for an eligible closed segment.
+/// Keeping the write in one helper makes the at-most-once boundary explicit
+/// and independently testable without racing the global task semaphore.
+pub(super) async fn generate_and_persist_summary_outcome(
+    summarizer: &Arc<maekon_analysis::LlmSegmentSummarizer>,
+    storage: &Arc<dyn StorageService>,
+    summary: &SegmentSummary,
+) -> AiSummaryArtifact {
+    let artifact = summarizer.summarize(summary).await;
+    if let Err(e) = storage
+        .update_segment_ai_summary(&summary.segment_id, &artifact)
+        .await
+    {
+        warn!("AI summary outcome storage failure: {e}");
+    }
+    artifact
+}
 
 /// Handle segment open / close / restart decisions and trigger embedding pipeline.
 pub(in crate::scheduler) async fn handle_segment_lifecycle(
@@ -166,13 +185,14 @@ async fn handle_segment_close(
                         // Permit is held for the duration of the task and
                         // released automatically when this closure returns.
                         let _permit = permit;
-                        if let Some(text) = summarizer.summarize(&summary_clone).await {
-                            if let Err(e) = storage_clone
-                                .update_segment_llm_summary(&segment_id, &text)
-                                .await
-                            {
-                                warn!("LLM summary storage failure: {e}");
-                            }
+                        let artifact = generate_and_persist_summary_outcome(
+                            &summarizer,
+                            &storage_clone,
+                            &summary_clone,
+                        )
+                        .await;
+                        let generated_text = artifact.text.clone();
+                        if let Some(text) = generated_text {
                             // #8051: re-index with the LLM summary now available
                             // so the richest signal (the natural-language
                             // summary) is keyword-searchable. Idempotent upsert
@@ -214,7 +234,29 @@ async fn handle_segment_close(
                         segment_id = %summary.segment_id,
                         "LLM summary semaphore exhausted — skipping segment summarization"
                     );
+                    let artifact = AiSummaryArtifact::unavailable(
+                        ts.llm_summary_provider_class,
+                        AiSummaryFailureReason::CapacityLimited,
+                    );
+                    if let Err(e) = storage
+                        .update_segment_ai_summary(&summary.segment_id, &artifact)
+                        .await
+                    {
+                        warn!("AI summary capacity outcome storage failure: {e}");
+                    }
                 }
+            }
+        } else if persisted {
+            let artifact = AiSummaryArtifact::unavailable(
+                ts.llm_summary_provider_class,
+                ts.llm_summary_unavailable_reason
+                    .unwrap_or(AiSummaryFailureReason::ProviderUnavailable),
+            );
+            if let Err(e) = storage
+                .update_segment_ai_summary(&summary.segment_id, &artifact)
+                .await
+            {
+                warn!("AI summary unavailable outcome storage failure: {e}");
             }
         }
     }

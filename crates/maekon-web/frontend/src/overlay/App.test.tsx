@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { I18nextProvider } from 'react-i18next'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { invalidateAiReadinessSnapshotCache } from '../hooks/useAiReadinessSnapshot'
 import i18n from '../i18n'
 import OverlayApp from './App'
 import type { SuggestionGuiAnchorPayload, SuggestionSurfacePlacement, SuggestionViewDto } from './types'
@@ -349,6 +350,23 @@ async function flushAsyncEffects(turns = 8) {
   }
 }
 
+const WBS_AVAILABLE_CAPABILITIES = { features: [], wbs_assignee_available: true }
+
+/** Answer the named commands; every other command keeps the default mock. */
+function mockCommands(results: Record<string, () => Promise<unknown>>) {
+  const originalInvoke = mockInvoke.getMockImplementation()
+  mockInvoke.mockImplementation((command: string, ...args: unknown[]) =>
+    command in results ? results[command]() : originalInvoke?.(command, ...args),
+  )
+}
+
+async function waitForCapabilityRead() {
+  await waitFor(() => {
+    expect(mockInvoke.mock.calls.some(([command]) => command === 'get_feature_capabilities')).toBe(true)
+  })
+  await flushAsyncEffects()
+}
+
 describe('overlay app', () => {
   beforeEach(() => {
     listeners.clear()
@@ -366,6 +384,111 @@ describe('overlay app', () => {
       configurable: true,
       value: { invoke: mockInvoke },
     })
+    invalidateAiReadinessSnapshotCache()
+  })
+
+  it('opens WBS only from the user-opened panel without reading a document', async () => {
+    mockCommands({
+      get_suggestions_panel_open: async () => true,
+      get_feature_capabilities: async () => WBS_AVAILABLE_CAPABILITIES,
+    })
+    render(
+      <I18nextProvider i18n={i18n}>
+        <OverlayApp />
+      </I18nextProvider>,
+    )
+    await flushAsyncEffects()
+    const toggle = await screen.findByTestId('wbs-toggle')
+    expect(screen.queryByTestId('wbs-assignee-tooltip')).not.toBeInTheDocument()
+    await act(async () => fireEvent.click(toggle))
+    expect(screen.getByTestId('wbs-request-consent')).toBeEnabled()
+    expect(mockInvoke.mock.calls.filter(([name]) => String(name).startsWith('wbs_'))).toEqual([])
+    await act(async () => fireEvent.click(toggle))
+    await flushAsyncEffects()
+    expect(screen.queryByTestId('wbs-assignee-tooltip')).not.toBeInTheDocument()
+  })
+
+  it('keeps WBS controls out of the closed passive overlay', async () => {
+    mockCommands({ get_feature_capabilities: async () => WBS_AVAILABLE_CAPABILITIES })
+    render(
+      <I18nextProvider i18n={i18n}>
+        <OverlayApp />
+      </I18nextProvider>,
+    )
+    await waitForCapabilityRead()
+    expect(screen.queryByTestId('wbs-toggle')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('wbs-assignee-tooltip')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['reports WBS unavailable', async () => ({ features: [], wbs_assignee_available: false })],
+    ['predates the WBS flag', async () => ({ features: [] })],
+    ['cannot be read', async () => Promise.reject(new Error('capability IPC unavailable'))],
+  ])('hides WBS when the capability snapshot %s', async (_case, capabilities) => {
+    mockCommands({ get_suggestions_panel_open: async () => true, get_feature_capabilities: capabilities })
+    render(
+      <I18nextProvider i18n={i18n}>
+        <OverlayApp />
+      </I18nextProvider>,
+    )
+    await waitForCapabilityRead()
+    await waitFor(() => {
+      expect(screen.getByLabelText('Suggestions panel')).toHaveClass('translate-x-0')
+    })
+    expect(screen.queryByTestId('wbs-toggle')).not.toBeInTheDocument()
+
+    await act(async () => {
+      listeners.get('overlay:wbs')?.({
+        payload: { open: true, anchor: { x: 12, y: 24, width: 48, height: 16, dpi: 1 } },
+      })
+    })
+    expect(screen.queryByTestId('wbs-assignee-tooltip')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Suggestions panel')).toHaveClass('translate-x-0')
+    expect(mockInvoke.mock.calls.filter(([name]) => String(name).startsWith('wbs_'))).toEqual([])
+  })
+
+  it('does not open the suggestions panel for a WBS request this build cannot serve', async () => {
+    mockCommands({ get_feature_capabilities: async () => ({ features: [], wbs_assignee_available: false }) })
+    render(
+      <I18nextProvider i18n={i18n}>
+        <OverlayApp />
+      </I18nextProvider>,
+    )
+    await waitForCapabilityRead()
+    expect(listeners.has('overlay:wbs')).toBe(true)
+
+    await act(async () => {
+      listeners.get('overlay:wbs')?.({
+        payload: { open: true, anchor: { x: 12, y: 24, width: 48, height: 16, dpi: 1 } },
+      })
+    })
+    await flushAsyncEffects()
+    expect(screen.getByLabelText('Suggestions panel')).not.toHaveClass('translate-x-0')
+    expect(screen.queryByTestId('wbs-assignee-tooltip')).not.toBeInTheDocument()
+  })
+
+  it('opens and closes WBS from the bounded native event without consuming its anchor', async () => {
+    mockCommands({ get_feature_capabilities: async () => WBS_AVAILABLE_CAPABILITIES })
+    render(
+      <I18nextProvider i18n={i18n}>
+        <OverlayApp />
+      </I18nextProvider>,
+    )
+    await waitForCapabilityRead()
+    expect(listeners.has('overlay:wbs')).toBe(true)
+
+    await act(async () => {
+      listeners.get('overlay:wbs')?.({
+        payload: { open: true, anchor: { x: 12, y: 24, width: 48, height: 16, dpi: 1 } },
+      })
+    })
+    expect(screen.getByTestId('wbs-assignee-tooltip')).toBeInTheDocument()
+    expect(screen.getByTestId('wbs-toggle')).toHaveAttribute('aria-expanded', 'true')
+
+    await act(async () => {
+      listeners.get('overlay:wbs')?.({ payload: { open: false, anchor: null } })
+    })
+    expect(screen.queryByTestId('wbs-assignee-tooltip')).not.toBeInTheDocument()
   })
 
   it('keeps the recording border off the interactive magic-overlay surface', async () => {

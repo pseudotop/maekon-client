@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use tracing::{debug, warn};
 
+use maekon_core::models::ai_summary::{
+    AiSummaryArtifact, AiSummaryFailureReason, AiSummaryProviderClass,
+};
 use maekon_core::models::daily_digest::{
     DailyDigest, DailyInsight, DigestHighlight, HighlightType,
 };
@@ -32,21 +35,45 @@ Respond in JSON:
 pub struct DailyInsightGenerator {
     analysis_provider: Arc<dyn AnalysisProvider>,
     pii_filter: PiiFilter,
+    provider_class: AiSummaryProviderClass,
 }
 
 impl DailyInsightGenerator {
     pub fn new(analysis_provider: Arc<dyn AnalysisProvider>, pii_filter: PiiFilter) -> Self {
+        Self::new_with_provider_class(
+            analysis_provider,
+            pii_filter,
+            AiSummaryProviderClass::Unknown,
+        )
+    }
+
+    pub fn new_with_provider_class(
+        analysis_provider: Arc<dyn AnalysisProvider>,
+        pii_filter: PiiFilter,
+        provider_class: AiSummaryProviderClass,
+    ) -> Self {
         Self {
             analysis_provider,
             pii_filter,
+            provider_class,
         }
     }
 
     /// Generate a `DailyInsight` from LLM analysis of the digest.
     ///
-    /// Returns `None` if the LLM is unavailable.
-    /// Falls back to a statistics-based narrative if JSON parsing fails.
+    /// Returns `None` if the LLM is unavailable or its response is invalid.
+    /// The deterministic digest remains separate and is never relabelled as AI.
     pub async fn generate(&self, digest: &DailyDigest) -> Option<DailyInsight> {
+        self.generate_with_artifact(digest).await.0
+    }
+
+    /// Generate an AI narrative together with privacy-safe provenance.
+    /// A malformed or failed response never becomes a heuristic-looking
+    /// `DailyInsight`; the deterministic digest remains available separately.
+    pub async fn generate_with_artifact(
+        &self,
+        digest: &DailyDigest,
+    ) -> (Option<DailyInsight>, AiSummaryArtifact) {
         let context = self.build_context(digest);
         let filtered_context = (self.pii_filter)(&context);
 
@@ -60,23 +87,45 @@ impl DailyInsightGenerator {
                 // D5 iter-9: parse THEN sanitize narrative + highlight texts.
                 // LLM response may echo back user context (app names, activity
                 // descriptions) that slipped through input sanitization.
-                match Self::parse_insight_response(&response).map(|mut insight| {
-                    insight.narrative = (self.pii_filter)(&insight.narrative);
-                    for highlight in &mut insight.highlights {
-                        highlight.text = (self.pii_filter)(&highlight.text);
+                match Self::parse_insight_response(&response)
+                    .map(|mut insight| {
+                        insight.narrative = (self.pii_filter)(&insight.narrative);
+                        for highlight in &mut insight.highlights {
+                            highlight.text = (self.pii_filter)(&highlight.text);
+                        }
+                        insight
+                    })
+                    .filter(|insight| !insight.narrative.trim().is_empty())
+                {
+                    Some(insight) => {
+                        let artifact = AiSummaryArtifact::generated(
+                            insight.narrative.clone(),
+                            self.provider_class,
+                            chrono::Utc::now(),
+                        );
+                        (Some(insight), artifact)
                     }
-                    insight
-                }) {
-                    Some(insight) => Some(insight),
                     None => {
-                        warn!("Failed to parse LLM response, using fallback narrative");
-                        Some(Self::fallback_insight(&digest.statistics))
+                        warn!("Failed to parse LLM daily insight response");
+                        (
+                            None,
+                            AiSummaryArtifact::unavailable(
+                                Some(self.provider_class),
+                                AiSummaryFailureReason::InvalidResponse,
+                            ),
+                        )
                     }
                 }
             }
             Err(e) => {
                 warn!(error = %e, "LLM unavailable for daily insight");
-                None
+                (
+                    None,
+                    AiSummaryArtifact::unavailable(
+                        Some(self.provider_class),
+                        AiSummaryFailureReason::ProviderFailed,
+                    ),
+                )
             }
         }
     }
@@ -202,19 +251,6 @@ impl DailyInsightGenerator {
 
         Some(stripped[start..=end].to_string())
     }
-
-    /// Fallback insight using basic statistics when LLM parsing fails.
-    fn fallback_insight(
-        stats: &maekon_core::models::daily_digest::DailyStatistics,
-    ) -> DailyInsight {
-        DailyInsight {
-            narrative: format!(
-                "Today: deep work {:.1}h, communication {:.1}h, {} context switches.",
-                stats.deep_work_hours, stats.communication_hours, stats.context_switches,
-            ),
-            highlights: vec![],
-        }
-    }
 }
 
 #[cfg(test)]
@@ -277,6 +313,8 @@ mod tests {
                 comparison: None,
             },
             generated_at: Utc::now(),
+            digest_provenance: "heuristic".to_string(),
+            ai_narrative: Default::default(),
         }
     }
 
@@ -343,7 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_response_falls_back_to_stats() {
+    async fn malformed_response_is_not_mislabeled_as_ai_narrative() {
         let response = "This is not JSON at all, just some text about the day.";
 
         let provider = Arc::new(MockAnalysisProvider {
@@ -352,13 +390,30 @@ mod tests {
         let generator = DailyInsightGenerator::new(provider, identity_filter());
         let digest = make_test_digest();
 
-        let insight = generator.generate(&digest).await;
-        assert!(insight.is_some());
-        let insight = insight.unwrap();
-        // Fallback narrative uses stats
-        assert!(insight.narrative.contains("4.2"));
-        assert!(insight.narrative.contains("0.5"));
-        assert!(insight.highlights.is_empty());
+        let (insight, artifact) = generator.generate_with_artifact(&digest).await;
+        assert!(insight.is_none());
+        assert_eq!(
+            artifact.failure_reason,
+            Some(AiSummaryFailureReason::InvalidResponse)
+        );
+    }
+
+    #[tokio::test]
+    async fn narrative_removed_by_privacy_filter_is_an_invalid_response() {
+        let response = r#"{"narrative":"Alice","highlights":[]}"#;
+        let provider = Arc::new(MockAnalysisProvider {
+            response_text: Some(response.to_string()),
+        });
+        let generator =
+            DailyInsightGenerator::new(provider, Box::new(|text| text.replace("Alice", "")));
+
+        let (insight, artifact) = generator.generate_with_artifact(&make_test_digest()).await;
+
+        assert!(insight.is_none());
+        assert_eq!(
+            artifact.failure_reason,
+            Some(AiSummaryFailureReason::InvalidResponse)
+        );
     }
 
     #[tokio::test]

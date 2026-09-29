@@ -1,10 +1,57 @@
 use crate::services::settings_assembler::config_to_settings;
+use maekon_api_contracts::settings::AiSessionSettings;
 use maekon_core::config::{
     AiAccessMode, AiProviderProfileConfig, AiProviderType, CredentialAuthMode,
     CredentialBackendKind, CredentialBinding, ExternalApiEndpoint, FocusSchedule, LlmProviderType,
     MicInputMode, OcrProviderType, SavedAiProviderProfile, SecretRef, SttLanguage, SttProviderKind,
     TimeRange, Weekday, WhisperModelSize,
 };
+
+#[test]
+fn daily_token_budget_is_visible_in_settings_json() {
+    for budget in [
+        0_u64,
+        4096,
+        9_007_199_254_740_991,
+        9_007_199_254_740_993,
+        u64::MAX,
+    ] {
+        let mut config = maekon_core::config::AppConfig::default_config();
+        config.ai_session.daily_token_budget = budget;
+        let settings = config_to_settings(&config, CredentialBackendKind::OsSecretStore);
+        let json = serde_json::to_value(settings).expect("settings JSON");
+        assert_eq!(json["ai_session"]["daily_token_budget"], budget.to_string());
+    }
+}
+
+#[test]
+fn daily_token_budget_rejects_invalid_json_numbers() {
+    for invalid in [
+        serde_json::json!(0),
+        serde_json::json!(4096),
+        serde_json::json!(u64::MAX),
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+    ] {
+        let mut json = serde_json::to_value(maekon_api_contracts::settings::AppSettings::default())
+            .expect("settings JSON");
+        json["ai_session"]["daily_token_budget"] = invalid;
+        let error = serde_json::from_value::<maekon_api_contracts::settings::AppSettings>(json)
+            .expect_err("daily token budget must be a decimal string");
+        assert!(error.is_data());
+    }
+}
+
+#[test]
+fn daily_token_budget_omission_and_null_preserve_the_optional_contract() {
+    let mut json = serde_json::to_value(AiSessionSettings::default()).expect("settings JSON");
+    assert!(json.get("daily_token_budget").is_none());
+    let omitted: AiSessionSettings = serde_json::from_value(json.clone()).expect("omitted budget");
+    assert_eq!(omitted.daily_token_budget, None);
+    json["daily_token_budget"] = serde_json::Value::Null;
+    let null: AiSessionSettings = serde_json::from_value(json).expect("null budget");
+    assert_eq!(null.daily_token_budget, None);
+}
 
 #[test]
 fn config_to_settings_maps_plaintext_api_keys_to_current_default_backend() {

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Backlog category contract tests — surface checks for source files declared
 //! in tc-catalog.jsonl entries under the integration-adapters / ai-providers /
 //! automation-control / coaching-engine / vector-rag /

@@ -17,6 +17,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../../__tests__/helpers/render-helpers'
 import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../../api/contracts'
+import * as aiReadinessModule from '../../../hooks/useAiReadinessSnapshot'
 // Test i18n resolves to en (fallbackLng='en'). After Task 3 keys resolve to actual copy, so
 // reference the resolved copy from en.json directly instead of the key string (the test stays
 // consistent across wording changes as long as the key path is preserved).
@@ -75,7 +76,10 @@ function mockConsentIpc(initial: ConsentSnapshot) {
 }
 
 describe('ConsentToggleSection', () => {
-  afterEach(() => clearMocks())
+  afterEach(() => {
+    clearMocks()
+    vi.restoreAllMocks()
+  })
 
   it('mounts → calls get_consent and reflects a Valid+screen_capture snapshot as monitoring ON', async () => {
     mockConsentIpc(snapshot('Valid', { screen_capture: true }))
@@ -90,6 +94,7 @@ describe('ConsentToggleSection', () => {
     // Assume ocr_processing is already separately enabled → it must be preserved by the spread.
     const { setSpy } = mockConsentIpc(snapshot('NotGranted', { ocr_processing: true }))
     const onConsentChanged = vi.fn()
+    const invalidateSpy = vi.spyOn(aiReadinessModule, 'invalidateAiReadinessSnapshotCache')
 
     renderWithProviders(<ConsentToggleSection onConsentChanged={onConsentChanged} />)
 
@@ -112,6 +117,7 @@ describe('ConsentToggleSection', () => {
     expect(sent.clipboard_monitoring).toBe(false)
     expect(sent.file_access_monitoring).toBe(false)
     expect(onConsentChanged).toHaveBeenCalledTimes(1)
+    expect(invalidateSpy).toHaveBeenCalledTimes(1)
   })
 
   it('toggling the microphone opt-in → set_consent flips microphone, all other fields preserved (full-spread)', async () => {
@@ -400,6 +406,7 @@ describe('ConsentToggleSection', () => {
 
   it('withdraw action → calls withdraw_consent', async () => {
     const { withdrawSpy } = mockConsentIpc(snapshot('Valid', { screen_capture: true }))
+    const invalidateSpy = vi.spyOn(aiReadinessModule, 'invalidateAiReadinessSnapshotCache')
 
     renderWithProviders(<ConsentToggleSection />)
 
@@ -413,6 +420,7 @@ describe('ConsentToggleSection', () => {
     fireEvent.click(confirm)
 
     await waitFor(() => expect(withdrawSpy).toHaveBeenCalledTimes(1))
+    expect(invalidateSpy).toHaveBeenCalledTimes(1)
   })
 
   it('#9505: withdraw failure surfaces the mapped error toast and keeps the modal open for retry', async () => {

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use maekon_core::config::AppConfig;
+use maekon_core::config::{AiProviderConfig, AppConfig};
 use maekon_core::models::ai_session::{
     ActivitySummary, MessageRole, SessionMessage, SuggestionPatterns, SystemInfo,
     SystemPromptContext, ToolDefinition, UserProfileSummary,
@@ -73,6 +73,14 @@ impl SessionContextAssembler {
             config,
             regime_state,
         }
+    }
+
+    /// The boot-time AI provider config sessions are composed from. HttpApi
+    /// sessions take the API key binding Settings recorded on `llm_api` from
+    /// it (#12541); `chat.http_api` applies provider changes on restart.
+    #[cfg_attr(not(feature = "analysis"), allow(dead_code))]
+    pub(crate) fn ai_provider(&self) -> &AiProviderConfig {
+        &self.config.ai_provider
     }
 
     pub async fn build_system_prompt(&self) -> SystemPromptContext {

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! End-to-end integration for the trusted Skill Pack resolver (#8588,
 //! adversarial-review Fix 3).
 //!

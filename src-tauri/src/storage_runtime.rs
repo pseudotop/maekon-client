@@ -28,6 +28,11 @@ const MASTER_KEY_KEYCHAIN_REGISTRY_FILE: &str = "maekon-master-key-keychain-regi
 /// keychain itself is unavailable (headless Linux/CI without a keyring
 /// backend).
 ///
+/// #12534: on Linux the keychain is the kernel keyring, which a reboot
+/// clears, so it is only a cache there and `.db_key` stays on disk as the
+/// durable copy. `EncryptionKey::load_or_create_sealed` picks that policy per
+/// platform; macOS and Windows still keep the key only in the keychain.
+///
 /// This is the ONE production entry point for resolving `data_dir`'s master
 /// key — `StorageRuntimeBuilder::build` (SQLCipher + frame encryption) and
 /// `ServerBootstrapContext::build` (`server` feature — integration state
@@ -256,8 +261,8 @@ mod tests {
 
     /// #8040 regression: `build()` must wire a successful keychain-sealed
     /// migration through end-to-end — the resulting `SqliteStorage` must open
-    /// with the SAME key the fake vault now holds, and no plaintext `.db_key`
-    /// file must remain.
+    /// with the SAME key the fake vault now holds. The plaintext `.db_key`
+    /// is removed only where the keychain survives a reboot (#12534).
     #[test]
     fn build_migrates_legacy_key_to_keychain_and_opens_with_it() {
         let base = std::env::temp_dir().join(format!("maekon-8040-{}", std::process::id()));
@@ -275,9 +280,11 @@ mod tests {
             .build()
             .expect("build must succeed and migrate the legacy key into the fake vault");
 
-        assert!(
-            !base.join(".db_key").exists(),
-            "the legacy plaintext key file must be deleted after a verified migration"
+        assert_eq!(
+            base.join(".db_key").exists(),
+            cfg!(not(any(target_os = "macos", target_os = "windows"))),
+            "#12534: Linux keeps the key file as the durable copy (the kernel keyring does \
+             not survive a reboot); macOS/Windows delete it after a verified migration"
         );
         assert_eq!(
             bundle

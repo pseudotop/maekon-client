@@ -27,6 +27,7 @@ use crate::commands::capture::{
     analyze_current_scene_snapshot, manual_capture_permissions, CurrentSceneSnapshot,
 };
 use crate::commands::suggestion_parser::extract_suggestions;
+use crate::commands::suggestions::helpers::{open_recovery_session, RecoverySessionUnavailable};
 use crate::ipc_error::IpcError;
 use crate::runtime_state::{AiSessionRuntimeState, AppState, SuggestionRuntimeState};
 use crate::session_manager::SessionManagerImpl;
@@ -81,12 +82,40 @@ impl CurrentContextSuggestionResult {
     }
 }
 
+pub(super) fn recovery_unavailable(
+    unavailable: RecoverySessionUnavailable,
+    queue_count: usize,
+) -> CurrentContextSuggestionResult {
+    use CurrentContextSuggestionStatus::{AnalysisUnavailable, ConsentRequired};
+    let (status, reason) = match unavailable {
+        RecoverySessionUnavailable::ProviderNotReady => {
+            (AnalysisUnavailable, "chat_provider_not_ready")
+        }
+        RecoverySessionUnavailable::ExternalTextConsent => {
+            (ConsentRequired, "external_text_consent_required")
+        }
+        RecoverySessionUnavailable::ProviderUnavailable => {
+            (AnalysisUnavailable, "provider_unavailable")
+        }
+        RecoverySessionUnavailable::CliNeedsOpenChat => {
+            (AnalysisUnavailable, "chat_cli_needs_open_chat")
+        }
+    };
+    let mut result = CurrentContextSuggestionResult::empty(status, reason, queue_count);
+    if unavailable == RecoverySessionUnavailable::ExternalTextConsent {
+        result.missing_permissions.push("full_text_extraction");
+    }
+    result
+}
+
 #[command]
 pub async fn request_current_context_suggestions(
     app: AppHandle,
     app_state: tauri::State<'_, AppState>,
     ai_state: tauri::State<'_, AiSessionRuntimeState>,
     suggestion_state: tauri::State<'_, SuggestionRuntimeState>,
+    feature_state: tauri::State<'_, crate::feature_capabilities::FeatureCapabilityState>,
+    config_state: tauri::State<'_, crate::runtime_state::ConfigRuntimeState>,
     session_id: Option<String>,
 ) -> Result<CurrentContextSuggestionResult, IpcError> {
     let Some(suggestion_manager) = suggestion_state.manager() else {
@@ -135,17 +164,29 @@ pub async fn request_current_context_suggestions(
             ),
         ));
     };
-    let Some(session) = select_session(&session_manager, session_id.as_deref()).await else {
-        let queue_count = suggestion_manager.queue().lock().await.len();
-        return Ok(emit_result(
-            &app,
-            CurrentContextSuggestionResult::empty(
-                CurrentContextSuggestionStatus::AnalysisUnavailable,
-                "active_session_unavailable",
-                queue_count,
-            ),
-        ));
-    };
+    // #12521: with no chat session running, this explicit request opens one on
+    // a readiness-Ready path; the guard closes it when the request ends.
+    let (session, _recovery_session) =
+        match select_session(&session_manager, session_id.as_deref()).await {
+            Some(session) => (session, None),
+            None => match open_recovery_session(
+                &session_manager,
+                feature_state,
+                app_state.clone(),
+                config_state,
+            )
+            .await
+            {
+                Ok((session, guard)) => (session, Some(guard)),
+                Err(unavailable) => {
+                    let queue_count = suggestion_manager.queue().lock().await.len();
+                    return Ok(emit_result(
+                        &app,
+                        recovery_unavailable(unavailable, queue_count),
+                    ));
+                }
+            },
+        };
     let selected_session_id = session.session_id().to_string();
 
     // The existing external conversation decorator requires this consent and

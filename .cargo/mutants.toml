@@ -1,0 +1,30 @@
+# cargo-mutants configuration for the Maekon client workspace.
+#
+# `required-features` binaries are never part of the build graph that the
+# mutants gates compile: `.github/workflows/maekon-client-mutants-in-diff.yml`
+# and `maekon-client-mutants.yml` run `cargo mutants` without any `--features`,
+# so `emit-openapi-schemas` (schema), `hnsw_bench` (hnsw) and `grpc_test` (grpc)
+# are not compiled while their mutants are tested. Every mutant in those files
+# therefore survives with a 0s build, regardless of test coverage (#12128,
+# PR #12371: `replace main -> Result<(), serde_json::Error> with Ok(())`
+# missed after a cached build). Excluding them makes the gate report
+# "no mutants in the changed lines" instead of a verdict it cannot measure.
+#
+# This is an explicit gap, not coverage: these binaries stay unmeasured until
+# the gates derive per-package features (see the workflow header for the
+# in-diff budget that a feature-aware run must still respect).
+#
+# Platform-only OCR backends (#12500) are the same kind of gap.
+# `native_ocr/windows.rs` is `#[cfg(target_os = "windows")]` and
+# `native_ocr/macos.rs` is `#[cfg(target_os = "macos")]` (see
+# `native_ocr/mod.rs`), while both mutants gates build on Linux. Their mutants
+# are never compiled, so each one "survives" regardless of coverage (PR #12533:
+# `replace WindowsNativeOcr::webp_to_software_bitmap -> Result<..> with
+# Ok(Default::default())`). Their host-independent logic lives in
+# `native_ocr/webp_decode.rs`, which stays measured; the weekly per-OS
+# first-party lint is the only Windows/macOS compile check for the rest.
+exclude_globs = [
+    "crates/**/src/bin/*.rs",
+    "crates/maekon-vision/src/native_ocr/windows.rs",
+    "crates/maekon-vision/src/native_ocr/macos.rs",
+]

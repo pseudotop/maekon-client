@@ -5,10 +5,16 @@ use async_trait::async_trait;
 use crate::error::CoreError;
 use crate::models::wbs_xlsx::{
     EffectiveWbsXlsxProjectionResolution, LocalWbsXlsxReceipt, UploadedWbsXlsxReceipt,
+    WbsXlsxHandoff,
 };
 
 #[async_trait]
 pub trait WbsXlsxClient: Send + Sync {
+    async fn resolve_handoff(
+        &self,
+        assignment_receipt_id: &str,
+    ) -> Result<WbsXlsxHandoff, CoreError>;
+
     async fn resolve_effective_projection(
         &self,
         organization_id: &str,

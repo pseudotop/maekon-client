@@ -10,8 +10,13 @@ pub fn setup(webview: &WebView) {
   let bf_state = BackForwardState(Rc::new(RefCell::new(0)));
 
   let bf_state_c = bf_state.clone();
-  let webview_c = webview.clone();
+  // Weak: the gesture is owned by this webview, and GTK4 destroy never breaks a strong
+  // self-capture cycle, so the webview would never be finalized (#12652).
+  let webview_c = webview.downgrade();
   gesture.connect_pressed(move |gesture, n_press, x, y| {
+    let Some(webview_c) = webview_c.upgrade() else {
+      return;
+    };
     let button = gesture.current_button();
     let mut inhibit = false;
     match button {
@@ -64,8 +69,13 @@ pub fn setup(webview: &WebView) {
   });
 
   let bf_state_c = bf_state.clone();
-  let webview_c = webview.clone();
+  // Weak: the gesture is owned by this webview, and GTK4 destroy never breaks a strong
+  // self-capture cycle, so the webview would never be finalized (#12652).
+  let webview_c = webview.downgrade();
   gesture.connect_released(move |gesture, n_press, x, y| {
+    let Some(webview_c) = webview_c.upgrade() else {
+      return;
+    };
     let button = gesture.current_button();
     let mut inhibit = false;
     match button {

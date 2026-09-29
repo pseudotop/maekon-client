@@ -3,6 +3,7 @@
  */
 
 import { useTranslation } from 'react-i18next'
+import type { AiSummaryArtifact } from '../api/contracts'
 import { colors, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import { Card } from './ui'
@@ -18,6 +19,8 @@ interface DailyInsight {
 
 interface InsightCardProps {
   insight: DailyInsight | null
+  digestProvenance?: 'heuristic'
+  aiNarrative?: AiSummaryArtifact
 }
 
 const highlightConfig: Record<string, { icon: string; bg: string; text: string }> = {
@@ -26,21 +29,52 @@ const highlightConfig: Record<string, { icon: string; bg: string; text: string }
   SUGGESTION: { icon: '\u{1F4A1}', bg: 'bg-brand-signal/10', text: 'text-brand-text' },
 }
 
-export default function InsightCard({ insight }: InsightCardProps) {
+function providerLabelKey(provider: AiSummaryArtifact['provider_class']): string {
+  return `summaryProvenance.provider.${provider ?? 'unknown'}`
+}
+
+function failureLabelKey(reason: AiSummaryArtifact['failure_reason']): string {
+  return `summaryProvenance.failure.${reason ?? 'not_generated'}`
+}
+
+export default function InsightCard({ insight, digestProvenance = 'heuristic', aiNarrative = {} }: InsightCardProps) {
   const { t } = useTranslation()
 
-  if (!insight) {
+  // The artifact is the provenance authority. A legacy `insight` without an
+  // artifact must not be upgraded to an AI claim merely because text exists.
+  if (!aiNarrative.text) {
     return (
       <Card variant="accent" padding="md">
-        <p className={cn(typography.body, colors.text.secondary)}>{t('insightCard.noInsightAvailable')}</p>
+        <div className="mb-2 flex flex-wrap gap-2">
+          <span className="rounded-full bg-surface-muted px-2 py-1 text-content-secondary text-xs">
+            {t(`summaryProvenance.digest.${digestProvenance}`)}
+          </span>
+          <span className="rounded-full bg-semantic-warning/10 px-2 py-1 text-semantic-warning text-xs">
+            {t('summaryProvenance.dailyNarrativeUnavailable')}
+          </span>
+        </div>
+        <p className={cn(typography.body, colors.text.secondary)}>{t(failureLabelKey(aiNarrative.failure_reason))}</p>
       </Card>
     )
   }
 
   return (
     <Card variant="accent" padding="md">
-      <p className={cn('mb-3 leading-relaxed', typography.body, colors.text.primary)}>{insight.narrative}</p>
-      {insight.highlights.length > 0 && (
+      <div className="mb-2 flex flex-wrap gap-2">
+        <span className="rounded-full bg-surface-muted px-2 py-1 text-content-secondary text-xs">
+          {t(`summaryProvenance.digest.${digestProvenance}`)}
+        </span>
+        <span className="rounded-full bg-brand-signal/10 px-2 py-1 text-brand-text text-xs">
+          {t('summaryProvenance.aiDailyNarrative')} · {t(providerLabelKey(aiNarrative.provider_class))}
+        </span>
+        {aiNarrative.generated_at && (
+          <time className="text-content-tertiary text-xs" dateTime={aiNarrative.generated_at}>
+            {new Date(aiNarrative.generated_at).toLocaleString()}
+          </time>
+        )}
+      </div>
+      <p className={cn('mb-3 leading-relaxed', typography.body, colors.text.primary)}>{aiNarrative.text}</p>
+      {insight && insight.highlights.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {insight.highlights.map((highlight, _idx) => {
             const config = highlightConfig[highlight.highlight_type] ?? highlightConfig.SUGGESTION
