@@ -55,7 +55,8 @@ const expectedOverrides = {
   // #12497: the 4.3.1 pin itself became vulnerable (GHSA-2883-xcg3-v3hh).
   'js-yaml@<4.3.2': '4.3.2',
   ws: '8.21.0',
-  'ip-address': '10.3.1',
+  // #12763: fix IPv6 link-local and local-use NAT64 classification.
+  'ip-address@<10.5.1': '10.5.1',
   'cheerio>undici': '7.29.0',
   'minimatch@10.2.5>brace-expansion': '5.0.7',
   'webdriver>undici': '6.28.0',
