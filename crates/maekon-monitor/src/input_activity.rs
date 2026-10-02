@@ -109,10 +109,10 @@ impl InputActivityCollector {
         // Atomic read-modify-write (CAS loop): the previous load → compute → store
         // was non-atomic, so two concurrent callers (or a concurrent
         // `take_snapshot` swap) could lose an update. The closure never returns
-        // `None`, so `fetch_update` always succeeds (#6830).
+        // `None`, so `try_update` always succeeds (#6830).
         let _ = self
             .move_distance
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
                 Some((f64::from_bits(bits) + distance).to_bits())
             });
     }

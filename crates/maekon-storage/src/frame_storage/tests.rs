@@ -819,6 +819,14 @@ mod tests {
             remaining_bytes <= 5 * 1024 * 1024,
             "remaining {remaining_bytes} bytes must be within the 5 MB limit (#6245)"
         );
+
+        // The cached size must follow the evictions (#12778). Without the
+        // decrement it would still report the pre-eviction 19 MB.
+        assert_eq!(
+            storage.total_size_mb().await.unwrap(),
+            remaining_bytes / 1024 / 1024,
+            "the cached size must drop by the evicted bytes (#12778)"
+        );
     }
 
     /// #7074 (MS-001): a written frame file must be owner-only (mode 0o600), not

@@ -753,6 +753,7 @@ jobs:
           node scripts/verify-windows-runtime-closure.mjs `
             --payload-root "target/${{ matrix.target }}/release" `
             --dependency-tool $dumpbin.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Prebuilt runtime closure verification failed with exit $LASTEXITCODE" }
 
       - name: Validate WiX assets
         if: runner.os == 'Windows'
@@ -866,6 +867,7 @@ jobs:
           Remove-Item -LiteralPath $zipRoot -Recurse -Force -ErrorAction SilentlyContinue
           Expand-Archive -LiteralPath "dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}" -DestinationPath $zipRoot
           node scripts/verify-windows-runtime-closure.mjs --payload-root $zipRoot --dependency-tool $dumpbin.FullName
+          if ($LASTEXITCODE -ne 0) { throw "ZIP runtime closure verification failed with exit $LASTEXITCODE" }
 
           $msiFiles = @(Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)
           if ($msiFiles.Count -ne 2) { throw "Expected exactly two localized MSI files, found $($msiFiles.Count)" }
@@ -878,9 +880,14 @@ jobs:
             $msiRoot = Join-Path $env:RUNNER_TEMP "maekon-msi-runtime-closure-$($msi.BaseName)"
             Remove-Item -LiteralPath $msiRoot -Recurse -Force -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Path $msiRoot -Force | Out-Null
-            & msiexec.exe /a $msi.FullName /qn "TARGETDIR=$msiRoot"
-            if ($LASTEXITCODE -ne 0) { throw "MSI administrative extraction failed for $($msi.Name) with exit $LASTEXITCODE" }
+            # msiexec.exe is a GUI-subsystem program, so the call operator
+            # returns before extraction finishes and never sets $LASTEXITCODE.
+            # v0.0.1-rc.11 checked an empty directory 0.11 s later, then read
+            # that check's stale exit code as an extraction failure (#12776).
+            $extract = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$msiRoot`"") -Wait -PassThru
+            if ($extract.ExitCode -ne 0) { throw "MSI administrative extraction failed for $($msi.Name) with exit $($extract.ExitCode)" }
             node scripts/verify-windows-runtime-closure.mjs --payload-root $msiRoot --dependency-tool $dumpbin.FullName
+            if ($LASTEXITCODE -ne 0) { throw "MSI runtime closure verification failed for $($msi.Name) with exit $LASTEXITCODE" }
           }
 
           $setup = Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis","src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -891,6 +898,7 @@ jobs:
           & 7z.exe x "-o$nsisRoot" -y $setup.FullName
           if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed with exit $LASTEXITCODE" }
           node scripts/verify-windows-runtime-closure.mjs --payload-root $nsisRoot --dependency-tool $dumpbin.FullName
+          if ($LASTEXITCODE -ne 0) { throw "NSIS runtime closure verification failed with exit $LASTEXITCODE" }
 
       - name: Record Windows Authenticode policy state
         if: runner.os == 'Windows'
