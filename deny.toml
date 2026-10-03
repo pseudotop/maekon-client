@@ -34,7 +34,11 @@ db-urls = ["https://github.com/RustSec/advisory-db"]
 # E31 removed the previous webkit2gtk/glib 0.18 advisory exception path. Any future
 # unsound advisory must be triaged from current `cargo audit` / `cargo deny` output,
 # not from the retired RUSTSEC-2024-0429 suppression.
-# Review-by: 2026-10-01 — re-evaluate upstream resolution for all advisory policy.
+# Review-by: 2026-12-31 — re-evaluate upstream resolution for all advisory policy.
+# Re-evaluated 2026-10-02 (#12778): `cargo deny check advisories` reports
+# "advisories ok". Without the two quick-xml ignores (RUSTSEC-2026-0194/0195) it
+# fails with 6 findings each, so both stay. The lockfile now carries quick-xml
+# 0.30.0, 0.38.4 and 0.39.4 (vulnerable) and 0.42.0 (fixed).
 # F-SC-C41-05: deny.toml 의 5개 Review-by 약속은 config.toml(cargo-vet) 의 분산(stagger)
 # 창(2026-10-01..2026-12-31)에 맞춰 5개 서로 다른 날짜로 분산했다(이전: 전부 2026-09-01 단일
 # cliff). 이 advisories 검토는 분산 스케줄의 첫 버킷(2026-10-01)에 배정한다.

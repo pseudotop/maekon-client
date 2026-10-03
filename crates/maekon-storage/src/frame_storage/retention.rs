@@ -192,16 +192,15 @@ impl FrameFileStorage {
         }
 
         // Subtract deleted bytes from the cached size tracker using an atomic
-        // fetch_update so that a concurrent save() cannot interleave between
+        // try_update so that a concurrent save() cannot interleave between
         // the load() and the fetch_sub(), which would have caused the counter
-        // to underflow (TOCTOU).
-        if total_deleted_bytes > 0 {
-            let _ = self.cached_size_bytes.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |current| Some(current.saturating_sub(total_deleted_bytes)),
-            );
-        }
+        // to underflow (TOCTOU). Subtracting zero leaves the counter unchanged,
+        // so the update needs no `total_deleted_bytes > 0` guard.
+        let _ =
+            self.cached_size_bytes
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_sub(total_deleted_bytes))
+                });
 
         if let Some(failure) = first_failure {
             return Err(StorageError::Internal(format!(

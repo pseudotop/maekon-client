@@ -622,11 +622,8 @@ impl SqliteStorage {
         // transactionally, so a rebuild failure must NOT roll back (and thereby
         // fail) the erasure itself. (`search_trigram` was dropped by V45 (#8056),
         // so it is no longer rebuilt here.)
-        for fts in ["search_fts"] {
-            if let Err(e) = conn.execute(&format!("INSERT INTO {fts}({fts}) VALUES('rebuild')"), [])
-            {
-                tracing::warn!("FTS5 index rebuild after GDPR erasure failed for {fts}: {e}");
-            }
+        if let Err(e) = conn.execute("INSERT INTO search_fts(search_fts) VALUES('rebuild')", []) {
+            tracing::warn!("FTS5 index rebuild after GDPR erasure failed for search_fts: {e}");
         }
 
         Ok(())

@@ -318,7 +318,7 @@ impl IntegrationEgressPort for IntegrationEgressCoordinator {
             // backlog) must NOT underflow the unsigned counter.
             let _ =
                 self.pending_bytes
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                         Some(current.saturating_sub(acked_bytes))
                     });
 
