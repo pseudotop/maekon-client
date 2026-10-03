@@ -56,10 +56,15 @@ const expectedOverrides = {
   'js-yaml@<4.3.2': '4.3.2',
   ws: '8.21.0',
   // #12763: fix IPv6 link-local and local-use NAT64 classification.
-  'ip-address@<10.5.1': '10.5.1',
-  'cheerio>undici': '7.29.0',
-  'minimatch@10.2.5>brace-expansion': '5.0.7',
-  'webdriver>undici': '6.28.0',
+  // #12783: the 10.5.1 pin itself became vulnerable (GHSA-j6r3-76f7-8jcv).
+  'ip-address@<10.7.1': '10.7.1',
+  // #12783: GHSA-w293-vg96-wgc3 and five more undici advisories (< 7.29.1).
+  'cheerio>undici': '7.29.1',
+  // #12783: GHSA-q2hr-2g5m-vwhr across the three in-tree brace-expansion lines.
+  'brace-expansion@<1.1.21': '1.1.21',
+  'brace-expansion@>=2.0.0 <2.1.7': '2.1.7',
+  'brace-expansion@>=4.0.0 <5.0.12': '5.0.12',
+  'webdriver>undici': '6.28.1',
 }
 
 for (const [packageName, expectedVersion] of Object.entries(expectedOverrides)) {
