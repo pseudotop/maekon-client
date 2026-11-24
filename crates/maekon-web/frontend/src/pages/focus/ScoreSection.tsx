@@ -84,11 +84,10 @@ export default function ScoreSection() {
 
   const today = metrics.today
 
+  // The trend chart plots the score only, so the rows carry nothing else.
   const historyData = [...metrics.history].reverse().map((m) => ({
     date: m.date.slice(5), // MM-DD
     score: m.focus_score,
-    deepWork: Math.round(m.deep_work_secs / 60),
-    communication: Math.round(m.communication_secs / 60),
   }))
 
   const avgScore =
@@ -118,13 +117,13 @@ export default function ScoreSection() {
 
         <StatCard
           title={t('focus.deepWork')}
-          value={formatDuration(today.deep_work_secs, true)}
+          value={formatDuration(today.deep_work_secs)}
           icon={<Clock className={`${iconSize.md} text-brand-text`} />}
         />
 
         <StatCard
           title={t('focus.communication')}
-          value={formatDuration(today.communication_secs, true)}
+          value={formatDuration(today.communication_secs)}
           icon={<MessageSquare className={`${iconSize.md} text-brand-text`} />}
         />
 

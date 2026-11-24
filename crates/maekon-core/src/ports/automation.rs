@@ -17,6 +17,10 @@ use crate::models::gui::{
     GuiExecutionTicket, GuiHighlightRequest, GuiInteractionSession, GuiSessionEvent,
 };
 use crate::models::intent::{IntentCommand, IntentResult, WorkflowPreset};
+use crate::models::intent_execution::{
+    IntentExecutionLookup, IntentLookupUnknownReason, IntentSubmission, ObservedIntentFailure,
+    ObservedIntentResult, OpaqueIntentId,
+};
 use crate::models::ui_scene::UiScene;
 
 /// Automation execution port — the automation controller interface used by
@@ -68,6 +72,34 @@ pub trait AutomationPort: Send + Sync {
         session_id: &str,
         intent_hint: &str,
     ) -> Result<PlannedIntentResult, CoreError>;
+
+    /// Observe one execution; correlation does not authorize or deduplicate it.
+    async fn execute_intent_hint_observed(
+        &self,
+        command_id: &str,
+        session_id: &str,
+        intent_hint: &str,
+        _submission: IntentSubmission,
+    ) -> Result<ObservedIntentResult, ObservedIntentFailure> {
+        self.execute_intent_hint(command_id, session_id, intent_hint)
+            .await
+            .map(|result| ObservedIntentResult {
+                result,
+                provenance: None,
+            })
+            .map_err(|error| ObservedIntentFailure {
+                error,
+                provenance: None,
+            })
+    }
+
+    /// Exact lookup within this controller's authenticated local-profile scope.
+    async fn intent_execution_by_submission(
+        &self,
+        _submission_id: OpaqueIntentId,
+    ) -> IntentExecutionLookup {
+        IntentExecutionLookup::Unknown(IntentLookupUnknownReason::Unavailable)
+    }
 
     /// Run a workflow preset.
     async fn run_workflow(&self, preset: &WorkflowPreset) -> Result<WorkflowResult, CoreError>;

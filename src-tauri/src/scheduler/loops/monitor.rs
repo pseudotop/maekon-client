@@ -2,6 +2,7 @@ use chrono::Utc;
 use maekon_core::capture_gate;
 use maekon_core::models::event::{Event, InputActivityEvent, KeyboardActivity, MouseActivity};
 use maekon_core::models::frame::OcrRegion;
+use maekon_core::ports::batch_sink::{UploadDecision, UploadPolicy};
 use maekon_core::ports::consent_manager::ConsentGate;
 use maekon_monitor::idle::IdleTracker;
 use maekon_monitor::input_activity::InputActivityCollector;
@@ -20,10 +21,11 @@ use super::coaching_helper::{CoachingEvalContext, CoachingTickState};
 use super::helpers::{
     audit_consent_and_pii_changes, build_segment_stats_snapshot, emit_heatmap_and_goals,
     emit_pointer_context_highlight, handle_event_analysis, handle_frame_capture, handle_idle_tick,
-    redact_window_title, IdleTickServices, PointerContextEmitterState,
+    redact_window_title, FrameCapturePolicy, IdleTickServices, PointerContextEmitterState,
 };
 use super::monitor_phases::{
-    capture_ring_thumbnail_if_due, ActiveWindowSnapshot, RingThumbnailCadence,
+    capture_ring_thumbnail_if_due, ActiveWindowSnapshot, CaptureGrabGuard, RingThumbnailCadence,
+    RingThumbnailContext,
 };
 use crate::focus_mode::FocusModeState;
 
@@ -83,6 +85,7 @@ impl Scheduler {
         let gui_feedback_pii_san = super::super::gui_pipeline::gui_feedback_pii_sanitizer();
         let coaching_pii_sanitizer = super::coaching_helper::build_pii_sanitizer();
         let capture_paused = self.capture_paused.clone();
+        let capture_pause_state = self.capture_pause_state.clone();
         let overlay_driver_ref = self.overlay_driver.clone();
         let detection_active = self.detection_active.clone();
         let scene_finder_slot = self.scene_finder_slot.clone();
@@ -104,6 +107,7 @@ impl Scheduler {
             let input_collector = input_collector1;
             let ring_buffer = CaptureRingBuffer::new(6, 2, 0.5); // dashcam: 6 slots, 2 post-event, 0.5 threshold
             let mut thumbnail_cadence = RingThumbnailCadence::default();
+            let mut capture_cache_epoch = super::monitor_phases::CaptureCacheEpoch::default();
 
             // GUI Activity Intelligence state (carried across ticks)
             use maekon_core::models::focused_element::FocusedElementInfo;
@@ -275,8 +279,7 @@ impl Scheduler {
                         if capture_gate::should_release_idle_frame(new_idle_secs)
                             && (last_frame_rgba.is_some() || !last_ocr_regions.is_empty())
                         {
-                            last_frame_rgba = None;
-                            last_ocr_regions.clear();
+                            super::monitor_phases::clear_capture_pixels(&mut last_frame_rgba, &mut last_ocr_regions);
                         }
 
                         // PR-B1 §5.5: productive-session detection (Idle↔Active transitions, idempotent counter)
@@ -302,7 +305,13 @@ impl Scheduler {
                         } else {
                             true
                         };
-                        if !capture_permitted_for_tick || !os_capture_ok {
+                        let capture_cache_decision = capture_cache_epoch.observe(capture_permitted_for_tick && os_capture_ok, &capture_pause_state);
+                        if super::monitor_phases::discard_closed_capture_cache(
+                            capture_cache_decision,
+                            &ring_buffer, &mut last_frame_rgba, &mut last_ocr_regions,
+                            &mut last_focused_element, &mut last_gui_summary,
+                            adaptive_trigger_state.as_mut().and_then(|state| state.gui_pipeline_state.as_mut()),
+                        ) {
                             // #8045 B3: a closed capture gate (consent withdrawn/
                             // revoked, capture paused, or capture disabled by
                             // config) must not retain pre-consent dashcam frames
@@ -313,7 +322,6 @@ impl Scheduler {
                             // memory buffer that `withdraw_consent`'s on-disk
                             // erase cannot reach. Cheap no-op once the buffer is
                             // already empty.
-                            ring_buffer.clear();
                             debug!("monitor loop: capture gate closed - skipping context, accessibility, capture, and analysis tick");
                             continue;
                         }
@@ -370,19 +378,27 @@ impl Scheduler {
                                 // the source covers window_tracker + context + the PK
                                 // uniformly and matches analysis_pipeline, which masks
                                 // the title before its own downstream use.
-                                let window_title = {
+                                let (window_title, title_evidence) = {
                                     let redacted = redact_window_title(
                                         active_window.window_title,
                                         consent.window_title_collection,
                                     );
-                                    let title_pii_level = config_snapshot
-                                        .as_ref()
-                                        .map(|cfg| cfg.privacy.pii_filter_level)
+                                    let privacy = config_snapshot.as_ref().map(|cfg| &cfg.privacy);
+                                    let title_pii_level = privacy
+                                        .map(|privacy| privacy.pii_filter_level)
                                         .unwrap_or_default();
-                                    maekon_vision::privacy::sanitize_title_with_level(
+                                    let masked = maekon_vision::privacy::sanitize_title_with_level(
                                         &redacted,
                                         title_pii_level,
-                                    )
+                                    );
+                                    // Retain only non-content evidence from BEFORE masking,
+                                    // using the same capture snapshot as the masking level.
+                                    let evidence = egress1.capture_title_evidence(
+                                        privacy,
+                                        consent.window_title_collection.then_some(redacted.as_str()),
+                                        &masked,
+                                    );
+                                    (masked, evidence)
                                 };
                                 let focus_window_title = window_title.clone();
                                 let window_bounds = active_window.window_bounds;
@@ -477,33 +493,42 @@ impl Scheduler {
                                     }
 
                                     let win_event = Event::Window(layout_event);
-                                    if let Err(e) = storage1.save_event(&win_event).await {
-                                        warn!(err.code = %e.code(), "window event save failure: {e}");
-                                    }
-                                    if let Some(ref sink) = uploader1 {
-                                        // #4803: egress audit — compute the type/size before consumption and
-                                        // record the uploaded/blocked disposition in the ledger.
-                                        let etype = super::super::egress_policy::egress_event_type(&win_event);
-                                        let bytes = super::super::egress_policy::egress_byte_count(&win_event);
-                                        let consent_state = egress1.consent_state_snapshot();
-                                        // #7946: pair the upload payload with the PERSISTED id
-                                        // (derived from the original event — egress filtering can
-                                        // change id-relevant fields) so flush marks the right row.
-                                        let upload_storage_id =
-                                            maekon_storage::sqlite::storage_event_id(&win_event);
-                                        if let Some(upload_event) = egress1.prepare_event_for_upload(win_event) {
-                                            sink.enqueue(maekon_core::ports::batch_sink::QueuedUpload {
-                                                storage_id: upload_storage_id,
-                                                event: upload_event,
-                                            });
-                                            super::super::egress_policy::record_event_egress(
-                                                &sqlite1, etype, bytes, "uploaded", &consent_state,
-                                            ).await;
-                                        } else {
-                                            super::super::egress_policy::record_event_egress(
-                                                &sqlite1, etype, bytes, "blocked", &consent_state,
-                                            ).await;
+                                    let upload_storage_id = maekon_storage::sqlite::storage_event_id(&win_event);
+                                    let upload_provenance = egress1.bind_source_title(
+                                        &upload_storage_id, &win_event, title_evidence.as_ref(),
+                                    );
+                                    match storage1.save_event_with_upload_provenance(&win_event, upload_provenance.as_ref()).await {
+                                        Ok(true) => {
+                                            if let Some(ref sink) = uploader1 {
+                                                // #4803: egress audit — compute the type/size before consumption and
+                                                // record the uploaded/blocked disposition in the ledger.
+                                                let etype = super::super::egress_policy::egress_event_type(&win_event);
+                                                let bytes = super::super::egress_policy::egress_byte_count(&win_event);
+                                                let consent_state = egress1.consent_state_snapshot();
+                                                // #7946: pair the upload payload with the PERSISTED id
+                                                // (derived from the original event — egress filtering can
+                                                // change id-relevant fields) so flush marks the right row.
+                                                let mut upload_event = win_event.clone();
+                                                let decision = egress1.evaluate(
+                                                    &upload_storage_id, &mut upload_event, upload_provenance.as_ref(),
+                                                );
+                                                if decision == UploadDecision::Allow {
+                                                    sink.enqueue(maekon_core::ports::batch_sink::QueuedUpload {
+                                                        storage_id: upload_storage_id,
+                                                        event: upload_event,
+                                                    });
+                                                    super::super::egress_policy::record_event_egress(
+                                                        &sqlite1, etype, bytes, "uploaded", &consent_state,
+                                                    ).await;
+                                                } else if decision == UploadDecision::Block {
+                                                    super::super::egress_policy::record_event_egress(
+                                                        &sqlite1, etype, bytes, "blocked", &consent_state,
+                                                    ).await;
+                                                }
+                                            }
                                         }
+                                        Ok(false) => {}
+                                        Err(e) => warn!(err.code = %e.code(), "window event save failure: {e}"),
                                     }
                                 }
 
@@ -520,19 +545,21 @@ impl Scheduler {
                                     .map(|cfg| Duration::from_millis(cfg.vision.capture_throttle_ms))
                                     .unwrap_or(Duration::from_secs(5));
 
-                                // #7909: no ring thumbnail while the active app is
-                                // capture-excluded — excluded-app pixels must never
-                                // enter the dashcam pre-event buffer.
+                                let ring_context = RingThumbnailContext {
+                                    pause: &capture_pause_state, accepted_epoch: capture_cache_decision.pause_epoch,
+                                    guard: CaptureGrabGuard {
+                                        activity_monitor: act_mon.as_ref(), snapshot_app: &app_name,
+                                        config: config_snapshot.as_deref(),
+                                        visible_apps: &maekon_monitor::visible_window_app_names,
+                                    },
+                                    window_title: &event.window_title,
+                                    focused_element: last_focused_element.as_ref(),
+                                    window_bounds: window_bounds.as_ref(),
+                                };
                                 if !capture_excluded {
                                     capture_ring_thumbnail_if_due(
-                                        &mut thumbnail_cadence,
-                                        processor.as_ref(),
-                                        &ring_buffer,
-                                        &app_name,
-                                        &event.window_title,
-                                        last_focused_element.as_ref(),
-                                        window_bounds.as_ref(),
-                                        thumbnail_throttle,
+                                        &mut thumbnail_cadence, processor.as_ref(), &ring_buffer,
+                                        &ring_context, thumbnail_throttle,
                                     ).await;
                                 }
                                 {
@@ -570,16 +597,7 @@ impl Scheduler {
                                         .map(|r| r.importance >= focus_threshold)
                                         .unwrap_or(false)
                                         || force_post;
-                                    let grab_skip = would_capture
-                                        && (super::monitor_phases::frontmost_app_switched_since(
-                                            act_mon.as_ref(),
-                                            &app_name,
-                                        )
-                                        .await
-                                            || super::monitor_phases::any_excluded_app_visible(
-                                                config_snapshot.as_deref(),
-                                                &maekon_monitor::visible_window_app_names(),
-                                            ));
+                                    let grab_skip = would_capture && ring_context.denied(&ring_buffer).await;
                                     if grab_skip {
                                         debug!(app = %app_name, "capture skipped at grab time (window switch or occluded excluded app)");
                                     }
@@ -633,7 +651,11 @@ impl Scheduler {
                                         // Even if only the composite gate (screen_capture) is granted, ocr_processing defaults
                                         // to false, so the frame is captured but the OCR text/regions are discarded
                                         // (ConsentPermissions.ocr_processing).
-                                        let (ocr_hint, regions, frame_rgba) = handle_frame_capture(&capture_req, &processor, &frame_storage1, &sqlite1, &session1, capture_pii, consent.ocr_processing, &event_tx_mon).await;
+                                        let capture_policy = FrameCapturePolicy {
+                                            pause: &capture_pause_state, pii_filter_level: capture_pii,
+                                            ocr_permitted: consent.ocr_processing,
+                                        };
+                                        let (ocr_hint, regions, frame_rgba) = handle_frame_capture(&capture_req, &processor, &frame_storage1, &sqlite1, &session1, &capture_policy, &event_tx_mon).await;
                                         focus_ocr_hint = ocr_hint;
                                         if !regions.is_empty() {
                                             last_ocr_regions = regions;
@@ -660,33 +682,43 @@ impl Scheduler {
                                     }
                                 }
                                 let ctx_event = Event::Context(event);
-                                if let Err(e) = storage1.save_event(&ctx_event).await {
-                                    warn!(err.code = %e.code(), "event save failure: {e}");
-                                }
+                                let upload_storage_id = maekon_storage::sqlite::storage_event_id(&ctx_event);
+                                let upload_provenance = egress1.bind_source_title(
+                                    &upload_storage_id, &ctx_event, title_evidence.as_ref(),
+                                );
+                                let saved = storage1.save_event_with_upload_provenance(&ctx_event, upload_provenance.as_ref()).await;
                                 if let Err(e) = sqlite1.increment_session_counters(&session1, 1, 0, 0).await {
                                     debug!("increment_session_counters failed: {e}");
                                 }
-                                if let Some(ref sink) = uploader1 {
-                                    // #4803: egress audit (uploaded/blocked).
-                                    let etype = super::super::egress_policy::egress_event_type(&ctx_event);
-                                    let bytes = super::super::egress_policy::egress_byte_count(&ctx_event);
-                                    let consent_state = egress1.consent_state_snapshot();
-                                    // #7946: persisted id travels with the filtered payload.
-                                    let upload_storage_id =
-                                        maekon_storage::sqlite::storage_event_id(&ctx_event);
-                                    if let Some(upload_event) = egress1.prepare_event_for_upload(ctx_event) {
-                                        sink.enqueue(maekon_core::ports::batch_sink::QueuedUpload {
-                                            storage_id: upload_storage_id,
-                                            event: upload_event,
-                                        });
-                                        super::super::egress_policy::record_event_egress(
-                                            &sqlite1, etype, bytes, "uploaded", &consent_state,
-                                        ).await;
-                                    } else {
-                                        super::super::egress_policy::record_event_egress(
-                                            &sqlite1, etype, bytes, "blocked", &consent_state,
-                                        ).await;
+                                match saved {
+                                    Ok(true) => {
+                                        if let Some(ref sink) = uploader1 {
+                                            // #4803: egress audit (uploaded/blocked).
+                                            let etype = super::super::egress_policy::egress_event_type(&ctx_event);
+                                            let bytes = super::super::egress_policy::egress_byte_count(&ctx_event);
+                                            let consent_state = egress1.consent_state_snapshot();
+                                            // #7946: persisted id travels with the filtered payload.
+                                            let mut upload_event = ctx_event.clone();
+                                            let decision = egress1.evaluate(
+                                                &upload_storage_id, &mut upload_event, upload_provenance.as_ref(),
+                                            );
+                                            if decision == UploadDecision::Allow {
+                                                sink.enqueue(maekon_core::ports::batch_sink::QueuedUpload {
+                                                    storage_id: upload_storage_id,
+                                                    event: upload_event,
+                                                });
+                                                super::super::egress_policy::record_event_egress(
+                                                    &sqlite1, etype, bytes, "uploaded", &consent_state,
+                                                ).await;
+                                            } else if decision == UploadDecision::Block {
+                                                super::super::egress_policy::record_event_egress(
+                                                    &sqlite1, etype, bytes, "blocked", &consent_state,
+                                                ).await;
+                                            }
+                                        }
                                     }
+                                    Ok(false) => {}
+                                    Err(e) => warn!(err.code = %e.code(), "event save failure: {e}"),
                                 }
                                 let app_changed = prev_app.as_ref() != Some(&app_name);
                                 if app_changed {

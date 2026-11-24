@@ -1,4 +1,3 @@
-use chrono::Utc;
 use maekon_api_contracts::automation::AuditEntryDto;
 use maekon_api_contracts::settings::{AppSettings, StorageStats};
 use maekon_api_contracts::support::{
@@ -7,7 +6,6 @@ use maekon_api_contracts::support::{
 use maekon_core::models::audit::AuditEntry;
 
 const SUPPORT_DIAGNOSTICS_SCHEMA_VERSION: &str = "support.diagnostics.v1";
-const SUPPORT_AUDIT_SCHEMA_VERSION: &str = "automation.audit.v1";
 
 pub(crate) struct DiagnosticsHealthInput {
     pub storage_error: Option<String>,
@@ -36,17 +34,7 @@ pub(crate) fn assemble_diagnostics_health(input: DiagnosticsHealthInput) -> Diag
 }
 
 pub(crate) fn to_audit_entry_dto(entry: AuditEntry) -> AuditEntryDto {
-    AuditEntryDto {
-        schema_version: SUPPORT_AUDIT_SCHEMA_VERSION.to_string(),
-        entry_id: entry.entry_id,
-        timestamp: entry.timestamp.to_rfc3339(),
-        session_id: entry.session_id,
-        command_id: entry.command_id,
-        action_type: entry.action_type,
-        status: format!("{:?}", entry.status),
-        details: entry.details,
-        elapsed_ms: entry.execution_time_ms,
-    }
+    super::automation_assembler::map_audit_entry(entry)
 }
 
 pub(crate) fn assemble_diagnostics_bundle(
@@ -59,7 +47,7 @@ pub(crate) fn assemble_diagnostics_bundle(
 ) -> DiagnosticsBundleDto {
     DiagnosticsBundleDto {
         schema_version: SUPPORT_DIAGNOSTICS_SCHEMA_VERSION.to_string(),
-        generated_at: Utc::now().to_rfc3339(),
+        generated_at: super::current_metadata_timestamp(),
         health,
         settings_snapshot,
         storage_stats,

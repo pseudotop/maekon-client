@@ -4,11 +4,11 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::error::AutomationError;
-use maekon_core::models::intent::{
-    AutomationIntent, IntentConfig, IntentResult, UiElement, VerificationResult,
-};
+use crate::screen_settle::{sample_before_action, verify_after_action};
+use maekon_core::models::intent::{AutomationIntent, IntentConfig, IntentResult, UiElement};
 use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::input_driver::InputDriver;
+use maekon_core::ports::screen_probe::ScreenChangeProbe;
 
 /// Reject a synthesized input action whose text/key count exceeds the shared
 /// cap. The action_dispatcher inline path caps its own synthesis (review4 A8);
@@ -228,11 +228,26 @@ impl IntentResolver {
 pub struct IntentExecutor {
     resolver: IntentResolver,
     config: IntentConfig,
+    /// Samples the screen for `verify_after_action`. Without one, verification
+    /// is reported as not observed (`None`) rather than inferred from the
+    /// action result.
+    screen_probe: Option<Arc<dyn ScreenChangeProbe>>,
 }
 
 impl IntentExecutor {
     pub fn new(resolver: IntentResolver, config: IntentConfig) -> Self {
-        Self { resolver, config }
+        Self {
+            resolver,
+            config,
+            screen_probe: None,
+        }
+    }
+
+    /// Attach the probe that `verify_after_action` uses to compare the screen
+    /// before and after each action.
+    pub fn with_screen_probe(mut self, probe: Arc<dyn ScreenChangeProbe>) -> Self {
+        self.screen_probe = Some(probe);
+        self
     }
 
     /// The underlying real input driver this executor's resolver was built with.
@@ -255,7 +270,11 @@ impl IntentExecutor {
             input_driver.unwrap_or_else(|| self.resolver.input_driver.clone()),
             config.clone(),
         );
-        Self::new(resolver, config)
+        Self {
+            resolver,
+            config,
+            screen_probe: self.screen_probe.clone(),
+        }
     }
 
     pub async fn execute(
@@ -275,21 +294,19 @@ impl IntentExecutor {
                 .await;
             }
 
+            let probe = self.screen_probe.as_deref();
+            let before = if self.config.verify_after_action {
+                sample_before_action(probe).await
+            } else {
+                None
+            };
+
             match self.resolver.resolve_and_execute(intent).await {
                 Ok((success, element)) => {
                     let elapsed_ms = start.elapsed().as_millis() as u64;
 
                     let verification = if self.config.verify_after_action {
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            self.config.verify_delay_ms,
-                        ))
-                        .await;
-
-                        Some(VerificationResult {
-                            screen_changed: success,
-                            changed_regions: if success { 1 } else { 0 },
-                            text_found: None,
-                        })
+                        verify_after_action(probe, before, self.config.verify_delay_ms).await
                     } else {
                         None
                     };
@@ -326,6 +343,7 @@ impl IntentExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screen_settle::test_probe::{within, ProbeStep, ScriptedProbe};
     use maekon_core::error::CoreError;
     use maekon_core::models::automation::AutomationAction;
     use maekon_core::models::intent::{ElementBounds, FinderSource};
@@ -592,29 +610,89 @@ mod tests {
         assert!(result.retry_count >= 1);
     }
 
-    #[tokio::test]
-    async fn executor_succeeds_with_verification() {
-        // Target text is incidental test data ("OK"/"confirm"), ASCII-escaped to keep
-        // the source ASCII while preserving the exact bytes under test.
-        let resolver = make_resolver_with_elements(vec![make_element("\u{d655}\u{c778}", 0.9)]);
-        let config = IntentConfig {
+    fn verifying_config(verify_delay_ms: u64) -> IntentConfig {
+        IntentConfig {
             verify_after_action: true,
-            verify_delay_ms: 10, // fast verification in test
+            verify_delay_ms,
             ..IntentConfig::default()
-        };
-        let executor = IntentExecutor::new(resolver, config);
+        }
+    }
 
+    /// Target text is incidental test data ("OK"/"confirm"), ASCII-escaped to
+    /// keep the source ASCII while preserving the exact bytes under test.
+    fn click_ok() -> (IntentResolver, AutomationIntent) {
+        let resolver = make_resolver_with_elements(vec![make_element("\u{d655}\u{c778}", 0.9)]);
         let intent = AutomationIntent::ClickElement {
             text: Some("\u{d655}\u{c778}".to_string()),
             role: None,
             app_name: None,
             button: "left".to_string(),
         };
+        (resolver, intent)
+    }
 
+    #[tokio::test]
+    async fn executor_succeeds_with_verification() {
+        // The click redraws one tile and the screen then stays put, so the
+        // wait ends on the quiet period well before the 5 s bound.
+        let (resolver, intent) = click_ok();
+        let probe = ScriptedProbe::new(vec![ProbeStep::Screen(0), ProbeStep::Screen(1)]);
+        let executor =
+            IntentExecutor::new(resolver, verifying_config(5_000)).with_screen_probe(probe);
+
+        let result = within(4_000, executor.execute(&intent)).await.unwrap();
+        assert!(result.success);
+        let verification = result.verification.expect("observed with a probe");
+        assert!(verification.screen_changed);
+        assert_eq!(verification.changed_regions, 1);
+        assert_eq!(verification.settled, Some(true));
+    }
+
+    #[tokio::test]
+    async fn executor_reports_no_change_when_the_screen_stays_the_same() {
+        // Falsifies the old behaviour, which copied the action result into
+        // `screen_changed`: the click succeeds but nothing is redrawn.
+        let (resolver, intent) = click_ok();
+        let probe = ScriptedProbe::new(vec![ProbeStep::Screen(0)]);
+        let executor =
+            IntentExecutor::new(resolver, verifying_config(400)).with_screen_probe(probe.clone());
+
+        let result = within(4_000, executor.execute(&intent)).await.unwrap();
+        assert!(result.success);
+        let verification = result.verification.expect("observed with a probe");
+        assert!(
+            !verification.screen_changed,
+            "a successful action is not a screen change by itself"
+        );
+        assert_eq!(verification.changed_regions, 0);
+        assert!(probe.calls() >= 2, "sampled before and after the action");
+    }
+
+    #[tokio::test]
+    async fn executor_without_a_probe_reports_verification_as_unavailable() {
+        // No observation means no verification result, while the fixed pause
+        // that presets may rely on stays in place.
+        let (resolver, intent) = click_ok();
+        let executor = IntentExecutor::new(resolver, verifying_config(40));
+
+        let started = Instant::now();
         let result = executor.execute(&intent).await.unwrap();
         assert!(result.success);
+        assert!(result.verification.is_none());
+        assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+    }
+
+    #[tokio::test]
+    async fn executor_overrides_keep_the_screen_probe() {
+        let (resolver, intent) = click_ok();
+        let probe = ScriptedProbe::new(vec![ProbeStep::Screen(0)]);
+        let executor = IntentExecutor::new(resolver, IntentConfig::default())
+            .with_screen_probe(probe.clone())
+            .with_overrides(None, Some(verifying_config(0)));
+
+        let result = executor.execute(&intent).await.unwrap();
         assert!(result.verification.is_some());
-        assert!(result.verification.unwrap().screen_changed);
+        assert_eq!(probe.calls(), 2, "one sample before and one after");
     }
 
     #[tokio::test]
@@ -651,14 +729,8 @@ mod tests {
         // must report success=false and must not claim a screen change happened
         // (review4 A9 regression guard — the old no-op fabricated success).
         let (resolver, _calls) = make_resolver_with_activate(false);
-        let executor = IntentExecutor::new(
-            resolver,
-            IntentConfig {
-                verify_after_action: true,
-                verify_delay_ms: 0,
-                ..IntentConfig::default()
-            },
-        );
+        let executor = IntentExecutor::new(resolver, verifying_config(0))
+            .with_screen_probe(ScriptedProbe::new(vec![ProbeStep::Screen(0)]));
         let intent = AutomationIntent::ActivateApp {
             app_name: "NoSuchApp".to_string(),
         };
@@ -667,7 +739,7 @@ mod tests {
             !result.success,
             "failed activation must report success=false"
         );
-        let verification = result.verification.expect("verification runs when enabled");
+        let verification = result.verification.expect("observed with a probe");
         assert!(
             !verification.screen_changed,
             "must not fabricate a screen change for a failed activation"

@@ -5,24 +5,25 @@ import { type AuthStatus, requestLogoutAllSessions } from '../../components/auth
 import { LoginForm } from '../../components/auth/LoginForm'
 import { useAuthStatus } from '../../components/auth/useAuthStatus'
 import LanguageSelector from '../../components/LanguageSelector'
+import { SupportDetails } from '../../components/SupportDetails'
 import SupportToolsCard from '../../components/SupportToolsCard'
 import {
   Alert,
   Button,
   Card,
   CardTitle,
-  Checkbox,
   Dialog,
   DialogBody,
   DialogContent,
   DialogFooter,
   DialogTitle,
   Input,
+  Switch,
 } from '../../components/ui'
 import { DEFAULT_WEB_PORT } from '../../constants'
 import { useTheme } from '../../contexts/ThemeContext'
 import { addToast } from '../../hooks/useToast'
-import { describeIpcError } from '../../i18n/tauriIpcErrors'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import { form } from '../../styles/tokens'
 import { IS_TAURI } from '../../utils/platform'
 import { isSelectableUpdateChannel } from '../../utils/updateChannels'
@@ -45,22 +46,31 @@ interface AutostartCapabilities {
 // Exported for unit testing (Vitest).
 export function StartupSection() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [enabled, setEnabled] = useState<boolean | null>(null)
   const [caps, setCaps] = useState<AutostartCapabilities | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorDisplay | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     Promise.all([
       invokeDesktop<boolean>('is_autostart_enabled'),
       invokeDesktop<AutostartCapabilities>('autostart_capabilities'),
     ])
       .then(([e, c]) => {
+        if (cancelled) return
         setEnabled(e)
         setCaps(c)
+        setError(null)
       })
-      .catch((e) => setError(String(e)))
-  }, [])
+      .catch((e) => {
+        if (!cancelled) setError(describeError(e))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [describeError])
 
   const handleToggle = async (next: boolean) => {
     if (loading) return
@@ -70,7 +80,7 @@ export function StartupSection() {
       await invokeDesktop(next ? 'enable_autostart' : 'disable_autostart')
       setEnabled(next)
     } catch (e) {
-      setError(String(e))
+      setError(describeError(e))
       const actual = await invokeDesktop<boolean>('is_autostart_enabled').catch(() => null)
       if (actual !== null) setEnabled(actual)
     } finally {
@@ -86,9 +96,9 @@ export function StartupSection() {
       <div className="space-y-3">
         <p className="text-content-secondary text-sm">{t('settings.autostart.description')}</p>
         <label className="flex cursor-pointer items-center gap-3">
-          <Checkbox
+          <Switch
             checked={enabled ?? false}
-            onChange={(e) => void handleToggle(e.target.checked)}
+            onCheckedChange={(next) => void handleToggle(next)}
             disabled={isDisabled}
           />
           <span className="text-content-strong text-sm">{t('settings.autostart.toggle')}</span>
@@ -101,8 +111,8 @@ export function StartupSection() {
           </p>
         )}
         {error && (
-          <Alert variant="error" title={t('settings.autostart.error', { error })}>
-            <span />
+          <Alert variant="error" title={t('settings.autostart.error', { error: error.text })}>
+            <SupportDetails detail={error.detail} />
           </Alert>
         )}
       </div>
@@ -174,11 +184,9 @@ export default function GeneralTab() {
           <div className="flex items-center">
             <div>
               <label className="flex cursor-pointer items-center">
-                <Checkbox
+                <Switch
                   checked={formData.allow_external}
-                  onChange={(e) =>
-                    settingsForm.handleRootChange('allow_external' as keyof AppSettings, e.target.checked)
-                  }
+                  onCheckedChange={(next) => settingsForm.handleRootChange('allow_external' as keyof AppSettings, next)}
                   className="mr-3"
                 />
                 <div>
@@ -349,15 +357,12 @@ export default function GeneralTab() {
  */
 // Exported for unit testing (Vitest).
 export function AccountSection() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const { status, refresh: refreshStatus, setStatus } = useAuthStatus()
 
-  const describeAuthError = useCallback(
-    (e: unknown) => describeIpcError(e, (key) => t(key), i18n.language),
-    [i18n.language, t],
-  )
+  const describeAuthError = useErrorDisplay()
 
   const handleConfirm = useCallback(async () => {
     setLoading(true)
@@ -374,7 +379,10 @@ export function AccountSection() {
       // holds rather than what the command implied.
       await refreshStatus()
     } catch (e) {
-      addToast('error', t('settings.account.error', { error: describeAuthError(e) }))
+      const display = describeAuthError(e)
+      const message = t('settings.account.error', { error: display.text })
+      if (display.detail) addToast('error', message, 4000, display.detail)
+      else addToast('error', message)
     } finally {
       setLoading(false)
     }

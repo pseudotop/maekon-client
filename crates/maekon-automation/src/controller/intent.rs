@@ -22,6 +22,11 @@ use maekon_core::models::automation::{
 };
 use maekon_core::models::gui::{GuiExecutionTicket, GuiInteractionSession, GuiSessionEvent};
 use maekon_core::models::intent::{AutomationIntent, IntentCommand, IntentResult};
+use maekon_core::models::intent_execution::{
+    IntentActionOutcome, IntentExecutionEventKind, IntentExecutionLookup, IntentExecutionObserver,
+    IntentPlanningOutcome, IntentSafeReason, IntentSubmission, ObservedIntentFailure,
+    ObservedIntentResult, OpaqueIntentId,
+};
 use maekon_core::models::ui_scene::UiScene;
 use maekon_core::ports::input_driver::InputDriver;
 
@@ -291,6 +296,138 @@ impl AutomationController {
         session_id: &str,
         intent_hint: &str,
     ) -> Result<PlannedIntentResult, AutomationError> {
+        self.execute_intent_hint_inner(command_id, session_id, intent_hint, None)
+            .await
+    }
+
+    pub async fn execute_intent_hint_observed(
+        &self,
+        command_id: &str,
+        session_id: &str,
+        intent_hint: &str,
+        submission: IntentSubmission,
+    ) -> Result<ObservedIntentResult, ObservedIntentFailure> {
+        let lease = self.intent_observations.begin(submission);
+        let observer = lease.as_ref().map(|lease| &lease.observer);
+        let started = Instant::now();
+        let result = self
+            .execute_intent_hint_inner(command_id, session_id, intent_hint, observer)
+            .await
+            .map_err(CoreError::from);
+        let Some(observer) = observer else {
+            // Observation pressure must not change the existing execution policy.
+            return result
+                .map(|result| ObservedIntentResult {
+                    result,
+                    provenance: None,
+                })
+                .map_err(|error| ObservedIntentFailure {
+                    error,
+                    provenance: None,
+                });
+        };
+        match result {
+            Ok(result) => {
+                let (outcome, reason) = if result.result.success {
+                    (IntentActionOutcome::Completed, None)
+                } else {
+                    (
+                        IntentActionOutcome::Failed,
+                        Some(IntentSafeReason::ActionFailed),
+                    )
+                };
+                observer.record_outcome(outcome, reason);
+                self.finalize_intent_observation(observer, started).await;
+                Ok(ObservedIntentResult {
+                    result,
+                    provenance: Some(observer.snapshot()),
+                })
+            }
+            Err(error) => {
+                let before = observer.snapshot();
+                let reason = IntentSafeReason::from_error(&error);
+                if !before.events.iter().any(|event| {
+                    matches!(
+                        event.kind,
+                        IntentExecutionEventKind::PlanningFinished { .. }
+                    )
+                }) {
+                    observer.planning_finished(IntentPlanningOutcome::Error, Some(reason));
+                }
+                let action_started = before
+                    .events
+                    .iter()
+                    .any(|event| matches!(event.kind, IntentExecutionEventKind::ActionStarted {}));
+                let outcome = if reason == IntentSafeReason::Denied {
+                    IntentActionOutcome::Denied
+                } else if action_started {
+                    IntentActionOutcome::Failed
+                } else {
+                    IntentActionOutcome::NotStarted
+                };
+                // Preserve a more specific planner reason, e.g. confidence rejection.
+                let reason = before.observation_reason.or(Some(reason));
+                observer.record_outcome(outcome, reason);
+                self.finalize_intent_observation(observer, started).await;
+                Err(ObservedIntentFailure {
+                    error,
+                    provenance: Some(Box::new(observer.snapshot())),
+                })
+            }
+        }
+    }
+
+    pub fn intent_execution_by_submission(
+        &self,
+        submission: OpaqueIntentId,
+    ) -> IntentExecutionLookup {
+        self.intent_observations.lookup(submission)
+    }
+
+    async fn finalize_intent_observation(
+        &self,
+        observer: &IntentExecutionObserver,
+        started: Instant,
+    ) {
+        // Cancellation while awaiting the logger leaves the retained record partial.
+        let mut logger = self.audit_logger.write().await;
+        let snapshot = observer.snapshot();
+        let Ok(details) = serde_json::to_string(&snapshot) else {
+            observer.mark_partial();
+            observer.finalize();
+            return;
+        };
+        let status = match snapshot.action_outcome {
+            IntentActionOutcome::Completed => AuditStatus::Completed,
+            IntentActionOutcome::Denied => AuditStatus::Denied,
+            _ => AuditStatus::Failed,
+        };
+        let before = logger.dropped_count();
+        let id = snapshot.execution_id.to_string();
+        let recorded = logger.try_log_with_status_and_time(
+            AuditLevel::Basic,
+            &id,
+            &id,
+            "intent.execution.observation",
+            status,
+            &details,
+            started.elapsed().as_millis() as u64,
+        );
+        if recorded.is_err() || logger.dropped_count() != before {
+            observer.mark_partial();
+        }
+        // An accepted queue entry still is not a database commit; storage remains
+        // ProcessMemory on the receipt even when the audit sink is configured.
+        observer.finalize();
+    }
+
+    async fn execute_intent_hint_inner(
+        &self,
+        command_id: &str,
+        session_id: &str,
+        intent_hint: &str,
+        observer: Option<&IntentExecutionObserver>,
+    ) -> Result<PlannedIntentResult, AutomationError> {
         self.ensure_enabled()?;
         let planner = self.require_intent_planner()?;
 
@@ -306,7 +443,10 @@ impl AutomationController {
         }
 
         let start = Instant::now();
-        let planned_intent = planner.plan(intent_hint).await?;
+        let planned_intent = match observer {
+            Some(observer) => planner.plan_observed(intent_hint, observer).await?,
+            None => planner.plan(intent_hint).await?,
+        };
 
         if let Err(err) = self
             .enforce_intent_confirmation_policy(command_id, "intent-hint", &planned_intent)
@@ -341,6 +481,9 @@ impl AutomationController {
             origin: CommandOrigin::Internal,
         };
         let executor = self.scoped_intent_executor(&intent_command)?;
+        if let Some(observer) = observer {
+            observer.action_started();
+        }
         let result = executor.execute(&planned_intent).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
 

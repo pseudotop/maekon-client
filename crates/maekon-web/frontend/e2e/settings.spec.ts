@@ -171,13 +171,14 @@ test.describe('Settings', () => {
     await expect(page.getByText(collectionSectionName)).toBeVisible()
   })
 
-  test('should display capture enable checkbox', async ({ page }) => {
+  test('should display capture enable switch', async ({ page }) => {
     await gotoSettingsTab(page, 'monitoring')
     // SettingsLayout renders the active tab inside <form id="settings-form"> via <Outlet>.
-    // Since only MonitoringTab is mounted at /settings/monitoring, the first checkbox
-    // in the form is the "capture enabled" toggle owned by that tab.
-    const captureCheckbox = page.locator('form#settings-form input[type="checkbox"]').first()
-    await expect(captureCheckbox).toBeVisible()
+    // Since only MonitoringTab is mounted at /settings/monitoring, the first switch
+    // in the form is the "capture enabled" toggle owned by that tab (#13739: on/off
+    // settings render `ui/Switch`, role="switch").
+    const captureSwitch = page.locator('form#settings-form').getByRole('switch').first()
+    await expect(captureSwitch).toBeVisible()
   })
 
   test('should display idle threshold input', async ({ page }) => {
@@ -213,9 +214,11 @@ test.describe('Settings', () => {
 
     // The form holds both the tab content (via <Outlet>) and the SettingsLayout
     // save button. Exclude the save button testids so we only count tab-specific
-    // action buttons (the export buttons in DataStorageTab).
+    // action buttons (the export buttons in DataStorageTab). #13739: on/off
+    // settings are `<button role="switch">` now; exclude them too, or the tab's
+    // switches alone would satisfy this count.
     const buttons = page.locator(
-      'form#settings-form button:not([data-testid="settings-save"]):not([data-testid="settings-save-floating"])',
+      'form#settings-form button:not([role="switch"]):not([data-testid="settings-save"]):not([data-testid="settings-save-floating"])',
     )
     const count = await buttons.count()
     expect(count).toBeGreaterThan(0)
@@ -233,9 +236,9 @@ test.describe('Settings', () => {
 
   test('should save settings', async ({ page }) => {
     await gotoSettingsTab(page, 'monitoring')
-    // See "should display capture enable checkbox" for the selector rationale.
-    const captureCheckbox = page.locator('form#settings-form input[type="checkbox"]').first()
-    await captureCheckbox.uncheck()
+    // See "should display capture enable switch" for the selector rationale.
+    const captureSwitch = page.locator('form#settings-form').getByRole('switch').first()
+    await captureSwitch.uncheck()
 
     let saveRequests = 0
     await page.route('**/api/settings', async (route) => {

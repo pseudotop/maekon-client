@@ -11,6 +11,7 @@ import { Outlet } from 'react-router-dom'
 import { type FocusMetricsResponse, fetchFocusMetrics } from '../../api/client'
 import DateRangePicker from '../../components/DateRangePicker'
 import { Spinner } from '../../components/ui/Spinner'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { formatLocalCalendarDate, localDayBoundaryIso, shiftLocalCalendarDate } from '../../utils/localDate'
@@ -40,6 +41,7 @@ export interface FocusContext {
 
 export default function FocusLayout() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [dateRange, setDateRange] = useState<{ from: Date; to: Date }>(() => createInitialWeekRange())
 
   const {
@@ -60,7 +62,7 @@ export default function FocusLayout() {
     )
   }
 
-  const errorText = metricsError ? (metricsError instanceof Error ? metricsError.message : String(metricsError)) : null
+  const errorText = metricsError ? describeError(metricsError, t('focus.metricsLoadFailed')).text : null
 
   // Empty-state and error-state UX live in ScoreSection so the layout can
   // always render <Outlet> and the `/focus` → `/focus/score` index redirect

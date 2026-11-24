@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { CaptureReauthDialog } from '../../components/CaptureReauthGate'
+import { SupportDetails } from '../../components/SupportDetails'
 import { TagManagementCard } from '../../components/TagManagementCard'
 import { Alert, Button, Card, CardTitle, GuidancePanel, Input, Spinner } from '../../components/ui'
 import { colors, form, iconSize, motion, typography } from '../../styles/tokens'
@@ -151,7 +152,8 @@ export default function DataStorageTab() {
         {exportRecovery && (
           <Alert variant="error" title={t('settings.exportFailed')} className="mb-4" role="alert">
             <div className="space-y-3">
-              <p>{exportRecovery.detail}</p>
+              <p>{exportRecovery.display.text}</p>
+              <SupportDetails detail={exportRecovery.display.detail} />
               <p>
                 {exportRecovery.storageFailure
                   ? t('settings.exportStorageRecovery')

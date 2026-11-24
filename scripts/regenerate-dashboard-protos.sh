@@ -54,7 +54,10 @@ version = "0.0.0"
 edition = "2021"
 
 [build-dependencies]
-tonic-prost-build = "0.14"
+# Pinned like regenerate-protos.sh (#13550). tonic-prost-build 0.14.9 adds
+# blanket #[allow(clippy::all)] attributes, so an unpinned "0.14" makes the
+# public gRPC gate report drift; 0.14.6 reproduces the committed output.
+tonic-prost-build = "=0.14.6"
 CARGO
 
 mkdir -p "$TEMP_DIR/src"

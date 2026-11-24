@@ -27,6 +27,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use maekon_core::error::CoreError;
+use maekon_core::models::intent_execution::{
+    IntentExecutionObserver, IntentProviderClass, IntentSkillContextKind, IntentSkillUse,
+};
 use maekon_core::ports::llm_provider::{
     InterpretedAction, LlmProvider, ScreenContext, SkillContext,
 };
@@ -52,6 +55,50 @@ impl FallbackLlmProvider {
 
 #[async_trait]
 impl LlmProvider for FallbackLlmProvider {
+    async fn interpret_intent_observed(
+        &self,
+        screen_context: &ScreenContext,
+        intent_hint: &str,
+        skills: Option<&SkillContext>,
+        observer: &IntentExecutionObserver,
+    ) -> Result<InterpretedAction, CoreError> {
+        match self
+            .primary
+            .interpret_intent_observed(screen_context, intent_hint, skills, observer)
+            .await
+        {
+            Ok(action) => Ok(action),
+            Err(_) => {
+                // Preserve the original base-method fallback: it receives no skills.
+                let mut capabilities = self.fallback.intent_capability_observation(skills);
+                capabilities.skills_context_forwarded = Some(false);
+                capabilities.skill_context_kind = IntentSkillContextKind::None;
+                capabilities.skills_effective =
+                    if self.fallback.intent_provider_class() == IntentProviderClass::Rule {
+                        IntentSkillUse::Unsupported
+                    } else {
+                        IntentSkillUse::Unknown
+                    };
+                let attempt =
+                    observer.begin_attempt(self.fallback.intent_provider_class(), capabilities);
+                let result = self
+                    .fallback
+                    .interpret_intent(screen_context, intent_hint)
+                    .await;
+                observer.end_attempt(attempt, result.as_ref().map(|_| ()));
+                result
+            }
+        }
+    }
+
+    fn intent_provider_class(&self) -> IntentProviderClass {
+        self.primary.intent_provider_class()
+    }
+
+    fn intent_requested_provider_class(&self) -> IntentProviderClass {
+        self.primary.intent_requested_provider_class()
+    }
+
     async fn interpret_intent(
         &self,
         screen_context: &ScreenContext,
@@ -152,6 +199,14 @@ impl LoopbackLlmProvider {
 
 #[async_trait]
 impl LlmProvider for LoopbackLlmProvider {
+    fn intent_provider_class(&self) -> IntentProviderClass {
+        IntentProviderClass::LocalModel
+    }
+
+    fn intent_forwards_skill_context(&self) -> Option<bool> {
+        self.inner.intent_forwards_skill_context()
+    }
+
     async fn interpret_intent(
         &self,
         screen_context: &ScreenContext,
@@ -219,6 +274,12 @@ mod tests {
     struct OkLlmProvider;
     #[async_trait]
     impl LlmProvider for OkLlmProvider {
+        fn intent_provider_class(&self) -> IntentProviderClass {
+            IntentProviderClass::LocalModel
+        }
+        fn intent_forwards_skill_context(&self) -> Option<bool> {
+            Some(true)
+        }
         async fn interpret_intent(
             &self,
             _ctx: &ScreenContext,
@@ -246,6 +307,9 @@ mod tests {
     struct FailLlmProvider;
     #[async_trait]
     impl LlmProvider for FailLlmProvider {
+        fn intent_provider_class(&self) -> IntentProviderClass {
+            IntentProviderClass::LocalModel
+        }
         async fn interpret_intent(
             &self,
             _ctx: &ScreenContext,
@@ -268,6 +332,20 @@ mod tests {
     struct RuleMatcherProvider;
     #[async_trait]
     impl LlmProvider for RuleMatcherProvider {
+        fn intent_provider_class(&self) -> IntentProviderClass {
+            IntentProviderClass::Rule
+        }
+        fn intent_forwards_skill_context(&self) -> Option<bool> {
+            Some(false)
+        }
+        async fn interpret_intent_with_skills(
+            &self,
+            _: &ScreenContext,
+            _: &str,
+            _: &SkillContext,
+        ) -> Result<InterpretedAction, CoreError> {
+            panic!("fallback must retain the base-method route that drops skills")
+        }
         async fn interpret_intent(
             &self,
             _ctx: &ScreenContext,
@@ -289,9 +367,12 @@ mod tests {
     }
 
     // External provider for is_external composition test.
-    struct ExternalLlmProvider;
+    struct ExternalLlmProvider(Option<bool>);
     #[async_trait]
     impl LlmProvider for ExternalLlmProvider {
+        fn intent_forwards_skill_context(&self) -> Option<bool> {
+            self.0
+        }
         async fn interpret_intent(
             &self,
             _ctx: &ScreenContext,
@@ -367,15 +448,17 @@ mod tests {
 
     #[test]
     fn is_external_is_true_when_primary_is_external() {
-        let provider =
-            FallbackLlmProvider::new(Arc::new(ExternalLlmProvider), Arc::new(RuleMatcherProvider));
+        let provider = FallbackLlmProvider::new(
+            Arc::new(ExternalLlmProvider(None)),
+            Arc::new(RuleMatcherProvider),
+        );
         assert!(provider.is_external());
     }
 
     #[test]
     fn is_external_is_true_when_fallback_is_external() {
         let provider =
-            FallbackLlmProvider::new(Arc::new(OkLlmProvider), Arc::new(ExternalLlmProvider));
+            FallbackLlmProvider::new(Arc::new(OkLlmProvider), Arc::new(ExternalLlmProvider(None)));
         assert!(provider.is_external());
     }
 
@@ -418,5 +501,131 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.action_type, "rule-match");
+    }
+
+    #[tokio::test]
+    async fn observed_fallback_records_actual_legs_and_distinct_skill_evidence() {
+        use maekon_core::models::intent_execution::*;
+        let skills = SkillContext {
+            available_skills: vec![SkillMeta {
+                name: "CANARY_SKILL".into(),
+                description: "CANARY_BODY".into(),
+            }],
+            active_skill: None,
+        };
+        for primary_ok in [true, false] {
+            let primary: Arc<dyn LlmProvider> = if primary_ok {
+                Arc::new(OkLlmProvider)
+            } else {
+                Arc::new(FailLlmProvider)
+            };
+            let provider = FallbackLlmProvider::new(primary, Arc::new(RuleMatcherProvider));
+            assert_eq!(
+                provider.intent_provider_class(),
+                IntentProviderClass::LocalModel
+            );
+            let observer = IntentExecutionObserver::new(IntentSubmission::default());
+            observer.requested_provider(provider.intent_requested_provider_class());
+            provider
+                .interpret_intent_observed(&screen_ctx(), "CANARY_PROMPT", Some(&skills), &observer)
+                .await
+                .unwrap();
+            observer.planning_succeeded();
+            observer.finish(IntentActionOutcome::NotStarted, None);
+            let receipt = observer.snapshot();
+            assert_eq!(
+                receipt.requested_provider_class,
+                IntentProviderClass::LocalModel
+            );
+            assert_eq!(receipt.attempts.len(), if primary_ok { 1 } else { 2 });
+            let primary = &receipt.attempts[0];
+            assert!(primary.capabilities.skills_requested);
+            if primary_ok {
+                assert_eq!(receipt.planning_outcome, IntentPlanningOutcome::Llm);
+                assert_eq!(primary.outcome, IntentAttemptOutcome::Succeeded);
+                assert_eq!(primary.capabilities.skills_context_forwarded, Some(true));
+                assert_eq!(
+                    primary.capabilities.skill_context_kind,
+                    IntentSkillContextKind::Catalog
+                );
+                assert_eq!(
+                    primary.capabilities.skills_effective,
+                    IntentSkillUse::Unknown
+                );
+            } else {
+                let fallback = &receipt.attempts[1];
+                assert_eq!(primary.outcome, IntentAttemptOutcome::InvalidOutput);
+                assert_eq!(receipt.planning_outcome, IntentPlanningOutcome::Rule);
+                assert_eq!(fallback.predecessor, Some(primary.attempt_id));
+                assert_eq!(fallback.effective_provider_class, IntentProviderClass::Rule);
+                assert_eq!(fallback.model_revision, IntentRevision::NotApplicable);
+                assert!(fallback.capabilities.skills_requested);
+                assert_eq!(fallback.capabilities.skills_context_forwarded, Some(false));
+                assert_eq!(
+                    fallback.capabilities.skills_effective,
+                    IntentSkillUse::Unsupported
+                );
+                assert_eq!(
+                    fallback.capabilities.skill_context_kind,
+                    IntentSkillContextKind::None
+                );
+            }
+            assert!(!serde_json::to_string(&receipt).unwrap().contains("CANARY"));
+        }
+    }
+
+    #[tokio::test]
+    async fn both_failed_legs_remain_failed_without_planning_success() {
+        use maekon_core::models::intent_execution::*;
+        let provider =
+            FallbackLlmProvider::new(Arc::new(FailLlmProvider), Arc::new(FailLlmProvider));
+        let observer = IntentExecutionObserver::new(IntentSubmission::default());
+        let error = provider
+            .interpret_intent_observed(&screen_ctx(), "save", None, &observer)
+            .await
+            .unwrap_err();
+        observer.planning_finished(
+            IntentPlanningOutcome::Error,
+            Some(IntentSafeReason::from_error(&error)),
+        );
+        observer.finish(IntentActionOutcome::NotStarted, None);
+        let receipt = observer.snapshot();
+        assert_eq!(receipt.attempts.len(), 2);
+        assert!(receipt
+            .attempts
+            .iter()
+            .all(|attempt| attempt.outcome == IntentAttemptOutcome::InvalidOutput));
+        assert_eq!(receipt.planning_outcome, IntentPlanningOutcome::Error);
+        assert_eq!(receipt.action_outcome, IntentActionOutcome::NotStarted);
+    }
+
+    #[tokio::test]
+    async fn loopback_observation_keeps_local_class_without_duplicate_attempt() {
+        use maekon_core::models::intent_execution::*;
+        for forwards in [Some(true), Some(false), None] {
+            let provider = LoopbackLlmProvider::new(Arc::new(ExternalLlmProvider(forwards)));
+            let observer = IntentExecutionObserver::new(IntentSubmission::default());
+            let skills = SkillContext {
+                available_skills: vec![SkillMeta {
+                    name: "save".into(),
+                    description: "save".into(),
+                }],
+                active_skill: None,
+            };
+            provider
+                .interpret_intent_observed(&screen_ctx(), "save", Some(&skills), &observer)
+                .await
+                .unwrap();
+            let receipt = observer.snapshot();
+            assert_eq!(receipt.attempts.len(), 1);
+            assert_eq!(
+                receipt.attempts[0].capabilities.skills_context_forwarded,
+                forwards
+            );
+            assert_eq!(
+                receipt.attempts[0].effective_provider_class,
+                IntentProviderClass::LocalModel
+            );
+        }
     }
 }

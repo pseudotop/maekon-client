@@ -119,6 +119,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn persisted_frame_timestamps_preserve_the_wire_format() {
+        let frame_with = |timestamp: &str| {
+            serde_json::from_value::<FrameMetadata>(serde_json::json!({
+                "timestamp": timestamp, "trigger_type": "manual", "app_name": "Example",
+                "window_title": "", "resolution": [800, 600], "importance": 0.5
+            }))
+        };
+        for (input, expected) in [
+            ("1970-01-01T00:00:00Z", "1970-01-01T00:00:00Z"),
+            (
+                "1969-12-31T23:59:59.999999999Z",
+                "1969-12-31T23:59:59.999999999Z",
+            ),
+            ("2000-02-29T22:14:01+09:00", "2000-02-29T13:14:01Z"),
+            ("2026-06-25T12:34:56.1Z", "2026-06-25T12:34:56.100Z"),
+            ("2026-06-25T12:34:56.0011Z", "2026-06-25T12:34:56.001100Z"),
+            ("2026-11-01T01:30:00-04:00", "2026-11-01T05:30:00Z"),
+            ("2026-11-01T01:30:00-05:00", "2026-11-01T06:30:00Z"),
+            ("2016-12-31T23:59:60Z", "2016-12-31T23:59:60Z"),
+            ("+010000-01-01T00:00:00Z", "+10000-01-01T00:00:00Z"),
+        ] {
+            let encoded = serde_json::to_value(frame_with(input).unwrap()).unwrap();
+            assert_eq!(encoded["timestamp"], expected, "{input}");
+        }
+        for input in ["2026-02-30T12:00:00Z", "2026-05-15T12:12:12"] {
+            let error = frame_with(input).unwrap_err();
+            assert_eq!(
+                error.classify(),
+                serde_json::error::Category::Data,
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
     fn bounding_box_contains_point_inside() {
         let bbox = BoundingBox {
             x: 10,

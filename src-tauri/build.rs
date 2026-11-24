@@ -319,7 +319,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .capabilities_path_pattern(capabilities_pattern)
         // The linker-embedded manifest above replaces the winres one; leaving
         // both in place would fail the bin link with a duplicate RT_MANIFEST.
-        .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        //
+        // #13020: tauri-build 2.7 links a static VC runtime with the dynamic
+        // UCRT unless told otherwise; 2.6 did that only for
+        // STATIC_VCRUNTIME=true, which tauri-cli sets for `cargo tauri build`
+        // and plain `cargo build` does not. The env var still outranks this
+        // attribute, so pinning `false` keeps both paths linking exactly as
+        // before. #13077 keeps that split on purpose: the MSI packages the
+        // fully static plain build and the zip the hybrid CLI relink, so
+        // dropping the pin would turn the MSI hybrid as well.
+        .windows_attributes(
+            tauri_build::WindowsAttributes::new_without_app_manifest().static_vc_runtime(false),
+        );
     tauri_build::try_build(attrs)?;
     Ok(())
 }

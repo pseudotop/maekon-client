@@ -13,17 +13,10 @@ import { fetchCurrentDigest, fetchSummary } from '../api/client'
 import type { DailySummary, WeeklyDigest } from '../api/contracts'
 import CaptureProcessingStatus, { hasCapturedActivity } from '../components/CaptureProcessingStatus'
 import { Card, CardContent, CardTitle, Skeleton } from '../components/ui'
+import { workTypeLabel } from '../features/activityLabels'
 import { colors, iconSize, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
-
-/** "ACTIVE_CODING" (wire WorkType) → "Active Coding". */
-function humanizeWorkType(workType: string): string {
-  return workType
-    .toLowerCase()
-    .split('_')
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ')
-}
+import { formatHours, formatMinutes, hoursFromSeconds } from '../utils/formatters'
 
 function formatRange(startIso: string, endIso: string): string {
   try {
@@ -70,7 +63,9 @@ function HoursBarList({ title, breakdown }: { title: string; breakdown: Record<s
                   style={{ width: `${Math.min(100, (hours / max) * 100)}%` }}
                 />
               </div>
-              <span className={cn('w-14 text-right text-sm', typography.weight.medium)}>{hours.toFixed(1)}h</span>
+              <span className={cn('w-24 shrink-0 whitespace-nowrap text-right text-sm', typography.weight.medium)}>
+                {formatHours(hours)}
+              </span>
             </li>
           ))}
         </ul>
@@ -82,14 +77,12 @@ function HoursBarList({ title, breakdown }: { title: string; breakdown: Record<s
 function DeltaRow({ label, deltaHours }: { label: string; deltaHours: number }) {
   const positive = deltaHours >= 0
   const Icon = positive ? TrendingUp : TrendingDown
+  const sign = deltaHours > 0 ? '+' : deltaHours < 0 ? '-' : ''
   return (
     <li className="flex items-center gap-2 text-sm">
       <Icon className={cn(iconSize.sm, positive ? 'text-semantic-success' : 'text-semantic-error')} />
       <span className={colors.text.secondary}>{label}</span>
-      <span className={typography.weight.medium}>
-        {positive ? '+' : ''}
-        {deltaHours.toFixed(1)}h
-      </span>
+      <span className={typography.weight.medium}>{`${sign}${formatHours(Math.abs(deltaHours))}`}</span>
     </li>
   )
 }
@@ -132,7 +125,7 @@ export default function DashboardWeek() {
     )
   }
 
-  const rawTrackedHours = (rawTodaySummary?.total_active_secs ?? 0) / 3600
+  const rawTrackedHours = hoursFromSeconds(rawTodaySummary?.total_active_secs ?? 0)
   const trackedHours = Math.max(digest.total_tracked_hours, rawTrackedHours)
   const analysisPending = digest.total_tracked_hours === 0 && hasCapturedActivity(rawTodaySummary)
 
@@ -150,16 +143,13 @@ export default function DashboardWeek() {
       {analysisPending && <CaptureProcessingStatus summary={rawTodaySummary} />}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        <StatTile label={t('week.totalTracked', 'Tracked')} value={`${trackedHours.toFixed(1)}h`} />
-        <StatTile label={t('week.deepWork', 'Deep work')} value={`${digest.deep_work_hours.toFixed(1)}h`} />
-        <StatTile
-          label={t('week.communication', 'Communication')}
-          value={`${digest.communication_hours.toFixed(1)}h`}
-        />
+        <StatTile label={t('week.totalTracked', 'Tracked')} value={formatHours(trackedHours)} />
+        <StatTile label={t('week.deepWork', 'Deep work')} value={formatHours(digest.deep_work_hours)} />
+        <StatTile label={t('week.communication', 'Communication')} value={formatHours(digest.communication_hours)} />
         <StatTile label={t('week.contextSwitches', 'Context switches')} value={String(digest.context_switches_total)} />
         <StatTile
           label={t('week.longestSegment', 'Longest focus')}
-          value={`${digest.longest_deep_work_segment_mins}m`}
+          value={formatMinutes(digest.longest_deep_work_segment_mins)}
         />
       </div>
 
@@ -193,9 +183,9 @@ export default function DashboardWeek() {
                 <li key={item.content_label} className="flex items-center gap-2 text-sm">
                   <span className="flex-1 truncate">{item.content_label}</span>
                   <span className={cn('text-xs', colors.text.secondary)}>
-                    {humanizeWorkType(item.dominant_work_type)}
+                    {workTypeLabel(item.dominant_work_type, t)}
                   </span>
-                  <span className={typography.weight.medium}>{item.total_mins}m</span>
+                  <span className={typography.weight.medium}>{formatMinutes(item.total_mins)}</span>
                 </li>
               ))}
             </ul>

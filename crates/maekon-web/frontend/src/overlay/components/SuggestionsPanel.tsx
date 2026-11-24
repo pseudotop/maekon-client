@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AiReadinessNotice } from '../../components/AiReadinessNotice'
 import { useAiReadinessSnapshot } from '../../hooks/useAiReadinessSnapshot'
-import { translateError, type WireErrorLocale } from '../../i18n/translateError'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { navigateMainWindow } from '../mainWindowNavigation'
@@ -15,12 +15,6 @@ import { SuggestionItem } from './SuggestionItem'
 import { SuggestionReplayTrail } from './SuggestionReplayTrail'
 import { type LocalAnalysisStatus, LocalAnalysisStatusNotice, SuggestionStats } from './SuggestionStats'
 import { showToast } from './Toast'
-
-// ADR-019 Follow-up #3: Route through translateError to preserve and localize the IpcError wire code.
-// The previous errorMessage helper discarded the code and exposed only the raw English message.
-function errorMessage(e: unknown, locale: WireErrorLocale): string {
-  return translateError(e, locale)
-}
 
 interface SuggestionsPanelProps {
   open: boolean
@@ -115,11 +109,10 @@ export function SuggestionsPanel({
   placement = 'window-side-panel',
   anchor,
 }: SuggestionsPanelProps) {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const aiReadinessSnapshot = useAiReadinessSnapshot()
   const suggestionLoadError = t('suggestions.loadError', 'Could not load suggestions.')
-  // ADR-019 Follow-up #3: Map the current UI locale to the wire-error locale (same pattern as BugReportWizard).
-  const errorLocale: WireErrorLocale = i18n.language?.startsWith('ko') ? 'ko' : 'en'
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const refreshingRef = useRef(false)
@@ -133,10 +126,11 @@ export function SuggestionsPanel({
         await navigateMainWindow(route)
         onClose()
       } catch (e) {
-        showToast(errorMessage(e, errorLocale), 'error')
+        const display = describeError(e)
+        showToast(display.text, 'error', undefined, display.detail)
       }
     },
-    [errorLocale, onClose],
+    [describeError, onClose],
   )
 
   // Source filter with localStorage persistence
@@ -241,7 +235,8 @@ export function SuggestionsPanel({
         await invoke('explain_suggestion_in_chat', { suggestionId: id })
         showToast(t('suggestions.openingInChat', 'Opening in chat...'), 'info')
       } catch (e) {
-        showToast(errorMessage(e, errorLocale), 'error')
+        const display = describeError(e)
+        showToast(display.text, 'error', undefined, display.detail)
       }
       return
     }
@@ -271,7 +266,13 @@ export function SuggestionsPanel({
     } catch (e) {
       console.warn('Feedback failed:', e)
       setError(null)
-      showToast(`${t('suggestions.feedbackFailed', 'Feedback failed:')} ${errorMessage(e, errorLocale)}`, 'error')
+      const display = describeError(e)
+      showToast(
+        `${t('suggestions.feedbackFailed', 'Feedback failed:')} ${display.text}`,
+        'error',
+        undefined,
+        display.detail,
+      )
     }
   }
 

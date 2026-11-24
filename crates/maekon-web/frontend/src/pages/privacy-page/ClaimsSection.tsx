@@ -18,6 +18,7 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { type ClaimListParams, fetchClaims, retractClaim } from '../../api/client'
 import type { Claim } from '../../api/contracts'
+import { SupportDetails } from '../../components/SupportDetails'
 import {
   Alert,
   Badge,
@@ -29,7 +30,8 @@ import {
   Select,
   Spinner,
 } from '../../components/ui'
-import { addToast } from '../../hooks/useToast'
+import { addErrorToast, addToast } from '../../hooks/useToast'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { formatDateTime, formatPercent } from '../../utils/formatters'
@@ -72,6 +74,7 @@ function statusBadgeColor(status: string): BadgeProps['color'] {
 
 export default function ClaimsSection() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const queryClient = useQueryClient()
   const [range, setRange] = useState<RangePreset>('30d')
   const [kind, setKind] = useState<KindFilter>('all')
@@ -108,13 +111,14 @@ export default function ClaimsSection() {
       setPendingRetract(null)
     },
     onError: (err: Error) => {
-      addToast('error', err.message)
+      addErrorToast(describeError(err, t('privacy.claims.retract.failed')))
       setPendingRetract(null)
     },
   })
 
   const claims = data?.claims ?? []
   const total = data?.total ?? 0
+  const loadError = isError ? describeError(error, t('errors.tryAgainLater')) : null
   const filtersActive = kind !== 'all' || status !== 'active_superseded' || range !== 'all'
 
   return (
@@ -181,9 +185,10 @@ export default function ClaimsSection() {
         </div>
       )}
 
-      {isError && (
+      {loadError && (
         <Alert variant="error" title={t('privacy.claims.loadError')} className="mb-2">
-          {(error as Error).message}
+          {loadError.text}
+          <SupportDetails detail={loadError.detail} />
         </Alert>
       )}
 

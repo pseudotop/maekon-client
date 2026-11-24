@@ -8,6 +8,8 @@
 **Related**: ADR-001 §3 (DI + adapter boundaries), D7 circuit-breaker broadening (2026-04-20), #9855 (Google Calendar OAuth factory), #9639 (integration rollup)
 **Issue**: TBD
 
+> Implementation reference refresh 2026-10-10: Proposed and Issue TBD above are the original 2026-08-05 proposal metadata. Read them with the P3 (2026-08-05) and P4 (2026-08-06) execution records below and the current [maekon-http-core](../../crates/maekon-http-core/) and [maekon-integration](../../crates/maekon-integration/) sources. The extraction is implemented; this reference refresh does not introduce a new ADR approval record.
+
 ---
 
 ## Context

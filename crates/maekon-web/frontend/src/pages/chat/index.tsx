@@ -2,6 +2,7 @@ import { ChevronDown, Download, FileText, Loader2, MessageSquarePlus, RefreshCw,
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AiReadinessNotice } from '../../components/AiReadinessNotice'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Button, EmptyState, Input } from '../../components/ui'
 import {
   aiCapabilityReadiness,
@@ -13,7 +14,8 @@ import {
 } from '../../features/aiReadiness'
 import { defaultSurfaceModel } from '../../features/providerSurfaces'
 import { useAiReadinessSnapshot } from '../../hooks/useAiReadinessSnapshot'
-import { addToast } from '../../hooks/useToast'
+import { addErrorToast, addToast } from '../../hooks/useToast'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import { SessionTurnControl } from '../../overlay/components/SessionTurnControl'
 import { colors, iconSize, interaction, motion, radius, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
@@ -27,13 +29,14 @@ import { useSessionSetup } from './hooks/useSessionSetup'
 import { buildSendSessionMessageArgs } from './ipcPayloads'
 import { MessageBubble } from './MessageBubble'
 import { completeSessionTurn } from './messageStreamState'
-import { chatSendErrorMessage } from './providerErrorGuidance'
+import { chatSendErrorDisplay } from './providerErrorGuidance'
 import { clearAcceptedAttachments, clearAcceptedText, removeOptimisticMessage } from './sendDraftState'
 import type { AttachmentPayload, Transport } from './types'
-import { errorMessage, ipc, now, parseDataUrl, parseOptionalJsonValue, parseOptionalToolDefinitions } from './utils'
+import { ipc, now, parseDataUrl, parseOptionalJsonValue, parseOptionalToolDefinitions } from './utils'
 
 export default function Chat() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const aiReadinessSnapshot = useAiReadinessSnapshot()
   const isHistorical = useCallback((s: { state: string }) => s.state === 'terminated', [])
 
@@ -70,7 +73,7 @@ export default function Chat() {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [attachments, setAttachments] = useState<Array<{ name: string; type: string; data: string }>>([])
-  const [createError, setCreateError] = useState<string | null>(null)
+  const [createError, setCreateError] = useState<ErrorDisplay | null>(null)
   const [requestingSuggestions, setRequestingSuggestions] = useState(false)
   const [suggestionCooldown, setSuggestionCooldown] = useState(false)
 
@@ -150,14 +153,14 @@ export default function Chat() {
       const { listen } = await import('@tauri-apps/api/event')
       unlisten = await listen<{ count: number; sessionId: string }>('chat:suggestions-extracted', ({ payload }) => {
         if (payload.sessionId === activeId) {
-          addToast('info', `${payload.count} suggestion${payload.count !== 1 ? 's' : ''} added from this conversation`)
+          addToast('info', t('chat.suggestions_added', { count: payload.count }))
         }
       })
     })()
     return () => {
       unlisten?.()
     }
-  }, [activeId])
+  }, [activeId, t])
 
   // ---- Session handlers ----
   const {
@@ -194,10 +197,10 @@ export default function Chat() {
         setSessions((prev) => prev.map((s) => (s.session_id === id ? { ...s, title } : s)))
       } catch (e) {
         console.warn('rename_ai_session failed:', e)
-        addToast('error', errorMessage(e, 'Failed to rename session'), 5000)
+        addErrorToast(describeError(e, t('chat.rename_failed')))
       }
     },
-    [setSessions],
+    [setSessions, describeError, t],
   )
 
   const handleRequestSuggestions = useCallback(async () => {
@@ -206,15 +209,15 @@ export default function Chat() {
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       const count = await invoke<number>('request_chat_suggestions', { sessionId: activeId })
-      addToast('success', `${count} suggestion${count !== 1 ? 's' : ''} generated`)
+      addToast('success', t('chat.suggestions_generated', { count }))
       setSuggestionCooldown(true)
       setTimeout(() => setSuggestionCooldown(false), 5000)
     } catch (e) {
-      addToast('error', `Failed to get suggestions: ${errorMessage(e, 'Failed to get suggestions')}`)
+      addErrorToast(describeError(e, t('chat.suggestions_failed')))
     } finally {
       setRequestingSuggestions(false)
     }
-  }, [activeId])
+  }, [activeId, describeError, t])
 
   // ---- Active session state ----
   const active = sessions.find((s) => s.session_id === activeId)
@@ -301,16 +304,14 @@ export default function Chat() {
       console.warn('send_session_message failed:', e)
       setMessages((current) => removeOptimisticMessage(current, optimisticUserMessage))
       setSending(false)
-      addToast(
-        'error',
-        chatSendErrorMessage(e, {
+      addErrorToast(
+        chatSendErrorDisplay(e, describeError, {
           fullTextConsentRequiredMessage: t(
             'chat.full_text_consent_required',
-            'Enable AI text processing and external providers in Privacy → Consent, then try again.',
+            'Enable AI text processing and external providers in Privacy → Data Controls, then try again.',
           ),
           fallback: t('chat.send_failed', 'Failed to send the message.'),
         }),
-        5000,
       )
     }
   }, [
@@ -323,6 +324,7 @@ export default function Chat() {
     messageContext,
     parsedResponseFormat.value,
     t,
+    describeError,
     setMessages,
     setSending,
   ])
@@ -380,14 +382,16 @@ export default function Chat() {
             {createError && (
               <div className="mt-2 w-full max-w-md px-6">
                 <Alert variant="error" title={t('chat.create_failed_title', 'Could not create a session')}>
-                  <p>{createError}</p>
+                  <p>{createError.text}</p>
+                  <SupportDetails detail={createError.detail} />
                 </Alert>
               </div>
             )}
             {sessionLoadError && (
               <div className="mt-2 w-full max-w-md px-6">
                 <Alert variant="error" title={t('chat.load_failed_title', 'Could not load sessions')}>
-                  <p>{sessionLoadError}</p>
+                  <p>{sessionLoadError.text}</p>
+                  <SupportDetails detail={sessionLoadError.detail} />
                 </Alert>
               </div>
             )}

@@ -245,40 +245,45 @@ impl AutomationCommandService {
             .unwrap_or_else(|| format!("intent-hint-{}", Utc::now().timestamp_millis().abs()));
 
         match controller
-            .execute_intent_hint(&command_id, &req.session_id, &req.intent_hint)
+            .execute_intent_hint_observed(
+                &command_id,
+                &req.session_id,
+                &req.intent_hint,
+                maekon_core::models::intent_execution::IntentSubmission {
+                    submission_id: req.submission_id,
+                    retry_of: req.retry_of,
+                },
+            )
             .await
         {
             Ok(planned) => Ok(ExecuteIntentHintResponse {
                 command_id,
                 session_id: req.session_id,
-                planned_intent: planned.planned_intent,
-                result: planned.result,
+                planned_intent: planned.result.planned_intent,
+                result: planned.result.result,
+                execution_provenance: planned.provenance,
             }),
-            Err(
-                CoreError::PolicyDenied { message: msg, .. }
-                | CoreError::InvalidArguments { message: msg, .. },
-            ) => Err(ApiError::BadRequest(msg)),
-            Err(CoreError::ElementNotFound { name: msg, .. }) => Err(ApiError::BadRequest(msg)),
-            // Iter-104 cascading fix from iter-100: IntentPlanner/IntentExecutor
-            // "not configured" errors switched from Internal.Generic to
-            // Config.Missing. Match both variants so the BadRequest routing
-            // still fires — a previously silent regression where these
-            // config-miss errors would have returned 500 instead of 400.
-            Err(
-                CoreError::Internal {
-                    code: _,
-                    message: msg,
-                }
-                | CoreError::Config {
-                    code: _,
-                    message: msg,
-                },
-            ) if msg.contains("IntentPlanner") || msg.contains("IntentExecutor") => {
-                Err(ApiError::BadRequest(msg))
+            Err(failure) => {
+                // Preserve this endpoint's existing 400/500 mapping, including
+                // the legacy missing-planner/executor case (#iter-104). Messages
+                // are used only for that compatibility check, never serialized.
+                let status = match &failure.error {
+                    CoreError::PolicyDenied { .. }
+                    | CoreError::InvalidArguments { .. }
+                    | CoreError::ElementNotFound { .. } => 400,
+                    CoreError::Internal { message, .. } | CoreError::Config { message, .. }
+                        if message.contains("IntentPlanner")
+                            || message.contains("IntentExecutor") =>
+                    {
+                        400
+                    }
+                    _ => 500,
+                };
+                Err(ApiError::IntentExecution {
+                    status,
+                    provenance: failure.provenance,
+                })
             }
-            Err(e) => Err(ApiError::Internal(format!(
-                "Natural language intent execution failed: {e}"
-            ))),
         }
     }
 
@@ -560,6 +565,30 @@ mod tests {
     use maekon_storage::sqlite::SqliteStorage;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn intent_execution_without_observation_preserves_status_and_omits_receipt() {
+        use axum::response::IntoResponse;
+
+        for (status, code) in [
+            (400, "validation.invalid_arguments"),
+            (500, "internal.generic"),
+        ] {
+            let response = ApiError::IntentExecution {
+                status,
+                provenance: None,
+            }
+            .into_response();
+            assert_eq!(response.status().as_u16(), status);
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["status"], status);
+            assert_eq!(body["code"], code);
+            assert!(body.get("execution_provenance").is_none());
+        }
+    }
 
     fn test_context(config_manager: ConfigManager) -> AutomationWebContext {
         let storage = Arc::new(SqliteStorage::open_in_memory(30).expect("in-memory sqlite"))

@@ -126,7 +126,7 @@ impl BugReportService {
 
 fn runtime_log_snapshot_to_dto(snap: RuntimeLogSnapshot) -> RuntimeLogSnapshotDto {
     RuntimeLogSnapshotDto {
-        generated_at: chrono::Utc::now().to_rfc3339(),
+        generated_at: super::current_metadata_timestamp(),
         log_dir: snap.log_dir,
         log_file: snap.log_file,
         line_count: snap.line_count,
@@ -345,6 +345,7 @@ mod tests {
                     status: "ok".to_string(),
                     details: Some("contact user@example.com".to_string()),
                     elapsed_ms: None,
+                    execution_provenance: None,
                 }],
                 recent_policy_events: vec![],
             },

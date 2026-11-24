@@ -15,7 +15,7 @@
 //! * [`should_run_now_with_time`] — the time-injectable active-hours gate.
 //!
 //! * [`capture_permitted_now`] — composes the capture privacy gates:
-//!   `capture_enabled AND consent_granted AND active_hours AND tracking_schedule_allows_capture AND !capture_paused`.
+//!   `capture_enabled AND consent_granted AND !privacy_mode AND active_hours AND tracking_schedule_allows_capture AND !capture_paused`.
 //!
 //! * [`audio_capture_permitted_now`] — identical gate for microphone capture;
 //!   uses `cfg.audio.enabled` instead of `cfg.vision.capture_enabled` (ADR-075 P-3).
@@ -126,10 +126,11 @@ pub fn should_run_now_with_time(config: &AppConfig, now: DateTime<Local>) -> boo
 // ── Implementations ─────────────────────────────────────────────────────────
 
 /// Returns `true` when `now` falls inside any configured tracking-schedule
-/// allowed window.
+/// allowed window in the configured IANA timezone, or system time for `Local`.
 ///
 /// When `cfg.tracking_schedule.enabled` is `false` or the `windows` list is
 /// empty, the schedule is considered inactive and this returns `false`.
+/// An invalid unchecked timezone fails closed instead of using system time.
 ///
 /// The function iterates all configured windows and delegates per-window
 /// range checks to [`TrackingWindow::window_is_active`] (implemented in A.3),
@@ -139,6 +140,15 @@ pub fn tracking_schedule_active(cfg: &AppConfig, now: DateTime<Local>) -> bool {
     if !ts.enabled {
         return false;
     }
+    let now = if ts.timezone == "Local" {
+        now.fixed_offset()
+    } else {
+        let Some(timezone) = crate::config::tracking_zone_offset(&ts.timezone, now.timestamp())
+        else {
+            return false;
+        };
+        now.with_timezone(&timezone)
+    };
     ts.windows.iter().any(|w| w.window_is_active(now))
 }
 
@@ -161,7 +171,8 @@ pub fn tracking_schedule_allows_capture(cfg: &AppConfig, now: DateTime<Local>) -
 /// `consent.screen_capture` for the screen gate or `consent.microphone` for the
 /// audio gate (#4568: the mic has its own consent — screen consent must never
 /// silently authorize it). These two terms are the ONLY ones that differ between
-/// the gates (ADR-075 P-3: parameterize, don't duplicate).
+/// the gates (ADR-075 P-3: parameterize, don't duplicate). Privacy Mode pauses
+/// all capture even though its persisted field is in the vision config section.
 fn capture_permitted_now_inner(
     cfg: &AppConfig,
     enabled: bool,
@@ -171,6 +182,7 @@ fn capture_permitted_now_inner(
 ) -> bool {
     enabled
         && consent_granted
+        && !cfg.vision.privacy_mode
         && should_run_now_with_time(cfg, now)
         && tracking_schedule_allows_capture(cfg, now)
         && !capture_paused
@@ -184,6 +196,7 @@ fn capture_permitted_now_inner(
 /// capture_permitted_now =
 ///     cfg.vision.capture_enabled                 // user-visible capture toggle
 ///     AND consent.screen_capture                 // consent top-authority gate
+///     AND !cfg.vision.privacy_mode                // all-capture privacy veto
 ///     AND should_run_now_with_time(cfg, now)     // active_hours gate
 ///     AND tracking_schedule_allows_capture(cfg, now) // tracking-schedule allow gate
 ///     AND !capture_paused                         // user tray-toggle veto
@@ -234,7 +247,7 @@ pub fn audio_capture_permitted_now(
 /// Returns `true` when screen/vision capture is permitted after the optional
 /// battery-saver gate.
 ///
-/// This preserves the existing four-gate behavior unless
+/// This preserves the composite privacy gate unless
 /// `schedule.pause_on_battery_saver` is enabled and the platform reports an
 /// active battery-saver / low-battery state.
 pub fn capture_permitted_now_with_power(
@@ -719,64 +732,8 @@ mod tests {
 
     // ── capture_permitted_now tests ─────────────────────────────────────────
 
-    // ── 16-row truth table (Test 8) ────────────────────────────────────────
-
-    /// Test 8: All 2⁴ combinations of the legacy schedule/consent gates.
-    ///
-    /// Each combination is constructed by building an `AppConfig` that puts
-    /// each gate into the desired state, then asserting that
-    /// `capture_permitted_now` returns `consent AND active_hours AND ts_allowed
-    /// AND !capture_paused`.
-    ///
-    /// Gate construction:
-    ///   - `consent`: `ConsentPermissions { screen_capture: true/false, .. }`
-    ///   - `active_hours`: schedule.active_hours_enabled = true, window covers
-    ///     the test `now` (Mon 12:30 / Wed 23:00 accordingly)
-    ///   - `ts_allowed`: TS enabled with a window that covers `now`; disabled
-    ///     and empty schedules are covered by dedicated compatibility tests
-    ///   - `capture_paused`: passed directly as argument
-    #[test]
-    fn capture_permitted_combines_all_four_gates() {
-        // Fixed test instant: Monday 12:30.
-        // For each combo we build cfg to achieve the desired gate state.
-        let now = monday_at(12, 30);
-
-        // Iterate all 16 (bool×bool×bool×bool) combinations.
-        for consent_val in [true, false] {
-            for active_hours_val in [true, false] {
-                for ts_allowed_val in [true, false] {
-                    for paused_val in [true, false] {
-                        let cfg = build_scenario_cfg(active_hours_val, ts_allowed_val, now);
-                        // Screen gate reads screen_capture; mic mirrors it here (irrelevant to this gate).
-                        let c = consent(consent_val, consent_val);
-                        let expected =
-                            consent_val && active_hours_val && ts_allowed_val && !paused_val;
-
-                        let got = capture_permitted_now(&cfg, &c, paused_val, now);
-
-                        assert_eq!(
-                            got, expected,
-                            "combo (consent={consent_val}, active_hours={active_hours_val}, \
-                             ts_allowed={ts_allowed_val}, paused={paused_val}) expected \
-                             {expected} but got {got}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn capture_permitted_respects_capture_enabled_setting() {
-        let now = monday_at(12, 30);
-        let mut cfg = build_scenario_cfg(true, true, now);
-        cfg.vision.capture_enabled = false;
-
-        assert!(
-            !capture_permitted_now(&cfg, &consent(true, true), false, now),
-            "capture_enabled=false must veto capture even when consent, active hours, tracking schedule, and pause gates allow it"
-        );
-    }
+    mod privacy;
+    mod tracking_timezone;
 
     // ── audio_capture_permitted_now tests ───────────────────────────────────
 

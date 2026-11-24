@@ -3,6 +3,9 @@ use async_trait::async_trait;
 use maekon_core::config::DEFAULT_MIN_LLM_CONFIDENCE;
 use maekon_core::error::CoreError;
 use maekon_core::models::intent::AutomationIntent;
+use maekon_core::models::intent_execution::{
+    IntentExecutionObserver, IntentPlanningOutcome, IntentSafeReason,
+};
 use maekon_core::models::prompt_assembly::TrustedInstruction;
 use maekon_core::models::skill_pack::SkillActivationOutcome;
 use maekon_core::ports::element_finder::ElementFinder;
@@ -183,9 +186,12 @@ impl LlmIntentPlanner {
     }
 }
 
-#[async_trait]
-impl IntentPlanner for LlmIntentPlanner {
-    async fn plan(&self, intent_hint: &str) -> Result<AutomationIntent, CoreError> {
+impl LlmIntentPlanner {
+    async fn plan_with_observer(
+        &self,
+        intent_hint: &str,
+        observer: Option<&IntentExecutionObserver>,
+    ) -> Result<AutomationIntent, CoreError> {
         let screen_context = self.build_screen_context().await;
 
         let interpreted = if let Some(ref loader) = self.skill_loader {
@@ -193,13 +199,36 @@ impl IntentPlanner for LlmIntentPlanner {
                 available_skills: loader.list_skills(),
                 active_skill: self.resolve_active_skill().await?,
             };
-            self.llm_provider
-                .interpret_intent_with_skills(&screen_context, intent_hint, &skill_ctx)
-                .await?
+            match observer {
+                Some(observer) => {
+                    self.llm_provider
+                        .interpret_intent_observed(
+                            &screen_context,
+                            intent_hint,
+                            Some(&skill_ctx),
+                            observer,
+                        )
+                        .await?
+                }
+                None => {
+                    self.llm_provider
+                        .interpret_intent_with_skills(&screen_context, intent_hint, &skill_ctx)
+                        .await?
+                }
+            }
         } else {
-            self.llm_provider
-                .interpret_intent(&screen_context, intent_hint)
-                .await?
+            match observer {
+                Some(observer) => {
+                    self.llm_provider
+                        .interpret_intent_observed(&screen_context, intent_hint, None, observer)
+                        .await?
+                }
+                None => {
+                    self.llm_provider
+                        .interpret_intent(&screen_context, intent_hint)
+                        .await?
+                }
+            }
         };
 
         // #6333 A10: reject interpretations the LLM itself is not confident about,
@@ -207,6 +236,12 @@ impl IntentPlanner for LlmIntentPlanner {
         // auto-execute just because a matching on-screen element exists. A 0.0
         // floor is still available as an explicit admin opt-out.
         if interpreted.confidence < self.min_llm_confidence {
+            if let Some(observer) = observer {
+                observer.planning_finished(
+                    IntentPlanningOutcome::Denied,
+                    Some(IntentSafeReason::ConfidenceRejected),
+                );
+            }
             return Err(AutomationError::InvalidArguments(format!(
                 "LLM interpretation confidence {:.2} is below the configured minimum {:.2}; \
                  not auto-executing this intent (#6333 A10)",
@@ -215,8 +250,51 @@ impl IntentPlanner for LlmIntentPlanner {
             .into());
         }
 
-        self.action_to_intent(interpreted, intent_hint)
-            .map_err(Into::into)
+        let result = self
+            .action_to_intent(interpreted, intent_hint)
+            .map_err(Into::into);
+        if let Some(observer) = observer {
+            if result.is_ok() {
+                observer.planning_succeeded();
+            } else {
+                observer.planning_finished(
+                    IntentPlanningOutcome::Unsupported,
+                    Some(IntentSafeReason::UnsupportedAction),
+                );
+            }
+        }
+        result
+    }
+}
+
+#[async_trait]
+impl IntentPlanner for LlmIntentPlanner {
+    async fn plan(&self, intent_hint: &str) -> Result<AutomationIntent, CoreError> {
+        self.plan_with_observer(intent_hint, None).await
+    }
+
+    async fn plan_observed(
+        &self,
+        intent_hint: &str,
+        observer: &IntentExecutionObserver,
+    ) -> Result<AutomationIntent, CoreError> {
+        observer.configure(
+            self.llm_provider.intent_requested_provider_class(),
+            self.llm_provider.intent_configuration_reason(),
+        );
+        let result = self.plan_with_observer(intent_hint, Some(observer)).await;
+        if let Err(error) = &result {
+            if observer.snapshot().planning_outcome == IntentPlanningOutcome::Unknown {
+                let reason = IntentSafeReason::from_error(error);
+                let outcome = if reason == IntentSafeReason::Denied {
+                    IntentPlanningOutcome::Denied
+                } else {
+                    IntentPlanningOutcome::Error
+                };
+                observer.planning_finished(outcome, Some(reason));
+            }
+        }
+        result
     }
 }
 
@@ -286,6 +364,9 @@ mod tests {
         SourceKind, UpdateState,
     };
     use maekon_core::models::intent::{ElementBounds, FinderSource, UiElement};
+    use maekon_core::models::intent_execution::{
+        IntentAttemptOutcome, IntentProviderClass, IntentSubmission, OpaqueIntentId,
+    };
     use maekon_core::models::skill::{Skill, SkillMeta};
     use maekon_core::models::skill_pack::{
         body_digest, resolve_activation, EffectiveGrants, SkillActivationRequest,
@@ -334,7 +415,23 @@ mod tests {
             _screen_context: &ScreenContext,
             _intent_hint: &str,
         ) -> Result<InterpretedAction, CoreError> {
+            if self.action.action_type == "denied" {
+                return Err(CoreError::Auth {
+                    code: maekon_core::error_codes::AuthCode::Failed,
+                    message: "private-provider-canary".into(),
+                });
+            }
+            if self.action.action_type == "timeout" {
+                return Err(CoreError::RequestTimeout {
+                    code: maekon_core::error_codes::NetworkCode::Timeout,
+                    timeout_ms: 37,
+                });
+            }
             Ok(self.action.clone())
+        }
+
+        fn intent_provider_class(&self) -> IntentProviderClass {
+            IntentProviderClass::LocalModel
         }
 
         fn provider_name(&self) -> &str {
@@ -343,6 +440,83 @@ mod tests {
 
         fn is_external(&self) -> bool {
             false
+        }
+    }
+
+    fn observation() -> IntentExecutionObserver {
+        IntentExecutionObserver::new(IntentSubmission {
+            submission_id: Some(OpaqueIntentId::new()),
+            retry_of: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn observed_planning_preserves_results_and_distinguishes_provider_and_planning_failures()
+    {
+        use IntentAttemptOutcome::{Denied, Succeeded, Timeout};
+        use IntentPlanningOutcome::{Denied as PlanDenied, Error, Llm, Unsupported};
+        for (action_type, confidence, outcome, reason, attempt) in [
+            ("click", 0.9, Llm, None, Succeeded),
+            (
+                "dance",
+                0.9,
+                Unsupported,
+                Some(IntentSafeReason::UnsupportedAction),
+                Succeeded,
+            ),
+            (
+                "click",
+                0.1,
+                PlanDenied,
+                Some(IntentSafeReason::ConfidenceRejected),
+                Succeeded,
+            ),
+            (
+                "denied",
+                0.9,
+                PlanDenied,
+                Some(IntentSafeReason::Denied),
+                Denied,
+            ),
+            (
+                "timeout",
+                0.9,
+                Error,
+                Some(IntentSafeReason::Timeout),
+                Timeout,
+            ),
+        ] {
+            let mut action = click_action(confidence);
+            action.action_type = action_type.into();
+            let planner = LlmIntentPlanner::new(
+                Arc::new(StubLlmProvider { action }),
+                Arc::new(StubElementFinder),
+            );
+            let ordinary = planner.plan("save").await;
+            let observer = observation();
+            let observed = planner.plan_observed("save", &observer).await;
+            assert_eq!(
+                ordinary
+                    .as_ref()
+                    .map(|value| serde_json::to_value(value).unwrap())
+                    .map_err(|e| e.code()),
+                observed
+                    .as_ref()
+                    .map(|value| serde_json::to_value(value).unwrap())
+                    .map_err(|e| e.code())
+            );
+            let receipt = observer.snapshot();
+            assert_eq!(receipt.planning_outcome, outcome);
+            assert_eq!(receipt.observation_reason, reason);
+            assert_eq!(
+                receipt.requested_provider_class,
+                IntentProviderClass::LocalModel
+            );
+            assert_eq!(receipt.attempts.len(), 1);
+            assert_eq!(receipt.attempts[0].outcome, attempt);
+            assert!(!serde_json::to_string(&receipt)
+                .unwrap()
+                .contains("private-provider-canary"));
         }
     }
 
@@ -627,6 +801,20 @@ mod tests {
             err.to_string().contains("skill pack activation blocked"),
             "a blocked activation must refuse the plan, got: {err}"
         );
+        let observer = observation();
+        assert_eq!(
+            planner
+                .plan_observed("click save", &observer)
+                .await
+                .unwrap_err()
+                .code(),
+            err.code()
+        );
+        assert!(observer.snapshot().attempts.is_empty());
+        assert_eq!(
+            observer.snapshot().planning_outcome,
+            IntentPlanningOutcome::Error
+        );
     }
 
     /// The benign "nothing selected" block is NOT a refusal — the planner runs
@@ -687,5 +875,15 @@ mod tests {
             Some(BODY),
             "the verified skill body must reach the LLM's SkillContext"
         );
+        let observer = observation();
+        planner
+            .plan_observed("click save", &observer)
+            .await
+            .expect("observed skill still plans");
+        assert_eq!(captured.lock().unwrap().as_deref(), Some(BODY));
+        let receipt = observer.snapshot();
+        assert_eq!(receipt.attempts.len(), 1);
+        assert!(receipt.attempts[0].capabilities.skills_requested);
+        assert_eq!(receipt.attempts[0].outcome, IntentAttemptOutcome::Succeeded);
     }
 }

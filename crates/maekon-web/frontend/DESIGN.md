@@ -132,6 +132,7 @@ Pre-composed class strings for form elements:
 | `form.checkbox` | Checkbox styling (brand-signal focus ring) |
 | `form.checkboxInline` | Inline checkbox variant (with right margin) |
 | `form.radio` | Radio button styling |
+| `form.switch*` | `ui/Switch` track, thumb and focus-ring offset — an on/off setting (#13739). A list of choices and a confirmation check stay `Checkbox`. |
 | `form.sectionDivider` | Horizontal rule between form sections |
 
 ### Data Visualization

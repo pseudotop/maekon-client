@@ -68,3 +68,63 @@ pub(crate) mod timeline_assembler;
 pub mod timeline_service;
 pub mod update_service;
 pub mod web_contexts;
+
+fn current_metadata_timestamp() -> String {
+    format_metadata_timestamp(time::UtcDateTime::now())
+}
+
+// rc.11 wrote a numeric UTC offset and zero, three, six, or nine fractional digits.
+fn format_metadata_timestamp(utc: time::UtcDateTime) -> String {
+    use std::fmt::Write;
+
+    let (hour, minute, second, nanos) = utc.as_hms_nano();
+    let mut text = format!("{}T{hour:02}:{minute:02}:{second:02}", utc.date());
+    if nanos != 0 {
+        let (fraction, width) = if nanos.is_multiple_of(1_000_000) {
+            (nanos / 1_000_000, 3)
+        } else if nanos.is_multiple_of(1_000) {
+            (nanos / 1_000, 6)
+        } else {
+            (nanos, 9)
+        };
+        let _ = write!(text, ".{fraction:0width$}");
+    }
+    text.push_str("+00:00");
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_metadata_timestamp;
+    use time::{Date, Month, Time, UtcDateTime};
+
+    #[test]
+    fn metadata_preserves_rc11_utc_offset_and_fraction_groups() {
+        for (unix_nanos, expected) in [
+            (-1, "1969-12-31T23:59:59.999999999+00:00"),
+            (0, "1970-01-01T00:00:00+00:00"),
+            (1, "1970-01-01T00:00:00.000000001+00:00"),
+            (10_000, "1970-01-01T00:00:00.000010+00:00"),
+            (100_000_000, "1970-01-01T00:00:00.100+00:00"),
+            (1_709_164_800_000_000_000, "2024-02-29T00:00:00+00:00"),
+        ] {
+            let utc = UtcDateTime::from_unix_timestamp_nanos(unix_nanos).unwrap();
+            assert_eq!(format_metadata_timestamp(utc), expected);
+        }
+    }
+
+    #[test]
+    fn metadata_preserves_rc11_signed_years() {
+        for (year, expected) in [
+            (-1, "-0001-01-01T00:00:00+00:00"),
+            (0, "0000-01-01T00:00:00+00:00"),
+            (10_000, "+10000-01-01T00:00:00+00:00"),
+        ] {
+            let date = Date::from_calendar_date(year, Month::January, 1).unwrap();
+            assert_eq!(
+                format_metadata_timestamp(UtcDateTime::new(date, Time::MIDNIGHT)),
+                expected
+            );
+        }
+    }
+}

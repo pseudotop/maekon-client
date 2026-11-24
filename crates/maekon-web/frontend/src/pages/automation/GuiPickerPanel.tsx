@@ -29,10 +29,12 @@ import {
   type GuiExecutionTicket,
   highlightGuiSession,
 } from '../../api/client'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
+import { LocalizedError, useErrorDisplay } from '../../i18n/errorDisplay'
 import { iconSize, interaction, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 
@@ -94,8 +96,10 @@ function ExecutionResultPanel({ data }: ExecutionResultPanelProps) {
   )
 }
 
-function ErrorLine({ message }: { message: string }) {
+function ErrorLine({ error }: { error: unknown }) {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
+  const display = describeError(error, t('guiPicker.error'))
   return (
     <div
       className="mt-3 rounded-md bg-semantic-error/10 p-3 text-semantic-error text-sm"
@@ -104,8 +108,9 @@ function ErrorLine({ message }: { message: string }) {
     >
       <div className="flex items-start gap-2">
         <XCircle className={cn(iconSize.base, 'mt-0.5 shrink-0')} aria-hidden="true" />
-        <span className={cn(typography.weight.medium)}>{message || t('guiPicker.error')}</span>
+        <span className={cn(typography.weight.medium)}>{display.text}</span>
       </div>
+      <SupportDetails detail={display.detail} />
     </div>
   )
 }
@@ -154,7 +159,7 @@ export default function GuiPickerPanel({ status }: GuiPickerPanelProps) {
   const confirmMutation = useMutation({
     mutationFn: async (): Promise<GuiExecutionTicket> => {
       if (!session || !selectedCandidateId) {
-        throw new Error(t('guiPicker.selectCandidate'))
+        throw new LocalizedError(t('guiPicker.selectCandidate'))
       }
       const res = await confirmGuiSession(session.session.session_id, session.capability_token, {
         candidate_id: selectedCandidateId,
@@ -171,7 +176,7 @@ export default function GuiPickerPanel({ status }: GuiPickerPanelProps) {
   const executeMutation = useMutation({
     mutationFn: async (): Promise<GuiExecuteResponse> => {
       if (!session || !ticket) {
-        throw new Error(t('guiPicker.error'))
+        throw new LocalizedError(t('guiPicker.error'))
       }
       return executeGuiSession(session.session.session_id, session.capability_token, { ticket })
     },
@@ -222,9 +227,7 @@ export default function GuiPickerPanel({ status }: GuiPickerPanelProps) {
         </div>
 
         {isDisabled && <p className="mt-2 text-content-secondary text-xs">{t('guiPicker.disabledHint')}</p>}
-        {scanMutation.isError && scanMutation.error instanceof Error && (
-          <ErrorLine message={scanMutation.error.message} />
-        )}
+        {scanMutation.isError && <ErrorLine error={scanMutation.error} />}
 
         {/* Step 2: pick a highlighted candidate + action */}
         {session && (
@@ -321,9 +324,7 @@ export default function GuiPickerPanel({ status }: GuiPickerPanelProps) {
               </Button>
             </div>
 
-            {confirmMutation.isError && confirmMutation.error instanceof Error && (
-              <ErrorLine message={confirmMutation.error.message} />
-            )}
+            {confirmMutation.isError && <ErrorLine error={confirmMutation.error} />}
 
             {/* Step 3: execute the minted ticket through existing gates */}
             {ticket && (
@@ -349,9 +350,7 @@ export default function GuiPickerPanel({ status }: GuiPickerPanelProps) {
               </div>
             )}
 
-            {executeMutation.isError && executeMutation.error instanceof Error && (
-              <ErrorLine message={executeMutation.error.message} />
-            )}
+            {executeMutation.isError && <ErrorLine error={executeMutation.error} />}
             {executeMutation.isSuccess && executeMutation.data && <ExecutionResultPanel data={executeMutation.data} />}
           </div>
         )}

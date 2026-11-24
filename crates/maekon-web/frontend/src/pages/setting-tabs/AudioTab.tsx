@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Alert, Badge, Button, Checkbox, GuidancePanel, Spinner } from '../../components/ui'
-import { translateError, type WireErrorLocale } from '../../i18n/translateError'
+import { SupportDetails } from '../../components/SupportDetails'
+import { Alert, Badge, Button, GuidancePanel, Spinner, Switch } from '../../components/ui'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, radius, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useSettingsFormContext } from '../settings/SettingsFormContext'
@@ -33,7 +34,7 @@ const MODEL_LABELS: Record<ModelSize, string> = {
 }
 
 export default function AudioTab() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const { form, data } = useSettingsFormContext()
   const formData = form.formData
 
@@ -57,17 +58,9 @@ export default function AudioTab() {
   // #8058 P2-6: surface model download/delete/reload failures. Previously these
   // catch blocks silently reset state or `// ignore`d the error, so a failed
   // download or a locked-file delete looked like a no-op to the user.
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<ErrorDisplay | null>(null)
 
-  // Localize a thrown IpcError (typed wire codes) the same way GeneralTab does;
-  // falls through to the raw Display string for non-IpcError shapes.
-  const describeError = useCallback(
-    (e: unknown): string => {
-      const locale = (i18n.language?.startsWith('ko') ? 'ko' : 'en') as WireErrorLocale
-      return translateError(e, locale)
-    },
-    [i18n.language],
-  )
+  const describeError = useErrorDisplay()
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -132,6 +125,7 @@ export default function AudioTab() {
   const modelSize = (audio?.model_size ?? 'base') as ModelSize
   const language = audio?.language ?? 'auto'
   const modelState = audioStatus?.model_status?.state ?? 'not_installed'
+  const modelError = audioStatus?.model_status.state === 'error' ? describeError(audioStatus.model_status) : null
   const sttProvider = (audio?.stt_provider ?? 'local') as string
   const cloudApiKey = audio?.cloud_api_key ?? ''
   const cloudEndpoint = audio?.cloud_stt_endpoint ?? 'https://api.openai.com/v1/audio/transcriptions'
@@ -147,11 +141,8 @@ export default function AudioTab() {
       await ipc('download_whisper_model', { modelSize })
     } catch (e) {
       setDownloading(false)
-      setActionError(
-        t('settings.audio.downloadFailed', 'Could not start the model download: {{error}}', {
-          error: describeError(e),
-        }),
-      )
+      const display = describeError(e)
+      setActionError({ ...display, text: t('settings.audio.downloadFailed', { error: display.text }) })
       fetchStatus()
     }
   }
@@ -161,11 +152,8 @@ export default function AudioTab() {
     try {
       await ipc('cancel_model_download')
     } catch (e) {
-      setActionError(
-        t('settings.audio.cancelFailed', 'Could not cancel the download: {{error}}', {
-          error: describeError(e),
-        }),
-      )
+      const display = describeError(e)
+      setActionError({ ...display, text: t('settings.audio.cancelFailed', { error: display.text }) })
     }
   }
 
@@ -177,11 +165,8 @@ export default function AudioTab() {
       await ipc('delete_whisper_model', { modelSize })
       fetchStatus()
     } catch (e) {
-      setActionError(
-        t('settings.audio.deleteFailed', 'Could not delete the model: {{error}}', {
-          error: describeError(e),
-        }),
-      )
+      const display = describeError(e)
+      setActionError({ ...display, text: t('settings.audio.deleteFailed', { error: display.text }) })
     }
   }
 
@@ -191,11 +176,8 @@ export default function AudioTab() {
       await ipc('reload_stt_engine')
       fetchStatus()
     } catch (e) {
-      setActionError(
-        t('settings.audio.reloadFailed', 'Could not reload the speech-to-text engine: {{error}}', {
-          error: describeError(e),
-        }),
-      )
+      const display = describeError(e)
+      setActionError({ ...display, text: t('settings.audio.reloadFailed', { error: display.text }) })
     }
   }
 
@@ -234,9 +216,9 @@ export default function AudioTab() {
         </Alert>
       )}
 
-      <Checkbox
+      <Switch
         checked={enabled}
-        onChange={(e) => handleAudioChange('enabled', e.target.checked)}
+        onCheckedChange={(next) => handleAudioChange('enabled', next)}
         label={t('settings.audio.enable', 'Enable audio capture and STT')}
         disabled={controlsDisabled}
       />
@@ -285,10 +267,13 @@ export default function AudioTab() {
               {t('settings.audio.ready', 'Ready')}
             </Badge>
           )}
-          {modelState === 'error' && audioStatus?.model_status.state === 'error' && (
-            <Badge color="error" size="sm">
-              {audioStatus.model_status.message}
-            </Badge>
+          {modelError && (
+            <div>
+              <Badge color="error" size="sm">
+                {modelError.text}
+              </Badge>
+              <SupportDetails detail={modelError.detail} />
+            </div>
           )}
         </div>
       </div>
@@ -328,7 +313,8 @@ export default function AudioTab() {
 
       {actionError && (
         <Alert variant="error" title={t('settings.audio.actionErrorTitle', 'Model action failed')}>
-          <p>{actionError}</p>
+          <p>{actionError.text}</p>
+          <SupportDetails detail={actionError.detail} />
         </Alert>
       )}
 

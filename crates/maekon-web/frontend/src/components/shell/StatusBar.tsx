@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { useSSE } from '../../hooks/useSSE'
 import { iconSize, layout, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
-import { formatBytes } from '../../utils/formatters'
+import { formatBytes, formatDateTime, formatTime } from '../../utils/formatters'
 
 declare const __APP_VERSION__: string
 
@@ -38,16 +38,15 @@ function useAutomationStatus(connected: boolean) {
 }
 
 export default function StatusBar() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { status, latestFrame, latestMetrics } = useSSE()
 
   const connected = status === 'connected'
   const automationOn = useAutomationStatus(connected)
-  const cpuText = latestMetrics ? `${latestMetrics.cpu_usage.toFixed(1)}%` : '--'
-  const ramText = latestMetrics ? formatBytes(latestMetrics.memory_used) : '--'
   const lastCaptureTimestamp = latestFrame?.timestamp ?? null
   const lastCaptureMs = lastCaptureTimestamp ? Date.parse(lastCaptureTimestamp) : Number.NaN
   const captureActive = Number.isFinite(lastCaptureMs) && Math.abs(Date.now() - lastCaptureMs) <= 2_000
+  const captureStateLabel = captureActive ? t('statusBar.captureActive') : t('statusBar.captureWaiting')
 
   return (
     <div
@@ -94,48 +93,50 @@ export default function StatusBar() {
         <output className="flex min-w-0 items-center gap-1 px-1.5" aria-live="polite" aria-atomic="true">
           <span
             role="img"
-            aria-label={captureActive ? 'Capture active' : 'Capture waiting'}
+            aria-label={captureStateLabel}
+            title={captureStateLabel}
             className={cn(
               'h-2 w-2 shrink-0 rounded-full',
               captureActive ? 'bg-status-connected' : 'bg-status-connecting opacity-70',
             )}
           />
           <Camera className={iconSize.xs} aria-hidden="true" />
-          {lastCaptureTimestamp ? (
+          {/* #13740: a local clock time like every other screen, not the raw ISO string or a "--" placeholder. */}
+          {lastCaptureTimestamp && Number.isFinite(lastCaptureMs) ? (
             <time
               role="timer"
               aria-label={t('statusBar.lastCaptureTimestamp')}
               dateTime={lastCaptureTimestamp}
-              className={cn('max-w-[180px] truncate tabular-nums', typography.family.mono)}
-            >
-              {lastCaptureTimestamp}
-            </time>
-          ) : (
-            <span
-              role="timer"
-              aria-label={t('statusBar.lastCaptureTimestamp')}
+              title={formatDateTime(lastCaptureTimestamp, i18n.language)}
               className={cn('tabular-nums', typography.family.mono)}
             >
-              --
-            </span>
+              {formatTime(lastCaptureTimestamp, i18n.language)}
+            </time>
+          ) : (
+            <span>{t('statusBar.noCaptureYet')}</span>
           )}
         </output>
       </div>
 
       <div className="flex items-center">
-        <span className="flex items-center gap-1 px-1.5">
-          <Cpu className={iconSize.xs} aria-hidden="true" />
-          <span>{cpuText}</span>
-        </span>
+        {/* #13740: no "--" while the first measurement is pending (or never comes in local mode); the cells appear with their values. */}
+        {latestMetrics && (
+          <>
+            <span className="flex items-center gap-1 px-1.5">
+              <Cpu className={iconSize.xs} aria-hidden="true" />
+              <span>{`${latestMetrics.cpu_usage.toFixed(1)}%`}</span>
+            </span>
 
-        <div className={layout.statusBar.separator} />
+            <div className={layout.statusBar.separator} />
 
-        <span className="flex items-center gap-1 px-1.5">
-          <HardDrive className={iconSize.xs} aria-hidden="true" />
-          <span>{ramText}</span>
-        </span>
+            <span className="flex items-center gap-1 px-1.5">
+              <HardDrive className={iconSize.xs} aria-hidden="true" />
+              <span>{formatBytes(latestMetrics.memory_used)}</span>
+            </span>
 
-        <div className={layout.statusBar.separator} />
+            <div className={layout.statusBar.separator} />
+          </>
+        )}
 
         <span className="px-1.5 opacity-70">{__APP_VERSION__}</span>
       </div>

@@ -19,26 +19,10 @@ import { useCurrentRoute } from '../../routes'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { formatLocalCalendarDate, localCalendarDateFromValue } from '../../utils/localDate'
+import ConnectionIndicator from './ConnectionIndicator'
 
 function toApiDate(dateInput?: string): string {
   return localCalendarDateFromValue(dateInput) || formatLocalCalendarDate(new Date())
-}
-
-function ConnectionIndicator({ status, t }: { status: ConnectionStatus; t: (key: string) => string }) {
-  const statusConfig = {
-    connecting: { color: colors.status.connecting, textKey: 'dashboard.connecting' },
-    connected: { color: colors.status.connected, textKey: 'dashboard.connected' },
-    disconnected: { color: colors.status.disconnected, textKey: 'dashboard.disconnected' },
-    error: { color: colors.status.error, textKey: 'dashboard.error' },
-  }
-  const config = statusConfig[status]
-
-  return (
-    <div className={cn('flex items-center space-x-2', typography.body)}>
-      <span className={cn('h-2 w-2 rounded-full', config.color, status === 'connected' && 'animate-pulse')} />
-      <span className={colors.text.secondary}>{t(config.textKey)}</span>
-    </div>
-  )
 }
 
 export interface DashboardContext {
@@ -48,6 +32,12 @@ export interface DashboardContext {
   metricsHistory: MetricsUpdate[]
   summary: DailySummary | undefined
   summaryLoading: boolean
+  /** Set when the summary request failed; `summary` may still hold an earlier result. */
+  summaryError: Error | null
+  refetchSummary: () => void
+  /** Local calendar date (`YYYY-MM-DD`) the dashboard is showing. */
+  selectedDate: string
+  isToday: boolean
   dateRange: { from?: string; to?: string }
   handleRangeChange: (range: { from?: string; to?: string }) => void
   isWidgetVisible: (widgetId: string) => boolean
@@ -68,7 +58,12 @@ export default function DashboardLayout() {
 
   const selectedDate = toApiDate(dateRange.from)
 
-  const { data: summary, isLoading: summaryLoading } = useQuery({
+  const {
+    data: summary,
+    isLoading: summaryLoading,
+    error: summaryError,
+    refetch,
+  } = useQuery({
     queryKey: ['summary', selectedDate],
     queryFn: () => fetchSummary(selectedDate),
   })
@@ -82,6 +77,12 @@ export default function DashboardLayout() {
     metricsHistory,
     summary,
     summaryLoading,
+    summaryError,
+    refetchSummary: () => {
+      void refetch()
+    },
+    selectedDate,
+    isToday: selectedDate === formatLocalCalendarDate(new Date()),
     dateRange,
     handleRangeChange: (range) => handleRangeChange(range.from, range.to),
     isWidgetVisible: isVisible,
@@ -93,7 +94,7 @@ export default function DashboardLayout() {
       <div id="section-overview" className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div className="flex items-center space-x-4">
           <h1 className={cn(typography.h1, colors.text.pageTitle)}>{t('dashboard.title')}</h1>
-          <ConnectionIndicator status={status} t={t} />
+          <ConnectionIndicator status={status} />
         </div>
         <div className="flex items-center gap-3">
           <DateRangePicker onRangeChange={handleRangeChange} />

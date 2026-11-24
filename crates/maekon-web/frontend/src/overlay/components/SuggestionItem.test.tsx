@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import i18n from '../../i18n'
 import type { SuggestionViewDto } from '../types'
 
 // #7917 / ADR-027: the one-click Run affordance renders ONLY when the DTO
@@ -8,19 +9,26 @@ import type { SuggestionViewDto } from '../types'
 // in flight (the command can block up to the 30s HITL confirm timeout).
 
 const showToastMock = vi.fn()
+let currentLanguage = 'en'
 vi.mock('./Toast', () => ({
-  showToast: (message: string, type?: string) => showToastMock(message, type),
+  showToast: (...args: unknown[]) => showToastMock(...args),
 }))
 
-vi.mock('react-i18next', () => ({
+vi.mock('react-i18next', async (original) => ({
+  ...(await original<typeof import('react-i18next')>()),
   useTranslation: () => ({
     // Return the default value with basic {{var}} interpolation.
     t: (_key: string, defaultValue?: string | Record<string, unknown>, opts?: Record<string, unknown>) => {
+      if (_key === 'errors.generic') return i18n.getFixedT(currentLanguage)(_key)
       if (typeof defaultValue !== 'string') return _key
       const vars = opts ?? {}
       return defaultValue.replace(/\{\{(\w+)\}\}/g, (_, name: string) => String(vars[name] ?? `{{${name}}}`))
     },
-    i18n: { language: 'en' },
+    i18n: {
+      get language() {
+        return currentLanguage
+      },
+    },
   }),
 }))
 
@@ -50,6 +58,7 @@ describe('SuggestionItem action binding (#7917 / ADR-027)', () => {
   beforeEach(() => {
     showToastMock.mockClear()
     invokeMock.mockReset()
+    currentLanguage = 'en'
   })
 
   it('renders localized producer and exact creation-time provenance', () => {
@@ -148,8 +157,46 @@ describe('SuggestionItem action binding (#7917 / ADR-027)', () => {
     fireEvent.click(button)
 
     await waitFor(() => {
-      expect(showToastMock).toHaveBeenCalledWith(expect.stringContaining('Could not run action:'), 'error')
+      expect(showToastMock.mock.calls.at(-1)?.slice(0, 2)).toEqual([
+        expect.stringContaining('Could not run action:'),
+        'error',
+      ])
     })
     expect(button).not.toBeDisabled()
+  })
+})
+
+describe('Suggestion action display detail (#13756)', () => {
+  it.each([
+    ['en', 'future.suggestion', 'Something went wrong. Try again.'],
+    ['ko', 'future.suggestion', '문제가 발생했습니다. 다시 시도하세요.'],
+    ['ja', 'future.suggestion', '問題が発生しました。もう一度お試しください。'],
+    ['zh-CN', 'future.suggestion', '出现了问题。请重试。'],
+    ['es', 'future.suggestion', 'Algo salió mal. Inténtelo de nuevo.'],
+    ['ja', 'policy.denied', 'ポリシーにより拒否されました'],
+    ['zh-CN', 'policy.denied', '被策略拒绝'],
+    ['es', 'policy.denied', 'Denegado por la política'],
+  ])('preserves the action gate and passes separated support detail in %s (%s)', async (language, code, generic) => {
+    currentLanguage = language
+    showToastMock.mockClear()
+    invokeMock.mockReset().mockRejectedValueOnce({ code, message: 'run diagnostic' }).mockResolvedValueOnce(undefined)
+    const onRan = vi.fn()
+    render(
+      <SuggestionItem item={makeSuggestion({ action: { label: 'Run action' } })} onAction={vi.fn()} onRan={onRan} />,
+    )
+    const button = screen.getByTestId('run-suggestion-action')
+    fireEvent.click(button)
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled())
+    const [primary, type, duration, detail] = showToastMock.mock.calls[0]
+    expect(primary).toContain(generic)
+    expect(primary).not.toContain('run diagnostic')
+    expect([type, duration, detail]).toEqual(['error', undefined, `${code}: run diagnostic`])
+    expect(invokeMock).toHaveBeenCalledWith('run_suggestion_action', { suggestionId: 'sug-1' })
+    expect(onRan).not.toHaveBeenCalled()
+    expect(button).toBeEnabled()
+    fireEvent.click(button)
+    await waitFor(() => expect(onRan).toHaveBeenCalledTimes(1))
+    expect(invokeMock).toHaveBeenCalledTimes(2)
+    currentLanguage = 'en'
   })
 })

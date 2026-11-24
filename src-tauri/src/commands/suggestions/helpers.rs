@@ -472,6 +472,7 @@ mod recovery_session_tests {
             selected_access_mode: AiAccessMode::ProviderSubscriptionCli,
             access_mode_compatible: true,
             endpoint_or_profile_configured: true,
+            http_chat_settings_resave_required: false,
             provider_detection: AiProviderDetection::Detected,
             provider_auth: AiProviderAuthReadiness::Ready,
             provider_invocation: AiProviderInvocationReadiness::Ready,

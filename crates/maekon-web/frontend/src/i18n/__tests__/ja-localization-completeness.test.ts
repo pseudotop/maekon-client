@@ -9,12 +9,12 @@
  * identical fails here, forcing a decision (translate it, or allowlist it with
  * a rationale).
  *
- * Scope: ja only, for now. ko/zh-CN/es also have identical-value leaves, but at
- * much larger counts measured on this HEAD (ko 64, zh-CN 296, es 337 vs ja's
- * post-fix 22 invariants). Translating those is out of scope for #8096; a
- * follow-up should translate each locale and then widen this guard to it,
- * reusing `IDENTICAL_INVARIANTS` as the shared cross-locale invariant baseline.
- * TODO(#8096-followup): extend the identical-value guard to ko, zh-CN, es.
+ * Scope: ja here. ko has its own guard since #13738
+ * (`ko-localization-completeness.test.ts`). zh-CN and es still have many
+ * identical-value leaves (296 and 337 when #8096 measured them); a follow-up
+ * should translate each locale and then widen the guard to it, reusing
+ * `IDENTICAL_INVARIANTS` as the shared cross-locale invariant baseline.
+ * TODO(#8096-followup): extend the identical-value guard to zh-CN and es.
  */
 
 import { describe, expect, it } from 'vitest'

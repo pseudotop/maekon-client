@@ -137,8 +137,9 @@ async fn external_streaming_falls_back_to_web_field_when_external_none() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(harness.port, &cert_pem, None).await;
 
     // Apply the fall-through scenario: external=None, web=false.
@@ -224,8 +225,9 @@ async fn external_streaming_override_wins_over_web_field_when_some() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(harness.port, &cert_pem, None).await;
 
     // Apply the override-beats-parent scenario: external=Some(true), web=false.

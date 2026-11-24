@@ -167,30 +167,39 @@ pub(crate) fn build_ai_readiness_snapshot_with_local_preflight(
     // session factory has no OAuth port, while Settings binds `llm_api` to a
     // managed OAuth credential in ProviderOAuth mode. That mode reports the
     // mismatch instead of a verification that cannot succeed.
-    let chat_http = evaluate_ai_readiness(
-        AiCapabilityId::ChatHttpApi,
-        dimensions(
-            access_mode,
-            access_mode == AiAccessMode::ProviderApiKey,
-            endpoint_or_profile_configured(&current.ai_provider),
-            with_http_chat_invocation_evidence(
-                http_provider_axes(provider_snapshot, &current.ai_provider),
-                http_chat_invocation_verified,
-            ),
-            if http_chat_invocation_verified {
-                AiModelAvailability::Available
-            } else {
-                configured_model_availability(current.ai_provider.llm_api.as_ref())
-            },
-            ReadinessRuntime {
-                compiled_capability: cfg!(feature = "analysis"),
-                runtime_flag_enabled: true,
-                consent: external_chat_consent,
-                apply_requirement: AiRuntimeApplyRequirement::Restart,
-                apply_pending: chat_apply_pending,
-            },
+    let mut chat_http_dimensions = dimensions(
+        access_mode,
+        access_mode == AiAccessMode::ProviderApiKey,
+        endpoint_or_profile_configured(&current.ai_provider),
+        with_http_chat_invocation_evidence(
+            http_provider_axes(provider_snapshot, &current.ai_provider),
+            http_chat_invocation_verified,
         ),
+        if http_chat_invocation_verified {
+            AiModelAvailability::Available
+        } else {
+            configured_model_availability(current.ai_provider.llm_api.as_ref())
+        },
+        ReadinessRuntime {
+            compiled_capability: cfg!(feature = "analysis"),
+            runtime_flag_enabled: true,
+            consent: external_chat_consent,
+            apply_requirement: AiRuntimeApplyRequirement::Restart,
+            apply_pending: chat_apply_pending,
+        },
     );
+    // #12562: do not infer a credential binding for legacy saved endpoints.
+    chat_http_dimensions.http_chat_settings_resave_required = current
+        .ai_provider
+        .llm_api
+        .as_ref()
+        .is_some_and(|endpoint| {
+            endpoint
+                .surface_id
+                .as_deref()
+                .is_none_or(|id| id.trim().is_empty())
+        });
+    let chat_http = evaluate_ai_readiness(AiCapabilityId::ChatHttpApi, chat_http_dimensions);
 
     let local_axes = local_preflight.map_or_else(
         || local_provider_axes(provider_snapshot),
@@ -360,6 +369,7 @@ fn dimensions(
         selected_access_mode,
         access_mode_compatible,
         endpoint_or_profile_configured,
+        http_chat_settings_resave_required: false,
         provider_detection: axes.detection,
         provider_auth: axes.auth,
         provider_invocation: axes.invocation,

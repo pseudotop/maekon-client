@@ -151,7 +151,10 @@ jobs:
       needs.changes.outputs.ci == 'true' ||
       (github.event_name != 'pull_request' &&
       needs.changes.outputs.rust == 'true')
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: ubuntu-latest now resolves to
+    # ubuntu-26.04, where Playwright 1.59.1 refuses to install chromium
+    # ("does not support chromium on ubuntu26.04-x64").
+    runs-on: ubuntu-24.04
     # 실측 n=11 p50=307s max=324s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
     timeout-minutes: 15
     steps:
@@ -179,7 +182,10 @@ jobs:
 
       - name: TypeScript type check
         working-directory: crates/maekon-web/frontend
-        run: npx tsc --noEmit
+        # tsconfig.json references the composite tsconfig.node.json
+        # (vite.config.ts and src/constants.ts). Plain --noEmit fails with
+        # TS6305 until that reference is built; build mode checks both.
+        run: npx tsc -b
 
       - name: Run frontend unit tests (vitest)
         working-directory: crates/maekon-web/frontend
@@ -1031,7 +1037,9 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: maekon-windows-x64
-          - os: ubuntu-latest
+          # Same image as release.yml build-release: the Linux bundle takes its
+          # libc6 and t64 package floor from the build host (#11246).
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact_name: maekon-linux-x64
     runs-on: ${{ matrix.os }}

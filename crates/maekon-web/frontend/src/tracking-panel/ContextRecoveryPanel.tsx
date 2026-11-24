@@ -12,8 +12,18 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { SupportDetails } from '../components/SupportDetails'
 import { type RecoveryResult, useContextRecovery } from '../hooks/useContextRecovery'
-import { type TaskCandidateView, type TodoState, useDurableTasks } from '../hooks/useDurableTasks'
+import {
+  type TaskAction,
+  type TaskCandidateView,
+  type TaskOutcome,
+  type TodoState,
+  taskActionFailureKey,
+  useDurableTasks,
+} from '../hooks/useDurableTasks'
+import { addErrorToast } from '../hooks/useToast'
+import { useErrorDisplay } from '../i18n/errorDisplay'
 
 /**
  * Context recovery vertical (MK-CONTEXT-01.T03, #8892).
@@ -75,14 +85,41 @@ interface OutcomeCopy {
   icon: React.ReactNode
   title: string
   detail: string
+  supportDetail?: string | null
 }
 
 export function ContextRecoveryPanel({ onBack }: { onBack: () => void }) {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const { phase, result, error, generate } = useContextRecovery()
-  const { candidates, todos, confirmCandidate, dismissCandidate, transitionTodo, refresh } = useDurableTasks()
+  const {
+    candidates,
+    todos,
+    error: tasksError,
+    loading: tasksLoading,
+    confirmCandidate,
+    dismissCandidate,
+    transitionTodo,
+    refresh,
+  } = useDurableTasks()
   const [notice, setNotice] = useState<string | null>(null)
   const startedRef = useRef(false)
+  const reportActionFailure = useCallback(
+    (cause: unknown) => {
+      addErrorToast(describeError(cause), undefined, { cause })
+    },
+    [describeError],
+  )
+  const reportOutcome = useCallback(
+    (outcome: TaskOutcome, action: TaskAction) => {
+      const key = taskActionFailureKey(outcome, action)
+      if (!key) return false
+      setNotice(null)
+      addErrorToast(describeError(outcome.outcome, t(key)), undefined, { cause: outcome.outcome, fallbackKey: key })
+      return true
+    },
+    [describeError, t],
+  )
 
   const runGenerate = useCallback(async () => {
     setNotice(null)
@@ -102,33 +139,33 @@ export function ContextRecoveryPanel({ onBack }: { onBack: () => void }) {
 
   const handleConfirm = useCallback(
     async (candidate: TaskCandidateView, edit?: { title: string; body: string | null }) => {
-      const outcome = await confirmCandidate(candidate.id, candidate.revision, {
-        confirmedTitle: edit?.title ?? null,
-        confirmedBody: edit?.body ?? null,
-      })
-      switch (outcome.outcome) {
-        case 'confirmed':
-        case 'already_transitioned':
-          setNotice(t('recovery.confirmedNotice', 'Added to your to-dos'))
-          break
-        case 'revision_conflict':
-          setNotice(t('recovery.conflictNotice', 'That item just changed — refreshed for you'))
-          await refresh()
-          break
-        default:
-          setNotice(t('recovery.confirmFailedNotice', "Couldn't confirm this step"))
-          break
+      try {
+        const outcome = await confirmCandidate(candidate.id, candidate.revision, {
+          confirmedTitle: edit?.title ?? null,
+          confirmedBody: edit?.body ?? null,
+        })
+        if (reportOutcome(outcome, 'confirm')) return
+        setNotice(t('recovery.confirmedNotice', 'Added to your to-dos'))
+      } catch (cause) {
+        setNotice(null)
+        reportActionFailure(cause)
       }
     },
-    [confirmCandidate, refresh, t],
+    [confirmCandidate, reportOutcome, reportActionFailure, t],
   )
 
   const handleDismiss = useCallback(
     async (candidate: TaskCandidateView) => {
-      await dismissCandidate(candidate.id, candidate.revision)
-      setNotice(t('recovery.dismissedNotice', 'Dismissed'))
+      try {
+        const outcome = await dismissCandidate(candidate.id, candidate.revision)
+        if (reportOutcome(outcome, 'dismiss')) return
+        setNotice(t('recovery.dismissedNotice', 'Dismissed'))
+      } catch (cause) {
+        setNotice(null)
+        reportActionFailure(cause)
+      }
     },
-    [dismissCandidate, t],
+    [dismissCandidate, reportOutcome, reportActionFailure, t],
   )
 
   return (
@@ -184,14 +221,35 @@ export function ContextRecoveryPanel({ onBack }: { onBack: () => void }) {
             testid: 'recovery-outcome-error',
             icon: <ShieldAlert size={14} />,
             title: t('recovery.outcome.errorTitle', 'Something went wrong'),
-            detail: error ?? t('recovery.outcome.errorDetail', 'The request could not be completed.'),
+            detail: error?.text ?? t('recovery.outcome.errorDetail', 'The request could not be completed.'),
+            supportDetail: error?.detail,
           }}
           retryLabel={t('recovery.retry', 'Try again')}
           onRetry={() => void runGenerate()}
         />
       )}
 
-      {phase === 'done' && result && (
+      {tasksError && (
+        <OutcomeBlock
+          copy={{
+            testid: 'recovery-outcome-task-error',
+            icon: <ShieldAlert size={14} />,
+            title: t('recovery.outcome.errorTitle'),
+            detail: tasksError.text,
+            supportDetail: tasksError.detail,
+          }}
+          retryLabel={t('common.retry')}
+          onRetry={() => void refresh()}
+        />
+      )}
+
+      {phase === 'done' && tasksLoading && (
+        <p data-testid="recovery-tasks-loading" aria-busy="true" className="px-1 text-[10px] text-white/70">
+          {t('durableTasks.loading')}
+        </p>
+      )}
+
+      {phase === 'done' && result && (result.status !== 'generated' || (!tasksLoading && !tasksError)) && (
         <RecoveryOutcome
           result={result}
           proposed={proposed}
@@ -201,7 +259,16 @@ export function ContextRecoveryPanel({ onBack }: { onBack: () => void }) {
         />
       )}
 
-      <TodoList todos={todos} onTransition={transitionTodo} />
+      {!tasksLoading && !tasksError && (
+        <TodoList
+          todos={todos}
+          onTransition={(...args) =>
+            void transitionTodo(...args)
+              .then((outcome) => reportOutcome(outcome, args[1]))
+              .catch(reportActionFailure)
+          }
+        />
+      )}
     </section>
   )
 }
@@ -379,6 +446,7 @@ function OutcomeBlock({
         <span className="font-medium text-[11px]">{copy.title}</span>
       </div>
       <p className="text-[10px] text-white/55">{copy.detail}</p>
+      <SupportDetails detail={copy.supportDetail} className="text-white/70 [&_code]:text-content-secondary" />
       {missing && missing.length > 0 && (
         <ul className="flex flex-wrap gap-1">
           {missing.map((permission) => (
@@ -391,6 +459,7 @@ function OutcomeBlock({
       <button
         type="button"
         onClick={onRetry}
+        data-testid={`${copy.testid}-retry`}
         className="mt-0.5 inline-flex items-center gap-1 self-start rounded bg-white/10 px-2 py-0.5 text-[10px] text-white/80 transition-colors hover:bg-white/20"
       >
         <RefreshCw size={11} />

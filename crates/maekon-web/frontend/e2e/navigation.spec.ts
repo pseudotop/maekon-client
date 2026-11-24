@@ -1,9 +1,7 @@
 import { i18nRegex } from './helpers/i18n'
 import { expect, test } from './helpers/test'
 
-const monitorName = i18nRegex('nav.groupMonitor')
-const insightsName = i18nRegex('nav.groupInsights')
-const manageName = i18nRegex('nav.groupManage')
+const mainName = i18nRegex('nav.groupMain')
 const settingsName = i18nRegex('nav.settings')
 const privacyName = i18nRegex('nav.privacy')
 const shortcutsTitle = i18nRegex('shortcuts.title')
@@ -15,29 +13,31 @@ test.describe('Navigation', () => {
     await expect(page.locator('nav')).toBeVisible()
   })
 
-  test('ActivityBar exposes the category icons + bottom direct icons', async ({ page }) => {
-    // After the category restructure the 48px rail holds just 3 group icons
-    // for main navigation and 2 direct icons for Settings / Privacy.  Every
-    // sub-route is reached via the SidePanel tree.
-    await expect(page.getByTitle(monitorName)).toBeVisible()
-    await expect(page.getByTitle(insightsName)).toBeVisible()
-    await expect(page.getByTitle(manageName)).toBeVisible()
+  test('ActivityBar exposes the main group icon + bottom direct icons', async ({ page }) => {
+    // #13736: the 48px rail holds one group icon for the main tree and 2
+    // direct icons for Settings / Privacy.  Every other route is reached via
+    // the SidePanel tree.
+    await expect(page.getByTitle(mainName)).toBeVisible()
     await expect(page.getByTitle(settingsName)).toBeVisible()
     await expect(page.getByTitle(privacyName)).toBeVisible()
   })
 
-  test('clicking Monitor lands on the dashboard overview', async ({ page }) => {
-    await page.getByTitle(monitorName).click()
+  test('clicking the main group icon from Settings lands on the dashboard overview', async ({ page }) => {
+    await page.getByTitle(settingsName).click()
+    await expect(page).toHaveURL(/\/settings\/general$/)
+    await page.getByTitle(mainName).click()
     await expect(page).toHaveURL(/\/overview$/)
   })
 
-  test('clicking Data lands on the reports activity view', async ({ page }) => {
-    await page.getByTitle(insightsName).click()
-    await expect(page).toHaveURL(/\/reports\/activity$/)
-  })
-
-  test('clicking Manage lands on automation', async ({ page }) => {
-    await page.getByTitle(manageName).click()
+  test('a destination moved into a bundle opens one level back', async ({ page }) => {
+    // Automation left the first level for the Tools bundle; unfolding the
+    // bundle and clicking it lands on its default tab.
+    const tree = page.locator('[role="tree"]')
+    await tree.getByRole('treeitem', { name: i18nRegex('nav.sectionTools') }).click()
+    await tree
+      .getByRole('treeitem', { name: i18nRegex('nav.automation') })
+      .first()
+      .click()
     await expect(page).toHaveURL(/\/automation\/policies$/)
   })
 
@@ -51,16 +51,19 @@ test.describe('Navigation', () => {
     await expect(page).toHaveURL(/\/privacy\/data$/)
   })
 
-  test('SidePanel tree navigates to any leaf in the active group', async ({ page }) => {
-    // beforeEach already lands on / (Monitor group) so the SidePanel tree is
-    // already visible — clicking Monitor again would toggle the panel rather
-    // than navigate.  Use the existing tree to drill into Timeline > All
-    // Frames, which proves the ActivityBar + SidePanel pair covers every
-    // route that used to have its own rail icon.
+  test('SidePanel tree navigates to a nested leaf of a front destination', async ({ page }) => {
+    // beforeEach already lands on / (main group) so the SidePanel tree is
+    // already visible — clicking the group icon again would toggle the panel
+    // rather than navigate.  Timeline starts folded (only the path to the
+    // current page is open), so unfold it and drill into Filters.
     const tree = page.locator('[role="tree"]')
     await expect(tree).toBeVisible()
-    await tree.getByRole('treeitem', { name: /all frames/i }).click()
-    await expect(page).toHaveURL(/\/timeline\/all$/)
+    await tree
+      .getByRole('treeitem', { name: i18nRegex('nav.timeline') })
+      .first()
+      .click()
+    await tree.getByRole('treeitem', { name: i18nRegex('sidebar.filters') }).click()
+    await expect(page).toHaveURL(/\/timeline\/filters$/)
   })
 
   test('should show keyboard shortcuts help with ? key', async ({ page }) => {

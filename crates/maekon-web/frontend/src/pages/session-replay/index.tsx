@@ -5,17 +5,21 @@ import { useTranslation } from 'react-i18next'
 import { fetchAutomationScene, fetchSceneCalibration, fetchSettings, fetchTimeline } from '../../api/client'
 import DateRangePicker from '../../components/DateRangePicker'
 import EventLog from '../../components/EventLog'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, EmptyState } from '../../components/ui'
 import { Card, CardContent } from '../../components/ui/Card'
 import { Spinner } from '../../components/ui/Spinner'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { formatDuration } from '../../utils/formatters'
 import { usePlaybackState } from './hooks/usePlaybackState'
 import { SceneAssistantPanel, SceneStatusBar, SceneViewport, useSceneState } from './SceneOverlay'
 import { FrameCard, TimelineScrubberSection } from './SessionPlayback'
 
 export default function SessionReplay() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
 
   const [fromDate, setFromDate] = useState(() => {
     const d = new Date()
@@ -32,11 +36,7 @@ export default function SessionReplay() {
     queryKey: ['timeline', fromDate, toDate],
     queryFn: () => fetchTimeline({ from: new Date(fromDate).toISOString(), to: new Date(toDate).toISOString() }),
   })
-  const error = timelineError
-    ? timelineError instanceof Error
-      ? timelineError.message
-      : '타임라인 로드 failure'
-    : null
+  const error = timelineError ? describeError(timelineError, t('replay.timelineLoadFailed')) : null
 
   const playback = usePlaybackState(timeline)
   const { currentFrame } = playback
@@ -113,7 +113,8 @@ export default function SessionReplay() {
       {/* Error state */}
       {error && (
         <Alert variant="error" icon={<AlertCircle className={iconSize.md} />}>
-          {error}
+          {error.text}
+          <SupportDetails detail={error.detail} />
         </Alert>
       )}
 
@@ -198,8 +199,7 @@ export default function SessionReplay() {
                 <div>
                   <p className="text-content-secondary text-xs">{t('replay.duration', 'session 시간')}</p>
                   <p className={`${typography.weight.semibold} text-content text-lg`}>
-                    {Math.round(timeline.session.duration_secs / 60)}
-                    {t('dashboard.minutes', '분')}
+                    {formatDuration(timeline.session.duration_secs)}
                   </p>
                 </div>
                 <div>
@@ -217,8 +217,7 @@ export default function SessionReplay() {
                 <div>
                   <p className="text-content-secondary text-xs">{t('replay.totalIdle', '총 idle')}</p>
                   <p className={`${typography.weight.semibold} text-content text-lg`}>
-                    {Math.round(timeline.session.total_idle_secs / 60)}
-                    {t('dashboard.minutes', '분')}
+                    {formatDuration(timeline.session.total_idle_secs)}
                   </p>
                 </div>
                 <div>

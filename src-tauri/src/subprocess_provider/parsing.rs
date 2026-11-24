@@ -6,6 +6,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+mod bounded_output;
+pub(crate) use bounded_output::write_prompt_and_collect_output;
+
 use super::{
     catalog_subprocess_transport, SubprocessOcrEnvelope, ACTION_SCHEMA_JSON, OCR_SCHEMA_JSON,
 };
@@ -535,52 +538,6 @@ pub(super) fn is_gemini_json_flag_error(error: &CoreError) -> bool {
             || lowered.contains("unrecognized option"))
 }
 
-/// #6262: write `prompt` to the spawned child's stdin and collect its output
-/// under a SINGLE bounded timeout, draining stdout/stderr CONCURRENTLY with the
-/// stdin write.
-///
-/// The previous per-site pattern wrote stdin OUTSIDE the timeout
-/// (`stdin.write_all(...).await` then `timeout(.., wait_with_output())`), so a
-/// child that filled its stdout/stderr pipe buffer without draining stdin could
-/// deadlock `write_all` forever. Because the write HANGS (rather than erroring),
-/// the function never returns and `kill_on_drop(true)` never fires, leaking the
-/// child indefinitely. Running `wait_with_output` (which drains both output
-/// pipes) concurrently with a spawned writer avoids the deadlock and bounds the
-/// whole sequence; on timeout the child future is dropped (kill_on_drop reaps
-/// the process) and the writer task is aborted.
-///
-/// The child MUST have been spawned with `stdin(Stdio::piped())`,
-/// `stdout(Stdio::piped())`, `stderr(Stdio::piped())`, and `kill_on_drop(true)`.
-pub(crate) async fn write_prompt_and_collect_output(
-    mut child: tokio::process::Child,
-    prompt: &str,
-    surface_label: &str,
-    timeout_dur: std::time::Duration,
-) -> Result<std::process::Output, CoreError> {
-    use tokio::io::AsyncWriteExt;
-    let mut stdin = child.stdin.take().ok_or_else(|| CoreError::Internal {
-        code: maekon_core::error_codes::InternalCode::Generic,
-        message: format!("Failed to open stdin for {surface_label} subprocess"),
-    })?;
-    let prompt_bytes = prompt.as_bytes().to_vec();
-    let writer = tokio::spawn(async move {
-        // Ignore write errors: a child that exits early closes the read end of
-        // the pipe (BrokenPipe), which surfaces via its exit status/stderr.
-        let _ = stdin.write_all(&prompt_bytes).await;
-        // Dropping `stdin` here closes the pipe (EOF) so the child can finish.
-    });
-
-    let collected = tokio::time::timeout(timeout_dur, child.wait_with_output()).await;
-    writer.abort();
-    match collected {
-        Ok(output) => output.map_err(CoreError::Io),
-        Err(_) => Err(CoreError::RequestTimeout {
-            code: maekon_core::error_codes::NetworkCode::Timeout,
-            timeout_ms: timeout_dur.as_millis() as u64,
-        }),
-    }
-}
-
 pub(crate) fn append_model_flag(command: &mut Command, surface_id: &str, model: &str) {
     if let Ok(transport) = catalog_subprocess_transport(surface_id) {
         if let Some(flag) = transport
@@ -705,13 +662,12 @@ pub(super) fn find_executable_in_path(
 }
 
 fn is_executable(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        if !path.is_file() {
+            return false;
+        }
         if let Ok(metadata) = std::fs::metadata(path) {
             return metadata.permissions().mode() & 0o111 != 0;
         }
@@ -720,7 +676,7 @@ fn is_executable(path: &Path) -> bool {
 
     #[cfg(not(unix))]
     {
-        true
+        path.is_file()
     }
 }
 

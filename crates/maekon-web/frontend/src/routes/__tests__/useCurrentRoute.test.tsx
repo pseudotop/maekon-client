@@ -24,10 +24,10 @@ describe('useCurrentRoute', () => {
     expect(result.current.child?.path).toBe('overview')
   })
 
-  it('resolves "/monitoring" to the root route with monitoring as active child', () => {
+  it('resolves "/monitoring" to its own leaf, not a Dashboard child (#13735)', () => {
     const { result } = renderHook(() => useCurrentRoute(), { wrapper: wrapperForPath('/monitoring') })
-    expect(result.current.node.path).toBe('/')
-    expect(result.current.child?.path).toBe('monitoring')
+    expect(result.current.node.path).toBe('/monitoring')
+    expect(result.current.child).toBeNull()
   })
 
   it('resolves "/focus/score" to /focus with score as active child', () => {
@@ -83,32 +83,39 @@ describe('useCurrentRoute', () => {
 
 describe('useCurrentGroup', () => {
   const cases: Array<[path: string, expected: string | null]> = [
-    // Monitor group — real-time observation
-    ['/', 'monitor'],
-    ['/overview', 'monitor'],
-    ['/day', 'monitor'],
-    ['/week', 'monitor'],
-    ['/timeline/all', 'monitor'],
-    ['/replay/timeline', 'monitor'],
-    ['/focus/score', 'monitor'],
-    // Insights group — analysis & AI
-    ['/reports/activity', 'insights'],
-    ['/coaching/goals', 'insights'],
-    ['/chat', 'insights'],
-    ['/playbooks', 'insights'],
-    ['/search', 'insights'],
-    // Manage group — control & administration
-    ['/automation/policies', 'manage'],
-    ['/recalibration/segments', 'manage'],
-    ['/audit/summary', 'manage'],
-    ['/policies', 'manage'],
-    ['/updates/status', 'manage'],
+    // #13736: one `main` group holds the front destinations and the bundles
+    // one level back, so every former Monitor / Insights / Manage route
+    // resolves to it.
+    ['/', 'main'],
+    ['/overview', 'main'],
+    ['/day', 'main'],
+    ['/week', 'main'],
+    ['/timeline/all', 'main'],
+    ['/replay/timeline', 'main'],
+    ['/focus/score', 'main'],
+    ['/reports/activity', 'main'],
+    ['/coaching/goals', 'main'],
+    ['/chat', 'main'],
+    ['/playbooks', 'main'],
+    ['/search', 'main'],
+    ['/automation/policies', 'main'],
+    ['/recalibration/segments', 'main'],
+    ['/audit/summary', 'main'],
+    ['/policies', 'main'],
+    ['/tasks', 'main'],
+    ['/updates/status', 'main'],
+    // Support moved from a bottom icon into the System bundle (#13736)
+    ['/support', 'main'],
+    // System Metrics left the Dashboard (#13735) for the System bundle
+    ['/monitoring', 'main'],
     // Bottom routes — not in any group
     ['/settings/general', null],
     ['/settings/monitoring', null],
     ['/privacy/data', null],
-    // Fallback — unknown path falls back to "/" which is monitor
-    ['/nonexistent', 'monitor'],
+    // Palette-only routes — no group, no rail slot
+    ['/login', null],
+    // Fallback — unknown path falls back to "/" which is in the main group
+    ['/nonexistent', 'main'],
   ]
 
   for (const [path, expected] of cases) {

@@ -89,80 +89,79 @@ export const DarkReview: Story = {
 }
 
 /**
- * Showcase for the v0.4.32 category restructure: landing on /overview should
- * activate the **Monitor** group icon and the SidePanel should render the
- * entire Monitor tree (Dashboard, Day, Timeline, Replay, Automation) with
- * first-level items auto-expanded.  Use this story to verify the group tree
- * density and selection highlight.
+ * Main tree (#13736): landing on /overview activates the **Menu** group icon
+ * and the SidePanel renders six front destinations followed by the folded
+ * More / Tools / System bundles.  Use this story to verify the tree density
+ * and selection highlight.
  */
-export const MonitorGroupExperience: Story = {
+export const MainTreeExperience: Story = {
   args: {
     route: '/overview',
-    title: 'Monitor group — /overview',
+    title: 'Main tree — /overview',
     description:
-      'Clicking Monitor lands here and opens the Monitor tree. Dashboard.Overview is the highlighted leaf, Dashboard is the expanded parent.',
+      'Clicking Menu lands here and opens the main tree. Dashboard.Overview is the highlighted leaf, Dashboard is the expanded parent, and the More / Tools / System bundles stay folded.',
     checklistItems: [
-      'Monitor icon shows active indicator bar.',
-      'SidePanel header reads "Monitor".',
+      'Menu icon shows active indicator bar.',
+      'SidePanel header reads "Menu".',
       'Dashboard tree node is expanded and Overview is selected.',
-      'Every other group route (Day, Timeline, Replay, Automation) is visible as a top-level treeitem.',
+      'Exactly six destinations (Dashboard, Timeline, Search, Focus, Reports, Chat) sit at the first level, followed by the More, Tools and System bundles.',
     ],
   },
 }
 
 /**
- * Deep-link into /automation/policies: the Monitor group stays active and
- * the SidePanel highlights the nested Policies leaf under the Automation
- * parent.  Verifies that two-level nesting renders + selection propagates.
+ * Deep-link into /automation/policies: the main group stays active and the
+ * SidePanel opens the Tools bundle to highlight the nested Runtime Status
+ * leaf under the Automation parent.  Verifies that three-level nesting
+ * renders and selection propagates.
  */
 export const NestedChildExperience: Story = {
   args: {
     route: '/automation/policies',
     title: 'Nested child — /automation/policies',
     description:
-      'The Monitor group remains active because /automation belongs to the monitor group. The SidePanel tree highlights the Policies leaf nested under Automation.',
+      'The main group remains active because /automation belongs to it. The SidePanel opens the Tools bundle and highlights the Runtime Status leaf nested under Automation.',
     checklistItems: [
-      'Monitor icon still shows the active indicator (not Automation as its own icon).',
-      'Automation parent is expanded and Policies leaf is selected.',
-      'Dashboard/Day/Timeline/Replay remain visible but unselected.',
+      'Menu icon still shows the active indicator (not Automation as its own icon).',
+      'Tools bundle and Automation parent are expanded and Runtime Status is selected.',
+      'The six front destinations stay visible but unselected; More and System stay folded.',
     ],
   },
 }
 
 /**
- * Data group landing view (/reports/activity).  Verifies that the Data group
- * tree renders every data-group route (Recalibration, Coaching, Playbooks,
- * Chat, Focus, Reports, Search) with Reports.Activity selected.
+ * Front destination with children (/reports/activity).  Verifies that only
+ * the Reports parent opens while the bundles stay folded.
  */
-export const DataGroupExperience: Story = {
+export const FrontDestinationExperience: Story = {
   args: {
     route: '/reports/activity',
-    title: 'Data group — /reports/activity',
+    title: 'Front destination — /reports/activity',
     description:
-      'Clicking Data lands on the reports activity view. The SidePanel renders the full Data tree with Reports expanded and Activity selected.',
+      'Reports is one of the six front destinations. The SidePanel renders the main tree with Reports expanded and Activity Report selected.',
     checklistItems: [
-      'Data icon shows the active indicator.',
+      'Menu icon shows the active indicator.',
       'Reports tree node is expanded and Activity Report is selected.',
-      'Every data-group leaf (Recalibration, Coaching, Playbooks, Chat, Focus, Search) is visible.',
+      'More, Tools and System bundles are folded.',
     ],
   },
 }
 
 /**
- * Manage group (/audit/summary).  Smaller group (only 3 top-level entries)
- * so the tree should feel airy with room to spare in the resizable panel.
+ * Bundled route (/audit/summary).  The Tools bundle opens to reveal the
+ * current page while the other bundles stay folded.
  */
-export const ManageGroupExperience: Story = {
+export const BundledRouteExperience: Story = {
   args: {
     route: '/audit/summary',
-    title: 'Manage group — /audit/summary',
+    title: 'Bundled route — /audit/summary',
     description:
-      'The Manage group only has three top-level entries (Audit, Policies, Updates). Use this story to check that a sparse group tree still feels intentional rather than empty.',
+      'Audit Log sits one level back in the Tools bundle. Use this story to check that an opened bundle still reads as secondary to the front destinations.',
     checklistItems: [
-      'Manage icon shows the active indicator.',
-      'Audit is expanded with Summary selected.',
-      'Policies is a leaf (no chevron).',
-      'Updates is collapsed by default.',
+      'Menu icon shows the active indicator.',
+      'Tools is expanded, Audit Log is expanded, and Summary is selected.',
+      'Execution Policies is a leaf (no chevron).',
+      'More and System stay folded.',
     ],
   },
 }
@@ -177,11 +176,11 @@ export const SettingsBottomMode: Story = {
     route: '/settings/monitoring',
     title: 'Settings — legacy bottom mode',
     description:
-      'Settings does not belong to any nav group, so the SidePanel falls back to the legacy "children of current route" rendering — nine Settings sub-tabs only, nothing from Monitor/Data/Manage.',
+      'Settings does not belong to any nav group, so the SidePanel falls back to the legacy "children of current route" rendering — Settings sub-tabs only, nothing from the main tree.',
     checklistItems: [
       'Settings icon shows the active indicator.',
       'SidePanel header reads "Settings" (not a group label).',
-      'Only Settings sub-tabs are listed (no Monitor/Data/Manage cross-pollination).',
+      'Only Settings sub-tabs are listed (no main-tree cross-pollination).',
       'Monitoring sub-tab is selected.',
     ],
   },

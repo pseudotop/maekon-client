@@ -558,11 +558,9 @@ mod tests {
     /// poll, deferred task records Completed with grpc_status_code=0 and
     /// command_id from RequestId.
     ///
-    /// Note: `MockRecorder` infers `AuditStatus` from the JSON `result`
-    /// field; both the Started and Completed rows use `result: "ok"`, so
-    /// MockRecorder maps both to `AuditStatus::Completed`. We disambiguate
-    /// by looking for the row that carries `grpc_status_code` (only the
-    /// completion row does — Started omits the field).
+    /// The recorder preserves the explicit Started and Completed statuses.
+    /// The completion row additionally carries `grpc_status_code`; the Started
+    /// row omits that field until the response trailer has been observed.
     #[tokio::test]
     async fn deferred_task_records_completion_after_body_drop() {
         let (bridge, recorder) = fixture_bridge();
@@ -587,6 +585,8 @@ mod tests {
 
         let entries = recorder.snapshot();
         assert_eq!(entries.len(), 2, "Started + Completed");
+        assert_eq!(entries[0].status, AuditStatus::Started);
+        assert_eq!(entries[1].status, AuditStatus::Completed);
         assert!(
             entries.iter().all(|e| e.command_id == "req-abc"),
             "both entries must carry the request_id as command_id"

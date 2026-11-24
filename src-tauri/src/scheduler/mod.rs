@@ -131,6 +131,7 @@ pub struct Scheduler {
         Option<Arc<dyn maekon_core::ports::analysis_provider::AnalysisProvider>>,
     pub(super) coaching_storage: Option<Arc<dyn CoachingStoragePort>>,
     pub(super) capture_paused: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) capture_pause_state: Arc<maekon_core::ports::vision::CapturePauseState>,
     pub(super) detection_active: Arc<std::sync::atomic::AtomicBool>,
     pub(super) scene_finder_slot: Option<SceneFinderSlot>,
     pub(super) server_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -195,6 +196,10 @@ impl Scheduler {
         batch_sink: Option<Arc<dyn BatchSink>>,
         api_client: Option<Arc<dyn ApiClient>>,
     ) -> Self {
+        let capture_paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let capture_pause_state = Arc::new(maekon_core::ports::vision::CapturePauseState::new(
+            capture_paused.clone(),
+        ));
         Self {
             config,
             system_monitor,
@@ -233,7 +238,8 @@ impl Scheduler {
             overlay_driver: None,
             analysis_provider: None,
             coaching_storage: None,
-            capture_paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            capture_paused,
+            capture_pause_state,
             detection_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             scene_finder_slot: None,
             server_health_flag: None,
@@ -433,8 +439,13 @@ impl Scheduler {
         self
     }
 
-    pub fn with_capture_paused(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    pub fn with_capture_paused(
+        mut self,
+        flag: Arc<std::sync::atomic::AtomicBool>,
+        pause: Arc<maekon_core::ports::vision::CapturePauseState>,
+    ) -> Self {
         self.capture_paused = flag;
+        self.capture_pause_state = pause;
         self
     }
 

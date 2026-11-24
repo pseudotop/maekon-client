@@ -234,14 +234,15 @@ test.describe('Settings Audio Tab', () => {
     await expect(heading).toContainText(/Audio/i)
   })
 
-  test('should display enable audio checkbox', async ({ page }) => {
+  test('should display enable audio switch', async ({ page }) => {
     await gotoAudioTab(page)
 
     const panel = audioPanel(page)
-    const checkbox = panel.locator('input[type="checkbox"]').first()
-    await expect(checkbox).toBeVisible()
+    // #13739: the on/off setting renders `ui/Switch` (role="switch", aria-checked).
+    const enableSwitch = panel.getByRole('switch').first()
+    await expect(enableSwitch).toBeVisible()
     // Should be checked since mockedSettings.audio.enabled = true
-    await expect(checkbox).toBeChecked()
+    await expect(enableSwitch).toBeChecked()
   })
 
   test('should display model size selector with options', async ({ page }) => {

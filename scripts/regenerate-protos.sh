@@ -57,7 +57,7 @@ version = "0.0.0"
 edition = "2021"
 
 [build-dependencies]
-tonic-prost-build = "0.14"
+tonic-prost-build = "=0.14.6"
 CARGO
 
 mkdir -p "$TEMP_DIR/src"

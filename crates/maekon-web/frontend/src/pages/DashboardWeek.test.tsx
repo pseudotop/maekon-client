@@ -1,8 +1,9 @@
 import { screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../__tests__/helpers/render-helpers'
 import { fetchCurrentDigest, fetchSummary } from '../api/client'
 import type { DailySummary, WeeklyDigest } from '../api/contracts'
+import i18n from '../i18n'
 import DashboardWeek from './DashboardWeek'
 
 vi.mock('../api/client', () => ({
@@ -59,20 +60,20 @@ describe('DashboardWeek page (#5676)', () => {
   it('renders wire-shape digest fields (pins the TS contract fix)', async () => {
     renderWithProviders(<DashboardWeek />)
 
-    // Stat tiles from top-level fields.
-    expect(await screen.findByText('32.5h')).toBeInTheDocument()
+    // Stat tiles from top-level fields, in the shared duration format (#13738).
+    expect(await screen.findByText('32h 30m')).toBeInTheDocument()
     expect(screen.getByText('87')).toBeInTheDocument()
-    expect(screen.getByText('95m')).toBeInTheDocument()
+    expect(screen.getByText('1h 35m')).toBeInTheDocument()
 
     // top_content uses total_mins + dominant_work_type (NOT the drifted
     // total_minutes / category names).
     expect(screen.getByText('auth-module')).toBeInTheDocument()
-    expect(screen.getByText('340m')).toBeInTheDocument()
+    expect(screen.getByText('5h 40m')).toBeInTheDocument()
     expect(screen.getByText('Active Coding')).toBeInTheDocument()
 
     // comparison uses *_delta_hours + trend_summary.
-    expect(screen.getByText('+2.4h')).toBeInTheDocument()
-    expect(screen.getByText('-1.1h')).toBeInTheDocument()
+    expect(screen.getByText('+2h 24m')).toBeInTheDocument()
+    expect(screen.getByText('-1h 6m')).toBeInTheDocument()
     expect(screen.getByText('More deep work, fewer interruptions than last week.')).toBeInTheDocument()
 
     // llm_narrative is null until a weekly narrative producer exists —
@@ -119,8 +120,37 @@ describe('DashboardWeek page (#5676)', () => {
     renderWithProviders(<DashboardWeek />)
 
     expect(await screen.findByText('Captured activity is awaiting analysis')).toBeInTheDocument()
-    expect(screen.getByText('1.5h')).toBeInTheDocument()
+    // The tracked tile and the capture status both read 1h 30m now that they share one format.
+    expect(screen.getByText('Tracked').parentElement).toHaveTextContent('1h 30m')
+    expect(screen.getAllByText('1h 30m')).toHaveLength(2)
     expect(screen.getByText('503')).toBeInTheDocument()
     expect(screen.getByText('1,028')).toBeInTheDocument()
+  })
+})
+
+// #13738: the work type and the durations used to be English words and "h"/"m"
+// written in the page itself, so a Korean screen showed "Active Coding" and "340m".
+describe('DashboardWeek on a Korean screen', () => {
+  beforeEach(() => {
+    vi.mocked(fetchCurrentDigest).mockResolvedValue(WIRE_DIGEST)
+    vi.mocked(fetchSummary).mockResolvedValue({ ...RAW_TODAY_SUMMARY, total_active_secs: 0 })
+  })
+
+  afterEach(async () => {
+    await i18n.changeLanguage('en')
+  })
+
+  it('shows the work type and durations in Korean', async () => {
+    await i18n.changeLanguage('ko')
+
+    renderWithProviders(<DashboardWeek />)
+
+    expect(await screen.findByText('32시간 30분')).toBeInTheDocument()
+    expect(screen.getByText('1시간 35분')).toBeInTheDocument()
+    expect(screen.getByText('코딩')).toBeInTheDocument()
+    expect(screen.getByText('5시간 40분')).toBeInTheDocument()
+    expect(screen.getByText('+2시간 24분')).toBeInTheDocument()
+    expect(screen.queryByText('Active Coding')).not.toBeInTheDocument()
+    expect(screen.queryByText(/\d+(\.\d)?[hm]$/)).not.toBeInTheDocument()
   })
 })

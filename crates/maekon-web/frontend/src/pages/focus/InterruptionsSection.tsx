@@ -51,7 +51,7 @@ export default function InterruptionsSection() {
                     })}
                   </p>
                   {int.duration_secs && (
-                    <p className="text-content-tertiary text-xs">{formatDuration(int.duration_secs, true)}</p>
+                    <p className="text-content-tertiary text-xs">{formatDuration(int.duration_secs)}</p>
                   )}
                 </div>
               </div>

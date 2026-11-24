@@ -40,43 +40,50 @@ target_size_kb() {
 }
 
 prune_target_if_needed() {
-  if [ "$TARGET_AUTO_PRUNE" != "1" ] || [ ! -d "$TARGET_DIR" ]; then
+  if [ "$TARGET_AUTO_PRUNE" != "1" ]; then
     return
   fi
 
-  local soft_limit_kb=$((TARGET_SOFT_LIMIT_MB * 1024))
-  local hard_limit_kb=$((TARGET_HARD_LIMIT_MB * 1024))
-  local current_size_kb
-
-  current_size_kb="$(target_size_kb)"
-  if [ "$current_size_kb" -le "$soft_limit_kb" ]; then
+  # Skip only when target is genuinely absent; symlinks must still reach the safety check.
+  if [ ! -L "$TARGET_DIR" ] && [ ! -e "$TARGET_DIR" ]; then
     return
   fi
 
-  echo "[cargo-cache] target directory exceeds soft limit (${TARGET_SOFT_LIMIT_MB}MB)."
-  echo "[cargo-cache] pruning incremental cache: $TARGET_DIR/debug/incremental"
-  rm -rf "$TARGET_DIR/debug/incremental"
-  current_size_kb="$(target_size_kb)"
-
-  if [ "$current_size_kb" -le "$soft_limit_kb" ]; then
+  local python_bin="${MAEKON_CARGO_CACHE_PYTHON:-python3}"
+  python_bin="$(command -v "$python_bin" 2>/dev/null || true)"
+  if [ -z "$python_bin" ] || [ ! -x "$python_bin" ]; then
+    echo "[cargo-cache] auto-prune skipped: python3 is unavailable; nothing was deleted." >&2
     return
   fi
 
-  echo "[cargo-cache] target still above soft limit. pruning dep artifacts: $TARGET_DIR/debug/deps"
-  rm -rf "$TARGET_DIR/debug/deps"
-  current_size_kb="$(target_size_kb)"
-
-  if [ "$current_size_kb" -le "$hard_limit_kb" ]; then
+  local disk_helper="$SCRIPT_DIR/cargo-target-disk.py"
+  if [ ! -r "$disk_helper" ]; then
+    echo "[cargo-cache] auto-prune skipped: helper $disk_helper is missing; nothing was deleted." >&2
     return
   fi
 
-  echo "[cargo-cache] target exceeds hard limit (${TARGET_HARD_LIMIT_MB}MB). pruning build script outputs: $TARGET_DIR/debug/build"
-  rm -rf "$TARGET_DIR/debug/build"
-  current_size_kb="$(target_size_kb)"
+  local prune_status=0
+  set +e
+  "$python_bin" "$disk_helper" auto-prune \
+    --target "$TARGET_DIR" \
+    --soft-limit-mb "$TARGET_SOFT_LIMIT_MB" \
+    --hard-limit-mb "$TARGET_HARD_LIMIT_MB"
+  prune_status=$?
+  set -e
 
-  if [ "$current_size_kb" -gt "$hard_limit_kb" ]; then
-    echo "[cargo-cache] target is still large (${current_size_kb}KB). run 'cargo clean' if you need full cleanup."
-  fi
+  case "$prune_status" in
+    0)
+      return
+      ;;
+    3)
+      echo "[cargo-cache] skipping auto-prune while Cargo holds the target lock." >&2
+      return
+      ;;
+    *)
+      echo "[cargo-cache] auto-prune aborted due to lock/path safety error (exit ${prune_status}); nothing was deleted." >&2
+      return
+      ;;
+  esac
 }
 
 print_target_status() {

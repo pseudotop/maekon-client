@@ -16,10 +16,12 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { useErrorDisplay } from '../i18n/errorDisplay'
 import { colors, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import { formatBytes, formatPercent } from '../utils/formatters'
 import { IS_TAURI } from '../utils/platform'
+import { SupportDetails } from './SupportDetails'
 import { Alert, Badge, Button, Card, CardTitle, Spinner } from './ui'
 
 /** Local diagnostics snapshot of the agent's own process usage vs. its budget. */
@@ -73,6 +75,7 @@ function MetricRow({
 
 export default function SelfResourceSnapshot() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
 
   const {
     data: snapshot,
@@ -85,6 +88,7 @@ export default function SelfResourceSnapshot() {
     enabled: IS_TAURI, // self-process sampling is only meaningful in the desktop app
     refetchInterval: 30_000,
   })
+  const sampleError = error ? describeError(error, t('errors.tryAgainLater')) : null
 
   return (
     <Card id="section-self-resource" variant="default" padding="lg">
@@ -106,14 +110,15 @@ export default function SelfResourceSnapshot() {
         <p className="mt-4 text-content-tertiary text-sm">
           {t('metrics.selfUsageDesktopOnly', 'Available in the desktop app.')}
         </p>
-      ) : error ? (
+      ) : sampleError ? (
         <Alert variant="error" title={t('metrics.snapshotError', 'Failed to sample resource usage')} className="mt-4">
           <div className="flex items-center justify-between gap-4">
-            <span>{error instanceof Error ? error.message : String(error)}</span>
+            <span>{sampleError.text}</span>
             <button type="button" className="text-sm underline hover:no-underline" onClick={() => refetch()}>
               {t('common.retry', 'Retry')}
             </button>
           </div>
+          <SupportDetails detail={sampleError.detail} />
         </Alert>
       ) : isLoading || !snapshot ? (
         <div className="mt-4 flex justify-center py-6">

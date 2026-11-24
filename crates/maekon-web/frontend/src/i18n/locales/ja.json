@@ -79,7 +79,13 @@
     "less": "表示を減らす",
     "lightbox": "画像ライトボックス",
     "navigate": "移動",
-    "previous": "前へ"
+    "previous": "前へ",
+    "duration": {
+      "seconds": "{{count}}秒",
+      "minutes": "{{count}}分",
+      "hours": "{{count}}時間",
+      "hoursMinutes": "{{hours}}時間{{minutes}}分"
+    }
   },
   "support": {
     "pageTitle": "サポートと診断",
@@ -149,10 +155,10 @@
     "audit": "監査ログ",
     "policies": "実行ポリシー",
     "playbooks": "プレイブック",
-    "groupMonitor": "モニター",
-    "groupInsights": "インサイト",
-    "groupManage": "管理",
-    "groupSystem": "システム",
+    "groupMain": "メニュー",
+    "sectionMore": "その他",
+    "sectionTools": "ツール",
+    "sectionSystem": "システム",
     "tasks": "タスク",
     "contextHome": "コンテキストホーム",
     "assignmentEmailDraft": "割り当てメール下書き",
@@ -200,20 +206,68 @@
     "exportDigest": "エクスポート",
     "exportMarkdown": "Markdownでダウンロード",
     "todaySummary": {
-      "title": "今日の概要",
-      "activeTime": "アクティブ時間",
-      "topApp": "上位アプリ",
-      "nudges": "ナッジ",
-      "regime": "レジーム"
+      "title": "今日の要約",
+      "titleForDate": "{{date}}の要約",
+      "headline": {
+        "focus": "{{app}}で最も長く作業しました。最も長く集中できた時間は{{longestFocus}}です。",
+        "app": "{{app}}で最も長く作業しました。",
+        "activity": "アクティビティを記録しています。要約できるだけの記録がたまると、ここに表示されます。"
+      }
+    },
+    "nextActions": {
+      "title": "次にやること",
+      "openAll": "すべてのタスクを見る",
+      "openTasks": "タスクを開く",
+      "emptyTitle": "次にやることはまだありません",
+      "emptyDescription": "画面上部のトラッキングパネルで「次のステップを探す」を押してください。作業していた内容から次のステップを提案し、確定したタスクがここに表示されます。",
+      "desktopOnly": "タスクはデスクトップアプリで確認できます。",
+      "loadError": "タスクを読み込めませんでした。",
+      "suggested": "提案",
+      "more": "ほか{{count}}件"
+    },
+    "keyNumbers": {
+      "title": "主な数値",
+      "deepWork": "ディープワーク",
+      "contextSwitches": "作業の切り替え",
+      "pendingAnalysis": "分析が終わると表示されます",
+      "unavailable": "読み込めませんでした"
+    },
+    "firstRun": {
+      "guideSummary": "1日を1行で要約します。AIに接続しなくても作成されます。",
+      "guideNextActions": "提案された次のステップと、確定したタスクがここに表示されます。",
+      "guideKeyNumbers": "作業するにつれて、アクティブ時間、ディープワーク、作業の切り替えが記録されます。",
+      "action": {
+        "reviewConsent": "収集の同意を確認",
+        "resumeCapture": "収集の設定を開く",
+        "checkStatus": "アプリの状態を確認"
+      }
+    },
+    "noActivityForDate": {
+      "title": "記録されたアクティビティはありません",
+      "description": "{{date}}に収集されたアクティビティはありません。上の日付選択で別の日を選んでください。"
+    },
+    "summaryError": {
+      "title": "アクティビティを読み込めませんでした",
+      "description": "ローカルのアクティビティサービスが応答しませんでした。しばらくしてからもう一度お試しください。"
+    },
+    "systemResources": {
+      "description": "過去24時間のCPU・メモリ使用量、負荷の高いプロセス、アプリの使用時間、今日のキャプチャ数を確認できます。",
+      "open": "システムメトリクスを開く"
     }
   },
   "updates": {
     "title": "アップデート",
     "loading": "アップデート状況を読み込み中...",
     "live": "ライブ",
-    "polling": "ポーリング",
+    "polling": "定期確認",
     "fresh": "最新",
-    "stale": "期限切れ",
+    "stale": "遅延",
+    "connectionBadge": "接続: {{state}}",
+    "connectionHint": "このパネルがアップデート状況を受け取る方法です。ライブは変化をすぐに受け取り、ライブストリームを使えない間は一定間隔で確認し直します。",
+    "freshnessBadge": "信号: {{state}}",
+    "freshnessHint": "最新のアップデート状況を最近受け取ったかを示します。遅延の場合、表示中の情報が古い可能性があります。",
+    "phaseBadge": "段階: {{state}}",
+    "phaseHint": "アップデートの確認・ダウンロード・インストールのうち、今どの段階にあるかを示します。",
     "idle": "待機中",
     "checking": "確認中",
     "pendingApproval": "承認待ち",
@@ -228,9 +282,9 @@
     "actionFailed": "アップデート操作を完了できませんでした。もう一度お試しください。",
     "technicalDetails": "技術的な詳細",
     "lastUpdateUnknown": "最終アップデート信号: 不明",
-    "lastUpdateAge": "最終アップデート信号: {{seconds}}秒前",
+    "lastUpdateAge": "最終アップデート信号: {{age}}前",
     "staleActionBlocked": "ステータスが古いため、アップデートの承認は一時的にブロックされています。「今すぐ確認」をクリックして更新してください。",
-    "streamIssue": "ライブアップデートストリームに一時的な問題が発生しました。ポーリングに切り替えます。",
+    "streamIssue": "ライブアップデートストリームに一時的な問題が発生しました。定期確認に切り替えます。",
     "reconnecting": "ライブアップデートストリームに再接続中 ({{count}}回目)...",
     "streamRecovered": "ライブアップデートストリームの接続が復旧しました。操作や通知を重複させずに状態更新を継続します。",
     "currentVersion": "現在のバージョン",
@@ -279,12 +333,12 @@
     "rolledBackAt": "{{timestamp}} に復元",
     "releaseDate": "リリース日: {{date}}",
     "releaseDateUnknown": "リリース日は不明です",
-    "releasedAgoMinutes": "{{count}} 分前にリリース",
-    "releasedAgoMinutes_plural": "{{count}} 分前にリリース",
-    "releasedAgoHours": "{{count}} 時間前にリリース",
-    "releasedAgoHours_plural": "{{count}} 時間前にリリース",
-    "releasedAgoDays": "{{count}} 日前にリリース",
-    "releasedAgoDays_plural": "{{count}} 日前にリリース",
+    "releasedAgoMinutes_one": "{{count}} 分前にリリース",
+    "releasedAgoMinutes_other": "{{count}} 分前にリリース",
+    "releasedAgoHours_one": "{{count}} 時間前にリリース",
+    "releasedAgoHours_other": "{{count}} 時間前にリリース",
+    "releasedAgoDays_one": "{{count}} 日前にリリース",
+    "releasedAgoDays_other": "{{count}} 日前にリリース",
     "readyToInstallMsg": "ダウンロードが完了しました。インストールの準備ができました。",
     "installNow": "今すぐインストール"
   },
@@ -353,6 +407,7 @@
     "filterSummary": "{{total}} 件中 {{shown}} 件のフレームを表示",
     "tagSuggestions": "タグの候補",
     "noActivity": "この日に記録されたアクティビティはありません",
+    "entryExpandLabel": "{{regime}} {{duration}} - クリックして展開",
     "segments": {
       "title": "画面にあった作業",
       "axis": "アクティビティ区間",
@@ -366,11 +421,11 @@
     "tabs": {
       "integrations": "連携",
       "general": "一般",
-      "privacy": "テレメトリ",
+      "privacy": "キャプチャ保護",
       "monitoring": "モニタリング",
       "aiAutomation": "AI & 自動化",
       "dataStorage": "データ & ストレージ",
-      "coaching": "コーチング",
+      "coaching": "コーチング設定",
       "focusAuto": "フォーカス自動",
       "audio": "オーディオ",
       "sync": "同期",
@@ -542,7 +597,7 @@
       }
     },
     "groupCore": "基本",
-    "groupAdvanced": "詳細",
+    "groupAdvanced": "その他の設定",
     "dataCollection": "データ収集",
     "enableCapture": "スクリーンショットキャプチャを有効化",
     "idleThreshold": "アイドル検出しきい値 (分)",
@@ -556,6 +611,11 @@
     "highUsageNotification": "高使用率通知 (%)",
     "saved": "設定を保存しました。",
     "saveFailed": "設定の保存に失敗しました",
+    "updateActionFailed": "アップデート操作をリクエストできませんでした。",
+    "permissionRequestFailed": "権限のリクエストを完了できませんでした。",
+    "permissionOpenSystemSettingsFailed": "システム設定を開けませんでした。",
+    "notifTestFailed": "テスト通知を送信できませんでした。",
+    "tagActionFailed": "タグの変更を保存できませんでした。",
     "unsavedChanges": "未保存の変更があります",
     "unsavedChangesHint": "このページを離れる前に現在の設定を保存してください。",
     "revertChanges": "元に戻す",
@@ -1095,7 +1155,8 @@
         "confirmNote": "撤回すると、この主張はダイジェストや今後の提案から非表示になります。記録は削除されず保持されるため、変更は監査可能なままです。",
         "confirmButton": "主張を撤回",
         "success": "主張を撤回しました",
-        "alreadyRetracted": "この主張はすでに撤回されています"
+        "alreadyRetracted": "この主張はすでに撤回されています",
+        "failed": "主張を撤回できませんでした。"
       }
     },
     "aiUsage": {
@@ -1515,6 +1576,7 @@
     "actionSuccess": "推奨アクションを実行しました。",
     "actionSuccessWithPolicy": "推奨アクションを実行しました (ポリシー: {{policy}})。",
     "actionFailed": "推奨アクションの実行に失敗しました。",
+    "timelineLoadFailed": "タイムラインの読み込みに失敗しました。",
     "typeTextLabel": "入力テキスト",
     "typeTextPlaceholder": "入力するテキストを入力してください",
     "allowSensitiveInput": "現在のプライバシーポリシーでセンシティブなテキスト入力を許可",
@@ -1670,7 +1732,95 @@
     "intentHintFailed": "コマンド失敗",
     "intentHintPlannedIntent": "プランされたインテント",
     "intentHintViewHistory": "実行履歴で表示",
-    "intentHintErrorCheckHistory": "リクエストはすでに実行された可能性があります — 実行履歴を確認してください。"
+    "intentHintErrorCheckHistory": "リクエストはすでに実行された可能性があります — 実行履歴を確認してください。",
+    "intentProvenance": {
+      "title": "実行の観測結果",
+      "unknown": "この応答に一致する実行の観測結果はありません。",
+      "scope": "最近の観測結果はアプリの再起動後に失われることがあります。",
+      "observe": "この実行を確認",
+      "lookupUnknown": "一意に一致する観測結果がありません。操作が実行されなかったことを示すものではありません。",
+      "lookupFound": "一致する実行を確認しました。新しい操作は送信していません。",
+      "replayWarning": "再実行すると新しい操作が開始され、前の操作と重複する可能性があります。",
+      "identityUnavailable": "安全な送信 ID を作成できなかったため、何も送信していません。",
+      "resultUnavailable": "実行の応答を確認できません。",
+      "requested": "要求した処理方式",
+      "planned": "観測された計画方式",
+      "actionLabel": "操作の結果",
+      "observationLabel": "観測状態",
+      "configurationOnlyRule": "初期設定ではルールによる処理のみが利用可能でした。失敗したモデルの試行は観測されていません。",
+      "attempt": "試行 {{number}}",
+      "skillContext": "スキル要求: {{requested}} · コンテキスト送信: {{forwarded}} · コンテキスト: {{context}}",
+      "steps": "観測された段階",
+      "yes": "はい",
+      "no": "いいえ",
+      "unknownValue": "不明",
+      "provider": {
+        "local_model": "端末内モデル",
+        "remote_model": "リモートモデル",
+        "rule": "ルール",
+        "unknown": "不明"
+      },
+      "planning": {
+        "llm": "モデルによる計画",
+        "rule": "ルールによる計画",
+        "unsupported": "未対応の要求",
+        "denied": "計画が拒否されました",
+        "error": "計画に失敗しました",
+        "unknown": "不明"
+      },
+      "action": {
+        "not_started": "未開始",
+        "denied": "拒否",
+        "completed": "完了",
+        "failed": "失敗",
+        "unknown": "不明"
+      },
+      "observation": {
+        "complete": "完全な観測",
+        "partial": "部分的な観測",
+        "legacy_unknown": "旧形式の応答のため不明"
+      },
+      "attemptOutcome": {
+        "succeeded": "成功",
+        "denied": "拒否",
+        "timeout": "タイムアウト",
+        "invalid_output": "無効な出力",
+        "unavailable": "利用不可",
+        "error": "エラー",
+        "unknown": "不明"
+      },
+      "reason": {
+        "denied": "実行の許可条件により拒否されました",
+        "timeout": "プロバイダーがタイムアウトしました",
+        "unavailable": "プロバイダーを利用できません",
+        "invalid_output": "プロバイダーの出力が無効でした",
+        "provider_error": "プロバイダーのエラー",
+        "confidence_rejected": "計画の信頼度が不足しています",
+        "unsupported_action": "未対応の操作です",
+        "action_failed": "操作に失敗しました",
+        "observation_unavailable": "観測結果が不完全、または利用できません",
+        "legacy_unknown": "旧形式の応答に実行の観測結果がありません"
+      },
+      "skills": {
+        "used": "スキルを使用しました",
+        "not_used": "スキルは使用されませんでした",
+        "unsupported": "この処理方式はスキルに対応していません",
+        "unknown": "スキルの使用は観測されていません"
+      },
+      "context": {
+        "none": "なし",
+        "catalog": "一覧",
+        "activated": "有効化されたスキル"
+      },
+      "stage": {
+        "started": "要求を観測",
+        "attempt_started": "プロバイダーの試行開始",
+        "attempt_finished": "プロバイダーの試行終了",
+        "planning_finished": "計画終了",
+        "action_started": "操作開始",
+        "action_finished": "操作終了"
+      }
+    }
   },
   "guiPicker": {
     "title": "指定して確認する操作",
@@ -1806,6 +1956,7 @@
     "modelDiscoveryNoModels": "このプロバイダー設定ではモデルが返されませんでした。",
     "modelDiscoveryMissingConfig": "リモートエンドポイント、プロバイダー、APIキーを先に設定してください。",
     "modelDiscoveryMissingKey": "モデルを検索するには完全なAPIキーを入力してください。",
+    "modelDiscoveryFailed": "モデル一覧を読み込めませんでした。",
     "sandboxProfilePermissive": "許容的",
     "sandboxProfileStandard": "標準",
     "sandboxProfileStrict": "厳格",
@@ -1884,7 +2035,7 @@
       "result": {
         "verified": "接続を確認しました。API キーによるチャットを使用できます。",
         "notConfigured": "確認できる API キーのチャットプロバイダーがありません。プロバイダーを選択して API キーを保存してから、もう一度お試しください。",
-        "consentRequired": "プライバシー → 同意で「AI テキスト処理と外部プロバイダー」をオンにしてから、もう一度お試しください。",
+        "consentRequired": "プライバシー → データ管理で「AI テキスト処理と外部プロバイダー」をオンにしてから、もう一度お試しください。",
         "restartRequired": "保存したプロバイダーの変更は Maekon の再起動後に反映されます。再起動してから、もう一度確認してください。",
         "budgetExhausted": "本日の AI トークン予算を使い切りました。予算がリセットされてから、もう一度お試しください。",
         "providerError": "プロバイダーが応答を完了しませんでした。API キーとモデルを確認してから、もう一度お試しください。",
@@ -1907,6 +2058,7 @@
     "interruptionList": "中断イベント",
     "loadMoreRemaining_one": "もっと見る (残り{{count}}件)",
     "loadMoreRemaining_other": "もっと見る (残り{{count}}件)",
+    "metricsLoadFailed": "フォーカス指標の読み込みに失敗しました。",
     "active": "アクティブ",
     "completed": "完了",
     "suggestions": {
@@ -2141,6 +2293,11 @@
     },
     "boundaryTitle": "問題が発生しました",
     "boundaryRetry": "再試行",
+    "generic": "問題が発生しました。もう一度お試しください。",
+    "tryAgainLater": "しばらくしてからもう一度お試しください。",
+    "supportDetails": "サポート用の詳細",
+    "copySupportDetails": "詳細をコピー",
+    "supportDetailsCopied": "コピーしました",
     "serverOffline": "サーバーがオフラインです",
     "serverOfflineDesc": "Maekonエージェントに接続できません。エージェントが実行中であることを確認してください。",
     "retryConnection": "接続を再試行",
@@ -2172,13 +2329,13 @@
     "byTag": "タグ別",
     "byImportance": "重要度別",
     "activityReport": "アクティビティレポート",
-    "focusReport": "集中度レポート",
+    "focusReport": "生産性レポート",
     "exportData": "データエクスポート",
     "currentScore": "現在のスコア",
     "weeklyTrend": "週間トレンド",
     "focusSessions": "集中セッション",
     "interruptions": "中断",
-    "timeline": "タイムライン",
+    "playback": "再生",
     "eventLog": "イベントログ",
     "policies": "ランタイム状態",
     "commands": "コマンド",
@@ -2194,7 +2351,7 @@
     "dataControls": "データ管理",
     "consent": "同意",
     "dangerZone": "危険ゾーン",
-    "dataExport": "データエクスポート",
+    "dataExport": "バックアップとエクスポート",
     "recentSearches": "最近の検索",
     "browseTags": "タグを閲覧",
     "segments": "セグメント",
@@ -2237,6 +2394,7 @@
   "aiReadiness": {
     "readyTitle": "AI 機能を利用できます",
     "blockedTitle": "AI の設定が必要です",
+    "unknownReason": "この機能は現在使用できません。",
     "capability": {
       "chatSubprocess": "AI チャット・サブスクリプション CLI",
       "chatHttpApi": "AI チャット・プロバイダー API",
@@ -2253,6 +2411,7 @@
       "consent_required": "必要なプライバシー同意が許可されていません。",
       "access_mode_mismatch": "選択した AI アクセスモードがこのプロバイダー経路と一致しません。",
       "endpoint_or_profile_required": "プロバイダーのエンドポイントまたはプロファイルを選択してください。",
+      "http_chat_settings_resave_required": "このAI設定は以前のバージョンで保存されています。AI設定でプロバイダーを選び直して保存してください。",
       "provider_not_detected": "選択したプロバイダーを検出できませんでした。",
       "provider_auth_required": "プロバイダーの認証が必要です。",
       "provider_auth_unverified": "プロバイダーの認証が確認されていません。",
@@ -2433,6 +2592,7 @@
     "undo": "元に戻す",
     "noOverrides": "この範囲にオーバーライドはありません",
     "noSegments": "この日付範囲にセグメントが見つかりません",
+    "noSegmentsDescription": "別の日付範囲を選んで、アクティビティのセグメントを探してください。",
     "overridden": "オーバーライド済み",
     "personalTime": "個人時間",
     "untilRemoved": "削除するまで（自動期限なし）",
@@ -2440,6 +2600,31 @@
     "effectReassignRegime": "今後の再クラスタリングで選択したレジームを使用します。",
     "effectPersonalTime": "以後の分析でこの範囲を個人時間として扱います。",
     "effectUnknown": "以後の再調整に適用されます。"
+  },
+  "regimeOptions": {
+    "deepWork": "ディープワーク",
+    "communication": "コミュニケーション",
+    "meeting": "会議",
+    "break": "休憩",
+    "admin": "事務作業"
+  },
+  "workTypes": {
+    "ACTIVE_CODING": "コーディング",
+    "CODE_REVIEW": "コードレビュー",
+    "WRITING": "執筆",
+    "READING": "閲覧",
+    "DESIGNING": "デザイン",
+    "FORM_FILLING": "フォーム入力",
+    "BROWSING": "ブラウジング",
+    "PASSIVE_MEETING": "会議(聴講)",
+    "ACTIVE_MEETING": "会議(参加)",
+    "NAVIGATION": "画面移動",
+    "TERMINAL_COMMANDS": "ターミナル操作",
+    "LOG_READING": "ログ確認",
+    "DOCUMENT_WRITING": "ドキュメント作成",
+    "DOCUMENT_READING": "ドキュメント閲覧",
+    "CHAT_COMPOSING": "メッセージ作成",
+    "UNKNOWN": "不明"
   },
   "coaching": {
     "title": "コーチング履歴",
@@ -2531,19 +2716,20 @@
     "regimeLabelPlaceholder": "例: ディープコーディング"
   },
   "onboarding": {
-    "step3Search": "見たものすべてを検索",
-    "aiFeatures": {
-      "optInHint": "任意: 階層メモリ、埋め込み、セマンティック検索、AI要約の設定を準備します。処理先はAI設定に応じてループバック、サブスクリプションCLI、外部APIのいずれかになります。別途パターン学習への同意と再起動が必要です。",
-      "enableButton": "AI機能を準備",
-      "enabling": "有効化中…",
-      "prepared": "AI設定を保存しました",
-      "preparedNote": "設定の保存だけでは準備完了ではありません。プロバイダーと別途パターン学習同意の要件を満たし、Maekonを再起動してください。",
-      "error": "AI機能を有効化できませんでした: {{error}}"
-    },
     "step1Title": "Maekonへようこそ",
-    "step1Desc": "Maekonはデスクトップのアクティビティを監視し、生産性向上のためのインテリジェントな提案を提供します。",
+    "step1Desc": "Maekon はこのコンピューターでの作業を記録し、見た内容を探し直したり、中断した作業に戻ったりできるようにします。",
+    "intro": {
+      "captureTitle": "作業のタイムライン",
+      "captureDesc": "使ったアプリやウィンドウ、画面上の文字をこのデバイス内に記録します。",
+      "resumeTitle": "中断した作業に戻る",
+      "resumeDesc": "中断する前の作業を振り返れます。AI を接続すると、次にやることも提案します。",
+      "searchTitle": "見た内容を検索",
+      "searchDesc": "画面に表示されていた文字から、ページや文書、メッセージを探し出せます。",
+      "privacyNote": "同意するまで何も記録しません。モニタリングの停止や記録の削除は、いつでもプライバシー画面で行えます。"
+    },
     "step2Title": "権限",
     "step2Desc": "Maekonが正しく動作するにはいくつかの権限が必要です。",
+    "step2DescMac": "コンテキストを安定して取得するにはアクセシビリティと画面収録が必要です。通知はリマインダーとコーチングのために推奨されますが、セットアップを止めるものではありません。",
     "step2DescWindows": "Windows では通常個別の権限は不要ですが、Maekon はデスクトップアクセス、画面キャプチャ、通知配信が利用可能であることに依存します。",
     "step2DescLinux": "Linux では OS の権限ダイアログではなくセッションサービスに依存することが一般的です。アクセシビリティ、画面キャプチャ、通知がデスクトップセッションで利用可能か確認してください。",
     "step2Accessibility": "アクセシビリティ",
@@ -2553,19 +2739,6 @@
     "step2WindowsScreenCapture": "デスクトップキャプチャ",
     "step2LinuxAccessibility": "AT-SPI セッション",
     "step2LinuxScreenCapture": "デスクトップキャプチャ",
-    "step3Title": "機能",
-    "step3Desc": "Maekonでできることをご紹介します。",
-    "step3Capture": "リアルタイムコンテキストキャプチャ",
-    "step3Analysis": "AI駆動の分析",
-    "step3Suggestions": "スマートな提案",
-    "step4Title": "準備完了",
-    "step4Desc": "設定が完了しました。今すぐMaekonを使い始めましょう。",
-    "step4Tip": "ヒント: いつでも{{shortcut}}を押すとコマンドパレットが開き、任意のページに直接移動できます。",
-    "next": "次へ",
-    "back": "戻る",
-    "skip": "スキップ",
-    "complete": "始める",
-    "step2DescMac": "コンテキストを安定して取得するにはアクセシビリティと画面収録が必要です。通知はリマインダーとコーチングのために推奨されますが、セットアップを止めるものではありません。",
     "step2AccessibilityAction": "アクセシビリティアクセスを許可",
     "step2ScreenCaptureAction": "画面収録を許可",
     "step2PermissionEnabled": "有効",
@@ -2580,54 +2753,93 @@
     "step2PermissionCheckFailed": "現在のデスクトップ権限状態を読み取れませんでした。",
     "step2SystemSettingsOpenFailed": "macOSシステム設定を開けませんでした。",
     "step2NotificationRequestFailed": "通知権限のリクエストに失敗しました。",
+    "consent": {
+      "title": "アクティビティモニタリングをオンにする",
+      "description": "同意した後にのみ、このコンピューターでの作業を記録します。記録はこのデバイスにだけ保存され、プライバシー画面でいつでもモニタリングをオフにしたり、同意を撤回したりできます。",
+      "collectedTitle": "モニタリングをオンにすると、Maekon は次の項目を収集します:",
+      "grantAndContinue": "同意して続ける",
+      "granting": "保存中…",
+      "continueWithout": "モニタリングせずに続ける",
+      "declineNote": "モニタリングせずに続けると、Maekon は何も収集しません。プライバシー画面で「{{label}}」をオンにするまで、タイムライン、検索、提案は空のままです。",
+      "granted": "アクティビティモニタリングがオンになりました",
+      "grantedNote": "このデバイスで記録を開始しました。プライバシー画面でいつでもオフにしたり、同意を撤回したりできます。",
+      "osNote": "この同意は、前のステップの OS の画面収録権限とは別です。画面をキャプチャするには両方が必要です。",
+      "error": "同意を保存できませんでした。もう一度お試しください。"
+    },
+    "ai": {
+      "title": "AI を接続",
+      "description": "任意です。AI が使える項目を選んでから、プロバイダーを接続してください。後から設定で行うこともできます。",
+      "consentTitle": "AI が使える項目",
+      "consentHint": "各項目はチェックした時点で保存されます。チェックしない項目はオフのままです。",
+      "consent": {
+        "fullTextDesc": "AI チャットに入力したテキストと、リクエストに必要な最小限の画面コンテキストを、個人情報を伏せたうえで選んだプロバイダーに送ります。元のスクリーンショット、パスワードなどの認証情報、除外したアプリの内容は送りません。プロバイダーの接続に必要です。",
+        "ocrDesc": "画面キャプチャ内の文字をこのデバイスで読み取り、検索や次にやることの提案に使います。外部の OCR プロバイダーを設定しない限り、デバイスの外には出ません。モニタリングに同意した場合は、すでにオンになっています。",
+        "patternLearningDesc": "繰り返し行う作業のパターンをこのデバイスで学習し、要約、次にやることの提案、コーチングに使います。コーチングの通知は、設定 → コーチング設定 でオンにするまでオフのままです。"
+      },
+      "consentError": "この項目を保存できませんでした。もう一度お試しください。",
+      "providerTitle": "プロバイダーを接続",
+      "providerHint": "プロバイダーを選び、API キーを入力してください。保存すると、要約や提案に使う分析機能もオンになります。使うのは上でチェックした項目だけです。",
+      "providerNeedsConsent": "プロバイダーを接続するには、上の「{{label}}」をオンにしてください。",
+      "providerUnsupported": "このプロバイダーはここでは設定できません。別のプロバイダーを選ぶか、後で 設定 → AI & 自動化 で設定してください。",
+      "checking": "AI の接続状態を確認しています…",
+      "loadFailed": "AI の設定を読み込めませんでした",
+      "loadFailedDesc": "AI なしで続け、後で 設定 → AI & 自動化 でプロバイダーを接続してください。",
+      "saving": "プロバイダーを保存しています…",
+      "saveFailed": "プロバイダーを保存できませんでした",
+      "restartTitle": "接続を完了するには Maekon を再起動してください",
+      "restartDesc": "プロバイダーを保存しました。再起動すると反映されます。Maekon を終了してもう一度開くと、この手順から再開してキーを確認できます。",
+      "savedProvider": "保存したプロバイダー: {{name}}",
+      "quitButton": "Maekon を終了",
+      "quitFailed": "Maekon を終了できませんでした。メニューバーまたはシステムトレイから終了し、もう一度開いてください。",
+      "restartLater": "後で再起動",
+      "changeProvider": "別のプロバイダーを選ぶ",
+      "blockedTitle": "まだ AI を使えません",
+      "unreachable": "保存したプロバイダーはまだ動作していません。キーとネットワークを確認するか、別のプロバイダーを選んでください。",
+      "unavailable": "現在 Maekon では AI を使えません。AI なしで続け、後で 設定 → AI & 自動化 で改めて確認してください。",
+      "connectedTitle": "AI に接続しました",
+      "connectedDesc": "AI チャットを使えるようになりました。",
+      "features": {
+        "suggestions": "次にやることの提案",
+        "segmentSummary": "作業区間の要約",
+        "dailySummary": "1 日のまとめ"
+      },
+      "featureStatus": {
+        "on": "オン",
+        "needsConsent": "「{{items}}」への同意が必要",
+        "afterRestart": "再起動後にオン",
+        "inSettings": "設定 → AI & 自動化 でオン"
+      },
+      "withoutButton": "AI なしで続ける",
+      "withoutNote": "AI がなくてもタイムラインと検索は使えますが、要約、次にやることの提案、チャットは 設定 → AI & 自動化 でプロバイダーを接続するまでオフのままです。"
+    },
+    "step4Title": "準備完了",
+    "ready": {
+      "desc": "設定が完了しました。作業中、Maekon がバックグラウンドで記録します。",
+      "ai": {
+        "connected": "AI に接続しました。チャットはすぐに使え、要約と提案は同意した項目だけを使います。",
+        "restartPending": "Maekon を再起動すると AI がオンになります。もう一度開いたら、設定 → AI & 自動化 でキーを確認してください。",
+        "off": "AI は接続されていません。要約、提案、チャットは 設定 → AI & 自動化 でプロバイダーを接続するとオンになります。"
+      },
+      "recoveryNeedsAi": "この機能を使うには AI の接続が必要です。"
+    },
+    "readyCollectionOffTitle": "モニタリングがオフのまま開始します",
+    "readyCollectionOffDesc": "モニタリングせずに続けたため、Maekon は何も収集していません。タイムライン、検索、提案は空のままです。今すぐオンにするか、後でプライバシー画面からオンにできます。",
+    "readyGrantNow": "今すぐモニタリングをオンにする",
+    "step4RecoveryCardHint": "中断した作業に戻りたいときは、画面上部の小さなトラッキングパネルで「次のステップを探す」を押してください。Maekon が現在の画面を読み取り、次のステップを提案します。",
+    "step4SuggestionsShortcut": "次のステップの提案は提案パネルに表示されます。{{shortcut}} でいつでも開けます。",
+    "step4Tip": "ヒント: いつでも{{shortcut}}を押すとコマンドパレットが開き、任意のページに直接移動できます。",
+    "next": "次へ",
+    "back": "戻る",
+    "skip": "スキップ",
+    "complete": "始める",
+    "stepIndicatorLabel": "ステップインジケーター",
     "autostart": {
       "title": "Maekon を自動的に起動しますか？",
       "body": "Maekon はバックグラウンドで実行すると最も効果的です。コンピューターにサインインしたときに起動しますか？",
       "enable_button": "有効にする",
       "not_now_button": "今はしない",
       "dismiss_button": "今後表示しない"
-    },
-    "consent": {
-      "title": "モニタリングを開始",
-      "description": "Maekon が作業を支援できるよう、デバイス上のコンテキスト収集に同意してください。すべてのデータはお使いのコンピューターに保存され、プライバシー設定からいつでも同意を撤回できます。",
-      "collectedTitle": "モニタリングを開始すると、Maekon は次の項目を収集します:",
-      "grantButton": "モニタリングを開始（同意を付与）",
-      "granting": "付与中…",
-      "granted": "モニタリングの同意を付与しました",
-      "grantedNote": "Maekon がデバイス上のコンテキスト収集を開始します。プライバシー設定からいつでも同意を管理・撤回できます。",
-      "osNote": "同意の付与は、上記の OS 画面録画権限とは別です。画面をキャプチャするには Maekon に両方が必要です。",
-      "error": "同意を付与できませんでした: {{error}}"
-    },
-    "coaching": {
-      "title": "プロアクティブコーチング",
-      "description": "Maekon があなたの活動パターンを分析し、集中維持のためのナッジ（オーバーレイのヒントやデスクトップ通知）を送信できます。すべての処理はデバイス内でのみ行われます。",
-      "enablesList": {
-        "item1": "コンテキスト対応オーバーレイナッジ（ローカルのみ）",
-        "item2": "集中と目標達成のためのデスクトップ通知",
-        "item3": "活動パターン学習（Tier-4 同意）",
-        "item4": "クワイエットアワーとプロファイルの設定"
-      },
-      "enableButton": "コーチングを有効にする",
-      "enabling": "有効化中…",
-      "enabled": "コーチングが有効になりました",
-      "activeNote": "変更はすぐに反映されます — 再起動は不要です。",
-      "monitoringMissingWarning": "モニタリングの同意がまだ付与されていません。コーチングを機能させるには、前のステップで同意を許可してください。",
-      "error": "コーチングを有効にできませんでした: {{error}}"
-    },
-    "audio": {
-      "title": "音声はデフォルトでオフです",
-      "description": "セットアップ中はマイク収録を延期します。音声と音声認識の設定は後で設定画面から確認できます。",
-      "statusTitle": "音声を延期しました",
-      "statusDescription": "マイク収録と音声認識は無効のままです。音声デバイス、モデル、プロバイダーには接続しません。",
-      "localNote": "ローカル音声認識は、明示的に音声を有効にしてモデルをインストールするまでオフのままです。",
-      "egressNote": "クラウド音声認識は、設定でプロバイダーを選択して認証情報を構成するまでオフのままです。"
-    },
-    "stepIndicatorLabel": "ステップインジケーター",
-    "step4RecoveryCardHint": "中断した作業に戻りたいときは、画面上部の小さなトラッキングパネルで「次のステップを探す」を押してください。Maekon が現在の画面を読み取り、次のステップを recovery card として提案します。先に設定で AI プロバイダーを登録しておく必要があります。",
-    "step4SuggestionsShortcut": "リカバリーカードは提案パネルに表示されます — {{shortcut}}でいつでも開けます。",
-    "readyCollectionOffTitle": "収集がオフのまま開始します",
-    "readyCollectionOffDesc": "同意をスキップしたため、Maekon は何も収集していません。タイムラインと提案は空のままになります。今すぐ有効にするか、後で 設定 > プライバシー から有効にできます。",
-    "readyGrantNow": "今すぐ収集を有効にする"
+    }
   },
   "chat": {
     "title": "AIセッション",
@@ -2669,7 +2881,14 @@
     "load_failed": "AIセッションの読み込みに失敗しました。",
     "refresh_failed": "AIセッションの更新に失敗しました。",
     "send_failed": "メッセージの送信に失敗しました。",
-    "full_text_consent_required": "プライバシー → 同意で「AI テキスト処理と外部プロバイダー」をオンにしてから、もう一度お試しください。",
+    "rename_failed": "セッション名の変更に失敗しました。",
+    "suggestions_failed": "提案の取得に失敗しました。",
+    "suggestions_added_one": "この会話から提案を {{count}} 件追加しました",
+    "suggestions_added_other": "この会話から提案を {{count}} 件追加しました",
+    "suggestions_generated_one": "提案を {{count}} 件作成しました",
+    "suggestions_generated_other": "提案を {{count}} 件作成しました",
+    "response_failed": "AI はこの返信を完了できませんでした。",
+    "full_text_consent_required": "プライバシー → データ管理で「AI テキスト処理と外部プロバイダー」をオンにしてから、もう一度お試しください。",
     "retry_failed": "セッションのリトライに失敗しました。",
     "delete_failed": "セッションの削除に失敗しました。",
     "copy_failed": "コンテンツのコピーに失敗しました。",
@@ -2992,6 +3211,8 @@
     "forgetPeerCancel": "キャンセル",
     "forgetPeerSuccess": "{{peerName}}の接続を解除しました。",
     "forgetPeerError": "ピアの接続を解除できませんでした。もう一度お試しください。",
+    "syncFailed": "同期を完了できませんでした。",
+    "setupFailed": "同期をオンにできませんでした。",
     "uploadRecoveryTitle": "アップロード復旧チェック",
     "uploadRecoveryDescription": "中断したアップロードが、再試行の成功を確認するまで未送信のまま保たれることを合成ローカルデータで検証します。",
     "uploadRecoveryInterrupted": "アップロードが中断されました。{{count}} 件は未送信のままローカルに残っています。",
@@ -3104,10 +3325,15 @@
     "communication": "コミュニケーション",
     "meetings": "会議",
     "contextSwitches": "コンテキストスイッチ",
-    "regimeDistribution": "活動タイプの分布"
+    "regimeDistribution": "活動タイプの分布",
+    "longestFocus": "最長集中: {{duration}}",
+    "share": "割合"
   },
   "statusBar": {
-    "lastCaptureTimestamp": "最終キャプチャ時刻"
+    "lastCaptureTimestamp": "最終キャプチャ時刻",
+    "captureActive": "キャプチャ中",
+    "captureWaiting": "キャプチャ待機中",
+    "noCaptureYet": "まだキャプチャなし"
   },
   "processList": {
     "pid": "PID:",
@@ -3293,7 +3519,7 @@
     "pinPlaceholder": "PINを入力",
     "unlock": "ロック解除",
     "noMethodTitle": "再認証手段がありません",
-    "noMethodBody": "キャプチャ履歴を表示するには、プライバシー設定でPINを登録するか、再認証の要求をオフにしてください。",
+    "noMethodBody": "キャプチャ履歴を表示するには、設定 → キャプチャ保護 でPINを登録するか、再認証の要求をオフにしてください。",
     "goToSettings": "設定を開く",
     "cancel": "キャンセル",
     "errors": {
@@ -3328,7 +3554,11 @@
   },
   "durableTasks": {
     "loading": "タスクを読み込み中…",
-    "loadError": "タスクを読み込めませんでした: {{error}}",
+    "loadError": "タスクを読み込めませんでした。もう一度お試しください。",
+    "actionConflict": "項目が変更されました。更新された一覧を確認して、もう一度お試しください。",
+    "actionConsentRequired": "この操作には同意が必要です。設定で権限を確認して、もう一度お試しください。",
+    "actionSourceUnavailable": "ソースを利用できません。再接続してから、もう一度お試しください。",
+    "actionFailed": "タスクを変更できませんでした。現在の状態を確認して、もう一度お試しください。",
     "suggestedHeading": "提案されたタスク",
     "noSuggestions": "確認するタスクの提案はありません。",
     "noTitle": "(タイトルなし)",
@@ -3547,6 +3777,14 @@
       "localReceipt": {
         "title": "ローカルレシートを保存できませんでした",
         "body": "ローカルファイルが残っている可能性がありますが、永続レシートの保存に失敗したため成功とは表示しません。選択した出力を確認し、ローカルストレージを復旧して再試行してください。コード: {{code}}"
+      },
+      "unverified": {
+        "title": "下書きの作成状況を確認できません",
+        "body": "この割り当てのファイルと永続レシートが作成されたか確認できません。ファイルが存在する可能性があります。再試行する前に選択した出力を確認してください。サーバーへのアップロードも未確認です。"
+      },
+      "uploadUnverified": {
+        "title": "サーバーへのアップロードは未確認です",
+        "body": "この割り当てのローカルファイルと永続レシートを確認できたため、以下に表示します。サーバーへの登録は未確認です。再試行する前に登録状況を確認してください。"
       },
       "cancelled": {
         "title": "ファイルは作成されませんでした",

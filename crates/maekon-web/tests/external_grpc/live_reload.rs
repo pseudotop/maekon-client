@@ -41,8 +41,9 @@ async fn external_grpc_live_streaming_toggle_reflects_within_1s() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(harness.port, &cert_pem, None).await;
 
     // Sanity: initial subscribe_metrics succeeds (streaming_enabled = true).
@@ -392,8 +393,9 @@ async fn live_reload_affects_long_running_stream() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(harness.port, &cert_pem, None).await;
     let mut req =
         tonic::Request::new(maekon_web::proto::dashboard::v1::SubscribeMetricsRequest::default());
@@ -543,8 +545,7 @@ async fn external_grpc_config_reload_task_exits_on_shutdown() {
     harness.shutdown_tx.send_replace(true);
 
     // Destructure to take ownership of the handles for the graceful-exit
-    // verification (await consumes JoinHandle, which can't be done through
-    // `harness.shutdown()`'s abort path).
+    // verification and the reload-task liveness assertion below.
     let LiveReloadHarness {
         metrics,
         server_handle,
@@ -566,7 +567,9 @@ async fn external_grpc_config_reload_task_exits_on_shutdown() {
         "reload task liveness flag must clear on exit"
     );
 
-    // Server may still be draining in-flight work; abort to end the test.
-    server_handle.abort();
-    let _ = server_handle.await;
+    tokio::time::timeout(Duration::from_secs(5), server_handle)
+        .await
+        .expect("server must drain within the shutdown deadline")
+        .expect("server task must not panic")
+        .expect("server shutdown must succeed");
 }

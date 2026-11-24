@@ -13,15 +13,17 @@
  */
 
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../../__tests__/helpers/render-helpers'
 import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../../api/contracts'
+import { ToastContainer } from '../../../components/ui/Toast'
 import * as aiReadinessModule from '../../../hooks/useAiReadinessSnapshot'
 // Test i18n resolves to en (fallbackLng='en'). After Task 3 keys resolve to actual copy, so
 // reference the resolved copy from en.json directly instead of the key string (the test stays
 // consistent across wording changes as long as the key path is preserved).
 import * as toastModule from '../../../hooks/useToast'
+import i18n from '../../../i18n'
 import en from '../../../i18n/locales/en.json'
 import ConsentToggleSection from '../ConsentToggleSection'
 
@@ -558,5 +560,86 @@ describe('ConsentToggleSection', () => {
     expect(unavailable).toBeInTheDocument()
     // The perpetual loading card must no longer be visible.
     expect(screen.queryByText(en.privacy.consent.loading)).not.toBeInTheDocument()
+  })
+})
+
+describe('Consent failure display and recovery (#13756)', () => {
+  afterEach(async () => {
+    clearMocks()
+    vi.restoreAllMocks()
+    toastModule.clearToasts()
+    await i18n.changeLanguage('en')
+  })
+  it.each([
+    ['en', 'Something went wrong. Try again.'],
+    ['ko', '문제가 발생했습니다. 다시 시도하세요.'],
+    ['ja', '問題が発生しました。もう一度お試しください。'],
+    ['zh-CN', '出现了问题。请重试。'],
+    ['es', 'Algo salió mal. Inténtelo de nuevo.'],
+  ])('preserves unrelated consent, then retries the failed toggle in %s', async (language, generic) => {
+    await i18n.changeLanguage(language)
+    let current = snapshot('Valid', { screen_capture: true, clipboard_monitoring: true })
+    const attempts: ConsentPermissions[] = []
+    mockIPC((command, args) => {
+      if (command === 'get_consent') return current
+      if (command === 'set_consent') {
+        attempts.push((args as { permissions: ConsentPermissions }).permissions)
+        if (attempts.length === 1) throw { code: 'future.consent', message: 'consent write diagnostic' }
+        current = { status: 'Valid', permissions: attempts.at(-1)! }
+        return current
+      }
+    })
+    renderWithProviders(<ConsentToggleSection />)
+    const toggle = await screen.findByTestId('consent-microphone-toggle')
+    fireEvent.click(toggle)
+    const details = await screen.findByTestId('support-details')
+    expect(details.previousElementSibling).toHaveTextContent(generic)
+    expect(details.previousElementSibling).not.toHaveTextContent('consent write diagnostic')
+    expect(details).not.toHaveAttribute('open')
+    expect(within(details).getByTestId('support-details-text')).toHaveTextContent(
+      'future.consent: consent write diagnostic',
+    )
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]).toEqual({ ...current.permissions, microphone: true })
+    expect(toggle).not.toBeChecked()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle).toBeChecked())
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1]).toEqual(attempts[0])
+    expect(screen.queryByTestId('support-details')).toBeNull()
+  })
+
+  it('keeps withdrawal dialog open with diagnostics above it and recovers without an extra grant', async () => {
+    let attempts = 0
+    const grant = vi.fn()
+    mockIPC((command) => {
+      if (command === 'get_consent') return snapshot('Valid', { screen_capture: true })
+      if (command === 'set_consent') grant()
+      if (command === 'withdraw_consent') {
+        if (++attempts === 1) throw new Error('withdrawal diagnostic')
+        return snapshot('NotGranted')
+      }
+    })
+    renderWithProviders(
+      <>
+        <ConsentToggleSection />
+        <ToastContainer />
+      </>,
+    )
+    fireEvent.click(await screen.findByTestId('consent-withdraw-trigger'))
+    const dialog = screen.getByRole('alertdialog')
+    const confirm = within(dialog).getAllByRole('button').at(-1)!
+    fireEvent.click(confirm)
+    await waitFor(() => expect(screen.getAllByTestId('support-details')).toHaveLength(2))
+    expect(attempts).toBe(1)
+    expect(screen.getByRole('alertdialog')).toBe(dialog)
+    for (const detail of screen.getAllByTestId('support-details')) {
+      expect(detail).not.toHaveAttribute('open')
+      expect(detail.previousElementSibling).toHaveTextContent('Something went wrong. Try again.')
+    }
+    fireEvent.click(confirm)
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(attempts).toBe(2)
+    expect(grant).not.toHaveBeenCalled()
   })
 })

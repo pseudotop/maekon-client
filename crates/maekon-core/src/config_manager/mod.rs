@@ -11,6 +11,7 @@
 //! (`maekon_core::config_manager::ConfigManager`, etc.) continues to work
 //! without any caller-side changes.
 
+mod capture_policy;
 mod migration;
 mod path_resolution;
 pub(crate) mod persistence;
@@ -22,6 +23,7 @@ use crate::error::CoreError;
 use parking_lot::Mutex;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
@@ -64,7 +66,7 @@ fn blocking_io<T>(f: impl FnOnce() -> T) -> T {
 ///
 /// The source of truth is `inner.sender.borrow()`. Writers go through
 /// `update`, `update_with`, or `reload`, each of which serialises on
-/// `inner.writer_lock` and then calls `send_replace`. `subscribe()` /
+/// `inner.writer_lock` and then publishes under the watch write lock. `subscribe()` /
 /// `snapshot()` are zero-cost reads.
 ///
 /// `Clone` is cheap: clones share `Arc<Inner>`. The `writer_lock` is therefore
@@ -79,8 +81,11 @@ pub struct ConfigManager {
 struct Inner {
     /// Broadcast + source of truth. `borrow()` is cheap.
     sender: watch::Sender<Arc<AppConfig>>,
+    /// Updated only while holding the watch write lock. Capture snapshots read
+    /// it under that same watch's read lock, so policy and epoch cannot tear.
+    capture_policy_epoch: AtomicU64,
     /// Linearises concurrent writers across the (non-atomic) compute-new →
-    /// persist → send_replace sequence. Held briefly, never across `.await`.
+    /// persist → publish sequence. Held briefly, never across `.await`.
     writer_lock: Mutex<()>,
     config_path: PathBuf,
     /// Admin-deployed managed (MDM) policy, loaded once at construction.
@@ -294,6 +299,7 @@ impl ConfigManager {
         Ok(Self {
             inner: Arc::new(Inner {
                 sender,
+                capture_policy_epoch: AtomicU64::new(0),
                 writer_lock: Mutex::new(()),
                 config_path,
                 managed,
@@ -342,6 +348,39 @@ impl ConfigManager {
         self.inner.sender.borrow().clone()
     }
 
+    /// Coherent policy snapshot and process-local revocation epoch. Unrelated
+    /// settings and identical publications preserve the epoch; capture policy
+    /// transitions advance it even when the original values are later restored.
+    /// Epoch exhaustion denies capture instead of wrapping to an old authority.
+    pub fn capture_policy_snapshot(&self) -> Result<(Arc<AppConfig>, u64), CoreError> {
+        let current = self.inner.sender.borrow();
+        // The watch lock synchronizes both fields; the atomic needs no separate
+        // ordering and does not add another lock to the capture hot path.
+        let epoch = self.inner.capture_policy_epoch.load(Ordering::Relaxed);
+        let config = Arc::clone(&current);
+        drop(current);
+        if epoch == u64::MAX {
+            return Err(CoreError::PermissionDenied {
+                code: crate::error_codes::PermissionCode::PrivacyDenied,
+                message: "capture policy epoch exhausted".to_string(),
+            });
+        }
+        Ok((config, epoch))
+    }
+
+    /// Called after validation/persistence while holding the writer lock.
+    fn publish(&self, next: AppConfig) {
+        self.inner.sender.send_modify(|current| {
+            if capture_policy::changed(current, &next) {
+                let epoch = self.inner.capture_policy_epoch.load(Ordering::Relaxed);
+                self.inner
+                    .capture_policy_epoch
+                    .store(epoch.saturating_add(1), Ordering::Relaxed);
+            }
+            *current = Arc::new(next);
+        });
+    }
+
     pub fn update(&self, mut new_config: AppConfig) -> Result<(), CoreError> {
         let _guard = self.inner.writer_lock.lock();
         // Managed-policy clamp: this is THE write chokepoint, so every caller
@@ -368,7 +407,7 @@ impl ConfigManager {
         // safe — parking_lot guards are non-`Send` only in the async-Send sense,
         // and we are in a synchronous stack frame throughout.
         blocking_io(|| persistence::save_to_file(&self.inner.config_path, &new_config))?;
-        self.inner.sender.send_replace(Arc::new(new_config));
+        self.publish(new_config);
         debug!(
             "settings save complete: {}",
             self.inner.config_path.display()
@@ -397,7 +436,7 @@ impl ConfigManager {
         // Same `block_in_place` guard as `update` — see comment there.
         blocking_io(|| persistence::save_to_file(&self.inner.config_path, &new_cfg))?;
         let snapshot = new_cfg.clone();
-        self.inner.sender.send_replace(Arc::new(new_cfg));
+        self.publish(new_cfg);
         debug!(
             "settings save complete: {}",
             self.inner.config_path.display()
@@ -418,7 +457,7 @@ impl ConfigManager {
         // #6102-4: an externally hand-edited config.json must not load out-of-range
         // values that escape the scheduler's interval floors.
         reloaded.validate_bounds().map_err(map_bounds_error)?;
-        self.inner.sender.send_replace(Arc::new(reloaded));
+        self.publish(reloaded);
         info!("settings load complete");
         Ok(())
     }

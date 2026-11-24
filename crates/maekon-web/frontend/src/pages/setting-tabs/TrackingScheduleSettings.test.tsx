@@ -136,9 +136,11 @@ describe('TrackingScheduleSettings', () => {
     // A.20b: DOW checkboxes should appear (7 per window).
     await waitFor(() => {
       const checkboxes = screen.getAllByRole('checkbox')
-      // At least 7 checkboxes: 1 enabled toggle + 7 DOW = 8 total minimum
-      expect(checkboxes.length).toBeGreaterThanOrEqual(7)
+      // #13739: the day list is a multi-select and stays checkboxes; the
+      // enabled toggle is an on/off setting and is now the one switch.
+      expect(checkboxes).toHaveLength(7)
     })
+    expect(screen.getAllByRole('switch')).toHaveLength(1)
   })
 
   // ── Test 3 — PUT /api/tracking-schedule on submit ─────────────────────────

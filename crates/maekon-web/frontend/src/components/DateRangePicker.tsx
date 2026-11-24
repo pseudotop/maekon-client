@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { interaction, motion } from '../styles/tokens'
+import { motion } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import {
   formatLocalCalendarDate,
@@ -8,6 +8,7 @@ import {
   localDayBoundaryIso,
   shiftLocalCalendarDate,
 } from '../utils/localDate'
+import { Input } from './ui'
 
 interface DateRangePickerProps {
   onRangeChange: (from: string | undefined, to: string | undefined) => void
@@ -149,15 +150,13 @@ export default function DateRangePicker({
           <label className="sr-only" htmlFor="date-from">
             {t('dateRange.from', 'From')}
           </label>
-          <input
+          <Input
             id="date-from"
             type="date"
+            inputSize="sm"
             value={customFrom}
             onChange={(e) => setCustomFrom(e.target.value)}
-            className={cn(
-              'rounded-lg border border-DEFAULT bg-surface-overlay px-3 py-1.5 text-content text-sm',
-              interaction.focusRing,
-            )}
+            className="w-auto"
           />
           <span className="text-content-muted" aria-hidden="true">
             ~
@@ -165,15 +164,13 @@ export default function DateRangePicker({
           <label className="sr-only" htmlFor="date-to">
             {t('dateRange.to', 'To')}
           </label>
-          <input
+          <Input
             id="date-to"
             type="date"
+            inputSize="sm"
             value={customTo}
             onChange={(e) => setCustomTo(e.target.value)}
-            className={cn(
-              'rounded-lg border border-DEFAULT bg-surface-overlay px-3 py-1.5 text-content text-sm',
-              interaction.focusRing,
-            )}
+            className="w-auto"
           />
         </div>
       )}

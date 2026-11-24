@@ -44,7 +44,7 @@ is not a stable release or evidence of production readiness.
 ## Source Build Quick Start
 
 The public repository is live, and this source snapshot is prepared for the
-`v0.0.1-rc.11` release candidate. Treat it as published only when the matching
+`v0.0.1-rc.12` release candidate. Treat it as published only when the matching
 GitHub Release and artifacts exist. Because GitHub's `latest` release endpoint
 excludes prereleases, use the version-pinned installer commands in the install
 guide for release-binary testing. For monorepo development and debug builds,
@@ -170,7 +170,7 @@ This repository is a **vetted snapshot export** of Maekon's internal source of t
 
 ## Requirements
 
-- Rust 1.88.0 or later
+- Rust 1.95.0 or later
 - macOS 10.15+ / Windows 10+ / Linux x64 (X11 recommended; on Wayland the tracking panel, overlay, and "Find my next step" are unavailable)
 
 ### Platform limitations
@@ -392,31 +392,31 @@ Full install guide:
 
 ### Quick Install (Terminal)
 
-> This source snapshot targets prerelease `v0.0.1-rc.11`. Run the commands below
+> This source snapshot targets prerelease `v0.0.1-rc.12`. Run the commands below
 > only after the matching GitHub Release publishes its assets. GitHub's `latest`
 > stable URL is not available until the first stable release.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.12 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.12 -RequireSignature
 ```
 
 ### Release Assets
 
 Download from [Releases](https://github.com/pseudotop/maekon-client/releases):
 
-The release-candidate source version is `v0.0.1-rc.11`. This table documents
+The release-candidate source version is `v0.0.1-rc.12`. This table documents
 the expected asset names used by the installer, updater, checksum, and signature
 flows; the matching GitHub Release is the publication authority.
 
@@ -527,13 +527,15 @@ A Cargo workspace with adapter crates following Hexagonal Architecture (Ports & 
 maekon-client/
 ├── src-tauri/              # Tauri v2 binary entry point (main binary, v0.1.5+)
 │   ├── src/
-│   │   ├── main.rs         # Tauri app builder + DI wiring
+│   │   ├── main.rs         # Thin binary shim; calls maekon_app::run()
 │   │   ├── tray.rs         # System tray menu
 │   │   ├── commands/       # Tauri IPC commands (directory module)
 │   │   └── scheduler/      # 16-loop background scheduler (monitor, metrics, process, sync, heartbeat, aggregation, notification, focus, event_snapshot, oauth_refresh, analysis, cross_device_sync, coaching + conditional: health_check, suggestion_sse, suggestion_maintenance)
 │   └── tauri.conf.json     # Tauri configuration
 ├── crates/
 │   ├── maekon-core/       # Domain models + port traits + errors + config
+│   ├── maekon-http-core/  # shared outbound HTTP mechanics
+│   ├── maekon-integration/ # external integration adapters
 │   ├── maekon-network/    # HTTP/SSE/WebSocket/gRPC, compression, auth
 │   ├── maekon-suggestion/ # Suggestion reception and processing
 │   ├── maekon-storage/    # SQLite local storage + schema migration
@@ -558,6 +560,8 @@ maekon-client/
 | Crate | Role | Docs |
 |----------|------|------|
 | maekon-core | Domain models, port interfaces, config | [Details](./docs/crates/maekon-core.md) |
+| maekon-http-core | shared outbound HTTP mechanics | [source](./crates/maekon-http-core/) |
+| maekon-integration | external integration adapters | [source](./crates/maekon-integration/) |
 | maekon-network | HTTP/SSE/WebSocket/gRPC, compression, auth | [Details](./docs/crates/maekon-network.md) |
 | maekon-vision | Screen capture, delta encoding, OCR, PII filter | [Details](./docs/crates/maekon-vision.md) |
 | maekon-monitor | System metrics, active windows, activity tracking | [Details](./docs/crates/maekon-monitor.md) |
@@ -592,7 +596,7 @@ Korean companion policy doc: [docs/DOCUMENTATION_POLICY.ko.md](./docs/DOCUMENTAT
 
 1. Define port traits in `maekon-core`
 2. Implement adapters in the relevant crate
-3. Wire up DI in `src-tauri/src/main.rs`
+3. Wire DI in `src-tauri/src/lib.rs` and `src-tauri/src/setup/`; `main.rs` delegates to the library
 4. Add tests
 
 ### Building Installers

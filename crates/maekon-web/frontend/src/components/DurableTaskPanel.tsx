@@ -1,7 +1,16 @@
 import { useTranslation } from 'react-i18next'
-import { type TodoState, useDurableTasks } from '../hooks/useDurableTasks'
+import {
+  type TaskAction,
+  type TaskOutcome,
+  type TodoState,
+  taskActionFailureKey,
+  useDurableTasks,
+} from '../hooks/useDurableTasks'
+import { addErrorToast } from '../hooks/useToast'
+import { useErrorDisplay } from '../i18n/errorDisplay'
 import { motion, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
+import { SupportDetails } from './SupportDetails'
 
 /**
  * Durable task panel (ADR-028, #8577; mounted on the /tasks route by #8892).
@@ -35,7 +44,17 @@ const ACTION_BUTTON = cn(
 
 export function DurableTaskPanel() {
   const { t } = useTranslation()
-  const { candidates, todos, loading, error, confirmCandidate, dismissCandidate, transitionTodo } = useDurableTasks()
+  const { candidates, todos, loading, error, refresh, confirmCandidate, dismissCandidate, transitionTodo } =
+    useDurableTasks()
+  const describeError = useErrorDisplay()
+  const reportActionFailure = (cause: unknown) => {
+    addErrorToast(describeError(cause), undefined, { cause })
+  }
+  const reportOutcome = (outcome: TaskOutcome, action: TaskAction) => {
+    const key = taskActionFailureKey(outcome, action)
+    if (key)
+      addErrorToast(describeError(outcome.outcome, t(key)), undefined, { cause: outcome.outcome, fallbackKey: key })
+  }
 
   const stateLabel = (state: TodoState) => t(STATE_LABEL[state].key, STATE_LABEL[state].fallback)
 
@@ -47,17 +66,25 @@ export function DurableTaskPanel() {
     )
   }
 
+  if (error) {
+    return (
+      <div className="durable-tasks__error rounded-md bg-semantic-error/10 px-3 py-2 text-semantic-error text-sm">
+        <p role="alert">{error.text}</p>
+        <SupportDetails detail={error.detail} />
+        <button
+          type="button"
+          className={ACTION_BUTTON}
+          data-testid="durable-tasks-retry"
+          onClick={() => void refresh()}
+        >
+          {t('common.retry')}
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="durable-tasks flex flex-col gap-6">
-      {error && (
-        <p
-          role="alert"
-          className="durable-tasks__error rounded-md bg-semantic-error/10 px-3 py-2 text-semantic-error text-sm"
-        >
-          {t('durableTasks.loadError', 'Could not load tasks: {{error}}', { error })}
-        </p>
-      )}
-
       <section aria-labelledby="durable-candidates-heading" className="flex flex-col gap-2">
         <h2 id="durable-candidates-heading" className={cn(typography.weight.medium, 'text-content text-sm')}>
           {t('durableTasks.suggestedHeading', 'Suggested tasks')}
@@ -80,14 +107,22 @@ export function DurableTaskPanel() {
                 <button
                   type="button"
                   className={ACTION_BUTTON}
-                  onClick={() => void confirmCandidate(candidate.id, candidate.revision)}
+                  onClick={() =>
+                    void confirmCandidate(candidate.id, candidate.revision)
+                      .then((outcome) => reportOutcome(outcome, 'confirm'))
+                      .catch(reportActionFailure)
+                  }
                 >
                   {t('durableTasks.confirm', 'Confirm')}
                 </button>
                 <button
                   type="button"
                   className={ACTION_BUTTON}
-                  onClick={() => void dismissCandidate(candidate.id, candidate.revision)}
+                  onClick={() =>
+                    void dismissCandidate(candidate.id, candidate.revision)
+                      .then((outcome) => reportOutcome(outcome, 'dismiss'))
+                      .catch(reportActionFailure)
+                  }
                 >
                   {t('durableTasks.dismiss', 'Dismiss')}
                 </button>
@@ -122,7 +157,11 @@ export function DurableTaskPanel() {
                     key={target}
                     type="button"
                     className={ACTION_BUTTON}
-                    onClick={() => void transitionTodo(todo.id, target, todo.revision)}
+                    onClick={() =>
+                      void transitionTodo(todo.id, target, todo.revision)
+                        .then((outcome) => reportOutcome(outcome, target))
+                        .catch(reportActionFailure)
+                    }
                   >
                     {stateLabel(target)}
                   </button>

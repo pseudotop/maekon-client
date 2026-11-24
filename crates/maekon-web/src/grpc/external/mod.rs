@@ -110,6 +110,16 @@ impl std::fmt::Display for ServeExternalError {
     }
 }
 
+impl std::error::Error for ServeExternalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Bind(error) => Some(error),
+            Self::Tls(error) => Some(error),
+            Self::Tonic(error) => Some(error),
+        }
+    }
+}
+
 /// Start the external gRPC server.
 ///
 /// Binds a `TcpListener`, runs the custom accept loop (IP ban + TLS handshake),
@@ -120,7 +130,16 @@ pub async fn serve_external(cfg: ExternalGrpcSpawnConfig) -> Result<(), ServeExt
     // `integration_auth_token: None` is enforced by `from_external_spawn_config`
     // (Task 13 spec §2.5 threat model).
     let service = crate::grpc::DashboardServiceImpl::from_external_spawn_config(&cfg);
-    serve_external_inner(cfg, service, "external_grpc").await
+    serve_external_inner(cfg, service, "external_grpc", None).await
+}
+
+/// Aborting the server future must also abort its owned accept task.
+struct AbortAcceptLoopOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortAcceptLoopOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Shared core of [`serve_external`] and the test-only
@@ -133,6 +152,7 @@ async fn serve_external_inner<T>(
     cfg: ExternalGrpcSpawnConfig,
     service: T,
     log_tag: &'static str,
+    ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
 ) -> Result<(), ServeExternalError>
 where
     T: crate::proto::dashboard::v1::dashboard_service_server::DashboardService,
@@ -165,6 +185,15 @@ where
         .map_err(ServeExternalError::Tls)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
 
+    // Test startup observes this server's successful bind and TLS preparation,
+    // never a connection to an unrelated process occupying the requested port.
+    // A canceled startup receiver has no reason to keep a server alive.
+    if let Some(ready) = ready {
+        if ready.send(bound_addr).is_err() {
+            return Ok(());
+        }
+    }
+
     let (conn_tx, conn_rx) = tokio::sync::mpsc::channel(64);
     let active_conns = Arc::new(AtomicUsize::new(0));
     let cfg_arc = Arc::new(cfg);
@@ -184,6 +213,7 @@ where
         active_conns,
         shutdown.clone(),
     ));
+    let _abort_accept_on_drop = AbortAcceptLoopOnDrop(accept_loop_handle.abort_handle());
 
     // Build the auth + audit layer stack.
     let auth_mode = cfg_arc
@@ -247,14 +277,11 @@ where
     // give up instead of respawning (F-QA-C31-06). Resume the panic so
     // `spawn_with_supervisor`'s catch_unwind sees it and applies the
     // backoff-respawn policy.
-    let accept_outcome = if accept_loop_handle.is_finished() {
-        accept_loop_handle.await
-    } else {
-        // Still running (normal path): abort so a supervisor restart does not
-        // leave the old loop spinning on a dropped listener.
-        accept_loop_handle.abort();
-        Ok(())
-    };
+    // Aborting a finished task is a no-op and preserves its recorded outcome.
+    // Always request cancellation before joining so no completion-state race
+    // can leave an accept task running after the server exits.
+    accept_loop_handle.abort();
+    let accept_outcome = accept_loop_handle.await;
 
     serve_result?;
     if let Err(join_err) = accept_outcome {

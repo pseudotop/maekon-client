@@ -155,6 +155,22 @@ export const form = {
   checkboxInline:
     'w-5 h-5 rounded bg-surface-base border-DEFAULT text-brand-signal focus-visible:ring-brand-signal mr-3',
   radio: 'w-4 h-4 bg-surface-base border-DEFAULT text-brand-signal focus-visible:ring-brand-signal',
+  /*
+   * #13739: `ui/Switch` — a setting that is on or off. A list of choices and a
+   * confirmation check stay on `checkbox`.
+   * WCAG 1.4.11 (>= 3:1) in both themes: each track against surface-base and
+   * surface-elevated, and the surface-base thumb against each track. The ring
+   * offset keeps the focus ring apart from the brand-colored "on" track.
+   */
+  switchTrack:
+    'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-150 ease-out motion-reduce:transition-none',
+  switchTrackOn: 'bg-brand',
+  switchTrackOff: 'bg-content-tertiary',
+  switchThumb:
+    'pointer-events-none inline-block h-5 w-5 rounded-full bg-surface-base shadow transition-transform duration-150 ease-out motion-reduce:transition-none',
+  switchThumbOn: 'translate-x-5',
+  switchThumbOff: 'translate-x-0',
+  switchFocusOffset: 'focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base',
   sectionDivider: 'border-DEFAULT',
 } as const
 

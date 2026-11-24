@@ -2,6 +2,8 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../../__tests__/helpers/render-helpers'
+import i18n from '../../../i18n'
+import { getGroupLayout } from '../../../routes'
 import CommandPalette from '../CommandPalette'
 
 const defaultProps = {
@@ -76,5 +78,22 @@ describe('CommandPalette', () => {
     const input = screen.getByRole('combobox')
     await user.type(input, '{Escape}')
     expect(onClose).toHaveBeenCalled()
+  })
+
+  // #13736: destinations moved one level back in the side panel must stay one
+  // search away.
+  it('finds every destination moved into a bundle by its name', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<CommandPalette {...defaultProps} />)
+    const input = screen.getByRole('combobox')
+
+    const demoted = getGroupLayout('main').sections.flatMap(({ routes }) => routes)
+    expect(demoted.length).toBeGreaterThan(0)
+    for (const route of demoted) {
+      const name = i18n.t(route.labelKey)
+      await user.clear(input)
+      await user.type(input, name)
+      expect(screen.getByText(name, { selector: '[role="option"] span' })).toBeInTheDocument()
+    }
   })
 })

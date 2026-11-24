@@ -19,7 +19,8 @@ pub(super) use analysis::relevance_gates;
 pub(crate) use audit::record_to_segment_summary;
 pub(super) use audit::{audit_consent_and_pii_changes, build_segment_stats_snapshot};
 pub(super) use capture::{
-    enforce_frame_retention, handle_frame_capture, redact_window_title, FRAME_RETENTION_INTERVAL,
+    enforce_frame_retention, handle_frame_capture, redact_window_title, FrameCapturePolicy,
+    FRAME_RETENTION_INTERVAL,
 };
 pub(super) use coaching::{build_personalization_prompt, COACHING_SYSTEM_PROMPT};
 pub(super) use idle::{handle_idle_tick, IdleTickServices};
@@ -470,9 +471,14 @@ mod tests {
             &None,
             &sqlite,
             "test-session",
-            maekon_core::config::PiiFilterLevel::Strict,
-            // ocr_processing consent granted -> OCR text path active (existing sanitize behavior preserved).
-            true,
+            &FrameCapturePolicy {
+                pause: &maekon_core::ports::vision::CapturePauseState::new(Arc::new(
+                    AtomicBool::new(false),
+                )),
+                pii_filter_level: maekon_core::config::PiiFilterLevel::Strict,
+                // ocr_processing consent granted -> OCR text path active (existing sanitize behavior preserved).
+                ocr_permitted: true,
+            },
             &None,
         )
         .await;
@@ -557,9 +563,14 @@ mod tests {
             &None,
             &sqlite,
             "test-session",
-            maekon_core::config::PiiFilterLevel::Strict,
-            // ocr_processing consent not granted -> entire OCR text path blocked.
-            false,
+            &FrameCapturePolicy {
+                pause: &maekon_core::ports::vision::CapturePauseState::new(Arc::new(
+                    AtomicBool::new(false),
+                )),
+                pii_filter_level: maekon_core::config::PiiFilterLevel::Strict,
+                // ocr_processing consent not granted -> entire OCR text path blocked.
+                ocr_permitted: false,
+            },
             &None,
         )
         .await;
@@ -615,8 +626,13 @@ mod tests {
             &None,
             &sqlite,
             "test-session",
-            maekon_core::config::PiiFilterLevel::Strict,
-            false,
+            &FrameCapturePolicy {
+                pause: &maekon_core::ports::vision::CapturePauseState::new(Arc::new(
+                    AtomicBool::new(false),
+                )),
+                pii_filter_level: maekon_core::config::PiiFilterLevel::Strict,
+                ocr_permitted: false,
+            },
             &None,
         )
         .await;
@@ -656,8 +672,13 @@ mod tests {
             &None,
             &sqlite,
             "test-session",
-            maekon_core::config::PiiFilterLevel::Strict,
-            false,
+            &FrameCapturePolicy {
+                pause: &maekon_core::ports::vision::CapturePauseState::new(Arc::new(
+                    AtomicBool::new(false),
+                )),
+                pii_filter_level: maekon_core::config::PiiFilterLevel::Strict,
+                ocr_permitted: false,
+            },
             &None,
         )
         .await;
@@ -695,9 +716,14 @@ mod tests {
             &None,
             &sqlite,
             "test-session",
-            maekon_core::config::PiiFilterLevel::Strict,
-            // ocr_processing consent granted -> OCR text/regions extracted.
-            true,
+            &FrameCapturePolicy {
+                pause: &maekon_core::ports::vision::CapturePauseState::new(Arc::new(
+                    AtomicBool::new(false),
+                )),
+                pii_filter_level: maekon_core::config::PiiFilterLevel::Strict,
+                // ocr_processing consent granted -> OCR text/regions extracted.
+                ocr_permitted: true,
+            },
             &None,
         )
         .await;
@@ -756,8 +782,13 @@ mod tests {
             &None,
             &sqlite,
             "test-session",
-            maekon_core::config::PiiFilterLevel::Standard,
-            true,
+            &FrameCapturePolicy {
+                pause: &maekon_core::ports::vision::CapturePauseState::new(Arc::new(
+                    AtomicBool::new(false),
+                )),
+                pii_filter_level: maekon_core::config::PiiFilterLevel::Standard,
+                ocr_permitted: true,
+            },
             &event_tx,
         )
         .await;

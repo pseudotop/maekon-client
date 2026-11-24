@@ -25,7 +25,7 @@ MaekonはONESHIMなしでも独立して利用できるApache-2.0 local-firstデ
 
 ## Source Buildクイックスタート
 
-公開リポジトリは利用可能で、このsource snapshotは`v0.0.1-rc.11` release candidate向けです。対応するGitHub Releaseとassetが実在する場合にのみ公開済みとして扱ってください。GitHubの`latest` endpointはprereleaseを除外するため、release binaryの検証ではinstall guideのversion固定commandを使用してください。開発とdebug buildはローカルのsource checkoutから実行します。
+公開リポジトリは利用可能で、このsource snapshotは`v0.0.1-rc.12` release candidate向けです。対応するGitHub Releaseとassetが実在する場合にのみ公開済みとして扱ってください。GitHubの`latest` endpointはprereleaseを除外するため、release binaryの検証ではinstall guideのversion固定commandを使用してください。開発とdebug buildはローカルのsource checkoutから実行します。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -136,7 +136,7 @@ Global AlphaではStandaloneモードが現在のデフォルト評価パスで�
 
 ## 動作要件
 
-- Rust 1.88.0以降
+- Rust 1.95.0以降
 - macOS 10.15+ / Windows 10+ / Linux x64（X11推奨。Waylandではトラッキングパネル、オーバーレイ、「次のステップを探す」を利用できません）
 
 ### プラットフォーム別の制限
@@ -257,22 +257,22 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 
 ### クイックインストール（ターミナル）
 
-対応するGitHub Releaseにassetが公開された後で、以下の`v0.0.1-rc.11`固定commandを実行してください。
+対応するGitHub Releaseにassetが公開された後で、以下の`v0.0.1-rc.12`固定commandを実行してください。
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.12 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.12 -RequireSignature
 ```
 
 ### リリースアセット
@@ -361,19 +361,21 @@ Maekon はアプリの表示名です。現在のリリースファイル名は�
 
 ## アーキテクチャ
 
-Hexagonal Architecture（Ports & Adapters）に従う15パッケージのCargo workspaceです。14個のクレイトは`crates/`配下にあり、メインバイナリ/composition rootは`src-tauri/`（Tauri v2、パッケージ名`maekon-app`）です。
+Cargo workspaceの構成は[`Cargo.toml`](./Cargo.toml)のmembersが正本です。crateは`crates/`、`maekon-app`のcomposition rootは`src-tauri/`にあります。
 
 ```
 maekon-client/
 ├── src-tauri/              # Tauri v2バイナリエントリーポイント + composition root
 │   ├── src/
-│   │   ├── main.rs         # Tauriアプリビルダー + DI配線
+│   │   ├── main.rs         # maekon_app::run()を呼ぶ薄いエントリポイント
 │   │   ├── tray.rs         # システムトレイメニュー
 │   │   ├── commands/       # Tauri IPCコマンド
 │   │   └── scheduler/      # バックグラウンドスケジューラー
 │   └── tauri.conf.json     # Tauri設定
 ├── crates/
 │   ├── maekon-core/       # ドメインモデル + Portトレイト + エラー + 設定
+│   ├── maekon-http-core/  # 共通outbound HTTP基盤
+│   ├── maekon-integration/ # 外部integration adapter
 │   ├── maekon-network/    # HTTP/SSE/WebSocket/gRPC、圧縮、認証
 │   ├── maekon-suggestion/ # 提案の受信と処理
 │   ├── maekon-storage/    # SQLiteローカルストレージ + スキーママイグレーション
@@ -398,6 +400,8 @@ maekon-client/
 | クレイト | 役割 | ドキュメント |
 |----------|------|------|
 | maekon-core | ドメインモデル、Portインターフェース | [詳細](./docs/crates/maekon-core.md) |
+| maekon-http-core | 共通outbound HTTP基盤 | [source](./crates/maekon-http-core/) |
+| maekon-integration | 外部integration adapter | [source](./crates/maekon-integration/) |
 | maekon-network | HTTP/SSE/WebSocket/gRPC、圧縮、認証 | [詳細](./docs/crates/maekon-network.md) |
 | maekon-vision | キャプチャ、デルタエンコーディング、OCR | [詳細](./docs/crates/maekon-vision.md) |
 | maekon-monitor | システム指標、アクティブウィンドウ | [詳細](./docs/crates/maekon-monitor.md) |
@@ -432,7 +436,7 @@ maekon-client/
 
 1. `maekon-core`でPortトレイトを定義します
 2. 該当するクレイトでAdapterを実装します
-3. `src-tauri/src/main.rs`でDIを配線します
+3. `src-tauri/src/lib.rs`と`src-tauri/src/setup/`でDIを配線します。`main.rs`はライブラリ呼び出しに委譲します
 4. テストを追加します
 
 ### インストーラーのビルド

@@ -20,6 +20,11 @@ maekon-vision/src/
 ├── capture.rs              # ScreenCapture - multi-monitor capture via xcap
 ├── trigger.rs              # SmartCaptureTrigger - event classification + importance + throttle
 ├── delta.rs                # DeltaEncoder - 16×16 tile comparison → changed region extraction
+├── screen_probe.rs         # AuthorizedScreenProbe - fresh capture permit per sample, 16 px tile signatures of a ≤960 px copy, pixel buffers zeroed
+├── dirty_region/           # AuthorizedDirtyRegions - OS change regions minus excluded-app windows, fresh capture permit per take; capture comparison where no OS source starts
+│   ├── macos.rs            # ScreenCaptureKitListener - a ScreenCaptureKit stream per display + window list (feature macos-screencapturekit, off by default: needs macOS 12.3; compile-checked, not yet run on a device)
+│   ├── windows.rs          # DxgiDuplicationListener - DXGI Desktop Duplication of every output + window events (compile-checked, not yet run on a device)
+│   └── x11.rs              # X11DamageListener - DAMAGE + XFIXES on the root window (X11 sessions only; Wayland uses capture comparison)
 ├── encoder.rs              # WebpEncoder - Low/Medium/High quality + stat-based quality prediction
 ├── thumbnail.rs            # ThumbnailGenerator - fast_image_resize + LRU cache (100 entries, FNV-1a)
 ├── ring_buffer.rs          # Bounded frame ring buffer

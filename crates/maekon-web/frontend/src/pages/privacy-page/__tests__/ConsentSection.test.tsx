@@ -140,7 +140,7 @@ describe('ConsentSection delete-all (revoke-first)', () => {
   })
 
   it('does NOT call deleteAllData and surfaces the error when withdrawConsent rejects', async () => {
-    const addToastSpy = vi.spyOn(toastModule, 'addToast')
+    const addErrorToastSpy = vi.spyOn(toastModule, 'addErrorToast')
     withdrawSpy.mockImplementationOnce(async () => {
       callOrder.push('withdraw')
       throw new Error('withdraw failed')
@@ -150,8 +150,12 @@ describe('ConsentSection delete-all (revoke-first)', () => {
 
     await triggerDeleteAll()
 
-    // Wait until the error surfaces (mutation onError → addToast('error', ...)).
-    await waitFor(() => expect(addToastSpy).toHaveBeenCalledWith('error', 'withdraw failed'))
+    // Wait until the error surfaces (mutation onError → addErrorToast). #13737: the
+    // toast leads with the localized delete-failure sentence; the raw rejection
+    // text stays in its support details.
+    await waitFor(() =>
+      expect(addErrorToastSpy).toHaveBeenCalledWith({ text: en.privacy.deleteFailed, detail: 'withdraw failed' }),
+    )
     // Since revocation failed, do not proceed with deletion (short-circuit).
     expect(deleteAllSpy).not.toHaveBeenCalled()
     expect(callOrder).toEqual(['withdraw'])

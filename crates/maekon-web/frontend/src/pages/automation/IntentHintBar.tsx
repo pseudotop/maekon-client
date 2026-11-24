@@ -7,12 +7,20 @@ import { CheckCircle2, Clock, ExternalLink, XCircle } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
-import { type AutomationStatus, type ExecuteIntentHintResponse, executeIntentHint } from '../../api/client'
+import {
+  type AutomationStatus,
+  type ExecuteIntentHintResponse,
+  executeIntentHint,
+  fetchIntentExecution,
+  type IntentExecutionProvenance,
+} from '../../api/client'
+import { decodeIntentProvenance, intentProvenanceFromError, isOpaqueIntentId } from '../../api/intentExecution'
 import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
 import { Input } from '../../components/ui/Input'
 import { iconSize, interaction, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { IntentProvenancePanel } from './IntentProvenancePanel'
 
 interface IntentHintBarProps {
   status: AutomationStatus | undefined
@@ -75,7 +83,7 @@ function ResultPanel({ data, elapsedMs }: ResultPanelProps) {
               </pre>
             </>
           ) : (
-            <div className={cn(typography.weight.medium)}>{data.result.error ?? t('automation.intentHintFailed')}</div>
+            <div className={cn(typography.weight.medium)}>{t('automation.intentHintFailed')}</div>
           )}
 
           <div className="mt-2 flex items-center gap-3 text-[11px] opacity-80">
@@ -103,12 +111,16 @@ function ResultPanel({ data, elapsedMs }: ResultPanelProps) {
 }
 
 interface ErrorPanelProps {
-  error: Error
+  error: unknown
+  uncertain: boolean
 }
 
-function ErrorPanel({ error }: ErrorPanelProps) {
+function ErrorPanel({ error, uncertain }: ErrorPanelProps) {
   const { t } = useTranslation()
-  const kind = classifyError(error.message)
+  // raw-error-text: matched against backend markers to pick guidance, never rendered.
+  // #13737: unlike other screens this panel offers no support details — an executor
+  // error can carry window titles and prompt text (IntentHintRecovery.test.tsx).
+  const kind = error instanceof Error ? classifyError(error.message) : 'generic'
 
   return (
     <div
@@ -144,10 +156,12 @@ function ErrorPanel({ error }: ErrorPanelProps) {
           )}
           {kind === 'generic' && (
             <div>
-              <span className={cn(typography.weight.medium)}>{error.message || t('automation.intentHintFailed')}</span>
+              <span className={cn(typography.weight.medium)}>{t('automation.intentProvenance.resultUnavailable')}</span>
               {/* #5705: remind the user the request may have executed before
                   the timeout / network error so they should check history. */}
-              <div className="mt-1 text-[11px] opacity-80">{t('automation.intentHintErrorCheckHistory')}</div>
+              {uncertain && (
+                <div className="mt-1 text-[11px] opacity-80">{t('automation.intentHintErrorCheckHistory')}</div>
+              )}
             </div>
           )}
         </div>
@@ -156,33 +170,58 @@ function ErrorPanel({ error }: ErrorPanelProps) {
   )
 }
 
+interface SubmissionSnapshot {
+  id: string
+  hint: string
+  provenance: IntentExecutionProvenance | null
+}
+
 export default function IntentHintBar({ status }: IntentHintBarProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-
-  // #5705: session_id is stable per mount — not regenerated on each submit.
   const mountTs = useRef(Date.now())
   const sessionId = `intent-bar-${mountTs.current}`
-
+  const pendingRef = useRef(false)
+  const currentRef = useRef<SubmissionSnapshot | null>(null)
+  const recoveryRef = useRef<string | null>(null)
+  const [submission, setSubmission] = useState<SubmissionSnapshot | null>(null)
+  const [recovery, setRecovery] = useState<'idle' | 'pending' | 'found' | 'unknown'>('idle')
+  const [identityUnavailable, setIdentityUnavailable] = useState(false)
   const [hint, setHint] = useState('')
   const [lastElapsedMs, setLastElapsedMs] = useState(0)
 
+  const recordObservation = (id: string, provenance: IntentExecutionProvenance | null): boolean => {
+    const current = currentRef.current
+    if (!current || current.id !== id) return false
+    if (current.provenance && provenance && current.provenance.execution_id !== provenance.execution_id) return false
+    const next = { ...current, provenance }
+    currentRef.current = next
+    setSubmission(next)
+    return true
+  }
+
   const mutation = useMutation({
-    // React Query v5 object syntax (#5705)
-    mutationFn: (intentHint: string) =>
+    retry: false,
+    networkMode: 'always',
+    mutationFn: (input: { id: string; hint: string; retryOf?: string; startedAt: number }) =>
       executeIntentHint({
-        command_id: `intent-hint-ui-${Date.now()}`,
+        command_id: `intent-hint-ui-${input.id}`,
         session_id: sessionId,
-        intent_hint: intentHint,
+        intent_hint: input.hint,
+        submission_id: input.id,
+        ...(input.retryOf ? { retry_of: input.retryOf } : {}),
       }),
-    onSuccess: () => {
-      // Invalidate stats so the execution count updates; audit page
-      // self-refetches on its own 10s interval — no auditLogs invalidation needed.
+    onSuccess: (data, input) => {
+      recordObservation(input.id, decodeIntentProvenance(data.execution_provenance, input.id))
       queryClient.invalidateQueries({ queryKey: ['automationStats'] })
     },
-    onMutate: () => {
-      // Record start time so we can compute elapsed_ms from mutation result
-      setLastElapsedMs(0)
+    onError: (error, input) => {
+      recordObservation(input.id, intentProvenanceFromError(error, input.id))
+    },
+    onSettled: (_data, _error, input) => {
+      if (currentRef.current?.id !== input.id) return
+      pendingRef.current = false
+      setLastElapsedMs(Date.now() - input.startedAt)
     },
   })
 
@@ -192,13 +231,47 @@ export default function IntentHintBar({ status }: IntentHintBarProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!canSubmit) return
-    const startMs = Date.now()
-    mutation.mutate(trimmed, {
-      onSettled: (_data, _err) => {
-        setLastElapsedMs(Date.now() - startMs)
-      },
-    })
+    if (!canSubmit || pendingRef.current) return
+    let id: string
+    try {
+      id = globalThis.crypto.randomUUID()
+      if (!isOpaqueIntentId(id)) throw new Error('Invalid correlation')
+    } catch {
+      setIdentityUnavailable(true)
+      return
+    }
+    const prior = currentRef.current
+    const knownPrior =
+      prior?.hint === trimmed &&
+      prior.provenance?.observation === 'complete' &&
+      prior.provenance.action_outcome !== 'unknown'
+        ? prior.provenance.execution_id
+        : undefined
+    const next = { id, hint: trimmed, provenance: null }
+    // #12061: Identity and an atomic guard exist before any mutation dispatch.
+    pendingRef.current = true
+    currentRef.current = next
+    setSubmission(next)
+    setRecovery('idle')
+    setIdentityUnavailable(false)
+    setLastElapsedMs(0)
+    mutation.mutate({ id, hint: trimmed, retryOf: knownPrior, startedAt: Date.now() })
+  }
+
+  const observeSubmission = async () => {
+    const id = currentRef.current?.id
+    if (!id || pendingRef.current || recoveryRef.current === id) return
+    recoveryRef.current = id
+    setRecovery('pending')
+    try {
+      const result = decodeIntentProvenance(await fetchIntentExecution(id), id)
+      if (currentRef.current?.id !== id) return
+      setRecovery(result && recordObservation(id, result) ? 'found' : 'unknown')
+    } catch {
+      if (currentRef.current?.id === id) setRecovery('unknown')
+    } finally {
+      if (recoveryRef.current === id) recoveryRef.current = null
+    }
   }
 
   return (
@@ -210,6 +283,7 @@ export default function IntentHintBar({ status }: IntentHintBarProps) {
         <form onSubmit={handleSubmit} className="space-y-2">
           <div className="flex gap-2">
             <Input
+              data-testid="intent-hint-input"
               aria-label={t('automation.intentHintTitle')}
               placeholder={t('automation.intentHintPlaceholder')}
               value={hint}
@@ -247,7 +321,46 @@ export default function IntentHintBar({ status }: IntentHintBarProps) {
             success=false comes back as a resolved mutation (not a thrown error),
             so we always show the panel when mutation.data is present. */}
         {mutation.isSuccess && mutation.data && <ResultPanel data={mutation.data} elapsedMs={lastElapsedMs} />}
-        {mutation.isError && mutation.error instanceof Error && <ErrorPanel error={mutation.error} />}
+        {identityUnavailable && <p role="alert">{t('automation.intentProvenance.identityUnavailable')}</p>}
+        {mutation.isError && recovery !== 'found' && (
+          <ErrorPanel error={mutation.error} uncertain={submission?.provenance?.observation !== 'complete'} />
+        )}
+        {submission && !mutation.isPending && (
+          <>
+            <IntentProvenancePanel provenance={submission.provenance} />
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={observeSubmission}
+                isLoading={recovery === 'pending'}
+                disabled={recovery === 'pending'}
+                data-testid="intent-observe-current"
+              >
+                {t('automation.intentProvenance.observe')}
+              </Button>
+              {!mutation.isSuccess && (
+                <Link to="/automation/history" className={cn('text-sm underline', interaction.focusRing)}>
+                  {t('automation.intentHintViewHistory')}
+                </Link>
+              )}
+            </div>
+            {recovery === 'unknown' && (
+              <p role="status" className="mt-2 text-content-secondary text-xs">
+                {t('automation.intentProvenance.lookupUnknown')}
+              </p>
+            )}
+            {recovery === 'found' && (
+              <p role="status" className="mt-2 text-content-secondary text-xs">
+                {t('automation.intentProvenance.lookupFound')}
+              </p>
+            )}
+            {submission.provenance?.observation !== 'complete' && (
+              <p className="mt-2 text-content-secondary text-xs">{t('automation.intentProvenance.replayWarning')}</p>
+            )}
+          </>
+        )}
       </CardContent>
     </Card>
   )
