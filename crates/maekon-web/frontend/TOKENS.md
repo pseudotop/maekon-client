@@ -245,6 +245,11 @@ Named z-index tokens in `tailwind.config.js`:
 | `form.checkbox` | `w-5 h-5 rounded bg-surface-base border-DEFAULT text-brand-signal focus-visible:ring-brand-signal` |
 | `form.checkboxInline` | Same as checkbox + `mr-3` |
 | `form.radio` | `w-4 h-4 bg-surface-base border-DEFAULT text-brand-signal focus-visible:ring-brand-signal` |
+| `form.switchTrack` | `relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent` + 150ms color transition (`motion-reduce:transition-none`) |
+| `form.switchTrackOn` / `form.switchTrackOff` | `bg-brand` / `bg-content-tertiary` |
+| `form.switchThumb` | `pointer-events-none inline-block h-5 w-5 rounded-full bg-surface-base shadow` + 150ms transform transition (`motion-reduce:transition-none`) |
+| `form.switchThumbOn` / `form.switchThumbOff` | `translate-x-5` / `translate-x-0` |
+| `form.switchFocusOffset` | `focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base` (pairs with `interaction.focusRing`) |
 | `form.sectionDivider` | `border-DEFAULT` |
 
 ---

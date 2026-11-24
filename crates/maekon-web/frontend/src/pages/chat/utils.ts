@@ -37,13 +37,6 @@ export function isToolDefinitionPayload(value: unknown): value is ToolDefinition
   return true
 }
 
-export function errorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message.trim()) return error.message
-  if (typeof error === 'string' && error.trim()) return error
-  if (isRecord(error) && typeof error.message === 'string' && error.message.trim()) return error.message
-  return fallback
-}
-
 export function parseOptionalJsonValue(raw: string): ParsedJsonResult<unknown> {
   const trimmed = raw.trim()
   if (!trimmed) return { value: undefined, error: false }

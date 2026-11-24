@@ -14,7 +14,9 @@ use maekon_core::ports::effective_mapping_cache::EffectiveMappingCache;
 use maekon_core::ports::wbs_xlsx_client::WbsXlsxClient;
 use maekon_core::ports::wbs_xlsx_receipt_store::WbsXlsxReceiptStore;
 use maekon_storage::tmd_xlsx_plan::fill_projected_workbook;
-use maekon_storage::tmd_xlsx_writer::{persist_atomic, template_structure_hash, XlsxFillOutcome};
+use maekon_storage::tmd_xlsx_writer::{
+    persist_atomic, read_template_file, template_structure_hash, XlsxFillOutcome, XlsxWriterError,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::State;
@@ -210,7 +212,17 @@ pub async fn generate_tmd_xlsx(
             "output path must not overwrite the selected template",
         ));
     }
-    let template = tokio::fs::read(&input_path).await.map_err(IpcError::from)?;
+    // #13047: bound the read by the template size gate instead of loading the whole file.
+    let template_path = input_path.clone();
+    let template = tokio::task::spawn_blocking(move || read_template_file(&template_path))
+        .await
+        .map_err(|error| {
+            IpcError::new(
+                "internal.generic",
+                format!("template read task failed: {error}"),
+            )
+        })?
+        .map_err(template_read_error)?;
     let structure_hash = template_structure_hash(&template).map_err(writer_error)?;
     let outcome = fill_projected_workbook(&template, &effective).map_err(writer_error)?;
     match outcome {
@@ -600,6 +612,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn writer_error(error: maekon_storage::tmd_xlsx_writer::XlsxWriterError) -> IpcError {
     IpcError::new("validation.invalid_arguments", error.to_string())
+}
+
+/// File-system failures keep the `io::Error` mapping the former `tokio::fs::read` used;
+/// only the size gate surfaces as a writer validation error.
+fn template_read_error(error: XlsxWriterError) -> IpcError {
+    match error {
+        XlsxWriterError::Io(error) => IpcError::from(error),
+        other => writer_error(other),
+    }
 }
 
 #[cfg(test)]

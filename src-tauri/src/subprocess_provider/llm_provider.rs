@@ -290,6 +290,14 @@ impl SubprocessLlmProvider {
 
 #[async_trait]
 impl LlmProvider for SubprocessLlmProvider {
+    fn intent_provider_class(&self) -> maekon_core::models::intent_execution::IntentProviderClass {
+        maekon_core::models::intent_execution::IntentProviderClass::RemoteModel
+    }
+
+    fn intent_forwards_skill_context(&self) -> Option<bool> {
+        Some(true)
+    }
+
     async fn interpret_intent(
         &self,
         screen_context: &ScreenContext,
@@ -364,6 +372,11 @@ mod tests {
         );
 
         assert_eq!(provider.model, "gpt-explicit-override");
+        assert_eq!(
+            provider.intent_provider_class(),
+            maekon_core::models::intent_execution::IntentProviderClass::RemoteModel
+        );
+        assert_eq!(provider.intent_forwards_skill_context(), Some(true));
     }
 
     #[tokio::test]

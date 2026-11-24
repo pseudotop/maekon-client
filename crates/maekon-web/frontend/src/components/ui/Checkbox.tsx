@@ -1,5 +1,6 @@
 /**
- *
+ * #13739: for picking several items from a list and for confirmation checks
+ * ("I understand ..."). A setting that is simply on or off uses `Switch`.
  */
 import { forwardRef, useId } from 'react'
 import { form, typography } from '../../styles/tokens'

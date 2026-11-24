@@ -33,15 +33,16 @@ import {
   setVaultMirrorEnabled,
   type VaultMirrorSettings as VaultSettings,
 } from '../../api/vault'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Button, Card, CardTitle, Checkbox, Input } from '../../components/ui'
 import { useLatestOnlyRead } from '../../hooks/useLatestOnlyRead'
 import { addToast } from '../../hooks/useToast'
-import { describeIpcError } from '../../i18n/tauriIpcErrors'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import { typography } from '../../styles/tokens'
 import { formatDateTime } from '../../utils/formatters'
 import ToggleRow from './ToggleRow'
 
-/** Stable id so the enable Checkbox can point at the one-way disclosure. */
+/** Stable id so the enable switch can point at the one-way disclosure. */
 const ONE_WAY_DISCLOSURE_ID = 'memory-vault-one-way-disclosure'
 
 /** A custom path proposed but not yet acknowledged (ADR-033 §3.3 step 1). */
@@ -68,7 +69,7 @@ export default function MemoryVaultSettings() {
   const [pathInput, setPathInput] = useState('')
   const [pending, setPending] = useState<PendingPath | null>(null)
   const [acknowledged, setAcknowledged] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorDisplay | null>(null)
   const read = useLatestOnlyRead()
 
   const refresh = useCallback(async () => {
@@ -90,7 +91,7 @@ export default function MemoryVaultSettings() {
     void refresh()
   }, [refresh])
 
-  const describe = useCallback((err: unknown) => describeIpcError(err, t, i18n.language), [i18n.language, t])
+  const describe = useErrorDisplay()
 
   /**
    * Tier-13 grant + `enabled`, in the order that fails safe at every step:
@@ -246,7 +247,8 @@ export default function MemoryVaultSettings() {
 
       {error && (
         <Alert variant="error" className="mb-4">
-          {error}
+          <p>{error.text}</p>
+          <SupportDetails detail={error.detail} />
         </Alert>
       )}
 

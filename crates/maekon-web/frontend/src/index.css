@@ -132,6 +132,39 @@ body {
   background: rgb(var(--border-strong));
 }
 
+/*
+ * #13739: a native date/time field keeps the box of a text input with the same
+ * classes. WebKit (macOS WKWebView, Linux WebKitGTK) pads the edit parts and
+ * makes these fields taller than the inputs beside them; this is the reset
+ * @tailwindcss/forms uses. `color-scheme` draws the picker icon and popup for
+ * the dark theme instead of a black icon on a dark field.
+ */
+::-webkit-datetime-edit {
+  display: inline-flex;
+}
+
+::-webkit-datetime-edit,
+::-webkit-datetime-edit-fields-wrapper,
+::-webkit-datetime-edit-year-field,
+::-webkit-datetime-edit-month-field,
+::-webkit-datetime-edit-day-field,
+::-webkit-datetime-edit-hour-field,
+::-webkit-datetime-edit-minute-field,
+::-webkit-datetime-edit-second-field,
+::-webkit-datetime-edit-millisecond-field,
+::-webkit-datetime-edit-meridiem-field {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.dark input[type="date"],
+.dark input[type="time"],
+.dark input[type="datetime-local"],
+.dark input[type="month"],
+.dark input[type="week"] {
+  color-scheme: dark;
+}
+
 /* Desktop shell layout */
 .app-shell {
   display: grid;

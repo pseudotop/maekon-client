@@ -2,11 +2,13 @@ import {
   Activity,
   AppWindow,
   BarChart3,
+  Camera,
   Cpu,
   Focus,
   Grid3x3,
   LineChart,
   List,
+  ListChecks,
   type LucideIcon,
   RefreshCw,
   Sun,
@@ -21,10 +23,14 @@ export interface WidgetDef {
   icon: LucideIcon
 }
 
+// #13735: the overview is the first screen (summary, next up, key numbers);
+// realtime CPU/memory and capture counts moved to the System Metrics page.
 export const WIDGET_REGISTRY: WidgetDef[] = [
-  { id: 'overview.realtime', section: 'overview', labelKey: 'widgets.realtime', icon: Activity },
-  { id: 'overview.today-summary', section: 'overview', labelKey: 'widgets.todaySummary', icon: Sun },
-  { id: 'overview.stat-cards', section: 'overview', labelKey: 'widgets.statCards', icon: BarChart3 },
+  { id: 'overview.today-summary', section: 'overview', labelKey: 'dashboard.todaySummary.title', icon: Sun },
+  { id: 'overview.next-actions', section: 'overview', labelKey: 'dashboard.nextActions.title', icon: ListChecks },
+  { id: 'overview.stat-cards', section: 'overview', labelKey: 'dashboard.keyNumbers.title', icon: BarChart3 },
+  { id: 'monitoring.realtime', section: 'monitoring', labelKey: 'widgets.realtime', icon: Activity },
+  { id: 'monitoring.capture-counts', section: 'monitoring', labelKey: 'widgets.statCards', icon: Camera },
   { id: 'monitoring.metrics-chart', section: 'monitoring', labelKey: 'widgets.metricsChart', icon: LineChart },
   { id: 'monitoring.app-usage', section: 'monitoring', labelKey: 'widgets.appUsage', icon: AppWindow },
   { id: 'monitoring.process-list', section: 'monitoring', labelKey: 'widgets.processList', icon: List },

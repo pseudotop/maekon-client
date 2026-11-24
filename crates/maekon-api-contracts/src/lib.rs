@@ -23,6 +23,7 @@
 
 pub mod ai_providers;
 pub mod annotations;
+pub mod assignment_board;
 pub mod audit_export;
 pub mod automation;
 pub mod automation_gui;
@@ -52,7 +53,7 @@ pub mod processes;
 pub mod provider_specs;
 pub mod recalibration;
 pub mod reports;
-#[cfg(feature = "schema")]
+#[cfg(any(feature = "schema", test))]
 pub mod schema_support;
 pub mod search;
 pub mod sessions;

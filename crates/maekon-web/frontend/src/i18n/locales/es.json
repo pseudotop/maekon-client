@@ -79,7 +79,13 @@
     "less": "Show less",
     "lightbox": "Image lightbox",
     "navigate": "Navigate",
-    "previous": "Previous"
+    "previous": "Previous",
+    "duration": {
+      "seconds": "{{count}} s",
+      "minutes": "{{count}} min",
+      "hours": "{{count}} h",
+      "hoursMinutes": "{{hours}} h {{minutes}} min"
+    }
   },
   "support": {
     "pageTitle": "Soporte y diagnóstico",
@@ -149,10 +155,10 @@
     "audit": "Registro de auditoría",
     "policies": "Políticas de ejecución",
     "playbooks": "Cuadernos de jugadas",
-    "groupMonitor": "Monitor",
-    "groupInsights": "Perspectivas",
-    "groupManage": "Gestión",
-    "groupSystem": "Sistema",
+    "groupMain": "Menú",
+    "sectionMore": "Más",
+    "sectionTools": "Herramientas",
+    "sectionSystem": "Sistema",
     "tasks": "Tareas",
     "contextHome": "Contexto",
     "assignmentEmailDraft": "Borrador de correo de asignación",
@@ -200,11 +206,53 @@
     "exportDigest": "Exportar",
     "exportMarkdown": "Descargar como Markdown",
     "todaySummary": {
-      "title": "Today at a Glance",
-      "activeTime": "Active Time",
-      "topApp": "Top App",
-      "nudges": "Nudges",
-      "regime": "Regime"
+      "title": "Resumen de hoy",
+      "titleForDate": "Resumen del {{date}}",
+      "headline": {
+        "focus": "Pasaste más tiempo en {{app}}. Tu racha de concentración más larga fue de {{longestFocus}}.",
+        "app": "Pasaste más tiempo en {{app}}.",
+        "activity": "Estamos registrando tu actividad. El resumen aparecerá aquí cuando haya suficiente información."
+      }
+    },
+    "nextActions": {
+      "title": "Lo siguiente",
+      "openAll": "Ver todas las tareas",
+      "openTasks": "Abrir tareas",
+      "emptyTitle": "Todavía no hay nada pendiente",
+      "emptyDescription": "Pulsa «Encontrar mi siguiente paso» en el panel de seguimiento de la parte superior de la pantalla. Maekon sugiere un siguiente paso a partir de lo que estabas haciendo, y las tareas que confirmes aparecerán aquí.",
+      "desktopOnly": "Las tareas están disponibles en la aplicación de escritorio.",
+      "loadError": "No se pudieron cargar las tareas.",
+      "suggested": "Sugerida",
+      "more": "{{count}} más"
+    },
+    "keyNumbers": {
+      "title": "Cifras clave",
+      "deepWork": "Trabajo profundo",
+      "contextSwitches": "Cambios de contexto",
+      "pendingAnalysis": "Aparece tras el análisis",
+      "unavailable": "No se pudo cargar"
+    },
+    "firstRun": {
+      "guideSummary": "Una línea sobre tu día. Funciona sin conexión a una IA.",
+      "guideNextActions": "Aquí aparecen los siguientes pasos sugeridos y las tareas que confirmes.",
+      "guideKeyNumbers": "El tiempo activo, el trabajo profundo y los cambios de contexto se acumulan mientras trabajas.",
+      "action": {
+        "reviewConsent": "Revisar el consentimiento de captura",
+        "resumeCapture": "Abrir controles de captura",
+        "checkStatus": "Comprobar el estado de la app"
+      }
+    },
+    "noActivityForDate": {
+      "title": "No hay actividad registrada",
+      "description": "No se capturó nada el {{date}}. Elige otro día en el selector de fechas de arriba."
+    },
+    "summaryError": {
+      "title": "No se pudo cargar la actividad",
+      "description": "El servicio local de actividad no respondió. Vuelve a intentarlo en un momento."
+    },
+    "systemResources": {
+      "description": "Uso de CPU y memoria de las últimas 24 horas, los procesos con más carga, el uso de apps y las capturas de hoy.",
+      "open": "Abrir métricas del sistema"
     }
   },
   "updates": {
@@ -212,8 +260,14 @@
     "loading": "Cargando estado de actualización...",
     "live": "En vivo",
     "polling": "Consulta periódica",
-    "fresh": "Actualizado",
-    "stale": "Desactualizado",
+    "fresh": "Reciente",
+    "stale": "Retrasada",
+    "connectionBadge": "Conexión: {{state}}",
+    "connectionHint": "Cómo recibe este panel el estado de actualización. En vivo recibe los cambios al momento; Consulta periódica vuelve a preguntar a intervalos regulares mientras el flujo en vivo no está disponible.",
+    "freshnessBadge": "Señal: {{state}}",
+    "freshnessHint": "Indica si el último estado de actualización llegó hace poco. Retrasada significa que lo que ve puede estar desactualizado.",
+    "phaseBadge": "Etapa: {{state}}",
+    "phaseHint": "Muestra en qué etapa está el actualizador: comprobación, descarga o instalación.",
     "idle": "Inactivo",
     "checking": "Verificando",
     "pendingApproval": "Pendiente de aprobación",
@@ -228,7 +282,7 @@
     "actionFailed": "No se pudo completar la acción de actualización. Vuelve a intentarlo.",
     "technicalDetails": "Detalles técnicos",
     "lastUpdateUnknown": "Última señal de actualización: desconocida",
-    "lastUpdateAge": "Última señal de actualización: hace {{seconds}}s",
+    "lastUpdateAge": "Última señal de actualización: hace {{age}}",
     "staleActionBlocked": "La aprobación de actualización está temporalmente bloqueada porque el estado está desactualizado. Haga clic en Verificar ahora para actualizar.",
     "streamIssue": "El flujo de actualizaciones en vivo tiene problemas temporales. Cambiando a consulta periódica.",
     "reconnecting": "Reconectando al flujo de actualizaciones en vivo (intento {{count}})...",
@@ -279,12 +333,12 @@
     "rolledBackAt": "Restored at {{timestamp}}",
     "releaseDate": "Released {{date}}",
     "releaseDateUnknown": "Release date unavailable",
-    "releasedAgoMinutes": "released {{count}} minute ago",
-    "releasedAgoMinutes_plural": "released {{count}} minutes ago",
-    "releasedAgoHours": "released {{count}} hour ago",
-    "releasedAgoHours_plural": "released {{count}} hours ago",
-    "releasedAgoDays": "released {{count}} day ago",
-    "releasedAgoDays_plural": "released {{count}} days ago",
+    "releasedAgoMinutes_one": "publicada hace {{count}} minuto",
+    "releasedAgoMinutes_other": "publicada hace {{count}} minutos",
+    "releasedAgoHours_one": "publicada hace {{count}} hora",
+    "releasedAgoHours_other": "publicada hace {{count}} horas",
+    "releasedAgoDays_one": "publicada hace {{count}} día",
+    "releasedAgoDays_other": "publicada hace {{count}} días",
     "readyToInstallMsg": "Descarga completada. Lista para instalar.",
     "installNow": "Instalar ahora"
   },
@@ -353,6 +407,7 @@
     "filterSummary": "Showing {{shown}} of {{total}} frames",
     "tagSuggestions": "Tag suggestions",
     "noActivity": "No hay actividad registrada para este día",
+    "entryExpandLabel": "{{regime}} {{duration}} - haz clic para expandir",
     "segments": {
       "title": "Qué había en pantalla",
       "axis": "Segmentos de actividad",
@@ -366,16 +421,16 @@
     "tabs": {
       "integrations": "Integraciones",
       "general": "General",
-      "privacy": "Telemetría",
+      "privacy": "Protección de capturas",
       "monitoring": "Monitoreo",
       "aiAutomation": "IA y Automatización",
       "dataStorage": "Datos y Almacenamiento",
-      "coaching": "Coaching",
+      "coaching": "Preferencias de coaching",
       "focusAuto": "Enfoque auto",
       "audio": "Audio",
-      "sync": "Sync",
-      "advanced": "Advanced",
-      "trackingSchedule": "Tracking Schedule"
+      "sync": "Sincronización",
+      "advanced": "Avanzado",
+      "trackingSchedule": "Horario de seguimiento"
     },
     "guidance": {
       "aiAutomation": {
@@ -542,7 +597,7 @@
       }
     },
     "groupCore": "Básico",
-    "groupAdvanced": "Avanzado",
+    "groupAdvanced": "Más ajustes",
     "dataCollection": "Recopilación de datos",
     "enableCapture": "Habilitar captura de pantalla",
     "idleThreshold": "Umbral de detección de inactividad (min)",
@@ -556,6 +611,11 @@
     "highUsageNotification": "Notificación de uso elevado (%)",
     "saved": "Configuración guardada.",
     "saveFailed": "Error al guardar la configuración",
+    "updateActionFailed": "No se pudo solicitar la acción de actualización.",
+    "permissionRequestFailed": "No se pudo completar la solicitud de permiso.",
+    "permissionOpenSystemSettingsFailed": "No se pudo abrir la Configuración del sistema.",
+    "notifTestFailed": "No se pudo enviar la notificación de prueba.",
+    "tagActionFailed": "No se pudo guardar el cambio de la etiqueta.",
     "unsavedChanges": "Hay cambios sin guardar",
     "unsavedChangesHint": "Guarda la configuración actual antes de salir de esta página.",
     "revertChanges": "Revertir",
@@ -1095,7 +1155,8 @@
         "confirmNote": "Retractar oculta esta afirmación de tus resúmenes y sugerencias futuras. El registro se conserva (no se elimina), por lo que el cambio sigue siendo auditable.",
         "confirmButton": "Retractar afirmación",
         "success": "Afirmación retractada",
-        "alreadyRetracted": "La afirmación ya estaba retractada"
+        "alreadyRetracted": "La afirmación ya estaba retractada",
+        "failed": "No se pudo retractar la afirmación."
       }
     },
     "aiUsage": {
@@ -1515,6 +1576,7 @@
     "actionSuccess": "Acción sugerida ejecutada.",
     "actionSuccessWithPolicy": "Acción sugerida ejecutada (política: {{policy}}).",
     "actionFailed": "La acción sugerida falló.",
+    "timelineLoadFailed": "No se pudo cargar la línea de tiempo.",
     "typeTextLabel": "Texto de entrada",
     "typeTextPlaceholder": "Ingrese el texto a escribir",
     "allowSensitiveInput": "Permitir entrada de texto sensible según la política de privacidad actual",
@@ -1670,7 +1732,95 @@
     "intentHintFailed": "Error en el comando",
     "intentHintPlannedIntent": "Intención planificada",
     "intentHintViewHistory": "Ver en historial de ejecución",
-    "intentHintErrorCheckHistory": "Es posible que la solicitud se haya ejecutado — revisa el historial de ejecución."
+    "intentHintErrorCheckHistory": "Es posible que la solicitud se haya ejecutado — revisa el historial de ejecución.",
+    "intentProvenance": {
+      "title": "Ejecución observada",
+      "unknown": "No hay una observación de ejecución coincidente para esta respuesta.",
+      "scope": "Las observaciones recientes pueden desaparecer al reiniciar la aplicación.",
+      "observe": "Comprobar esta ejecución",
+      "lookupUnknown": "No hay una observación coincidente única. Esto no demuestra que la acción no se ejecutara.",
+      "lookupFound": "Se observó la ejecución coincidente. No se envió ninguna acción.",
+      "replayWarning": "Ejecutar de nuevo inicia otra acción y puede duplicar la anterior.",
+      "identityUnavailable": "No se pudo crear un ID de envío seguro. No se envió nada.",
+      "resultUnavailable": "No se pudo leer la respuesta de ejecución.",
+      "requested": "Ruta solicitada",
+      "planned": "Planificación observada",
+      "actionLabel": "Resultado de la acción",
+      "observationLabel": "Observación",
+      "configurationOnlyRule": "En la configuración inicial solo estaba disponible la ruta basada en reglas. No se observó un intento fallido del modelo.",
+      "attempt": "Intento {{number}}",
+      "skillContext": "Habilidades solicitadas: {{requested}} · Contexto enviado: {{forwarded}} · Contexto: {{context}}",
+      "steps": "Pasos observados",
+      "yes": "Sí",
+      "no": "No",
+      "unknownValue": "Desconocido",
+      "provider": {
+        "local_model": "Modelo local",
+        "remote_model": "Modelo remoto",
+        "rule": "Reglas",
+        "unknown": "Desconocido"
+      },
+      "planning": {
+        "llm": "Plan basado en modelo",
+        "rule": "Plan basado en reglas",
+        "unsupported": "Solicitud no compatible",
+        "denied": "Planificación denegada",
+        "error": "Planificación fallida",
+        "unknown": "Desconocido"
+      },
+      "action": {
+        "not_started": "No iniciada",
+        "denied": "Denegada",
+        "completed": "Completada",
+        "failed": "Fallida",
+        "unknown": "Desconocido"
+      },
+      "observation": {
+        "complete": "Observación completa",
+        "partial": "Observación parcial",
+        "legacy_unknown": "Respuesta antigua; desconocido"
+      },
+      "attemptOutcome": {
+        "succeeded": "Correcto",
+        "denied": "Denegado",
+        "timeout": "Tiempo agotado",
+        "invalid_output": "Salida no válida",
+        "unavailable": "No disponible",
+        "error": "Error",
+        "unknown": "Desconocido"
+      },
+      "reason": {
+        "denied": "Denegado por un control de ejecución",
+        "timeout": "El proveedor agotó el tiempo",
+        "unavailable": "Proveedor no disponible",
+        "invalid_output": "La salida del proveedor no era válida",
+        "provider_error": "Error del proveedor",
+        "confidence_rejected": "Confianza de planificación insuficiente",
+        "unsupported_action": "Acción no compatible",
+        "action_failed": "La acción falló",
+        "observation_unavailable": "Observación incompleta o no disponible",
+        "legacy_unknown": "La respuesta antigua no contiene observaciones de ejecución"
+      },
+      "skills": {
+        "used": "Se utilizaron habilidades",
+        "not_used": "No se utilizaron habilidades",
+        "unsupported": "Esta ruta no admite habilidades",
+        "unknown": "No se observó el uso de habilidades"
+      },
+      "context": {
+        "none": "Ninguno",
+        "catalog": "Catálogo",
+        "activated": "Habilidades activadas"
+      },
+      "stage": {
+        "started": "Solicitud observada",
+        "attempt_started": "Intento del proveedor iniciado",
+        "attempt_finished": "Intento del proveedor finalizado",
+        "planning_finished": "Planificación finalizada",
+        "action_started": "Acción iniciada",
+        "action_finished": "Acción finalizada"
+      }
+    }
   },
   "guiPicker": {
     "title": "Acciones de señalar y confirmar",
@@ -1806,6 +1956,7 @@
     "modelDiscoveryNoModels": "No se encontraron modelos para esta configuración de proveedor.",
     "modelDiscoveryMissingConfig": "Configure primero el endpoint remoto, el proveedor y la clave API.",
     "modelDiscoveryMissingKey": "Ingrese la clave API completa para descubrir modelos.",
+    "modelDiscoveryFailed": "No se pudo cargar la lista de modelos.",
     "sandboxProfilePermissive": "Permisivo",
     "sandboxProfileStandard": "Estándar",
     "sandboxProfileStrict": "Estricto",
@@ -1884,7 +2035,7 @@
       "result": {
         "verified": "Conexión verificada. El chat con clave de API está listo.",
         "notConfigured": "No hay ningún proveedor de chat con clave de API listo para verificar. Elige un proveedor, guarda su clave de API y vuelve a intentarlo.",
-        "consentRequired": "Activa «Procesamiento de texto con IA y proveedores externos» en Privacidad → Consentimiento y vuelve a intentarlo.",
+        "consentRequired": "Activa «Procesamiento de texto con IA y proveedores externos» en Privacidad → Control de datos y vuelve a intentarlo.",
         "restartRequired": "El cambio de proveedor guardado se aplica cuando Maekon se reinicia. Reinicia Maekon y vuelve a verificar.",
         "budgetExhausted": "Se agotó el presupuesto diario de tokens de IA. Vuelve a intentarlo cuando se restablezca.",
         "providerError": "El proveedor no completó una respuesta. Revisa la clave de API y el modelo, y vuelve a intentarlo.",
@@ -1907,6 +2058,7 @@
     "interruptionList": "Eventos de interrupción",
     "loadMoreRemaining_one": "Más ({{count}} restante)",
     "loadMoreRemaining_other": "Más ({{count}} restantes)",
+    "metricsLoadFailed": "No se pudieron cargar las métricas de concentración.",
     "active": "Activa",
     "completed": "Completada",
     "suggestions": {
@@ -2141,6 +2293,11 @@
     },
     "boundaryTitle": "Algo salió mal",
     "boundaryRetry": "Reintentar",
+    "generic": "Algo salió mal. Inténtelo de nuevo.",
+    "tryAgainLater": "Inténtelo de nuevo en unos momentos.",
+    "supportDetails": "Detalles para soporte",
+    "copySupportDetails": "Copiar detalles",
+    "supportDetailsCopied": "Copiado",
     "serverOffline": "El servidor está fuera de línea",
     "serverOfflineDesc": "No se pudo conectar con el agente Maekon. Asegúrese de que el agente esté en ejecución.",
     "retryConnection": "Reintentar conexión",
@@ -2160,7 +2317,7 @@
   "sidebar": {
     "claimsBrowser": "Afirmaciones de memoria",
     "egressLedger": "Libro de salida",
-    "overview": "Resumen",
+    "overview": "Vista general",
     "systemMetrics": "Métricas del sistema",
     "activeProcesses": "Procesos activos",
     "focusScore": "Puntuación de concentración",
@@ -2172,13 +2329,13 @@
     "byTag": "Por etiqueta",
     "byImportance": "Por importancia",
     "activityReport": "Reporte de actividad",
-    "focusReport": "Reporte de concentración",
+    "focusReport": "Reporte de productividad",
     "exportData": "Exportar datos",
     "currentScore": "Puntuación actual",
     "weeklyTrend": "Tendencia semanal",
     "focusSessions": "Sesiones de concentración",
     "interruptions": "Interrupciones",
-    "timeline": "Línea de tiempo",
+    "playback": "Reproductor",
     "eventLog": "Registro de eventos",
     "policies": "Estado de ejecución",
     "commands": "Comandos",
@@ -2194,7 +2351,7 @@
     "dataControls": "Control de datos",
     "consent": "Consentimiento",
     "dangerZone": "Zona de peligro",
-    "dataExport": "Exportar datos",
+    "dataExport": "Copia de seguridad y exportación",
     "recentSearches": "Búsquedas recientes",
     "browseTags": "Explorar etiquetas",
     "segments": "Segmentos",
@@ -2237,6 +2394,7 @@
   "aiReadiness": {
     "readyTitle": "Las funciones de IA están listas",
     "blockedTitle": "Se requiere configurar la IA",
+    "unknownReason": "Esta función no se puede usar en este momento.",
     "capability": {
       "chatSubprocess": "Chat de IA · CLI de suscripción",
       "chatHttpApi": "Chat de IA · API del proveedor",
@@ -2253,6 +2411,7 @@
       "consent_required": "No se ha otorgado el consentimiento de privacidad necesario.",
       "access_mode_mismatch": "El modo de acceso a IA no coincide con esta ruta del proveedor.",
       "endpoint_or_profile_required": "Selecciona un endpoint o perfil del proveedor.",
+      "http_chat_settings_resave_required": "Estos ajustes de IA se guardaron con una versión anterior. Vuelve a seleccionar tu proveedor en los ajustes de IA y guarda los cambios.",
       "provider_not_detected": "No se detectó el proveedor seleccionado.",
       "provider_auth_required": "Se requiere autenticar el proveedor.",
       "provider_auth_unverified": "La autenticación del proveedor no está verificada.",
@@ -2433,6 +2592,7 @@
     "undo": "Deshacer",
     "noOverrides": "No hay anulaciones en este rango",
     "noSegments": "No se encontraron segmentos para este rango de fechas",
+    "noSegmentsDescription": "Prueba con otro rango de fechas para encontrar segmentos de actividad.",
     "overridden": "Anulado",
     "personalTime": "Tiempo personal",
     "untilRemoved": "Hasta eliminarlo (sin caducidad automática)",
@@ -2440,6 +2600,31 @@
     "effectReassignRegime": "La reagrupación futura usa el régimen seleccionado para este segmento.",
     "effectPersonalTime": "El análisis posterior trata este intervalo como tiempo personal.",
     "effectUnknown": "Se aplica a la recalibración posterior."
+  },
+  "regimeOptions": {
+    "deepWork": "Trabajo profundo",
+    "communication": "Comunicación",
+    "meeting": "Reunión",
+    "break": "Descanso",
+    "admin": "Tareas administrativas"
+  },
+  "workTypes": {
+    "ACTIVE_CODING": "Programación",
+    "CODE_REVIEW": "Revisión de código",
+    "WRITING": "Escritura",
+    "READING": "Lectura",
+    "DESIGNING": "Diseño",
+    "FORM_FILLING": "Rellenar formularios",
+    "BROWSING": "Navegación web",
+    "PASSIVE_MEETING": "Reunión (escucha)",
+    "ACTIVE_MEETING": "Reunión (participación)",
+    "NAVIGATION": "Navegación",
+    "TERMINAL_COMMANDS": "Comandos de terminal",
+    "LOG_READING": "Lectura de registros",
+    "DOCUMENT_WRITING": "Redacción de documentos",
+    "DOCUMENT_READING": "Lectura de documentos",
+    "CHAT_COMPOSING": "Redacción de mensajes",
+    "UNKNOWN": "Desconocido"
   },
   "coaching": {
     "title": "Historial de coaching",
@@ -2531,19 +2716,20 @@
     "regimeLabelPlaceholder": "p. ej., Programación intensiva"
   },
   "onboarding": {
-    "step3Search": "Busca todo lo que has visto",
-    "aiFeatures": {
-      "optInHint": "Opcional: prepara la memoria por niveles, el embedding, la búsqueda semántica y los resúmenes con IA. El procesamiento puede usar loopback, una CLI de suscripción o una API externa según tu configuración. El consentimiento de aprendizaje de patrones y un reinicio siguen siendo necesarios.",
-      "enableButton": "Preparar funciones de IA",
-      "enabling": "Activando…",
-      "prepared": "Configuración de IA guardada",
-      "preparedNote": "Guardar la configuración no significa que esté lista. Completa los requisitos de proveedor y el consentimiento separado de aprendizaje de patrones, y reinicia Maekon.",
-      "error": "No se pudieron activar las funciones de IA: {{error}}"
-    },
     "step1Title": "Bienvenido a Maekon",
-    "step1Desc": "Maekon monitorea la actividad de su escritorio y ofrece sugerencias inteligentes para aumentar la productividad.",
+    "step1Desc": "Maekon guarda un registro privado de tu trabajo en este ordenador para que encuentres lo que viste y retomes lo que estabas haciendo.",
+    "intro": {
+      "captureTitle": "Una cronología de tu trabajo",
+      "captureDesc": "Registra en este dispositivo las aplicaciones, las ventanas y el texto en pantalla con los que trabajas.",
+      "resumeTitle": "Retoma lo que estabas haciendo",
+      "resumeDesc": "Repasa en qué trabajabas antes de una interrupción. Con la IA conectada, Maekon también sugiere tu siguiente paso.",
+      "searchTitle": "Busca lo que has visto",
+      "searchDesc": "Encuentra una página, un documento o un mensaje por las palabras que había en tu pantalla.",
+      "privacyNote": "No se registra nada hasta que aceptes. Puedes desactivar la monitorización o eliminar registros cuando quieras en Privacidad."
+    },
     "step2Title": "Permisos",
     "step2Desc": "Maekon necesita algunos permisos para funcionar correctamente.",
+    "step2DescMac": "Accesibilidad y Grabación de pantalla son necesarias para capturar contexto de forma fiable. Las notificaciones se recomiendan para recordatorios y coaching, pero no bloquean la configuración.",
     "step2DescWindows": "Windows normalmente no requiere permisos separados, pero Maekon sigue dependiendo de que el acceso al escritorio, la captura de pantalla y las notificaciones estén disponibles.",
     "step2DescLinux": "Linux normalmente depende de servicios de sesión en lugar de avisos del sistema. Confirma que la accesibilidad, la captura de pantalla y las notificaciones estén disponibles en tu sesión de escritorio.",
     "step2Accessibility": "Accesibilidad",
@@ -2553,19 +2739,6 @@
     "step2WindowsScreenCapture": "Captura de escritorio",
     "step2LinuxAccessibility": "Sesión AT-SPI",
     "step2LinuxScreenCapture": "Captura de escritorio",
-    "step3Title": "Funciones",
-    "step3Desc": "Esto es lo que Maekon puede hacer por usted.",
-    "step3Capture": "Captura de contexto en tiempo real",
-    "step3Analysis": "Analisis impulsado por IA",
-    "step3Suggestions": "Sugerencias inteligentes",
-    "step4Title": "Listo para empezar",
-    "step4Desc": "Todo esta configurado. Comience a usar Maekon ahora.",
-    "step4Tip": "Consejo: presione {{shortcut}} en cualquier momento para abrir la Paleta de comandos y saltar a cualquier página.",
-    "next": "Siguiente",
-    "back": "Atras",
-    "skip": "Omitir",
-    "complete": "Comenzar",
-    "step2DescMac": "Accesibilidad y Grabación de pantalla son necesarias para capturar contexto de forma fiable. Las notificaciones se recomiendan para recordatorios y coaching, pero no bloquean la configuración.",
     "step2AccessibilityAction": "Permitir acceso de accesibilidad",
     "step2ScreenCaptureAction": "Permitir grabación de pantalla",
     "step2PermissionEnabled": "Habilitado",
@@ -2580,54 +2753,93 @@
     "step2PermissionCheckFailed": "No se pudo leer el estado actual de los permisos de escritorio.",
     "step2SystemSettingsOpenFailed": "No se pudo abrir la Configuración del sistema de macOS.",
     "step2NotificationRequestFailed": "No se pudo solicitar el permiso de notificaciones.",
+    "consent": {
+      "title": "Activa la monitorización de la actividad",
+      "description": "Maekon solo registra tu trabajo en este ordenador después de que aceptes. Los registros se quedan en este dispositivo y puedes desactivar la monitorización o retirar el consentimiento cuando quieras en Privacidad.",
+      "collectedTitle": "Con la monitorización activada, Maekon recopila:",
+      "grantAndContinue": "Aceptar y continuar",
+      "granting": "Guardando…",
+      "continueWithout": "Continuar sin monitorización",
+      "declineNote": "Si continúas sin monitorización, Maekon no recopila nada y tu cronología, la búsqueda y las sugerencias seguirán vacías hasta que actives «{{label}}» en Privacidad.",
+      "granted": "La monitorización de la actividad está activada",
+      "grantedNote": "Maekon ya registra en este dispositivo. Puedes desactivarla o retirar el consentimiento cuando quieras en Privacidad.",
+      "osNote": "Este consentimiento es independiente del permiso de grabación de pantalla del sistema operativo del paso anterior. Maekon necesita ambos para capturar tu pantalla.",
+      "error": "No se pudo guardar el consentimiento. Inténtalo de nuevo."
+    },
+    "ai": {
+      "title": "Conecta la IA",
+      "description": "Opcional. Elige qué puede usar la IA y luego conecta un proveedor. También puedes hacerlo más tarde en Configuración.",
+      "consentTitle": "Qué puede usar la IA",
+      "consentHint": "Cada elemento se guarda en cuanto lo marcas. Lo que no marques sigue desactivado.",
+      "consent": {
+        "fullTextDesc": "Envía al proveedor que elijas el texto que escribes en el chat de IA y el contexto mínimo de la pantalla que necesita cada solicitud, con los datos personales ocultos. Nunca se envían capturas originales, credenciales como contraseñas ni el contenido de las aplicaciones excluidas. Es necesario para conectar un proveedor.",
+        "ocrDesc": "Lee el texto de las capturas de pantalla en este dispositivo para que puedas buscarlo y Maekon sugiera los siguientes pasos. No sale del dispositivo salvo que configures un proveedor de OCR externo. Ya está activado si aceptaste la monitorización.",
+        "patternLearningDesc": "Aprende en este dispositivo tus patrones de trabajo habituales para los resúmenes, las sugerencias de siguiente paso y el coaching. Las alertas de coaching siguen desactivadas hasta que las actives en Configuración → Preferencias de coaching."
+      },
+      "consentError": "No se pudo guardar esta opción. Inténtalo de nuevo.",
+      "providerTitle": "Conecta un proveedor",
+      "providerHint": "Elige un proveedor e introduce su clave de API. Al guardar también se activa el análisis que usan los resúmenes y las sugerencias; solo usa lo que marcaste arriba.",
+      "providerNeedsConsent": "Para conectar un proveedor, activa «{{label}}» arriba.",
+      "providerUnsupported": "Este proveedor no se puede configurar aquí. Elige otro o configúralo más tarde en Configuración → IA y Automatización.",
+      "checking": "Comprobando la conexión de IA…",
+      "loadFailed": "No se pudo cargar la configuración de IA",
+      "loadFailedDesc": "Continúa sin IA y conecta un proveedor más tarde en Configuración → IA y Automatización.",
+      "saving": "Guardando el proveedor…",
+      "saveFailed": "No se pudo guardar el proveedor",
+      "restartTitle": "Reinicia Maekon para terminar la conexión",
+      "restartDesc": "El proveedor está guardado y se aplica tras reiniciar. Cierra Maekon y vuelve a abrirlo; la configuración continúa en este paso para que compruebes la clave.",
+      "savedProvider": "Proveedor guardado: {{name}}",
+      "quitButton": "Cerrar Maekon",
+      "quitFailed": "No se pudo cerrar Maekon. Ciérralo desde la barra de menús o la bandeja del sistema y vuelve a abrirlo.",
+      "restartLater": "Reiniciar más tarde",
+      "changeProvider": "Elegir otro proveedor",
+      "blockedTitle": "Todavía no se puede usar la IA",
+      "unreachable": "El proveedor guardado aún no funciona. Revisa la clave y la red, o elige otro proveedor.",
+      "unavailable": "Ahora mismo la IA no está disponible en Maekon. Continúa sin IA y vuelve a comprobarlo más tarde en Configuración → IA y Automatización.",
+      "connectedTitle": "La IA está conectada",
+      "connectedDesc": "El chat de IA ya funciona.",
+      "features": {
+        "suggestions": "Sugerencias de siguiente paso",
+        "segmentSummary": "Resúmenes de sesiones de trabajo",
+        "dailySummary": "Resumen del día"
+      },
+      "featureStatus": {
+        "on": "Activado",
+        "needsConsent": "Requiere «{{items}}»",
+        "afterRestart": "Se activa al reiniciar",
+        "inSettings": "Actívalo en Configuración → IA y Automatización"
+      },
+      "withoutButton": "Continuar sin IA",
+      "withoutNote": "Sin IA, la cronología y la búsqueda siguen funcionando; los resúmenes, las sugerencias de siguiente paso y el chat siguen desactivados hasta que conectes un proveedor en Configuración → IA y Automatización."
+    },
+    "step4Title": "Listo para empezar",
+    "ready": {
+      "desc": "La configuración está lista. Maekon registra en segundo plano mientras trabajas.",
+      "ai": {
+        "connected": "La IA está conectada. El chat ya funciona, y los resúmenes y las sugerencias solo usan lo que aceptaste.",
+        "restartPending": "La IA se activa cuando reinicies Maekon. Al volver a abrirlo, comprueba la clave en Configuración → IA y Automatización.",
+        "off": "La IA no está conectada. Conecta un proveedor en Configuración → IA y Automatización para activar los resúmenes, las sugerencias y el chat."
+      },
+      "recoveryNeedsAi": "Para esto necesitas conectar la IA."
+    },
+    "readyCollectionOffTitle": "Empiezas con la monitorización desactivada",
+    "readyCollectionOffDesc": "Continuaste sin monitorización, así que Maekon no recopila nada y tu cronología, la búsqueda y las sugerencias seguirán vacías. Actívala ahora o más tarde en Privacidad.",
+    "readyGrantNow": "Activar la monitorización ahora",
+    "step4RecoveryCardHint": "Cuando quieras retomar lo que estabas haciendo, pulsa «Encontrar mi siguiente paso» en el pequeño panel de seguimiento de la parte superior de tu pantalla. Maekon lee lo que hay en pantalla y te propone el siguiente paso.",
+    "step4SuggestionsShortcut": "Las sugerencias de siguiente paso aparecen en el panel de sugerencias. Ábrelo cuando quieras con {{shortcut}}.",
+    "step4Tip": "Consejo: presione {{shortcut}} en cualquier momento para abrir la Paleta de comandos y saltar a cualquier página.",
+    "next": "Siguiente",
+    "back": "Atrás",
+    "skip": "Omitir",
+    "complete": "Comenzar",
+    "stepIndicatorLabel": "Indicador de paso",
     "autostart": {
       "title": "Start Maekon automatically?",
       "body": "Maekon works best when running in the background. Want it to launch when you sign in to your computer?",
       "enable_button": "Enable",
       "not_now_button": "Not now",
       "dismiss_button": "Don't ask again"
-    },
-    "consent": {
-      "title": "Iniciar la monitorización",
-      "description": "Otorga tu consentimiento para que Maekon recopile contexto en el dispositivo y pueda ayudarte. Todo permanece en tu ordenador y puedes retirar el consentimiento en cualquier momento en los ajustes de Privacidad.",
-      "collectedTitle": "Cuando inicies la monitorización, Maekon recopilará:",
-      "grantButton": "Iniciar la monitorización (otorgar consentimiento)",
-      "granting": "Otorgando…",
-      "granted": "Consentimiento de monitorización otorgado",
-      "grantedNote": "Maekon empezará a recopilar contexto en el dispositivo. Gestiona o retira el consentimiento en cualquier momento en los ajustes de Privacidad.",
-      "osNote": "Otorgar el consentimiento es independiente del permiso de grabación de pantalla del sistema operativo de arriba: Maekon necesita ambos para capturar tu pantalla.",
-      "error": "No se pudo otorgar el consentimiento: {{error}}"
-    },
-    "coaching": {
-      "title": "Coaching proactivo",
-      "description": "Maekon puede analizar tus patrones de actividad y enviar sugerencias — avisos superpuestos y notificaciones de escritorio — para ayudarte a mantenerte enfocado. Todo se procesa únicamente en tu dispositivo.",
-      "enablesList": {
-        "item1": "Avisos superpuestos según el contexto (solo local)",
-        "item2": "Notificaciones de escritorio para enfoque y objetivos",
-        "item3": "Aprendizaje de patrones de actividad (consentimiento Tier-4)",
-        "item4": "Horas de silencio y perfiles configurables"
-      },
-      "enableButton": "Activar coaching",
-      "enabling": "Activando…",
-      "enabled": "Coaching activado",
-      "activeNote": "Los cambios surten efecto de inmediato — no es necesario reiniciar.",
-      "monitoringMissingWarning": "El consentimiento de monitorización aún no se ha otorgado. Otórgalo en el paso anterior para que el coaching funcione.",
-      "error": "No se pudo activar el coaching: {{error}}"
-    },
-    "audio": {
-      "title": "El audio está desactivado de forma predeterminada",
-      "description": "Pospón la captura del micrófono durante la configuración. Puedes revisar las opciones de audio y voz a texto más tarde en Ajustes.",
-      "statusTitle": "Audio pospuesto",
-      "statusDescription": "La captura del micrófono y la voz a texto siguen desactivadas. No se contacta ningún dispositivo, modelo ni proveedor de audio.",
-      "localNote": "La voz a texto local permanece desactivada hasta que habilites el audio e instales un modelo explícitamente.",
-      "egressNote": "La voz a texto en la nube permanece desactivada hasta que elijas un proveedor y configures credenciales en Ajustes."
-    },
-    "stepIndicatorLabel": "Indicador de paso",
-    "step4RecoveryCardHint": "Cuando quieras retomar lo que estabas haciendo, pulsa «Encontrar mi siguiente paso» en el pequeño panel de seguimiento de la parte superior de tu pantalla. Maekon lee lo que hay en pantalla y propone tu siguiente paso como una recovery card. Necesitas un proveedor de IA configurado en Ajustes.",
-    "step4SuggestionsShortcut": "Las tarjetas de recuperación aparecen en el panel de sugerencias — ábrelo cuando quieras con {{shortcut}}.",
-    "readyCollectionOffTitle": "Comenzando con la recopilación desactivada",
-    "readyCollectionOffDesc": "Omitiste el consentimiento, así que Maekon no está recopilando nada. Tu cronología y sugerencias permanecerán vacías. Actívalo ahora o más tarde en Configuración > Privacidad.",
-    "readyGrantNow": "Activar la recopilación ahora"
+    }
   },
   "chat": {
     "title": "Sesiones de IA",
@@ -2669,7 +2881,14 @@
     "load_failed": "No se pudieron cargar las sesiones de IA.",
     "refresh_failed": "No se pudieron actualizar las sesiones de IA.",
     "send_failed": "No se pudo enviar el mensaje.",
-    "full_text_consent_required": "Activa «Procesamiento de texto con IA y proveedores externos» en Privacidad → Consentimiento y vuelve a intentarlo.",
+    "rename_failed": "No se pudo cambiar el nombre de la sesión.",
+    "suggestions_failed": "No se pudieron obtener sugerencias.",
+    "suggestions_added_one": "Se añadió {{count}} sugerencia de esta conversación",
+    "suggestions_added_other": "Se añadieron {{count}} sugerencias de esta conversación",
+    "suggestions_generated_one": "Se generó {{count}} sugerencia",
+    "suggestions_generated_other": "Se generaron {{count}} sugerencias",
+    "response_failed": "La IA no pudo terminar esta respuesta.",
+    "full_text_consent_required": "Activa «Procesamiento de texto con IA y proveedores externos» en Privacidad → Control de datos y vuelve a intentarlo.",
     "retry_failed": "No se pudo reintentar la sesión.",
     "delete_failed": "No se pudo eliminar la sesión.",
     "copy_failed": "No se pudo copiar el contenido.",
@@ -2992,6 +3211,8 @@
     "forgetPeerCancel": "Cancelar",
     "forgetPeerSuccess": "Se desconectó {{peerName}}.",
     "forgetPeerError": "No se pudo desconectar el par. Inténtelo de nuevo.",
+    "syncFailed": "La sincronización no terminó.",
+    "setupFailed": "No se pudo activar la sincronización.",
     "uploadRecoveryTitle": "Comprobación de recuperación de carga",
     "uploadRecoveryDescription": "Verifica con datos sintéticos locales que una carga interrumpida siga sin marcarse como enviada hasta que el reintento se confirme.",
     "uploadRecoveryInterrupted": "La carga se interrumpió. {{count}} elementos sintéticos permanecen locales y sin enviar.",
@@ -3104,10 +3325,15 @@
     "communication": "Comunicación",
     "meetings": "Reuniones",
     "contextSwitches": "Cambios de contexto",
-    "regimeDistribution": "Distribución de regímenes"
+    "regimeDistribution": "Distribución de regímenes",
+    "longestFocus": "Mayor enfoque: {{duration}}",
+    "share": "Proporción"
   },
   "statusBar": {
-    "lastCaptureTimestamp": "Hora de la última captura"
+    "lastCaptureTimestamp": "Hora de la última captura",
+    "captureActive": "Captura activa",
+    "captureWaiting": "Esperando captura",
+    "noCaptureYet": "Aún no hay capturas"
   },
   "processList": {
     "pid": "PID:",
@@ -3293,7 +3519,7 @@
     "pinPlaceholder": "Introduce tu PIN",
     "unlock": "Desbloquear",
     "noMethodTitle": "Sin método de reautenticación",
-    "noMethodBody": "Configura un PIN en los ajustes de privacidad para ver el historial de capturas, o desactiva el requisito de reautenticación.",
+    "noMethodBody": "Configura un PIN en Configuración → Protección de capturas para ver el historial de capturas, o desactiva el requisito de reautenticación.",
     "goToSettings": "Abrir ajustes",
     "cancel": "Cancelar",
     "errors": {
@@ -3328,7 +3554,11 @@
   },
   "durableTasks": {
     "loading": "Cargando tareas…",
-    "loadError": "No se pudieron cargar las tareas: {{error}}",
+    "loadError": "No se pudieron cargar las tareas. Inténtalo de nuevo.",
+    "actionConflict": "Este elemento cambió. Revisa la lista actualizada y vuelve a intentarlo.",
+    "actionConsentRequired": "Esta acción requiere tu consentimiento. Revisa los permisos en Configuración y vuelve a intentarlo.",
+    "actionSourceUnavailable": "El origen no está disponible. Vuelve a conectarlo e inténtalo de nuevo.",
+    "actionFailed": "No se pudo cambiar la tarea. Revisa el estado actual y vuelve a intentarlo.",
     "suggestedHeading": "Tareas sugeridas",
     "noSuggestions": "No hay sugerencias de tareas para revisar.",
     "noTitle": "(sin título)",
@@ -3551,6 +3781,14 @@
       "localReceipt": {
         "title": "No se pudo guardar el recibo local",
         "body": "Puede existir un archivo local, pero no se declara éxito porque falló su recibo duradero. Revisa la salida seleccionada, repara el almacenamiento local y vuelve a intentarlo. Código: {{code}}"
+      },
+      "unverified": {
+        "title": "La creación no está verificada",
+        "body": "El resultado no permite confirmar un archivo y un recibo duradero para esta asignación. Puede existir un archivo. Revisa la salida seleccionada antes de reintentar; la carga al servidor tampoco está verificada."
+      },
+      "uploadUnverified": {
+        "title": "La carga al servidor no está verificada",
+        "body": "El resultado confirma un archivo local y un recibo duradero para esta asignación, que se muestran abajo. No se ha verificado el registro en el servidor. Comprueba su estado antes de reintentar."
       },
       "cancelled": {
         "title": "No se creó ningún archivo",

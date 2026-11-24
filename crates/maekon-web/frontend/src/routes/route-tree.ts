@@ -3,28 +3,27 @@ import {
   BookOpen,
   Calendar,
   CalendarRange,
+  CircleArrowUp,
   ClipboardList,
   Clock,
+  Cpu,
   FileSpreadsheet,
-  FileText,
-  Gauge,
   Home,
-  Image,
-  Info,
   LayoutDashboard,
   LifeBuoy,
-  Lightbulb,
   ListChecks,
   LogIn,
   Mail,
+  Menu,
   MessageCircle,
   MessageSquare,
-  Monitor,
   RefreshCw,
+  ScanSearch,
+  ScrollText,
   Settings,
-  Shield,
-  Tag,
-  Wrench,
+  ShieldCheck,
+  Target,
+  Workflow,
   Zap,
 } from 'lucide-react'
 import type { ComponentType, LazyExoticComponent } from 'react'
@@ -38,7 +37,13 @@ export interface RouteNode {
   defaultChild?: string
   component: LazyExoticComponent<ComponentType> | ComponentType
   children?: RouteLeaf[]
-  group?: 'monitor' | 'insights' | 'manage'
+  group?: NavGroupId
+  /**
+   * Bundle that holds this route one level back in the main side-panel tree.
+   * Group routes without a `section` are the front destinations at the first
+   * tree level (see `navSections` and `getGroupLayout`).
+   */
+  section?: NavSectionId
   bottom?: boolean
   /**
    * When true, RouteRenderer does NOT wrap the component in a RouteErrorBoundary.
@@ -166,14 +171,23 @@ const AuditEntries = lazy(() => import('../pages/audit/EntriesSection'))
  * Single source of truth for routing, sidebar, and ActivityBar.
  *
  * RouteRenderer auto-generates <Route> elements from this array.
- * SidePanel derives sidebar nodes from `children`.
- * ActivityBar derives nav items from top-level entries.
+ * SidePanel derives the main tree from `group` + `section`, and the
+ * Settings / Privacy trees from `children`.
+ * ActivityBar derives its group icon from `navGroups` and its bottom icons
+ * from `bottom`.
+ *
+ * #13736: routes in the `main` group without a `section` are the front
+ * destinations at the first side-panel level; every other group route sits one
+ * level back under a `navSections` bundle. No path changed in that move, so old
+ * URLs, deep links, notification targets and CommandPalette entries keep
+ * working — `routes/__tests__/legacyPaths.test.tsx` freezes the earlier list.
  *
  * Ordering note: RouteRenderer sorts at render time (leaves first, "/" last),
- * so declaration order here is for readability, not route priority.
+ * so declaration order here is the display order of the side panel and the
+ * command palette, not route priority.
  */
 export const routeTree: RouteNode[] = [
-  // --- Monitor group (real-time observation) ---
+  // --- Front destinations (first side-panel level) ---
   {
     path: '/',
     labelKey: 'nav.dashboard',
@@ -182,24 +196,9 @@ export const routeTree: RouteNode[] = [
     component: DashboardLayout,
     children: [
       { path: 'overview', labelKey: 'sidebar.overview', component: OverviewSection },
-      { path: 'monitoring', labelKey: 'sidebar.systemMetrics', component: MonitoringSection },
       { path: 'insights', labelKey: 'sidebar.activityHeatmap', component: InsightsSection },
     ],
-    group: 'monitor',
-  },
-  {
-    path: '/day',
-    labelKey: 'nav.dashboardDay',
-    icon: Calendar,
-    component: DashboardDay,
-    group: 'monitor',
-  },
-  {
-    path: '/week',
-    labelKey: 'nav.dashboardWeek',
-    icon: CalendarRange,
-    component: DashboardWeek,
-    group: 'monitor',
+    group: 'main',
   },
   {
     path: '/timeline',
@@ -211,24 +210,19 @@ export const routeTree: RouteNode[] = [
       { path: 'all', labelKey: 'sidebar.allFrames', component: AllFrames },
       { path: 'filters', labelKey: 'sidebar.filters', component: FiltersView },
     ],
-    group: 'monitor',
+    group: 'main',
   },
   {
-    path: '/replay',
-    labelKey: 'nav.replay',
-    icon: Zap,
-    defaultChild: 'timeline',
-    component: ReplayLayout,
-    children: [
-      { path: 'timeline', labelKey: 'sidebar.timeline', component: ReplayTimeline },
-      { path: 'events', labelKey: 'sidebar.eventLog', component: EventsSection },
-    ],
-    group: 'monitor',
+    path: '/search',
+    labelKey: 'nav.search',
+    icon: ScanSearch,
+    component: Search,
+    group: 'main',
   },
   {
     path: '/focus',
     labelKey: 'nav.focus',
-    icon: Image,
+    icon: Target,
     defaultChild: 'score',
     component: FocusLayout,
     children: [
@@ -236,10 +230,8 @@ export const routeTree: RouteNode[] = [
       { path: 'sessions', labelKey: 'sidebar.focusSessions', component: SessionsSection },
       { path: 'interruptions', labelKey: 'sidebar.interruptions', component: InterruptionsSection },
     ],
-    group: 'monitor',
+    group: 'main',
   },
-
-  // --- Insights group (analysis & AI) ---
   {
     path: '/reports',
     labelKey: 'nav.reports',
@@ -251,7 +243,45 @@ export const routeTree: RouteNode[] = [
       { path: 'focus', labelKey: 'sidebar.focusReport', component: FocusReport },
       { path: 'export', labelKey: 'sidebar.exportData', component: ExportSection },
     ],
-    group: 'insights',
+    group: 'main',
+  },
+  {
+    path: '/chat',
+    labelKey: 'nav.chat',
+    icon: MessageSquare,
+    component: Chat,
+    group: 'main',
+  },
+
+  // --- "More" bundle (periodic review surfaces) ---
+  {
+    path: '/day',
+    labelKey: 'nav.dashboardDay',
+    icon: Calendar,
+    component: DashboardDay,
+    group: 'main',
+    section: 'more',
+  },
+  {
+    path: '/week',
+    labelKey: 'nav.dashboardWeek',
+    icon: CalendarRange,
+    component: DashboardWeek,
+    group: 'main',
+    section: 'more',
+  },
+  {
+    path: '/replay',
+    labelKey: 'nav.replay',
+    icon: Zap,
+    defaultChild: 'timeline',
+    component: ReplayLayout,
+    children: [
+      { path: 'timeline', labelKey: 'sidebar.playback', component: ReplayTimeline },
+      { path: 'events', labelKey: 'sidebar.eventLog', component: EventsSection },
+    ],
+    group: 'main',
+    section: 'more',
   },
   {
     path: '/coaching',
@@ -263,35 +293,23 @@ export const routeTree: RouteNode[] = [
       { path: 'goals', labelKey: 'sidebar.coachingGoals', component: GoalsSection },
       { path: 'history', labelKey: 'sidebar.coachingEvents', component: CoachingHistorySection },
     ],
-    group: 'insights',
+    group: 'main',
+    section: 'more',
   },
   {
-    path: '/chat',
-    labelKey: 'nav.chat',
-    icon: MessageSquare,
-    component: Chat,
-    group: 'insights',
-  },
-  {
-    path: '/playbooks',
-    labelKey: 'nav.playbooks',
-    icon: BookOpen,
-    component: Playbooks,
-    group: 'insights',
-  },
-  {
-    path: '/search',
-    labelKey: 'nav.search',
-    icon: Tag,
-    component: Search,
-    group: 'insights',
+    path: '/tasks',
+    labelKey: 'nav.tasks',
+    icon: ListChecks,
+    component: TasksPage,
+    group: 'main',
+    section: 'more',
   },
 
-  // --- Manage group (control & administration) ---
+  // --- "Tools" bundle (automation and the controls around it) ---
   {
     path: '/automation',
     labelKey: 'nav.automation',
-    icon: Monitor,
+    icon: Workflow,
     defaultChild: 'policies',
     component: AutomationLayout,
     children: [
@@ -299,7 +317,24 @@ export const routeTree: RouteNode[] = [
       { path: 'commands', labelKey: 'sidebar.commands', component: CommandsSection },
       { path: 'history', labelKey: 'sidebar.executionHistory', component: HistorySection },
     ],
-    group: 'manage',
+    group: 'main',
+    section: 'tools',
+  },
+  {
+    path: '/playbooks',
+    labelKey: 'nav.playbooks',
+    icon: BookOpen,
+    component: Playbooks,
+    group: 'main',
+    section: 'tools',
+  },
+  {
+    path: '/policies',
+    labelKey: 'nav.policies',
+    icon: ScrollText,
+    component: Policies,
+    group: 'main',
+    section: 'tools',
   },
   {
     path: '/recalibration',
@@ -311,21 +346,8 @@ export const routeTree: RouteNode[] = [
       { path: 'segments', labelKey: 'sidebar.segments', component: SegmentsSection },
       { path: 'overrides', labelKey: 'sidebar.overrideHistory', component: OverridesSection },
     ],
-    group: 'manage',
-  },
-  {
-    path: '/policies',
-    labelKey: 'nav.policies',
-    icon: Shield,
-    component: Policies,
-    group: 'manage',
-  },
-  {
-    path: '/tasks',
-    labelKey: 'nav.tasks',
-    icon: ListChecks,
-    component: TasksPage,
-    group: 'manage',
+    group: 'main',
+    section: 'tools',
   },
   {
     path: '/audit',
@@ -337,22 +359,47 @@ export const routeTree: RouteNode[] = [
       { path: 'summary', labelKey: 'sidebar.auditSummary', component: AuditSummary },
       { path: 'entries', labelKey: 'sidebar.auditEntries', component: AuditEntries },
     ],
-    group: 'manage',
+    group: 'main',
+    section: 'tools',
   },
+
+  // --- "System" bundle (app health and help) ---
   {
     path: '/updates',
     labelKey: 'nav.updates',
-    icon: FileText,
+    icon: CircleArrowUp,
     defaultChild: 'status',
     component: UpdatesLayout,
     children: [
       { path: 'status', labelKey: 'sidebar.currentStatus', component: StatusSection },
       { path: 'channel', labelKey: 'sidebar.updateChannel', component: ChannelSection },
     ],
-    group: 'manage',
+    group: 'main',
+    section: 'system',
+  },
+  // #8079: dedicated Support & Diagnostics destination. #13736 moved it from a
+  // bottom rail icon into the System bundle; the path did not change.
+  {
+    path: '/support',
+    labelKey: 'nav.support',
+    icon: LifeBuoy,
+    component: SupportPage,
+    group: 'main',
+    section: 'system',
+  },
+  // #13735 moved CPU, memory and process data off the Dashboard's first screen
+  // to this leaf at the former Dashboard child URL, so deep links keep working.
+  // #13736 puts it in the System bundle next to Support, which links to it.
+  {
+    path: '/monitoring',
+    labelKey: 'sidebar.systemMetrics',
+    icon: Cpu,
+    component: MonitoringSection,
+    group: 'main',
+    section: 'system',
   },
 
-  // --- Bottom items ---
+  // --- Bottom items (direct ActivityBar icons) ---
   {
     path: '/settings',
     labelKey: 'nav.settings',
@@ -391,7 +438,7 @@ export const routeTree: RouteNode[] = [
   {
     path: '/privacy',
     labelKey: 'nav.privacy',
-    icon: Info,
+    icon: ShieldCheck,
     defaultChild: 'data',
     component: PrivacyLayout,
     children: [
@@ -403,18 +450,9 @@ export const routeTree: RouteNode[] = [
     ],
     bottom: true,
   },
-  // #8079: dedicated Support & Diagnostics destination — a childless bottom
-  // leaf (like a group leaf, it renders no SidePanel tree; the ActivityBar
-  // icon navigates directly to the page).
-  {
-    path: '/support',
-    labelKey: 'nav.support',
-    icon: LifeBuoy,
-    component: SupportPage,
-    bottom: true,
-  },
   // #9603 WD-02.1: the connected-mode sign-in screen. Deliberately neither
-  // `group` nor `bottom`, so it claims no slot on the 48px ActivityBar rail —
+  // `group` nor `bottom`, so it claims no slot in the side-panel tree or on the
+  // 48px ActivityBar rail —
   // signing in is optional in a local-first product and does not deserve
   // permanent nav chrome, least of all in the default build where connected
   // mode is not compiled in at all. It is still a first-class destination:
@@ -438,9 +476,10 @@ export const routeTree: RouteNode[] = [
   // make the default build's landing page an error state, so the two coexist and
   // sign-in is what moves you between them.
   //
-  // Like `/login`: no `group` and no `bottom`, so it claims no slot on the 48px
-  // rail — but it carries an `icon` so CommandPalette lists it and it is
-  // reachable by name rather than only as a post-login redirect target.
+  // Like `/login`: no `group` and no `bottom`, so it claims no slot in the side
+  // panel or on the 48px rail — but it carries an `icon` so CommandPalette
+  // lists it and it is reachable by name rather than only as a post-login
+  // redirect target.
   {
     path: '/home',
     labelKey: 'nav.contextHome',
@@ -465,16 +504,18 @@ export const routeTree: RouteNode[] = [
 ]
 
 // ---------------------------------------------------------------------------
-// Top-level category navigation
+// Side-panel navigation: one group, front destinations, and bundles
 // ---------------------------------------------------------------------------
 //
-// The ActivityBar renders a small fixed set of category icons rather than one
-// icon per top-level route.  Clicking a category icon navigates to its
-// `defaultPath` and the SidePanel expands to show the entire group's routes
-// (top-level + their `children`) as a nested tree.  This keeps the 48px rail
-// uncluttered while still making every route reachable in two clicks.
+// #13736: the rail used to carry three category icons (Monitor / Insights /
+// Manage) whose trees listed 17 top-level destinations between them, next to
+// three bottom icons. A newcomer had 20 places to choose from. Now the single
+// `main` group icon opens one tree: the six front destinations (group routes
+// without a `section`) at the first level, and every other group route one
+// level back under a `navSections` bundle. Settings and Privacy stay as direct
+// bottom icons, so 6 + 2 destinations are visible up front.
 
-export type NavGroupId = 'monitor' | 'insights' | 'manage'
+export type NavGroupId = 'main'
 
 export interface NavGroup {
   id: NavGroupId
@@ -487,26 +528,55 @@ export interface NavGroup {
   defaultPath: string
 }
 
-export const navGroups: NavGroup[] = [
-  { id: 'monitor', labelKey: 'nav.groupMonitor', icon: Gauge, defaultPath: '/' },
-  // /reports is the Insights landing because it surfaces charts and activity
-  // summaries that give users the broadest overview of their analysis data.
-  { id: 'insights', labelKey: 'nav.groupInsights', icon: Lightbulb, defaultPath: '/reports' },
-  { id: 'manage', labelKey: 'nav.groupManage', icon: Wrench, defaultPath: '/automation' },
+export const navGroups: NavGroup[] = [{ id: 'main', labelKey: 'nav.groupMain', icon: Menu, defaultPath: '/' }]
+
+export type NavSectionId = 'more' | 'tools' | 'system'
+
+export interface NavSection {
+  id: NavSectionId
+  labelKey: string
+}
+
+/** Bundles one level back in the main tree, in display order. */
+export const navSections: NavSection[] = [
+  { id: 'more', labelKey: 'nav.sectionMore' },
+  { id: 'tools', labelKey: 'nav.sectionTools' },
+  { id: 'system', labelKey: 'nav.sectionSystem' },
 ]
 
 /**
  * Return every top-level route that belongs to a nav group, preserving the
- * declaration order in `routeTree`.  Used by `SidePanel` (group mode) to
- * build the tree shown in the resizable panel.
+ * declaration order in `routeTree`.
  *
- * @param group The nav group ID — `'monitor' | 'insights' | 'manage'`.
+ * @param group The nav group ID.
  * @returns The routes whose `group` field matches. Empty if the group has
- *          no routes (e.g. `manage` during an IA experiment), in which case
- *          the SidePanel falls back to rendering `null`.
+ *          no routes, in which case the SidePanel falls back to rendering
+ *          `null`.
  */
 export function getRoutesForGroup(group: NavGroupId): RouteNode[] {
   return routeTree.filter((r) => r.group === group)
+}
+
+export interface GroupLayout {
+  /** Routes shown at the first tree level, in declaration order. */
+  front: RouteNode[]
+  /** Non-empty bundles in `navSections` order, each with its routes. */
+  sections: { section: NavSection; routes: RouteNode[] }[]
+}
+
+/**
+ * Split a group's routes into the front destinations and the bundles one
+ * level back. Used by `SidePanel` to build the main tree and by the IA budget
+ * test, so both read the same layout.
+ */
+export function getGroupLayout(group: NavGroupId): GroupLayout {
+  const routes = getRoutesForGroup(group)
+  return {
+    front: routes.filter((r) => !r.section),
+    sections: navSections
+      .map((section) => ({ section, routes: routes.filter((r) => r.section === section.id) }))
+      .filter((entry) => entry.routes.length > 0),
+  }
 }
 
 /**

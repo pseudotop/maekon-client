@@ -27,8 +27,10 @@ pub use error::VisionError;
 
 pub mod accessibility;
 pub mod capture;
+pub mod capture_authority;
 pub mod contour_classifier;
 pub mod delta;
+pub mod dirty_region;
 pub mod element_finder;
 pub mod encoder;
 pub mod frame_pii;
@@ -43,6 +45,7 @@ pub mod privacy;
 pub mod privacy_gateway;
 pub mod processor;
 pub mod ring_buffer;
+pub mod screen_probe;
 pub mod screen_regions;
 pub mod thumbnail;
 pub mod timeline;

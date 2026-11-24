@@ -127,7 +127,7 @@ impl FewShotSelector {
         history: &[SuggestionHistoryEntry],
         current_regime: Option<&str>,
     ) -> Vec<FewShotExample> {
-        if history.is_empty() {
+        if self.max_examples == 0 || history.is_empty() {
             return vec![];
         }
 
@@ -365,6 +365,17 @@ mod tests {
             !result[0].context_summary.contains("user@example.com"),
             "Raw PII should not appear"
         );
+    }
+
+    #[test]
+    fn zero_limit_rejects_even_accepted_feedback() {
+        let history = vec![
+            make_entry("accepted", Some("coding"), "Editor", "Accepted example"),
+            make_entry("rejected", Some("coding"), "Editor", "Rejected example"),
+        ];
+        let selector = FewShotSelector::new(0);
+        assert!(selector.select(&history, None).is_empty());
+        assert!(selector.select(&history, Some("coding")).is_empty());
     }
 
     #[test]

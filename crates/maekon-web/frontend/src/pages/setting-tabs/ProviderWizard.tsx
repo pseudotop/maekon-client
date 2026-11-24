@@ -16,6 +16,7 @@ import { colors, motion, radius, typography } from '../../styles/tokens'
 import type { BadgeColor } from '../../styles/variants'
 import { resolveApiUrl, withResolvedLocalAuthHeaders } from '../../utils/api-base'
 import { cn } from '../../utils/cn'
+import type { SettingsFormResult } from '../hooks/useSettingsForm'
 
 interface ProviderDef {
   id: string
@@ -181,6 +182,25 @@ function ProviderIcon({ icon, size = 28 }: { icon: string; size?: number }) {
   return <img src={icon} alt="" width={size} height={size} className="shrink-0" loading="lazy" />
 }
 
+type ProviderSelectionForm = Pick<
+  SettingsFormResult,
+  'handleAiProviderChange' | 'handleProviderSurfaceChange' | 'handleExternalApiChange'
+>
+
+/**
+ * Maps a wizard choice onto the settings form. Settings and onboarding (#13734)
+ * share this so a provider picked in either place is saved the same way.
+ */
+export function applyProviderWizardSelection(form: ProviderSelectionForm, provider: ProviderDef, apiKey: string) {
+  form.handleAiProviderChange('access_mode', 'ProviderApiKey')
+  form.handleAiProviderChange('llm_provider', provider.tier === 'local' ? 'Local' : 'Remote')
+  form.handleProviderSurfaceChange('llm_api', provider.surfaceId)
+  if (apiKey) {
+    form.handleExternalApiChange('llm_api', 'api_key_masked', apiKey)
+  }
+  form.handleExternalApiChange('llm_api', 'model', provider.defaultModel)
+}
+
 interface ProviderWizardProps {
   onSelect: (provider: ProviderDef, apiKey: string) => void
   className?: string
@@ -271,6 +291,7 @@ export default function ProviderWizard({ onSelect, className }: ProviderWizardPr
             </label>
             <Input
               id="wizard-api-key"
+              data-testid="provider-wizard-api-key"
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
@@ -347,7 +368,13 @@ export default function ProviderWizard({ onSelect, className }: ProviderWizardPr
 
           <div className="flex-1" />
 
-          <Button variant="primary" onClick={handleSave} disabled={needsApiKey && !apiKey} className="text-sm">
+          <Button
+            variant="primary"
+            onClick={handleSave}
+            disabled={needsApiKey && !apiKey}
+            className="text-sm"
+            data-testid="provider-wizard-save"
+          >
             {t('settings.ai.saveActivate', 'Save & Activate')}
           </Button>
         </div>
@@ -370,6 +397,7 @@ export default function ProviderWizard({ onSelect, className }: ProviderWizardPr
             type="button"
             onClick={() => !provider.comingSoon && setSelected(provider)}
             disabled={provider.comingSoon}
+            data-testid={`provider-wizard-option-${provider.id}`}
             className={cn(
               'flex items-center gap-2.5 p-3 text-left',
               radius.md,

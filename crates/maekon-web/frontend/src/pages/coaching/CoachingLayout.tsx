@@ -10,6 +10,7 @@ import { Alert, Button, Card, CardContent, CardHeader, CardTitle, Select, Skelet
 import { useCoachingHistory, useGoalProgress } from '../../hooks/useCoaching'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { minutesFromSeconds } from '../../utils/formatters'
 
 export interface CoachingOutletContext {
   history: CoachingEvent[] | undefined
@@ -137,7 +138,7 @@ export default function CoachingLayout() {
                 >
                   {isCustom && (
                     <option value={intervalSecs}>
-                      {t('coaching.frequencyCustom', { min: Math.round(intervalSecs / 60) })}
+                      {t('coaching.frequencyCustom', { min: minutesFromSeconds(intervalSecs) })}
                     </option>
                   )}
                   {INTERVAL_PRESETS.map((opt) => (

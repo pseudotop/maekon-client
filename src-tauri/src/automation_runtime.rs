@@ -279,13 +279,23 @@ impl LatestFrameOcrElementFinder {
         self
     }
 
+    /// Hold the newest stored frame for OCR lookups. When there is none, or it
+    /// cannot be read, the finder drops its image and the OCR results kept for
+    /// it, so a lookup never answers from a frame it could not read again.
     async fn refresh_latest_frame(&self) -> Result<bool, CoreError> {
-        match self.frame_storage.load_latest_frame().await? {
-            Some((image_data, image_format)) => {
+        match self.frame_storage.load_latest_frame().await {
+            Ok(Some((image_data, image_format))) => {
                 self.inner.set_image(image_data, image_format).await;
                 Ok(true)
             }
-            None => Ok(false),
+            Ok(None) => {
+                self.inner.clear_image().await;
+                Ok(false)
+            }
+            Err(error) => {
+                self.inner.clear_image().await;
+                Err(error)
+            }
         }
     }
 }
@@ -595,6 +605,68 @@ mod tests {
                 "keyless reader over encrypted data must NOT yield plaintext (the #8045 bug)"
             );
         }
+    }
+
+    /// Counts the OCR calls the runtime finder makes.
+    struct CountingOcrProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl OcrProvider for CountingOcrProvider {
+        async fn extract_elements(
+            &self,
+            image: &[u8],
+            image_format: &str,
+        ) -> Result<Vec<OcrResult>, CoreError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            FakeOcrProvider.extract_elements(image, image_format).await
+        }
+
+        fn provider_name(&self) -> &str {
+            "counting-ocr"
+        }
+
+        fn is_external(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn latest_frame_finder_reads_each_stored_frame_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Arc::new(create_test_storage(temp_dir.path().to_path_buf()).await);
+        storage
+            .save_frame(Utc::now(), b"fake-webp-binary")
+            .await
+            .unwrap();
+        let ocr = Arc::new(CountingOcrProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let finder = LatestFrameOcrElementFinder::new(storage.clone(), ocr.clone());
+        let calls = || ocr.calls.load(std::sync::atomic::Ordering::SeqCst);
+
+        for _ in 0..3 {
+            let found = finder.find_element(Some("save"), None, None).await.unwrap();
+            assert_eq!(found.len(), 1);
+        }
+        assert_eq!(calls(), 1, "the unchanged frame was read more than once");
+
+        // The frame is gone: no answer, and nothing is kept for it.
+        storage.delete_all_frames().await.unwrap();
+        let err = finder
+            .find_element(Some("save"), None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::ElementNotFound { .. }));
+
+        // The same bytes stored again are read afresh.
+        storage
+            .save_frame(Utc::now(), b"fake-webp-binary")
+            .await
+            .unwrap();
+        finder.find_element(Some("save"), None, None).await.unwrap();
+        assert_eq!(calls(), 2, "results kept for a vanished frame were reused");
     }
 
     #[tokio::test]

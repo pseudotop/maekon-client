@@ -10,8 +10,8 @@ const defaultProps = {
   sidebarCollapsed: false,
 }
 
-// New activity bar shape: 3 category buttons + every bottom item (settings,
-// privacy, …) still rendered as its own direct icon.
+// Activity bar shape (#13736): one main group button + every bottom item
+// (Settings, Privacy) rendered as its own direct icon.
 const expectedBottomItems = routeTree.filter((r) => r.bottom && r.icon).length
 const expectedNavButtonCount = navGroups.length + expectedBottomItems
 
@@ -38,24 +38,33 @@ describe('ActivityBar', () => {
     }
   })
 
+  it('keeps only Settings and Privacy as direct bottom icons (#13736)', () => {
+    renderWithProviders(<ActivityBar {...defaultProps} />)
+    expect(screen.getByTestId('nav-settings')).toBeInTheDocument()
+    expect(screen.getByTestId('nav-privacy')).toBeInTheDocument()
+    // Support moved one level back into the System bundle of the main tree.
+    expect(screen.queryByTestId('nav-support')).not.toBeInTheDocument()
+    expect(expectedBottomItems).toBe(2)
+  })
+
   it('group icon is active when pathname matches a route in that group', () => {
     renderWithProviders(<ActivityBar {...defaultProps} />, {
       routerProps: { initialEntries: ['/automation/policies'] },
     })
     const activeButton = screen.getByRole('button', { current: 'page' })
-    expect(activeButton).toHaveAttribute('data-testid', 'nav-group-manage')
+    expect(activeButton).toHaveAttribute('data-testid', 'nav-group-main')
   })
 
   it('clicking an inactive group navigates to its default path', async () => {
     const user = userEvent.setup()
     const onToggleSidebar = vi.fn()
     renderWithProviders(<ActivityBar onToggleSidebar={onToggleSidebar} sidebarCollapsed={true} />, {
-      routerProps: { initialEntries: ['/'] },
+      routerProps: { initialEntries: ['/settings/general'] },
     })
 
-    // Clicking the data group from monitor → group changes + sidebar toggles
+    // Clicking the main group from Settings → group changes + sidebar toggles
     // (because the sidebar was collapsed).
-    await user.click(screen.getByTestId('nav-group-insights'))
+    await user.click(screen.getByTestId('nav-group-main'))
     expect(onToggleSidebar).toHaveBeenCalled()
   })
 
@@ -65,11 +74,11 @@ describe('ActivityBar', () => {
     const user = userEvent.setup()
     const onToggleSidebar = vi.fn()
     renderWithProviders(<ActivityBar onToggleSidebar={onToggleSidebar} sidebarCollapsed={false} />, {
-      routerProps: { initialEntries: ['/overview'] },
+      routerProps: { initialEntries: ['/privacy/data'] },
     })
 
-    // From monitor, click data while sidebar is already expanded.
-    await user.click(screen.getByTestId('nav-group-insights'))
+    // From Privacy, click the main group while the sidebar is already expanded.
+    await user.click(screen.getByTestId('nav-group-main'))
     expect(onToggleSidebar).not.toHaveBeenCalled()
   })
 
@@ -80,9 +89,9 @@ describe('ActivityBar', () => {
       routerProps: { initialEntries: ['/reports/activity'] },
     })
 
-    // /reports is in the insights group — clicking insights while sidebar is
-    // open should collapse it without navigating elsewhere.
-    await user.click(screen.getByTestId('nav-group-insights'))
+    // /reports is in the main group — clicking it while the sidebar is open
+    // should collapse it without navigating elsewhere.
+    await user.click(screen.getByTestId('nav-group-main'))
     expect(onToggleSidebar).toHaveBeenCalledTimes(1)
   })
 

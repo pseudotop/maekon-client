@@ -9,6 +9,7 @@ import type {
   SecretBackendCapabilities,
 } from '../../api/client'
 import { oauthCancelFlow, oauthConnectionStatus, oauthFlowStatus, oauthRevoke, oauthStartFlow } from '../../api/client'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Badge, Button, Card } from '../../components/ui'
 import {
   findFeatureCapability,
@@ -18,6 +19,7 @@ import {
   providerSurfaceStatusCopyKey,
 } from '../../features/featureCapabilities'
 import { invalidateAiReadinessSnapshotCache } from '../../hooks/useAiReadinessSnapshot'
+import { supportDetailOf } from '../../i18n/errorDisplay'
 import { iconSize, typography } from '../../styles/tokens'
 import { isOAuthPanelAvailable } from './oauth-panel-support'
 
@@ -89,7 +91,8 @@ export default function OAuthConnectionPanel({
 
   const toErrorState = useCallback(
     (error: unknown): PanelState => {
-      const detail = error instanceof Error ? error.message : String(error)
+      // The raw text picks the sentence and is kept as collapsed support detail.
+      const detail = supportDetailOf(error) ?? ''
       if (detail.includes('1455') || detail.includes('already in use')) {
         return { phase: 'error', detail, message: t('settingsOAuth.portConflict') }
       }
@@ -393,7 +396,7 @@ export default function OAuthConnectionPanel({
       {state.phase === 'error' && (
         <div className="space-y-2">
           <p className="text-semantic-error text-sm">{state.message}</p>
-          {state.detail && <p className="text-content-muted text-xs">{state.detail}</p>}
+          <SupportDetails detail={state.detail} />
           <Button type="button" variant="secondary" size="sm" onClick={refreshStatus}>
             {t('settingsOAuth.retry')}
           </Button>

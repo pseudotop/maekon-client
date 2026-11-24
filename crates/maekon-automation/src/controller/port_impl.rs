@@ -13,6 +13,10 @@ use maekon_core::models::gui::{
     GuiExecutionTicket, GuiHighlightRequest, GuiInteractionSession, GuiSessionEvent,
 };
 use maekon_core::models::intent::{IntentCommand, IntentResult, WorkflowPreset};
+use maekon_core::models::intent_execution::{
+    IntentExecutionLookup, IntentSubmission, ObservedIntentFailure, ObservedIntentResult,
+    OpaqueIntentId,
+};
 use maekon_core::models::ui_scene::UiScene;
 use maekon_core::ports::automation::AutomationPort;
 
@@ -115,6 +119,30 @@ fn policy_delete_audit_details(policy_id: &str, removed: bool) -> String {
 
 #[async_trait]
 impl AutomationPort for AutomationController {
+    async fn execute_intent_hint_observed(
+        &self,
+        command_id: &str,
+        session_id: &str,
+        intent_hint: &str,
+        submission: IntentSubmission,
+    ) -> Result<ObservedIntentResult, ObservedIntentFailure> {
+        AutomationController::execute_intent_hint_observed(
+            self,
+            command_id,
+            session_id,
+            intent_hint,
+            submission,
+        )
+        .await
+    }
+
+    async fn intent_execution_by_submission(
+        &self,
+        submission: OpaqueIntentId,
+    ) -> IntentExecutionLookup {
+        AutomationController::intent_execution_by_submission(self, submission)
+    }
+
     async fn execute_command(&self, cmd: &AutomationCommand) -> Result<CommandResult, CoreError> {
         self.execute_command(cmd).await.map_err(Into::into)
     }

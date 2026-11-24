@@ -20,7 +20,7 @@ import { TagBadge } from '../components/TagBadge'
 import { Badge, Button, Card, EmptyState, Input, Spinner } from '../components/ui'
 import { colors, iconSize, motion, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
-import { escapeRegex, formatDateTime } from '../utils/formatters'
+import { escapeRegex, formatDateTime, formatDuration } from '../utils/formatters'
 
 function highlightText(text: string, query: string): JSX.Element {
   if (!query || !text) return <>{text}</>
@@ -698,14 +698,6 @@ function SearchResultCard({ result, query, onTagClick, selectedTagIds }: SearchR
 
 interface SemanticResultCardProps {
   result: SemanticSearchResult
-}
-
-function formatDuration(secs: number): string {
-  if (secs < 60) return `${Math.round(secs)}s`
-  if (secs < 3600) return `${Math.round(secs / 60)}m`
-  const h = Math.floor(secs / 3600)
-  const m = Math.round((secs % 3600) / 60)
-  return m > 0 ? `${h}h ${m}m` : `${h}h`
 }
 
 function scoreColor(score: number): string {

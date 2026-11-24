@@ -12,7 +12,9 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { fetchAuditVerify } from '../../api/client'
 import type { AuditChainReport } from '../../api/contracts'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Button, Spinner } from '../../components/ui'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { IS_TAURI } from '../../utils/platform'
@@ -24,9 +26,10 @@ async function invokeVerifyAuditLog(): Promise<AuditChainReport> {
 
 export default function ChainVerifySection() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [report, setReport] = useState<AuditChainReport | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorDisplay | null>(null)
 
   const handleVerify = async () => {
     setLoading(true)
@@ -38,7 +41,7 @@ export default function ChainVerifySection() {
       const result = IS_TAURI ? await invokeVerifyAuditLog() : await fetchAuditVerify()
       setReport(result)
     } catch (e) {
-      setError(e instanceof Error ? e.message : t('auditLog.verifyFailed', 'Verification failed'))
+      setError(describeError(e, t('errors.tryAgainLater')))
       setReport(null)
     } finally {
       setLoading(false)
@@ -66,7 +69,8 @@ export default function ChainVerifySection() {
 
       {error && (
         <Alert variant="error" title={t('auditLog.verifyFailed', 'Verification failed')}>
-          {error}
+          {error.text}
+          <SupportDetails detail={error.detail} />
         </Alert>
       )}
 

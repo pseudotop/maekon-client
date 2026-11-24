@@ -10,12 +10,14 @@ const meta = {
     docs: {
       description: {
         component: `
-The SidePanel has two distinct render modes after the category restructure:
+The SidePanel has two distinct render modes:
 
-1. **Group mode** (default for any route that belongs to a nav group). Shows
-   the full group tree — every top-level route in the group is a first-level
-   treeitem, and each route's \`children\` nest underneath.  The current
-   pathname highlights the most-specific match.
+1. **Group mode** (default for any route in the main group). Shows the main
+   tree — the six front destinations as first-level treeitems, then the
+   More / Tools / System bundles that hold every other route one level back
+   (#13736). Bundles start folded except the one holding the current page;
+   each route's \`children\` nest underneath, and the current pathname
+   highlights the most-specific match.
 
 2. **Bottom-route mode** (Settings, Privacy). Falls back to the legacy
    "children of the current route" view.  Bottom routes are outside the group
@@ -61,37 +63,37 @@ const baseArgs = {
   onCollapse: noOp,
 }
 
-/** Monitor group tree rendered from /overview (Dashboard.Overview selected). */
-export const MonitorGroupTree: Story = {
+/** Main tree rendered from /overview (Dashboard.Overview selected, bundles folded). */
+export const MainTree: Story = {
   args: baseArgs,
 }
 
-/** Data group tree rendered from /reports/activity. */
-export const DataGroupTree: Story = {
+/** Front destination with children — /reports/activity opens Reports only. */
+export const FrontDestinationTree: Story = {
   args: baseArgs,
   decorators: routeDecorator('/reports/activity'),
 }
 
-/** Manage group tree rendered from /audit/summary. */
-export const ManageGroupTree: Story = {
+/** Bundled route — /audit/summary opens the Tools bundle and the Audit Log parent. */
+export const BundledRouteTree: Story = {
   args: baseArgs,
   decorators: routeDecorator('/audit/summary'),
 }
 
-/** Nested child highlighted — /automation/policies → Policies leaf selected. */
+/** Nested child highlighted — /automation/policies → Runtime Status leaf selected. */
 export const NestedChildHighlighted: Story = {
   args: baseArgs,
   decorators: routeDecorator('/automation/policies'),
 }
 
-/** Leaf-only route — /day highlights the Day View leaf in the Monitor tree. */
+/** Leaf-only route — /day highlights the Day View leaf inside the More bundle. */
 export const LeafRouteInGroup: Story = {
   args: baseArgs,
   decorators: routeDecorator('/day'),
 }
 
-/** Chat (leaf in Data group) — tree shows every Data route, Chat selected. */
-export const LeafRouteChatInData: Story = {
+/** Chat (front leaf) — main tree with Chat selected and every bundle folded. */
+export const FrontLeafRouteChat: Story = {
   args: baseArgs,
   decorators: routeDecorator('/chat'),
 }

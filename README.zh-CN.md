@@ -25,7 +25,7 @@ Maekon 是一款 Apache-2.0 local-first 桌面代理，可在不依赖 ONESHIM �
 
 ## Source Build 快速开始
 
-公开仓库已经可用，此 source snapshot 面向 `v0.0.1-rc.11` release candidate。只有对应的 GitHub Release 和资产实际存在时，才应视为已经发布。GitHub 的 `latest` endpoint 不包含 prerelease，因此验证 release binary 时请使用安装文档中的版本固定命令。开发和 debug build 请从本地 source checkout 运行。
+公开仓库已经可用，此 source snapshot 面向 `v0.0.1-rc.12` release candidate。只有对应的 GitHub Release 和资产实际存在时，才应视为已经发布。GitHub 的 `latest` endpoint 不包含 prerelease，因此验证 release binary 时请使用安装文档中的版本固定命令。开发和 debug build 请从本地 source checkout 运行。
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -136,7 +136,7 @@ Release 安装命令记录在下面的安装文档中。如需 prerelease 版本
 
 ## 系统要求
 
-- Rust 1.88.0 或更高版本
+- Rust 1.95.0 或更高版本
 - macOS 10.15+ / Windows 10+ / Linux x64（推荐 X11；在 Wayland 上无法使用跟踪面板、叠加层和“找到下一步”）
 
 ### 平台限制
@@ -257,22 +257,22 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 
 ### 快速安装（终端）
 
-请在对应 GitHub Release 发布资产后，再运行以下固定到 `v0.0.1-rc.11` 的命令。
+请在对应 GitHub Release 发布资产后，再运行以下固定到 `v0.0.1-rc.12` 的命令。
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.12 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.12 -RequireSignature
 ```
 
 ### 发布产物
@@ -361,19 +361,21 @@ Maekon 是应用显示名称。当前发布文件名会有意保留 `maekon-*`
 
 ## 架构
 
-基于 Hexagonal Architecture（Ports & Adapters）的 15 包 Cargo workspace。14 个 crate 位于 `crates/` 下，主二进制/composition root 位于 `src-tauri/`（Tauri v2，包名 `maekon-app`）。
+Cargo workspace 的成员以 [`Cargo.toml`](./Cargo.toml) 的 members 为准。crate 位于 `crates/`，`maekon-app` composition root 位于 `src-tauri/`。
 
 ```
 maekon-client/
 ├── src-tauri/              # Tauri v2 二进制入口 + composition root
 │   ├── src/
-│   │   ├── main.rs         # Tauri 应用构建 + 依赖注入布线
+│   │   ├── main.rs         # 薄入口；调用 maekon_app::run()
 │   │   ├── tray.rs         # 系统托盘菜单
 │   │   ├── commands/       # Tauri IPC 命令
 │   │   └── scheduler/      # 后台调度器
 │   └── tauri.conf.json     # Tauri 配置
 ├── crates/
 │   ├── maekon-core/       # 领域模型 + Port trait + 错误定义 + 配置
+│   ├── maekon-http-core/  # 共享 outbound HTTP 基础层
+│   ├── maekon-integration/ # 外部 integration adapter
 │   ├── maekon-network/    # HTTP/SSE/WebSocket/gRPC、压缩、认证
 │   ├── maekon-suggestion/ # 建议接收与处理
 │   ├── maekon-storage/    # SQLite 本地存储 + schema migration
@@ -398,6 +400,8 @@ maekon-client/
 | Crate | 职责 | 文档 |
 |----------|------|------|
 | maekon-core | 领域模型、Port 接口 | [详情](./docs/crates/maekon-core.md) |
+| maekon-http-core | 共享 outbound HTTP 基础层 | [source](./crates/maekon-http-core/) |
+| maekon-integration | 外部 integration adapter | [source](./crates/maekon-integration/) |
 | maekon-network | HTTP/SSE/WebSocket/gRPC、压缩、认证 | [详情](./docs/crates/maekon-network.md) |
 | maekon-vision | 捕获、增量编码、OCR | [详情](./docs/crates/maekon-vision.md) |
 | maekon-monitor | 系统指标、活动窗口 | [详情](./docs/crates/maekon-monitor.md) |
@@ -432,7 +436,7 @@ maekon-client/
 
 1. 在 `maekon-core` 中定义 Port trait
 2. 在对应的 crate 中实现 adapter
-3. 在 `src-tauri/src/main.rs` 中完成依赖注入布线
+3. 在 `src-tauri/src/lib.rs` 和 `src-tauri/src/setup/` 中完成 DI 布线；`main.rs` 仅委托库调用
 4. 添加测试
 
 ### 构建安装包

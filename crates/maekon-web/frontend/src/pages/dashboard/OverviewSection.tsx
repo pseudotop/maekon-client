@@ -1,5 +1,11 @@
 /**
- * Overview section — realtime metrics card, TodaySummary, and stat cards.
+ * Overview — the Dashboard's first screen (#13735).
+ *
+ * Top to bottom: a one-line summary of the day, what to do next, and four key
+ * numbers. Everything comes from data the client already has: the daily
+ * summary, the heuristic daily digest (no AI connection needed), and the
+ * durable task store. CPU, memory and process data live on their own page
+ * (`/monitoring`, linked from Support).
  *
  * Owns the Dashboard empty state. Lives here (not DashboardLayout) so that
  * the layout can always render <Outlet>, letting RouteRenderer's
@@ -8,131 +14,222 @@
  * AuditLayout adopted after the 2026-04-08 routing.spec regression.
  */
 
-import { BarChart3, Camera, Clock, Monitor, Moon } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { BarChart3, Brain, CalendarX, Clock, ListChecks, Monitor, Moon, Shuffle, Sun } from 'lucide-react'
+import { useId } from 'react'
 import { useTranslation } from 'react-i18next'
-import StatCard from '../../components/StatCard'
+import { useNavigate } from 'react-router-dom'
+import { fetchDailyDigest } from '../../api/client'
+import { hasCapturedActivity } from '../../components/CaptureProcessingStatus'
+import StatCard, { statCardGrid } from '../../components/StatCard'
 import TodaySummary from '../../components/TodaySummary'
-import { Badge, Card, EmptyState } from '../../components/ui'
+import { Alert, Button, EmptyState, GuidanceEmptyState, Skeleton } from '../../components/ui'
 import { useCaptureStatus } from '../../hooks/useCaptureStatus'
 import { useTypedOutletContext } from '../../routes'
-import { colors, iconSize, typography } from '../../styles/tokens'
-import { cn } from '../../utils/cn'
+import { iconSize } from '../../styles/tokens'
 import { formatDuration } from '../../utils/formatters'
+import { parseLocalCalendarDate } from '../../utils/localDate'
 import type { DashboardContext } from './DashboardLayout'
-import { resolveDashboardEmptyState } from './dashboardEmptyState'
+import {
+  type DashboardFirstStepAction,
+  resolveDashboardEmptyState,
+  resolveDashboardFirstStep,
+} from './dashboardEmptyState'
+import OverviewNextActions from './NextActionsCard'
+import { resolveTodayHeadline, resolveTodayNumbers, type TodayNumbers } from './todayDigest'
+
+/** Stands in for a number the digest has not produced yet. */
+const NO_VALUE = '—'
+
+type DigestState = 'loading' | 'error' | 'ready'
+
+function firstStepLabel(t: (key: string) => string, action: DashboardFirstStepAction): string {
+  switch (action) {
+    case 'reviewConsent':
+      return t('dashboard.firstRun.action.reviewConsent')
+    case 'resumeCapture':
+      return t('dashboard.firstRun.action.resumeCapture')
+    case 'checkStatus':
+      return t('dashboard.firstRun.action.checkStatus')
+  }
+}
+
+/** No activity today: say what is going on with capture and what to do next. */
+function FirstRunEmptyState() {
+  const { t } = useTranslation()
+  const navigate = useNavigate()
+  const captureState = resolveDashboardEmptyState(useCaptureStatus())
+  const firstStep = resolveDashboardFirstStep(captureState)
+
+  return (
+    <GuidanceEmptyState
+      data-testid="overview-first-run"
+      data-capture-state={captureState}
+      className="py-8"
+      icon={<Monitor className={iconSize.hero} aria-hidden="true" />}
+      title={t(`emptyState.dashboard.${captureState}.title`)}
+      description={t(`emptyState.dashboard.${captureState}.description`)}
+      guidance={[
+        {
+          icon: <Sun className={iconSize.sm} aria-hidden="true" />,
+          title: t('dashboard.todaySummary.title'),
+          description: t('dashboard.firstRun.guideSummary'),
+        },
+        {
+          icon: <ListChecks className={iconSize.sm} aria-hidden="true" />,
+          title: t('dashboard.nextActions.title'),
+          description: t('dashboard.firstRun.guideNextActions'),
+        },
+        {
+          icon: <BarChart3 className={iconSize.sm} aria-hidden="true" />,
+          title: t('dashboard.keyNumbers.title'),
+          description: t('dashboard.firstRun.guideKeyNumbers'),
+        },
+      ]}
+      primaryAction={
+        firstStep ? { label: firstStepLabel(t, firstStep.action), onClick: () => navigate(firstStep.path) } : undefined
+      }
+    />
+  )
+}
+
+/** A past day with nothing captured is not a first run; just say so. */
+function NoActivityForDate({ date }: { date: string }) {
+  const { t, i18n } = useTranslation()
+  const parsed = parseLocalCalendarDate(date)
+  const label = parsed ? parsed.toLocaleDateString(i18n.resolvedLanguage, { month: 'long', day: 'numeric' }) : date
+
+  return (
+    <div data-testid="overview-no-activity-for-date">
+      <EmptyState
+        icon={<CalendarX className={iconSize.hero} aria-hidden="true" />}
+        title={t('dashboard.noActivityForDate.title')}
+        description={t('dashboard.noActivityForDate.description', { date: label })}
+      />
+    </div>
+  )
+}
+
+function SummaryErrorAlert({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation()
+  return (
+    <Alert variant="error" title={t('dashboard.summaryError.title')} data-testid="overview-summary-error">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <span>{t('dashboard.summaryError.description')}</span>
+        <Button variant="secondary" size="sm" onClick={onRetry}>
+          {t('common.retry')}
+        </Button>
+      </div>
+    </Alert>
+  )
+}
+
+function OverviewSkeleton() {
+  return (
+    <div data-testid="overview-loading" aria-busy="true" className="space-y-6">
+      <Skeleton className="h-24 w-full" />
+      <Skeleton className="h-24 w-full" />
+      <div className={statCardGrid}>
+        {['active', 'deep-work', 'switches', 'idle'].map((id) => (
+          <Skeleton key={id} className="h-20" />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function KeyNumbers({ numbers, digestState }: { numbers: TodayNumbers; digestState: DigestState }) {
+  const { t, i18n } = useTranslation()
+  const headingId = useId()
+  // Why a digest number is missing. Nothing while the digest is still loading.
+  const missingDetail =
+    digestState === 'error'
+      ? t('dashboard.keyNumbers.unavailable')
+      : digestState === 'ready'
+        ? t('dashboard.keyNumbers.pendingAnalysis')
+        : undefined
+
+  return (
+    <section aria-labelledby={headingId} data-testid="overview-key-numbers">
+      <h2 id={headingId} className="sr-only">
+        {t('dashboard.keyNumbers.title')}
+      </h2>
+      <div className={statCardGrid}>
+        {/* Active time appears once on this screen, always in the short format. */}
+        <StatCard
+          data-testid="metric-card-active-time"
+          title={t('dashboard.activeTime')}
+          value={formatDuration(numbers.activeSecs, true)}
+          icon={<Clock className={iconSize.md} />}
+        />
+        <StatCard
+          data-testid="metric-card-deep-work"
+          title={t('dashboard.keyNumbers.deepWork')}
+          value={numbers.deepWorkSecs === null ? NO_VALUE : formatDuration(numbers.deepWorkSecs, true)}
+          detail={numbers.deepWorkSecs === null ? missingDetail : undefined}
+          icon={<Brain className={iconSize.md} />}
+        />
+        <StatCard
+          data-testid="metric-card-context-switches"
+          title={t('dashboard.keyNumbers.contextSwitches')}
+          value={
+            numbers.contextSwitches === null ? NO_VALUE : numbers.contextSwitches.toLocaleString(i18n.resolvedLanguage)
+          }
+          detail={numbers.contextSwitches === null ? missingDetail : undefined}
+          icon={<Shuffle className={iconSize.md} />}
+        />
+        <StatCard
+          data-testid="metric-card-idle-time"
+          title={t('dashboard.idleTime')}
+          value={formatDuration(numbers.idleSecs, true)}
+          icon={<Moon className={iconSize.md} />}
+        />
+      </div>
+    </section>
+  )
+}
 
 export default function OverviewSection() {
-  const { t } = useTranslation()
-  const captureStatus = useCaptureStatus()
-  const { latestMetrics, idleState, metricsHistory, summary, isWidgetVisible } =
+  const { summary, summaryLoading, summaryError, refetchSummary, selectedDate, isToday, isWidgetVisible } =
     useTypedOutletContext<DashboardContext>('Dashboard')
 
-  const isEmpty =
-    !latestMetrics && !summary?.events_logged && !summary?.frames_captured && (summary?.total_active_secs ?? 0) === 0
+  // Shares the Day view's cache entry. One retry keeps a failing digest from
+  // holding the summary skeleton for the default back-off.
+  const digestQuery = useQuery({
+    queryKey: ['dashboard-day', selectedDate],
+    queryFn: () => fetchDailyDigest(selectedDate),
+    retry: 1,
+  })
 
-  if (isEmpty) {
-    const captureState = resolveDashboardEmptyState(captureStatus)
+  if (summaryLoading) return <OverviewSkeleton />
+  if (summaryError && !summary) return <SummaryErrorAlert onRetry={refetchSummary} />
+
+  // Realtime CPU samples are not activity: an open stream with nothing
+  // captured is still an empty first screen, not a row of zeros.
+  if (!hasCapturedActivity(summary)) {
     return (
-      <EmptyState
-        icon={<Monitor className="h-8 w-8" />}
-        title={t(`emptyState.dashboard.${captureState}.title`)}
-        description={t(`emptyState.dashboard.${captureState}.description`)}
-      />
+      <>
+        {isToday ? <FirstRunEmptyState /> : <NoActivityForDate date={selectedDate} />}
+        {isWidgetVisible('overview.next-actions') && <OverviewNextActions hideWhenEmpty />}
+      </>
     )
   }
 
+  const digest = digestQuery.data
+  const digestState: DigestState = digestQuery.isLoading ? 'loading' : digestQuery.isError ? 'error' : 'ready'
+
   return (
     <>
-      {isWidgetVisible('overview.realtime') && latestMetrics && (
-        <Card variant="default" padding="md">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <span className={cn('h-2 w-2 animate-pulse rounded-full', colors.primary.signal)} />
-              <span className={cn(`${typography.weight.medium} text-sm`, colors.primary.text)}>
-                {t('dashboard.realtimeMonitoring')}
-              </span>
-              {idleState?.is_idle && (
-                <Badge color="warning" size="sm">
-                  {t('dashboard.idle')} {Math.floor((idleState.idle_secs || 0) / 60)}
-                  {t('dashboard.minutes')}
-                </Badge>
-              )}
-            </div>
-            <div className={cn('text-xs', colors.text.secondary)}>
-              {new Date(latestMetrics.timestamp).toLocaleTimeString()}
-            </div>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-4 md:grid-cols-4">
-            <div>
-              <div className={cn(typography.stat.large, colors.primary.text)}>
-                {latestMetrics.cpu_usage.toFixed(1)}%
-              </div>
-              <div className={cn('text-xs', colors.text.secondary)}>{t('dashboard.cpu')}</div>
-            </div>
-            <div>
-              <div className={cn(typography.stat.large, colors.primary.text)}>
-                {latestMetrics.memory_percent.toFixed(1)}%
-              </div>
-              <div className={cn('text-xs', colors.text.secondary)}>{t('dashboard.memory')}</div>
-            </div>
-            <div>
-              <div className={cn(typography.stat.large, colors.primary.text)}>
-                {(latestMetrics.memory_used / 1024 / 1024 / 1024).toFixed(1)} GB
-              </div>
-              <div className={cn('text-xs', colors.text.secondary)}>{t('dashboard.usedMemory')}</div>
-            </div>
-            <div>
-              <div className={cn(typography.stat.large, colors.primary.text)}>{metricsHistory.length}</div>
-              <div className={cn('text-xs', colors.text.secondary)}>{t('dashboard.collectedData')}</div>
-            </div>
-          </div>
-        </Card>
-      )}
-
       {isWidgetVisible('overview.today-summary') && (
         <TodaySummary
-          totalActiveSecs={summary?.total_active_secs ?? 0}
-          topApps={(summary?.top_apps ?? []).map((a) => ({ name: a.name }))}
+          headline={resolveTodayHeadline(summary, digest)}
+          pastDate={isToday ? null : selectedDate}
+          loading={digestState === 'loading'}
         />
       )}
-
+      {isWidgetVisible('overview.next-actions') && <OverviewNextActions />}
       {isWidgetVisible('overview.stat-cards') && (
-        <>
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            <StatCard
-              data-testid="metric-card-active-time"
-              title={t('dashboard.activeTime')}
-              value={formatDuration(summary?.total_active_secs ?? 0)}
-              icon={<Clock className={`${iconSize.md}`} />}
-            />
-            <StatCard
-              data-testid="metric-card-idle-time"
-              title={t('dashboard.idleTime')}
-              value={formatDuration(summary?.total_idle_secs ?? 0)}
-              icon={<Moon className={`${iconSize.md}`} />}
-            />
-            <StatCard
-              data-testid="metric-card-captures"
-              title={t('dashboard.captures')}
-              value={summary?.frames_captured?.toLocaleString() ?? '0'}
-              icon={<Camera className={`${iconSize.md}`} />}
-            />
-            <StatCard
-              data-testid="metric-card-events"
-              title={t('dashboard.events')}
-              value={summary?.events_logged?.toLocaleString() ?? '0'}
-              icon={<BarChart3 className={`${iconSize.md}`} />}
-            />
-          </div>
-          {/* #8077-B: make the count scope explicit — these are today's totals,
-              distinct from the Storage tab's all-time totals. */}
-          <p className="text-content-tertiary text-xs">
-            {t(
-              'dashboard.countScopeNote',
-              "Captures and events reflect today's activity. See Settings > Storage for all-time totals.",
-            )}
-          </p>
-        </>
+        <KeyNumbers numbers={resolveTodayNumbers(summary, digest)} digestState={digestState} />
       )}
     </>
   )

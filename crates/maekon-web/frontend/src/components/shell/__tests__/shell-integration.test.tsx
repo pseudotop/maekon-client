@@ -41,63 +41,97 @@ interface ShellCase {
   expectedHeaderPattern: RegExp
   selectedLeafPattern: RegExp
   expectedTopLevelItems: RegExp[]
+  /** Labels that must NOT sit at the first tree level (demoted one level back). */
+  absentTopLevelItems?: RegExp[]
 }
+
+// #13736: the main tree shows six front destinations, then the More / Tools /
+// System bundles that hold everything else one level back.
+const MAIN_TOP_LEVEL = [
+  /^dashboard$/i,
+  /^timeline$/i,
+  /^search$/i,
+  /^focus$/i,
+  /^reports$/i,
+  /^chat$/i,
+  /^more$/i,
+  /^tools$/i,
+  /^system$/i,
+]
+const DEMOTED = [/day view/i, /replay/i, /automation/i, /execution policies/i, /audit log/i, /updates/i, /support/i]
 
 const CASES: ShellCase[] = [
   {
     route: '/overview',
-    activeGroupTestId: 'nav-group-monitor',
-    expectedHeaderPattern: /monitor/i,
+    activeGroupTestId: 'nav-group-main',
+    expectedHeaderPattern: /menu/i,
     selectedLeafPattern: /overview/i,
-    expectedTopLevelItems: [/dashboard/i, /day view/i, /timeline/i, /replay/i, /focus/i],
+    expectedTopLevelItems: MAIN_TOP_LEVEL,
+    absentTopLevelItems: DEMOTED,
   },
   {
     // Note: `sidebar.policies` (automation child) translates to "Runtime
     // Status", not "Policies", because it's the first tab of the Automation
     // page.  The top-level `nav.policies` ("Execution Policies") is a
-    // separate manage group route.
+    // separate route in the same Tools bundle.  The selected leaf sits two
+    // levels down (Tools › Automation › Runtime Status) and is revealed.
     route: '/automation/policies',
-    activeGroupTestId: 'nav-group-manage',
-    expectedHeaderPattern: /manage/i,
+    activeGroupTestId: 'nav-group-main',
+    expectedHeaderPattern: /menu/i,
     selectedLeafPattern: /runtime status/i,
-    expectedTopLevelItems: [/automation/i, /recalibration/i, /^execution policies$/i, /audit/i, /updates/i],
+    expectedTopLevelItems: MAIN_TOP_LEVEL,
+    absentTopLevelItems: DEMOTED,
   },
   {
     route: '/day',
-    activeGroupTestId: 'nav-group-monitor',
-    expectedHeaderPattern: /monitor/i,
+    activeGroupTestId: 'nav-group-main',
+    expectedHeaderPattern: /menu/i,
     selectedLeafPattern: /day view/i,
-    expectedTopLevelItems: [/dashboard/i, /day view/i, /timeline/i, /replay/i, /focus/i],
+    expectedTopLevelItems: MAIN_TOP_LEVEL,
+    absentTopLevelItems: DEMOTED,
   },
   {
     route: '/reports/activity',
-    activeGroupTestId: 'nav-group-insights',
-    expectedHeaderPattern: /insights/i,
+    activeGroupTestId: 'nav-group-main',
+    expectedHeaderPattern: /menu/i,
     selectedLeafPattern: /activity report/i,
-    expectedTopLevelItems: [/reports/i, /coaching/i, /chat/i, /playbooks/i, /search/i],
+    expectedTopLevelItems: MAIN_TOP_LEVEL,
   },
   {
     route: '/chat',
-    activeGroupTestId: 'nav-group-insights',
-    expectedHeaderPattern: /insights/i,
+    activeGroupTestId: 'nav-group-main',
+    expectedHeaderPattern: /menu/i,
     selectedLeafPattern: /chat/i,
-    expectedTopLevelItems: [/reports/i, /coaching/i, /chat/i, /playbooks/i, /search/i],
+    expectedTopLevelItems: MAIN_TOP_LEVEL,
   },
   {
     route: '/audit/summary',
-    activeGroupTestId: 'nav-group-manage',
-    expectedHeaderPattern: /manage/i,
+    activeGroupTestId: 'nav-group-main',
+    expectedHeaderPattern: /menu/i,
     selectedLeafPattern: /summary/i,
-    expectedTopLevelItems: [/automation/i, /recalibration/i, /^execution policies$/i, /audit/i, /updates/i],
+    expectedTopLevelItems: MAIN_TOP_LEVEL,
+    absentTopLevelItems: DEMOTED,
   },
   {
-    // childGroups: tabs grouped under "Core" and "Advanced" top-level treeitems
+    // Support left the rail for the System bundle; the rail's main group
+    // icon is the active one there.
+    route: '/support',
+    activeGroupTestId: 'nav-group-main',
+    expectedHeaderPattern: /menu/i,
+    selectedLeafPattern: /support/i,
+    expectedTopLevelItems: MAIN_TOP_LEVEL,
+    absentTopLevelItems: DEMOTED,
+  },
+  {
+    // childGroups: tabs grouped under "Core" and "More Settings" top-level
+    // treeitems — the "Advanced" tab no longer sits inside an "Advanced" group.
     route: '/settings/general',
     activeGroupTestId: null,
     activeBottomTestId: 'nav-settings',
     expectedHeaderPattern: /settings/i,
     selectedLeafPattern: /^general$/i,
-    expectedTopLevelItems: [/^core$/i, /^advanced$/i],
+    expectedTopLevelItems: [/^core$/i, /^more settings$/i],
+    absentTopLevelItems: [/^advanced$/i],
   },
   {
     route: '/privacy/data',
@@ -105,7 +139,7 @@ const CASES: ShellCase[] = [
     activeBottomTestId: 'nav-privacy',
     expectedHeaderPattern: /privacy/i,
     selectedLeafPattern: /data controls/i,
-    expectedTopLevelItems: [/data controls/i, /danger zone/i, /data export/i],
+    expectedTopLevelItems: [/data controls/i, /danger zone/i, /backup & export/i],
   },
 ]
 
@@ -129,13 +163,16 @@ describe('Shell integration (ActivityBar + SidePanel story scenarios)', () => {
       const tree = screen.getByRole('tree')
       expect(tree).toBeInTheDocument()
 
-      // Every expected top-level item is visible (aria-level="1" only to
-      // avoid matching duplicate labels like "Timeline" which exists both as
-      // a top-level monitor route and as a child under /replay).
+      // Every expected top-level item is visible (aria-level="1" only, so a
+      // nested label can never satisfy a first-level expectation).
       const topLevelItems = getTopLevelTreeItems(tree)
       for (const pattern of testCase.expectedTopLevelItems) {
         const match = topLevelItems.find((el) => pattern.test(el.textContent ?? ''))
         expect(match, `expected a top-level treeitem matching ${pattern} at ${testCase.route}`).toBeDefined()
+      }
+      for (const pattern of testCase.absentTopLevelItems ?? []) {
+        const match = topLevelItems.find((el) => pattern.test(el.textContent ?? ''))
+        expect(match, `expected no top-level treeitem matching ${pattern} at ${testCase.route}`).toBeUndefined()
       }
 
       // The current leaf is selected somewhere in the tree (either top-level
@@ -152,7 +189,7 @@ describe('Shell integration (ActivityBar + SidePanel story scenarios)', () => {
     })
     expect(screen.queryByRole('tree')).not.toBeInTheDocument()
     // ActivityBar still renders its buttons.
-    expect(screen.getByTestId('nav-group-monitor')).toBeInTheDocument()
+    expect(screen.getByTestId('nav-group-main')).toBeInTheDocument()
   })
 
   it('exposes the collapse affordance in the SidePanel header when active', () => {

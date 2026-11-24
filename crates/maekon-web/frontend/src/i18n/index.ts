@@ -16,18 +16,27 @@ const resources = {
   es: { translation: es },
 }
 
+// #13749: a Chinese tag other than 'zh-CN' ('zh-TW', 'zh-Hant-TW', bare 'zh').
+// None of them has a bundle.
+const isChineseWithoutBundle = (code: string) => /^zh(-|$)/i.test(code) && code.toLowerCase() !== 'zh-cn'
+
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
     resources,
     fallbackLng: 'en',
-    supportedLngs: ['ko', 'en', 'ja', 'zh-CN', 'es'],
+    supportedLngs: ['ko', 'en', 'ja', 'zh-CN', 'zh', 'es'],
     // #8058 P2-5: map a region-suffixed OS language to its supported base
-    // (e.g. 'ko-KR' -> 'ko', 'ja-JP' -> 'ja', 'en-US' -> 'en') while keeping the
-    // explicit region code 'zh-CN' an exact match. Without this, navigator values
-    // like 'ko-KR' miss `supportedLngs` and fall through to the English fallback,
-    // defeating OS-language detection.
+    // (e.g. 'ko-KR' -> 'ko', 'ja-JP' -> 'ja', 'en-US' -> 'en'). Without this,
+    // navigator values like 'ko-KR' miss `supportedLngs` and fall through to the
+    // English fallback, defeating OS-language detection.
+    // #13749: with this option i18next strips the region from every code before
+    // it looks the code up in `supportedLngs`, 'zh-CN' included: it looks for
+    // 'zh'. The 'zh' entry above is what admits 'zh-CN'; it is not a sixth
+    // locale (resources stay under 'zh-CN'). Without it i18next drops 'zh-CN'
+    // from the lookup chain and the whole app renders the English fallback.
+    // 'zh-CN' stays listed so that it still resolves if this option is turned off.
     nonExplicitSupportedLngs: true,
 
     detection: {
@@ -39,6 +48,12 @@ i18n
       order: ['localStorage', 'navigator'],
       lookupLocalStorage: 'maekon-language',
       caches: ['localStorage'],
+      // #13749: the 'zh' entry in `supportedLngs` admits every Chinese tag, not
+      // only 'zh-CN'. Detection would stop at 'zh-TW' and render the English
+      // fallback instead of going on to the user's next language
+      // (['zh-TW', 'ko-KR'] is Korean). An empty code matches nothing, so
+      // i18next moves on.
+      convertDetectedLanguage: (code: string) => (isChineseWithoutBundle(code) ? '' : code),
     },
 
     interpolation: {
@@ -60,9 +75,11 @@ export const changeLanguage = (lng: SupportedLanguageCode) => {
   localStorage.setItem('maekon-language', lng)
 }
 
-// Get current language
+// Get current language: the locale whose resources are on screen.
+// #13749: `i18n.language` keeps the detected tag ('ko-KR'), which is not one of
+// the selectable codes, so the language selector showed English for it.
 export const getCurrentLanguage = (): SupportedLanguageCode => {
-  const lng = i18n.language
+  const lng = i18n.resolvedLanguage
   return (['ko', 'en', 'ja', 'zh-CN', 'es'] as const).includes(lng as SupportedLanguageCode)
     ? (lng as SupportedLanguageCode)
     : 'en'

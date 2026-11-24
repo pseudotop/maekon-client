@@ -13,11 +13,14 @@ use std::sync::Arc;
 use maekon_core::config::{ExternalDataPolicy, PrivacyConfig};
 use maekon_core::config_manager::ConfigManager;
 use maekon_core::models::event::Event;
+use maekon_core::ports::batch_sink::UploadProvenance;
 use maekon_core::ports::consent_manager::{ConsentGate, ConsentManagerPort};
 use maekon_core::ports::scheduler_storage::SchedulerStorage;
 use maekon_vision::privacy::{sanitize_title_with_level, should_exclude_by_policy};
 
 use super::config::SchedulerConfig;
+
+mod live_filter;
 
 /// Egress destination (sink target) string — the batch uploader sends to a
 /// single server endpoint. The `BatchSink` port does not expose the target
@@ -140,6 +143,18 @@ pub(super) async fn record_capture_block(storage: &Arc<dyn SchedulerStorage>, co
 
 pub(super) const REDACTED_WINDOW_TITLE: &str = "[REDACTED_WINDOW_TITLE]";
 
+/// V1 binds the current wildcard and built-in sensitive/private-window title
+/// heuristics. Bump this before changing those semantics so persisted masked
+/// evidence cannot silently authorize a new heuristic's policy.
+const TITLE_POLICY_SEMANTICS_VERSION: u8 = 1;
+
+#[derive(Clone)]
+pub(super) struct SourceTitleEvidence {
+    fingerprint: [u8; 32],
+    information_lost: bool,
+    allowed: bool,
+}
+
 #[derive(Clone)]
 pub(super) struct PlatformEgressPolicy {
     enabled: bool,
@@ -251,6 +266,40 @@ impl PlatformEgressPolicy {
         )
     }
 
+    /// Capture evidence BEFORE the monitor's existing PII masking, using its
+    /// same tick snapshot. A missing consented source title stays unknown.
+    pub(super) fn capture_title_evidence(
+        &self,
+        privacy: Option<&PrivacyConfig>,
+        source_title: Option<&str>,
+        masked_title: &str,
+    ) -> Option<SourceTitleEvidence> {
+        let source_title = source_title?;
+        let privacy = privacy.unwrap_or(&self.privacy_config);
+        Some(SourceTitleEvidence {
+            fingerprint: Self::title_policy_fingerprint(privacy),
+            information_lost: source_title != masked_title,
+            allowed: !Self::title_excluded(privacy, source_title),
+        })
+    }
+
+    pub(super) fn bind_source_title(
+        &self,
+        storage_id: &str,
+        event: &Event,
+        evidence: Option<&SourceTitleEvidence>,
+    ) -> Option<UploadProvenance> {
+        let evidence = evidence?;
+        UploadProvenance::new(
+            storage_id,
+            event,
+            evidence.fingerprint,
+            evidence.information_lost,
+            evidence.allowed,
+        )
+        .ok()
+    }
+
     pub(super) fn prepare_event_for_upload(&self, mut event: Event) -> Option<Event> {
         // Egress requires passing both the upload setting and telemetry consent
         // (fail-closed).
@@ -325,6 +374,7 @@ mod tests {
     use maekon_core::models::event::{
         ClipboardContentType, ClipboardEvent, ContextEvent, FileAccessEvent, FileEventType,
     };
+    use maekon_core::ports::batch_sink::UploadDecision;
     use maekon_core::ports::consent_manager::ConsentManagerPort;
     use std::path::PathBuf;
 
@@ -763,5 +813,88 @@ mod tests {
             PiiFilterLevel::Off.max(PiiFilterLevel::Basic),
             PiiFilterLevel::Basic
         );
+    }
+
+    #[test]
+    fn capture_loss_and_unknown_keep_tick_evidence_under_a_changed_live_policy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cm = ConfigManager::with_path(dir.path().join("config.json")).expect("config");
+        cm.update_with(|config| {
+            config.monitor.upload_enabled = true;
+            config.privacy.auto_exclude_sensitive = false;
+            config.privacy.pii_filter_level = PiiFilterLevel::Basic;
+            config.privacy.excluded_title_patterns.clear();
+            config.ai_provider.external_data_policy = ExternalDataPolicy::AllowFiltered;
+            Ok(())
+        })
+        .expect("initial policy");
+        let policy = PlatformEgressPolicy::new(&SchedulerConfig::default())
+            .with_config_manager(Some(cm.clone()))
+            .with_consent_manager(Some(granted_telemetry_consent_manager()));
+        let tick = cm.snapshot();
+        let raw = "notes for employee@example.com";
+        let masked = sanitize_title_with_level(raw, PiiFilterLevel::Basic);
+        assert_ne!(
+            raw, masked,
+            "actual capture masking must lose title information"
+        );
+        let evidence = policy.capture_title_evidence(Some(&tick.privacy), Some(raw), &masked);
+        let event = Event::Context(ContextEvent {
+            app_name: "Editor".into(),
+            window_title: masked.clone(),
+            ..Default::default()
+        });
+        let proof = policy
+            .bind_source_title("persisted", &event, evidence.as_ref())
+            .expect("proof");
+        assert!(proof.title_information_lost);
+        assert_eq!(
+            policy
+                .evaluate_with_provenance("persisted", &mut event.clone(), Some(&proof))
+                .0,
+            UploadDecision::Allow
+        );
+        let (decision, unknown) =
+            policy.evaluate_with_provenance("persisted", &mut event.clone(), None);
+        assert_eq!(decision, UploadDecision::Allow);
+        assert!(
+            unknown.is_none(),
+            "an unconstrained Allow must not invent historical proof"
+        );
+        cm.update_with(|config| {
+            config.privacy.excluded_apps.push("Other".into());
+            Ok(())
+        })
+        .expect("app-only change");
+        assert_eq!(
+            policy
+                .evaluate_with_provenance("persisted", &mut event.clone(), Some(&proof))
+                .0,
+            UploadDecision::Allow
+        );
+        cm.update_with(|config| {
+            config
+                .privacy
+                .excluded_title_patterns
+                .push("*private*".into());
+            Ok(())
+        })
+        .expect("changed title policy");
+        let old_tick_evidence =
+            policy.capture_title_evidence(Some(&tick.privacy), Some(raw), &masked);
+        assert_eq!(
+            policy.bind_source_title("persisted", &event, old_tick_evidence.as_ref()),
+            Some(proof.clone()),
+            "capture uses its tick snapshot, not the later live policy"
+        );
+        for supplied in [Some(&proof), None] {
+            assert_eq!(
+                policy
+                    .evaluate_with_provenance("persisted", &mut event.clone(), supplied)
+                    .0,
+                UploadDecision::Block,
+                "changed rules cannot inspect a lost original title"
+            );
+        }
     }
 }

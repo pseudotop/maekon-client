@@ -3,10 +3,24 @@ allowBuilds:
   esbuild: true
   geckodriver: false
 overrides:
+  # #13555: GHSA-474x-hrwr-fgx4 repeatedly scans unterminated stop-node tags.
+  # Update only vulnerable 5.x releases and leave newer fixes eligible.
+  'fast-xml-parser@>=5.0.0 <5.12.0': 5.12.0
+  # #13659: fix glob abort work leakage (GHSA-3g3m-2fjr-6pw4) and
+  # minimatch expansion-limit bypass (GHSA-g3hv-75wg-m249). Preserve
+  # unaffected older majors and permit later patched releases.
+  'glob@>=9.0.0 <14.0.2': 14.0.2
+  'minimatch@>=7.0.0 <11.0.1': 11.0.1
   # #12049: patch GHSA-w9m9-85wc-3x92 without changing the CSS parser major
   # or holding future patched releases at this version.
-  'postcss-selector-parser@>=6.1.0 <6.1.3': 6.1.3
-  serialize-javascript: 7.0.5
+  # #13584: 6.1.3 is vulnerable to GHSA-rj75-hqrm-r3gf; keep the 6.x line.
+  'postcss-selector-parser@>=6.1.0 <6.1.5': 6.1.5
+  # #13264: GHSA-68fv-2mgg-jv7q permits indexed source-map offset DoS.
+  # Raise only the vulnerable range so future patched releases stay eligible.
+  'source-map-js@>=1.0.0 <1.2.2': 1.2.2
+  # #13584: preserve the existing 7.x override while fixing GHSA-m5mm-p8h7-m29v.
+  # Bound it to vulnerable versions so future fixes are not pinned back.
+  'serialize-javascript@<7.1.3': 7.1.3
   '@babel/core': 7.29.6
   form-data: 4.0.6
   # #11396: 4.3.0 was itself the fix for an earlier advisory and has since
@@ -25,21 +39,33 @@ overrides:
   # GHSA-2vr4-cq9g-pvrc. Raise only vulnerable versions so future patched
   # releases are not held at this version (#12497).
   # #12783: GHSA-j6r3-76f7-8jcv covers <= 10.7.0, including the 10.5.1 pin.
-  'ip-address@<10.7.1': 10.7.1
-  # #11396: 7.28.0 -> 7.29.0 (GHSA-4cwx-7wf7-3272 and three medium advisories,
-  # all `>= 7.0.0, < 7.29.0`).
-  # #12783: 7.29.0 -> 7.29.1 (GHSA-w293-vg96-wgc3 high and five low/medium
-  # advisories, all `< 7.29.1`).
-  'cheerio>undici': 7.29.1
+  # #13584: 10.7.1 is affected by GHSA-rxp7-6hxx-x8q5.
+  'ip-address@<10.7.4': 10.7.4
+  # #11396 / #12783 pinned cheerio>undici and webdriver>undici exactly. Those
+  # pins became the vulnerable versions again (GHSA-2m5v-pch6-74hx,
+  # GHSA-qrxm-fqhp-jwvm, GHSA-xjj6-f33q-929c, GHSA-4w7w-5xrc-9h26). #13555
+  # lifts only the vulnerable ranges so a later patched release is not frozen.
+  'undici@>=6.0.0 <6.29.1': 6.29.1
+  'undici@>=7.0.0 <7.30.1': 7.30.1
+  # #13555: GHSA-2v37-7h3g-55p8 covers nanoid < 3.3.18. This tree only has the
+  # 3.x line (postcss). Do not force the 5.x line.
+  'nanoid@<3.3.18': 3.3.18
+  # #13555: GHSA-c475-qrg2-pj4r has no 5.x fix (<= 6.2.0). get-uri 6.0.5 still
+  # depends on basic-ftp ^5.0.2, and get-uri 8.0.1 still declares ^5.3.1, so
+  # the parent cannot carry the fix. 6.0.0 only changes the default to reject
+  # separate transfer hosts. 6.2.5 also includes the follow-up parser fixes
+  # through 6.2.4.
+  'basic-ftp@<=6.2.0': 6.2.5
+  # #13555: GHSA-ggr8-5vv4-36mx is < 8.0.0 with no 7.x fix. webdriver 9.30.0
+  # calls deepmergeCustom on plain protocol objects. 8.0.2 keeps that entry
+  # point; the breaking changes are Map merging and renamed custom-merge types.
+  'deepmerge-ts@<8.0.0': 8.0.2
   # brace-expansion 5.0.7 patches GHSA exponential-expansion DoS (dependabot #86).
   # #12783: GHSA-q2hr-2g5m-vwhr covers all three in-tree lines (< 1.1.21,
   # >= 2.0.0 < 2.1.7, >= 4.0.0 < 5.0.12). Raise only the vulnerable ranges.
   'brace-expansion@<1.1.21': 1.1.21
   'brace-expansion@>=2.0.0 <2.1.7': 2.1.7
   'brace-expansion@>=4.0.0 <5.0.12': 5.0.12
-  # #11396: 6.27.0 -> 6.28.0 (three advisories, all `< 6.28.0`).
-  # #12783: 6.28.0 -> 6.28.1 (GHSA-r53p-7pc4-xj5r, `< 6.28.1`).
-  'webdriver>undici': 6.28.1
   # esbuild 0.28.1 patches GHSA-gv7w-rqvm-qjhr (Deno-loader binary-integrity RCE)
   # and GHSA-g7r4-m6w7-qqqr (dev-server file read). Forces every transitive
   # instance (Vite, tsx, …) onto the patched line. Requires build.target to skip

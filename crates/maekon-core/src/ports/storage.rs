@@ -13,6 +13,8 @@ use crate::models::suggestion::Suggestion;
 use crate::models::system::SystemMetrics;
 use crate::models::tiered_memory::SegmentSummary;
 
+use super::batch_sink::{PendingEvent, UploadProvenance};
+
 /// Local event and suggestion persistence.
 ///
 /// # Errors
@@ -25,6 +27,23 @@ use crate::models::tiered_memory::SegmentSummary;
 pub trait StorageService: Send + Sync {
     async fn save_event(&self, event: &Event) -> Result<(), CoreError>;
 
+    /// Persist an event and its private upload evidence atomically.
+    ///
+    /// Return `true` only for an actual insert; duplicate and erasure-skipped
+    /// writes return `false`. Evidence-aware adapters reject a proof that is
+    /// not bound to this event and its persisted storage id.
+    ///
+    /// The compatibility default retains local persistence but cannot attest
+    /// to a private proof or an actual insert, so callers must not enqueue it.
+    async fn save_event_with_upload_provenance(
+        &self,
+        event: &Event,
+        _provenance: Option<&UploadProvenance>,
+    ) -> Result<bool, CoreError> {
+        self.save_event(event).await?;
+        Ok(false)
+    }
+
     async fn get_events(
         &self,
         from: DateTime<Utc>,
@@ -33,6 +52,27 @@ pub trait StorageService: Send + Sync {
     ) -> Result<Vec<Event>, CoreError>;
 
     async fn get_pending_events(&self, limit: usize) -> Result<Vec<Event>, CoreError>;
+
+    /// Read pending events with their original storage identity and evidence.
+    ///
+    /// Legacy adapters cannot recover a persisted id or proof from an Event
+    /// alone. Preserve that absence instead of manufacturing a new identity
+    /// or trusting the current policy as historical evidence.
+    async fn get_pending_events_with_upload_provenance(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PendingEvent>, CoreError> {
+        Ok(self
+            .get_pending_events(limit)
+            .await?
+            .into_iter()
+            .map(|event| PendingEvent {
+                storage_id: None,
+                event,
+                provenance: None,
+            })
+            .collect())
+    }
 
     async fn mark_as_sent(&self, event_ids: &[String]) -> Result<(), CoreError>;
 
@@ -148,4 +188,174 @@ pub trait MetricsStorage: Send + Sync {
         frames: u64,
         idle_secs: u64,
     ) -> Result<(), CoreError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error_codes::StorageCode;
+    use crate::models::event::{SystemEvent, SystemEventType};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct LegacyOnlyStorage {
+        save_calls: AtomicUsize,
+        saved: Mutex<Vec<Event>>,
+        pending: Vec<Event>,
+        pending_limits: Mutex<Vec<usize>>,
+        fail_save: bool,
+        fail_pending: bool,
+    }
+
+    #[async_trait]
+    impl StorageService for LegacyOnlyStorage {
+        async fn save_event(&self, event: &Event) -> Result<(), CoreError> {
+            self.save_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_save {
+                return Err(CoreError::Storage {
+                    code: StorageCode::Failed,
+                    message: "legacy save unavailable".to_string(),
+                });
+            }
+            self.saved.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+
+        async fn get_events(
+            &self,
+            _from: DateTime<Utc>,
+            _to: DateTime<Utc>,
+            _limit: usize,
+        ) -> Result<Vec<Event>, CoreError> {
+            panic!("upload defaults must use the legacy pending operation")
+        }
+
+        async fn get_pending_events(&self, limit: usize) -> Result<Vec<Event>, CoreError> {
+            self.pending_limits.lock().unwrap().push(limit);
+            if self.fail_pending {
+                return Err(CoreError::Storage {
+                    code: StorageCode::Failed,
+                    message: "legacy pending unavailable".to_string(),
+                });
+            }
+            Ok(self.pending.clone())
+        }
+
+        async fn mark_as_sent(&self, _event_ids: &[String]) -> Result<(), CoreError> {
+            panic!("upload defaults must not acknowledge events")
+        }
+
+        async fn enforce_retention(&self) -> Result<usize, CoreError> {
+            panic!("upload defaults must not change retention")
+        }
+
+        async fn save_suggestion(&self, _suggestion: &Suggestion) -> Result<(), CoreError> {
+            panic!("upload defaults must not write suggestions")
+        }
+
+        async fn save_activity_segment(&self, _summary: &SegmentSummary) -> Result<(), CoreError> {
+            panic!("upload defaults must not write activity segments")
+        }
+
+        async fn update_segment_llm_summary(
+            &self,
+            _segment_id: &str,
+            _llm_summary: &str,
+        ) -> Result<(), CoreError> {
+            panic!("upload defaults must not update activity summaries")
+        }
+    }
+
+    fn event(sequence: usize) -> Event {
+        Event::System(SystemEvent {
+            event_id: uuid::Uuid::new_v4(),
+            event_type: SystemEventType::MetricsUpdate,
+            timestamp: Utc::now(),
+            data: serde_json::json!({ "sequence": sequence }),
+        })
+    }
+
+    #[tokio::test]
+    async fn legacy_default_save_persists_once_without_attesting_an_insert_or_proof() {
+        for with_proof in [false, true] {
+            let storage = LegacyOnlyStorage::default();
+            let event = event(1);
+            let proof =
+                UploadProvenance::new("historical-id", &event, [3; 32], true, true).unwrap();
+
+            let inserted = storage
+                .save_event_with_upload_provenance(&event, with_proof.then_some(&proof))
+                .await
+                .unwrap();
+
+            assert!(!inserted, "legacy storage cannot authorize new upload work");
+            assert_eq!(storage.save_calls.load(Ordering::SeqCst), 1);
+            let saved = storage.saved.lock().unwrap();
+            assert_eq!(saved.len(), 1);
+            assert_eq!(
+                serde_json::to_value(&saved[0]).unwrap(),
+                serde_json::to_value(&event).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_default_pending_preserves_payloads_without_inventing_identity_or_proof() {
+        let storage = LegacyOnlyStorage {
+            pending: vec![event(1), event(2)],
+            ..Default::default()
+        };
+
+        let rows = storage
+            .get_pending_events_with_upload_provenance(7)
+            .await
+            .unwrap();
+
+        assert_eq!(*storage.pending_limits.lock().unwrap(), vec![7]);
+        assert_eq!(rows.len(), storage.pending.len());
+        for (row, original) in rows.iter().zip(&storage.pending) {
+            assert_eq!(row.storage_id, None);
+            assert_eq!(row.provenance, None);
+            assert_eq!(
+                serde_json::to_value(&row.event).unwrap(),
+                serde_json::to_value(original).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_default_upload_operations_preserve_typed_storage_errors() {
+        let storage = LegacyOnlyStorage {
+            fail_save: true,
+            fail_pending: true,
+            ..Default::default()
+        };
+        let error = storage
+            .save_event_with_upload_provenance(&event(1), None)
+            .await
+            .unwrap_err();
+        match error {
+            CoreError::Storage { code, message } => {
+                assert_eq!(code, StorageCode::Failed);
+                assert_eq!(message, "legacy save unavailable");
+            }
+            other => panic!("legacy save must preserve its storage error, got {other:?}"),
+        }
+        assert_eq!(storage.save_calls.load(Ordering::SeqCst), 1);
+        assert!(storage.saved.lock().unwrap().is_empty());
+
+        let error = storage
+            .get_pending_events_with_upload_provenance(9)
+            .await
+            .unwrap_err();
+        match error {
+            CoreError::Storage { code, message } => {
+                assert_eq!(code, StorageCode::Failed);
+                assert_eq!(message, "legacy pending unavailable");
+            }
+            other => panic!("legacy pending must preserve its storage error, got {other:?}"),
+        }
+        assert_eq!(*storage.pending_limits.lock().unwrap(), vec![9]);
+    }
 }

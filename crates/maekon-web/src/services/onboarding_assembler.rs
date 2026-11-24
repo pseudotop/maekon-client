@@ -1,4 +1,3 @@
-use chrono::Utc;
 use maekon_api_contracts::onboarding::{OnboardingQuickstartDto, QuickstartStepDto};
 use maekon_core::models::intent::WorkflowPreset;
 
@@ -26,7 +25,7 @@ pub(crate) fn assemble_quickstart(
 ) -> OnboardingQuickstartDto {
     OnboardingQuickstartDto {
         schema_version: ONBOARDING_QUICKSTART_SCHEMA_VERSION.to_string(),
-        generated_at: Utc::now().to_rfc3339(),
+        generated_at: super::current_metadata_timestamp(),
         target_mode: "standalone".to_string(),
         dashboard_url,
         checklist,

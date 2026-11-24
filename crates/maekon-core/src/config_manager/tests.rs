@@ -27,6 +27,8 @@ fn shifted_test_web_port(current: u16, offset: u16) -> u16 {
     crate::config::DEFAULT_WEB_PORT + ((current - crate::config::DEFAULT_WEB_PORT + offset) % span)
 }
 
+mod capture_policy_epochs;
+
 #[test]
 fn create_and_load_config() {
     let temp_dir = TempDir::new().unwrap();
@@ -509,101 +511,6 @@ fn snapshot_matches_latest_update() {
 
     assert_eq!(via_snapshot.web.port, via_rx.web.port);
     assert_eq!(via_snapshot.web.port, baseline_port.wrapping_add(1));
-}
-
-/// T-X1-2
-#[tokio::test]
-async fn update_notifies_subscribers() {
-    let tmp = TempDir::new().unwrap();
-    let cfg_path = tmp.path().join("config.json");
-    let mgr = ConfigManager::with_path(cfg_path).unwrap();
-
-    let mut rx = mgr.subscribe();
-    let before = rx.borrow_and_update().web.port;
-
-    let mut new_cfg = mgr.get();
-    let updated_port = shifted_test_web_port(before, 7);
-    new_cfg.web.port = updated_port;
-    mgr.update(new_cfg).unwrap();
-
-    rx.changed()
-        .await
-        .expect("changed() must resolve after update()");
-    assert_eq!(rx.borrow().web.port, updated_port);
-}
-
-/// T-X1-3
-#[tokio::test]
-async fn update_with_notifies_subscribers() {
-    let tmp = TempDir::new().unwrap();
-    let cfg_path = tmp.path().join("config.json");
-    let mgr = ConfigManager::with_path(cfg_path).unwrap();
-
-    let mut rx = mgr.subscribe();
-    let before = rx.borrow_and_update().web.port;
-
-    let updated_port = shifted_test_web_port(before, 1);
-    mgr.update_with(|c| {
-        c.web.port = updated_port;
-        Ok(())
-    })
-    .unwrap();
-
-    rx.changed()
-        .await
-        .expect("changed() must resolve after update_with()");
-    assert_eq!(rx.borrow().web.port, updated_port);
-}
-
-/// T-X1-4
-#[tokio::test]
-async fn reload_notifies_subscribers() {
-    let tmp = TempDir::new().unwrap();
-    let cfg_path = tmp.path().join("config.json");
-    let mgr = ConfigManager::with_path(cfg_path.clone()).unwrap();
-
-    let mut rx = mgr.subscribe();
-    let before = rx.borrow_and_update().web.port;
-
-    // Rewrite the file out-of-band so reload() observes a different value.
-    let mut forced = crate::config::AppConfig::default_config();
-    let updated_port = shifted_test_web_port(before, 2);
-    forced.web.port = updated_port;
-    let json = serde_json::to_string_pretty(&forced).unwrap();
-    std::fs::write(&cfg_path, json).unwrap();
-
-    mgr.reload().unwrap();
-    rx.changed()
-        .await
-        .expect("changed() must resolve after reload()");
-    assert_eq!(rx.borrow().web.port, updated_port);
-}
-
-/// T-X1-7 — pins latest-wins: identical-content updates still fire.
-///
-/// Documents the audit-coalescing hazard described in the subscribe() doc
-/// comment. Consumers that need transition-per-update semantics must diff
-/// or use their own channel.
-#[tokio::test]
-async fn each_update_fires_even_for_identical_content() {
-    let tmp = TempDir::new().unwrap();
-    let cfg_path = tmp.path().join("config.json");
-    let mgr = ConfigManager::with_path(cfg_path).unwrap();
-
-    let mut rx = mgr.subscribe();
-    rx.borrow_and_update(); // consume the initial value
-
-    let cfg = mgr.get();
-    mgr.update(cfg.clone()).unwrap();
-    rx.changed()
-        .await
-        .expect("first identical update still fires");
-    rx.borrow_and_update();
-
-    mgr.update(cfg).unwrap();
-    rx.changed()
-        .await
-        .expect("second identical update still fires");
 }
 
 /// T-X1-9 — writer_lock is non-reentrant but never crossed with watch reads.

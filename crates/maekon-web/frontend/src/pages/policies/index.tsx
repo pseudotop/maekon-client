@@ -25,7 +25,8 @@ import {
   Select,
   SettingPreview,
 } from '../../components/ui'
-import { addToast } from '../../hooks/useToast'
+import { addErrorToast, addToast } from '../../hooks/useToast'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, iconSize, interaction, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 
@@ -336,6 +337,7 @@ function PolicyForm({ initial, onSubmit, onCancel, isSubmitting, isEdit }: Polic
 
 function Policies() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const queryClient = useQueryClient()
   const [showForm, setShowForm] = useState(false)
   const [editPolicy, setEditPolicy] = useState<ExecutionPolicyConfig | null>(null)
@@ -353,7 +355,7 @@ function Policies() {
       addToast('success', t('policies.created', 'Policy created'))
     },
     onError: (err) => {
-      addToast('error', err instanceof Error ? err.message : t('policies.createError', 'Failed to create policy'))
+      addErrorToast(describeError(err, t('policies.createError', 'Failed to create policy')))
     },
   })
 
@@ -365,7 +367,7 @@ function Policies() {
       addToast('success', t('policies.updated', 'Policy updated'))
     },
     onError: (err) => {
-      addToast('error', err instanceof Error ? err.message : t('policies.updateError', 'Failed to update policy'))
+      addErrorToast(describeError(err, t('policies.updateError', 'Failed to update policy')))
     },
   })
 
@@ -376,7 +378,7 @@ function Policies() {
       addToast('success', t('policies.deleted', 'Policy deleted'))
     },
     onError: (err) => {
-      addToast('error', err instanceof Error ? err.message : t('policies.deleteError', 'Failed to delete policy'))
+      addErrorToast(describeError(err, t('policies.deleteError', 'Failed to delete policy')))
     },
   })
 

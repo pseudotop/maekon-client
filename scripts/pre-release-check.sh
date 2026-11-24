@@ -258,10 +258,12 @@ echo ""
 FRONTEND_DIR="crates/maekon-web/frontend"
 if [ -d "$FRONTEND_DIR/node_modules" ]; then
   echo "[Frontend Build]"
-  if (cd "$FRONTEND_DIR" && npx tsc --noEmit > /dev/null 2>&1); then
+  # Build mode: tsconfig.json references the composite tsconfig.node.json,
+  # and plain --noEmit fails with TS6305 until that reference is built.
+  if (cd "$FRONTEND_DIR" && npx tsc -b > /dev/null 2>&1); then
     pass "TypeScript type check passed"
   else
-    fail "TypeScript type check failed — run: cd $FRONTEND_DIR && npx tsc --noEmit"
+    fail "TypeScript type check failed — run: cd $FRONTEND_DIR && npx tsc -b"
   fi
   if (cd "$FRONTEND_DIR" && npx vite build > /dev/null 2>&1); then
     pass "Vite build passed"

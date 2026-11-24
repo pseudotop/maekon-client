@@ -1,8 +1,10 @@
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { removeToast, type Toast as ToastRecord, type ToastType, useToast } from '../../hooks/useToast'
+import { pinToast, removeToast, type Toast as ToastRecord, type ToastType, useToast } from '../../hooks/useToast'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { iconSize, interaction, radius, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { SupportDetails } from '../SupportDetails'
 
 const iconByType: Record<ToastType, typeof CheckCircle2> = {
   success: CheckCircle2,
@@ -20,6 +22,13 @@ const iconToneByType: Record<ToastType, string> = {
 
 function ToastItem({ toast }: { toast: ToastRecord }) {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
+  const display = toast.errorSource
+    ? describeError(
+        toast.errorSource.cause,
+        toast.errorSource.fallbackKey ? t(toast.errorSource.fallbackKey) : undefined,
+      )
+    : { text: toast.message, detail: toast.detail }
   const Icon = iconByType[toast.type]
 
   return (
@@ -40,7 +49,8 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
       </div>
 
       <div className="min-w-0 flex-1">
-        <p className={cn(typography.body, 'text-content')}>{toast.message}</p>
+        <p className={cn(typography.body, 'text-content')}>{display.text}</p>
+        <SupportDetails detail={display.detail} onToggle={(open) => open && pinToast(toast.id)} />
       </div>
 
       <button

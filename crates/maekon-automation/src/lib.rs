@@ -42,4 +42,5 @@ pub mod presets;
 pub mod record_template;
 pub mod resolver;
 pub mod sandbox;
+mod screen_settle;
 pub mod template_package;

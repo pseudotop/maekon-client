@@ -13,9 +13,9 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// RAII guard that decrements the active-connection counter when dropped.
 ///
-/// Created when a connection is successfully handed to tonic; ensures that
-/// `active_conns` is decremented even if tonic drops the stream mid-flight
-/// without going through a normal shutdown path.
+/// Created at connection admission and moved into the accepted stream. Releases
+/// the slot on handshake errors or cancellation and when tonic drops the stream,
+/// including shutdown paths that do not finish normally.
 pub(crate) struct ActiveConnGuard {
     counter: Arc<AtomicUsize>,
 }

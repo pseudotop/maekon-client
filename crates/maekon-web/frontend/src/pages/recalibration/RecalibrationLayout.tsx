@@ -16,19 +16,11 @@ import type {
 } from '../../api/contracts'
 import DateRangePicker from '../../components/DateRangePicker'
 import { Button, Card, Spinner } from '../../components/ui'
+import { defaultRegimeLabel } from '../../features/activityLabels'
 import { useCreateOverride, useDeleteOverride, useOverrides, useRecluster } from '../../hooks/useRecalibration'
 import { colors, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { formatLocalCalendarDate, localCalendarDateFromValue } from '../../utils/localDate'
-
-// Default regime options
-const REGIME_OPTIONS = [
-  { id: 'deep-work', label: 'Deep Work' },
-  { id: 'communication', label: 'Communication' },
-  { id: 'meeting', label: 'Meeting' },
-  { id: 'break', label: 'Break' },
-  { id: 'admin', label: 'Admin' },
-]
 
 export function formatTime(iso: string): string {
   try {
@@ -60,15 +52,12 @@ export function getActionLabel(override: RegimeOverride, t: (key: string) => str
       return t('recalibration.personalTime')
     case 'REASSIGN_REGIME': {
       const action = override.user_action as { type: 'REASSIGN_REGIME'; target_regime_id: string }
-      const regime = REGIME_OPTIONS.find((r) => r.id === action.target_regime_id)
-      return regime?.label ?? action.target_regime_id
+      return defaultRegimeLabel(action.target_regime_id, t) ?? action.target_regime_id
     }
     default:
       return t('recalibration.overridden')
   }
 }
-
-export { REGIME_OPTIONS }
 
 export interface RecalibrationOutletContext {
   segments: DailyDigestSegment[]

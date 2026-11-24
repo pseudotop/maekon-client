@@ -107,10 +107,10 @@ test.describe('Onboarding (simulated first-run)', () => {
 
     const stepIndicator = page.locator('fieldset[aria-label="Step indicator"]')
     await expect(stepIndicator).toBeVisible()
-    // 7 dots for 7 steps (TOTAL_STEPS in Onboarding.tsx — #5707 added
-    // StepCoaching; the audio disclosure step later made it 7)
+    // 5 dots for 5 steps (TOTAL_STEPS in Onboarding.tsx). #13734 folded the
+    // features, audio and coaching screens into one AI step.
     const dots = stepIndicator.locator('div')
-    await expect(dots).toHaveCount(7)
+    await expect(dots).toHaveCount(5)
   })
 
   test('should skip onboarding via skip button', async ({ page }) => {
@@ -126,22 +126,17 @@ test.describe('Onboarding (simulated first-run)', () => {
     await page.goto('/')
     await expect(page.getByText(step1TitleName)).toBeVisible({ timeout: 10000 })
 
-    // Advance to the Ready step (screen 7 of 7; i18n keys keep their
-    // historical step4* names): welcome → permissions → privacy → features
-    // → audio (disclosure-only, Next defers capture) → coaching (#5707
-    // opt-in, Next leaves it off) → ready.
-    const nextBtn = page.getByRole('button', { name: nextButtonName })
+    // Advance to the Ready step (screen 5 of 5; the i18n key keeps its
+    // historical step4Title name): intro → permissions → monitoring consent
+    // (continue without it) → AI (continue without it, #13734) → ready.
+    // Neither the consent step nor the AI step offers a plain Next until its
+    // choice is made, so each is left by its own decline button.
+    const nextBtn = page.getByTestId('onboarding-next')
     await nextBtn.click()
     await expect(page.getByText(step2TitleName)).toBeVisible({ timeout: 5000 })
     await nextBtn.click()
-    // features
-    await nextBtn.click()
-    // audio disclosure
-    await nextBtn.click()
-    // coaching opt-in
-    await nextBtn.click()
-    // ready
-    await nextBtn.click()
+    await page.getByTestId('onboarding-consent-decline').click()
+    await page.getByTestId('onboarding-ai-skip').click()
     await expect(page.getByText(step4TitleName)).toBeVisible({ timeout: 5000 })
 
     // The ready screen also has a recovery-card note. Locate this note by its

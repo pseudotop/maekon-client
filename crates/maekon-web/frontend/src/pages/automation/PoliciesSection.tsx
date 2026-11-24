@@ -58,7 +58,8 @@ export default function PoliciesSection() {
   return (
     <Card id="section-policies">
       <CardHeader>
-        <CardTitle>{t('automation.policies')}</CardTitle>
+        {/* #13736: titled like its nav entry, so it no longer reads as a second policies page beside Execution Policies. */}
+        <CardTitle>{t('sidebar.policies')}</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2 lg:grid-cols-3">

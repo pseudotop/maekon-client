@@ -11,6 +11,7 @@ import { Alert, Button } from '../../../components/ui'
 import { aiCapabilityReadiness } from '../../../features/aiReadiness'
 import { invalidateAiReadinessSnapshotCache } from '../../../hooks/useAiReadinessSnapshot'
 import { typography } from '../../../styles/tokens'
+import { cn } from '../../../utils/cn'
 
 /** `chat.http_api` blockers that one verification call can settle (#12530). */
 const VERIFIABLE_REASONS: ReadonlySet<AiReadinessReasonCode> = new Set([
@@ -19,7 +20,7 @@ const VERIFIABLE_REASONS: ReadonlySet<AiReadinessReasonCode> = new Set([
 ])
 
 /** `failed` is a rejected invoke; the rest are backend statuses. */
-type VerificationOutcome = ChatHttpVerificationStatus | 'failed'
+export type VerificationOutcome = ChatHttpVerificationStatus | 'failed'
 
 const OUTCOMES: Record<VerificationOutcome, { copyKey: string; variant: 'success' | 'warning' | 'error' }> = {
   verified: { copyKey: 'settingsAutomation.chatVerification.result.verified', variant: 'success' },
@@ -36,6 +37,9 @@ interface ChatHttpVerificationProps {
   snapshot: FeatureCapabilitySnapshot | null | undefined
   /** The backend verifies the saved configuration, so unsaved edits block the check. */
   hasUnsavedChanges: boolean
+  /** Receives every finished check, so onboarding (#13734) can gate on the real result. */
+  onOutcome?: (outcome: VerificationOutcome) => void
+  className?: string
 }
 
 /**
@@ -44,7 +48,12 @@ interface ChatHttpVerificationProps {
  * success records evidence that readiness reads; this refreshes readiness so
  * Chat can open the path without another setup step.
  */
-export default function ChatHttpVerification({ snapshot, hasUnsavedChanges }: ChatHttpVerificationProps) {
+export default function ChatHttpVerification({
+  snapshot,
+  hasUnsavedChanges,
+  onOutcome,
+  className,
+}: ChatHttpVerificationProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [pending, setPending] = useState(false)
@@ -57,23 +66,25 @@ export default function ChatHttpVerification({ snapshot, hasUnsavedChanges }: Ch
   const verify = async () => {
     setPending(true)
     setOutcome(null)
+    let next: VerificationOutcome
     try {
       const { status } = await verifyChatHttpProvider()
-      setOutcome(status)
+      next = status
       if (status === 'verified') {
         invalidateAiReadinessSnapshotCache()
         void queryClient.invalidateQueries({ queryKey: ['feature-capabilities'] })
       }
     } catch {
-      setOutcome('failed')
-    } finally {
-      setPending(false)
+      next = 'failed'
     }
+    setOutcome(next)
+    setPending(false)
+    onOutcome?.(next)
   }
 
   return (
     <div
-      className="space-y-3 rounded-lg border border-muted bg-surface-muted/80 p-4"
+      className={cn('space-y-3 rounded-lg border border-muted bg-surface-muted/80 p-4', className)}
       data-testid="settings-chat-http-verification"
     >
       {verifiable && (

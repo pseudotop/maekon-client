@@ -1277,6 +1277,7 @@ export type AiReadinessReasonCode =
   | 'consent_required'
   | 'access_mode_mismatch'
   | 'endpoint_or_profile_required'
+  | 'http_chat_settings_resave_required'
   | 'provider_not_detected'
   | 'provider_auth_required'
   | 'provider_auth_unverified'
@@ -1325,6 +1326,8 @@ export interface AiReadinessDimensions {
   selected_access_mode: 'provider_api_key' | 'local_model' | 'provider_subscription_cli' | 'provider_o_auth'
   access_mode_compatible: boolean
   endpoint_or_profile_configured: boolean
+  /** Absent on older readiness snapshots. */
+  http_chat_settings_resave_required?: boolean
   provider_detection: AiProviderDetection
   provider_auth: AiProviderAuthReadiness
   provider_invocation: AiProviderInvocationReadiness
@@ -1463,6 +1466,7 @@ export interface AutomationStatus {
 
 export interface AuditEntry {
   schema_version: string
+  execution_provenance?: IntentExecutionProvenance | null
   entry_id: string
   timestamp: string
   session_id: string
@@ -1642,15 +1646,90 @@ export interface PresetRunResult {
   total_elapsed_ms?: number
 }
 
+// #12061: Fixed, privacy-bounded observations from maekon-core's v1 wire contract.
+export type IntentProviderClass = 'local_model' | 'remote_model' | 'rule' | 'unknown'
+export type IntentRevision = 'unknown' | 'not_applicable'
+export type IntentSafeReason =
+  | 'denied'
+  | 'timeout'
+  | 'unavailable'
+  | 'invalid_output'
+  | 'provider_error'
+  | 'confidence_rejected'
+  | 'unsupported_action'
+  | 'action_failed'
+  | 'observation_unavailable'
+  | 'legacy_unknown'
+export type IntentAttemptOutcome =
+  | 'succeeded'
+  | 'denied'
+  | 'timeout'
+  | 'invalid_output'
+  | 'unavailable'
+  | 'error'
+  | 'unknown'
+export type IntentPlanningOutcome = 'llm' | 'rule' | 'unsupported' | 'denied' | 'error' | 'unknown'
+export type IntentActionOutcome = 'not_started' | 'denied' | 'completed' | 'failed' | 'unknown'
+export type IntentObservation = 'complete' | 'partial' | 'legacy_unknown'
+
+export interface IntentProviderAttempt {
+  attempt_id: string
+  predecessor: string | null
+  effective_provider_class: IntentProviderClass
+  model_revision: IntentRevision
+  outcome: IntentAttemptOutcome
+  reason: IntentSafeReason | null
+  capabilities: {
+    skills_requested: boolean
+    skills_context_forwarded: boolean | null
+    skill_context_kind: 'none' | 'catalog' | 'activated'
+    skills_effective: 'used' | 'not_used' | 'unsupported' | 'unknown'
+  }
+}
+
+export type IntentEventKind =
+  | { stage: 'started' | 'action_started' }
+  | { stage: 'attempt_started' | 'attempt_finished'; attempt_id: string }
+  | { stage: 'planning_finished'; outcome: IntentPlanningOutcome }
+  | { stage: 'action_finished'; outcome: IntentActionOutcome }
+
+export interface IntentExecutionEvent {
+  execution_id: string
+  event_id: string
+  sequence: number
+  observed_at: string
+  kind: IntentEventKind
+}
+
+export interface IntentExecutionProvenance {
+  schema_version: 'maekon.intent_execution.v1'
+  execution_id: string
+  submission_id: string | null
+  retry_of: string | null
+  config_revision: IntentRevision
+  requested_provider_class: IntentProviderClass
+  configuration_reason: 'rule_only_degradation' | null
+  attempts: IntentProviderAttempt[]
+  planning_outcome: IntentPlanningOutcome
+  action_outcome: IntentActionOutcome
+  observation: IntentObservation
+  observation_reason: IntentSafeReason | null
+  storage: 'process_memory'
+  events: IntentExecutionEvent[]
+}
+
 export interface ExecuteIntentHintRequest {
   command_id?: string
   session_id: string
   intent_hint: string
+  submission_id?: string
+  retry_of?: string
 }
 
 export interface ExecuteIntentHintResponse {
   command_id: string
   session_id: string
+  execution_provenance?: IntentExecutionProvenance | null
   planned_intent: IntentDefinition
   result: {
     success: boolean

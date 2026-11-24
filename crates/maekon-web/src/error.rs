@@ -43,11 +43,32 @@ pub enum ApiError {
         code: String,
         message: String,
     },
+
+    /// Intent failures retain their prior HTTP meaning with a safe receipt.
+    /// The error body never contains the provider's CoreError/Display text.
+    #[error("Natural language intent execution failed")]
+    IntentExecution {
+        status: u16,
+        provenance: Option<Box<maekon_core::models::intent_execution::IntentExecutionProvenance>>,
+    },
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
+            ApiError::IntentExecution { status, .. } => {
+                let status =
+                    StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                let (code, message) = if status == StatusCode::BAD_REQUEST {
+                    (
+                        "validation.invalid_arguments",
+                        "Intent execution was refused; inspect the execution observation",
+                    )
+                } else {
+                    ("internal.generic", INTERNAL_ERROR_RESPONSE_MESSAGE)
+                };
+                (status, code.to_string(), message.to_string())
+            }
             ApiError::Internal(msg) => {
                 tracing::error!(
                     status = StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
@@ -129,6 +150,10 @@ impl IntoResponse for ApiError {
             code,
             error: message,
             status: status.as_u16(),
+            execution_provenance: match self {
+                ApiError::IntentExecution { provenance, .. } => provenance.map(|receipt| *receipt),
+                _ => None,
+            },
         };
 
         (status, Json(body)).into_response()

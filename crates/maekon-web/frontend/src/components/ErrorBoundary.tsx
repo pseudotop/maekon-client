@@ -1,6 +1,8 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { type WithTranslation, withTranslation } from 'react-i18next'
+import { supportDetailOf } from '../i18n/errorDisplay'
 import { typography } from '../styles/tokens'
+import { SupportDetails } from './SupportDetails'
 
 // ErrorBoundary Props: children + optional fallback + i18next HOC props
 interface OwnProps {
@@ -18,7 +20,9 @@ interface State {
 // Utility that determines whether the error is a network/server-offline error
 function isNetworkError(error: Error | null): boolean {
   if (!error) return false
+  // raw-error-text: matched to choose the offline screen, never rendered
   if (error instanceof TypeError && error.message.toLowerCase().includes('fetch')) return true
+  // raw-error-text: matched to choose the offline screen, never rendered
   const msg = error.message.toLowerCase()
   return ['failed to fetch', 'offline', 'econnrefused', 'timeout', 'network error'].some((kw) => msg.includes(kw))
 }
@@ -64,7 +68,8 @@ class ErrorBoundaryBase extends Component<Props, State> {
             ) : (
               <>
                 <h1 className={`mb-4 ${typography.h1} text-semantic-error`}>{t('errors.boundaryTitle')}</h1>
-                <p className="mb-4 text-content-secondary">{this.state.error?.message}</p>
+                {/* #13737: the crash text is English diagnostics, so it is support detail. */}
+                <SupportDetails detail={supportDetailOf(this.state.error)} className="mb-4" />
                 <button
                   type="button"
                   onClick={() => this.setState({ hasError: false, error: null })}

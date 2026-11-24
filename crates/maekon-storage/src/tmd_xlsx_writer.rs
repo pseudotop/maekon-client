@@ -35,7 +35,7 @@ const SHARED_STRINGS_PART: &str = "xl/sharedStrings.xml";
 pub enum XlsxWriterError {
     #[error("template exceeds the compressed size limit: {actual} > {limit}")]
     TemplateTooLarge { actual: usize, limit: usize },
-    #[error("template exceeds the declared decompressed size limit: {actual} > {limit}")]
+    #[error("template exceeds the decompressed size limit: {actual} > {limit}")]
     DecompressedTooLarge { actual: u64, limit: u64 },
     #[error("template has too many ZIP entries: {actual} > {limit}")]
     TooManyEntries { actual: usize, limit: usize },
@@ -165,11 +165,12 @@ pub fn fill_workbook(
     validate_archive(input)?;
 
     let mut archive = ZipArchive::new(Cursor::new(input))?;
-    let workbook_xml = read_required_part(&mut archive, WORKBOOK_PART)?;
-    let rels_xml = read_required_part(&mut archive, WORKBOOK_RELS_PART)?;
+    let mut budget = PartReadBudget::new();
+    let workbook_xml = read_required_part(&mut archive, WORKBOOK_PART, &mut budget)?;
+    let rels_xml = read_required_part(&mut archive, WORKBOOK_RELS_PART, &mut budget)?;
     let worksheet_part = resolve_worksheet_part(&workbook_xml, &rels_xml, sheet_name)?;
-    let worksheet_xml = read_required_part(&mut archive, &worksheet_part)?;
-    let shared_strings = match read_optional_part(&mut archive, SHARED_STRINGS_PART)? {
+    let worksheet_xml = read_required_part(&mut archive, &worksheet_part, &mut budget)?;
+    let shared_strings = match read_optional_part(&mut archive, SHARED_STRINGS_PART, &mut budget)? {
         Some(xml) => parse_shared_strings(&xml)?,
         None => Vec::new(),
     };
@@ -197,9 +198,10 @@ pub fn fill_workbook(
 pub fn template_structure_hash(input: &[u8]) -> Result<String, XlsxWriterError> {
     validate_archive(input)?;
     let mut archive = ZipArchive::new(Cursor::new(input))?;
-    let workbook_xml = read_required_part(&mut archive, WORKBOOK_PART)?;
-    let rels_xml = read_required_part(&mut archive, WORKBOOK_RELS_PART)?;
-    let shared_strings = match read_optional_part(&mut archive, SHARED_STRINGS_PART)? {
+    let mut budget = PartReadBudget::new();
+    let workbook_xml = read_required_part(&mut archive, WORKBOOK_PART, &mut budget)?;
+    let rels_xml = read_required_part(&mut archive, WORKBOOK_RELS_PART, &mut budget)?;
+    let shared_strings = match read_optional_part(&mut archive, SHARED_STRINGS_PART, &mut budget)? {
         Some(xml) => parse_shared_strings(&xml)?,
         None => Vec::new(),
     };
@@ -208,7 +210,7 @@ pub fn template_structure_hash(input: &[u8]) -> Result<String, XlsxWriterError> 
     let mut sheets = Vec::with_capacity(sheet_names.len());
     for name in &sheet_names {
         let part = resolve_worksheet_part(&workbook_xml, &rels_xml, name)?;
-        let xml = read_required_part(&mut archive, &part)?;
+        let xml = read_required_part(&mut archive, &part, &mut budget)?;
         sheets.push(worksheet_structure(name, &xml, &shared_strings)?);
     }
     let canonical = serde_json::to_vec(&WorkbookStructure {
@@ -235,6 +237,14 @@ fn workbook_sheet_names(workbook_xml: &[u8]) -> Result<Vec<String>, XlsxWriterEr
                 let name = attribute_value(&start, "name")?
                     .ok_or_else(|| XlsxWriterError::Malformed("sheet has no name".to_owned()))?;
                 names.push(name);
+                // Every worksheet needs its own package part, so a workbook cannot
+                // list more sheets than the archive may hold entries. The cap also
+                // bounds the caller, which rescans workbook.xml once per sheet.
+                if names.len() > MAX_ZIP_ENTRIES {
+                    return Err(XlsxWriterError::Malformed(format!(
+                        "workbook lists more than {MAX_ZIP_ENTRIES} worksheets"
+                    )));
+                }
             }
             Event::DocType(_) => {
                 return Err(XlsxWriterError::UnsupportedXml(
@@ -363,6 +373,32 @@ fn worksheet_structure<'a>(
     })
 }
 
+/// Read a user-selected template without loading more than the size gate allows.
+///
+/// The metadata length rejects an oversized file before any read. The read itself
+/// stops one byte past the limit, so a device, FIFO or still-growing file is
+/// reported as too large instead of being buffered whole.
+pub fn read_template_file(path: &Path) -> Result<Vec<u8>, XlsxWriterError> {
+    let limit = MAX_TEMPLATE_BYTES as u64;
+    let file = std::fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    if length > limit {
+        return Err(XlsxWriterError::TemplateTooLarge {
+            actual: usize::try_from(length).unwrap_or(usize::MAX),
+            limit: MAX_TEMPLATE_BYTES,
+        });
+    }
+    let mut bytes = Vec::with_capacity(length as usize);
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_TEMPLATE_BYTES {
+        return Err(XlsxWriterError::TemplateTooLarge {
+            actual: bytes.len(),
+            limit: MAX_TEMPLATE_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
 /// Persist completed bytes with a sibling temporary file and atomic replace.
 pub fn persist_atomic(path: &Path, data: &[u8]) -> Result<(), XlsxWriterError> {
     let parent = path
@@ -404,7 +440,7 @@ fn validate_archive(input: &[u8]) -> Result<(), XlsxWriterError> {
     let mut decompressed = 0_u64;
     for index in 0..archive.len() {
         let file = archive.by_index(index)?;
-        let name = file.name().to_owned();
+        let name = file.name()?.into_owned();
         validate_member_name(&name)?;
         if !names.insert(name.clone()) {
             return Err(XlsxWriterError::DuplicateZipMember(name));
@@ -450,18 +486,41 @@ fn is_unsafe_workbook_part(name: &str) -> bool {
         || lower.contains("/embeddings/")
 }
 
+/// Decompressed bytes one workbook operation may read across all of its parts.
+///
+/// The declared sizes that `validate_archive` and `read_optional_part` check come
+/// from the template itself. zip 8 does not stop a decompressor at the declared
+/// size, and its CRC check runs only after `read_to_end` has buffered the whole
+/// stream, so those checks bound nothing on their own. Sheets may also alias one
+/// part, which a per-entry total never sees. Every part read therefore draws the
+/// bytes it actually produced from this budget.
+struct PartReadBudget {
+    remaining: u64,
+}
+
+impl PartReadBudget {
+    fn new() -> Self {
+        Self {
+            remaining: MAX_DECOMPRESSED_BYTES,
+        }
+    }
+}
+
 fn read_required_part<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
+    budget: &mut PartReadBudget,
 ) -> Result<Vec<u8>, XlsxWriterError> {
-    read_optional_part(archive, name)?.ok_or_else(|| XlsxWriterError::MissingPart(name.to_owned()))
+    read_optional_part(archive, name, budget)?
+        .ok_or_else(|| XlsxWriterError::MissingPart(name.to_owned()))
 }
 
 fn read_optional_part<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
+    budget: &mut PartReadBudget,
 ) -> Result<Option<Vec<u8>>, XlsxWriterError> {
-    let Ok(mut file) = archive.by_name(name) else {
+    let Ok(file) = archive.by_name(name) else {
         return Ok(None);
     };
     if file.size() > MAX_XML_PART_BYTES {
@@ -470,8 +529,24 @@ fn read_optional_part<R: Read + std::io::Seek>(
             limit: MAX_XML_PART_BYTES,
         });
     }
-    let mut body = Vec::with_capacity(file.size() as usize);
-    file.read_to_end(&mut body)?;
+    let cap = MAX_XML_PART_BYTES.min(budget.remaining);
+    let mut body = Vec::with_capacity(file.size().min(cap) as usize);
+    // Read one byte past the cap so an overrun is reported instead of truncated.
+    file.take(cap + 1).read_to_end(&mut body)?;
+    let read = body.len() as u64;
+    if read > MAX_XML_PART_BYTES {
+        return Err(XlsxWriterError::DecompressedTooLarge {
+            actual: read,
+            limit: MAX_XML_PART_BYTES,
+        });
+    }
+    if read > budget.remaining {
+        return Err(XlsxWriterError::DecompressedTooLarge {
+            actual: MAX_DECOMPRESSED_BYTES - budget.remaining + read,
+            limit: MAX_DECOMPRESSED_BYTES,
+        });
+    }
+    budget.remaining -= read;
     Ok(Some(body))
 }
 
@@ -1007,8 +1082,8 @@ fn rebuild_archive(
     let mut destination = ZipWriter::new(cursor);
     for index in 0..source.len() {
         let file = source.by_index(index)?;
-        if file.name() == worksheet_part {
-            let name = file.name().to_owned();
+        let name = file.name()?.into_owned();
+        if name == worksheet_part {
             let options: SimpleFileOptions = file.options();
             destination.start_file(name, options)?;
             destination.write_all(updated_xml)?;
@@ -1200,321 +1275,5 @@ fn nfc(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::tempdir;
-    use zip::CompressionMethod;
-
-    use super::*;
-
-    const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
-</Types>"#;
-
-    const ROOT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>"#;
-
-    const WORKBOOK_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
-  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>"#;
-
-    const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
-  <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF00FF00"/></patternFill></fill></fills>
-  <borders count="2"><border/><border><left style="medium"><color rgb="FFFF0000"/></left><right style="medium"><color rgb="FFFF0000"/></right></border></borders>
-  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="1" borderId="1" xfId="0"/><xf numFmtId="2" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
-  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
-</styleSheet>"#;
-
-    const SHEET_ONE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <sheetData>
-    <row r="1"><c r="A1" t="inlineStr"><is><t>WBS &#53076;&#46300;</t></is></c><c r="B1" t="inlineStr"><is><t>&#51089;&#50629;&#47749;</t></is></c></row>
-    <row r="2" spans="1:4"><c r="A2" s="1" t="inlineStr"><is><t>old</t></is></c><c r="B2" s="2" t="n"><v>7</v></c><c r="C2"><f>B2*2</f><v>14</v></c><c r="D2" s="1" t="inlineStr"><is><t>&#48337;&#54633;</t></is></c></row>
-  </sheetData>
-  <mergeCells count="1"><mergeCell ref="D2:E3"/></mergeCells>
-</worksheet>"#;
-
-    const SHEET_TWO: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>&#46160;&#48264;&#51704; &#49884;&#53944;</t></is></c></row></sheetData></worksheet>"#;
-
-    fn workbook_xml(sheet_name: &str) -> String {
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets><sheet name="{sheet_name}" sheetId="1" r:id="rId1"/><sheet name="두번째" sheetId="2" r:id="rId2"/></sheets>
-</workbook>"#
-        )
-    }
-
-    fn fixture(extra: &[(&str, &[u8])], sheet_name: &str) -> Vec<u8> {
-        let cursor = Cursor::new(Vec::new());
-        let mut archive = ZipWriter::new(cursor);
-        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        for (name, body) in [
-            ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
-            ("_rels/.rels", ROOT_RELS.as_bytes()),
-            ("xl/workbook.xml", workbook_xml(sheet_name).as_bytes()),
-            ("xl/_rels/workbook.xml.rels", WORKBOOK_RELS.as_bytes()),
-            ("xl/styles.xml", STYLES.as_bytes()),
-            ("xl/worksheets/sheet1.xml", SHEET_ONE.as_bytes()),
-            ("xl/worksheets/sheet2.xml", SHEET_TWO.as_bytes()),
-        ] {
-            archive.start_file(name, options).unwrap();
-            archive.write_all(body).unwrap();
-        }
-        for (name, body) in extra {
-            archive.start_file(*name, options).unwrap();
-            archive.write_all(body).unwrap();
-        }
-        archive.finish().unwrap().into_inner()
-    }
-
-    fn part(bytes: &[u8], name: &str) -> Vec<u8> {
-        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
-        let mut file = archive.by_name(name).unwrap();
-        let mut body = Vec::new();
-        file.read_to_end(&mut body).unwrap();
-        body
-    }
-
-    fn headers() -> Vec<HeaderExpectation> {
-        vec![
-            HeaderExpectation {
-                column: "A".to_owned(),
-                expected: "WBS 코드".to_owned(),
-            },
-            HeaderExpectation {
-                column: "B".to_owned(),
-                expected: "작업명".to_owned(),
-            },
-        ]
-    }
-
-    #[test]
-    fn text_nodes_reads_only_text_and_cdata_inside_the_target() {
-        let events = parse_xml_events(
-            b"<root>outside<![CDATA[outside-cdata]]><t>inside<![CDATA[inside-cdata]]></t>tail<![CDATA[tail-cdata]]></root>",
-            "text-nodes-test",
-        )
-        .unwrap();
-
-        assert_eq!(text_nodes(&events, "t").unwrap(), "insideinside-cdata");
-    }
-
-    #[test]
-    fn surgical_golden_preserves_untouched_parts_styles_formulas_merges_and_hangul() {
-        let input = fixture(&[], "데이터");
-        let original_styles = part(&input, "xl/styles.xml");
-        let original_second_sheet = part(&input, "xl/worksheets/sheet2.xml");
-        let original_workbook = part(&input, "xl/workbook.xml");
-        let formula = rollup_sum_formula("F", &[3, 4]).unwrap();
-        let updates = vec![
-            CellUpdate {
-                coordinate: "A2".to_owned(),
-                value: CellValue::Text("한글만".to_owned()),
-            },
-            CellUpdate {
-                coordinate: "B2".to_owned(),
-                value: CellValue::Number(12.5),
-            },
-            CellUpdate {
-                coordinate: "A3".to_owned(),
-                value: CellValue::Text("mixed 한글".to_owned()),
-            },
-            CellUpdate {
-                coordinate: "C3".to_owned(),
-                value: CellValue::Text("=CMD()".to_owned()),
-            },
-            CellUpdate {
-                coordinate: "F2".to_owned(),
-                value: CellValue::Formula(formula),
-            },
-        ];
-
-        let XlsxFillOutcome::Written {
-            bytes,
-            escaped_cell_count,
-        } = fill_workbook(&input, "데이터", &headers(), &updates).unwrap()
-        else {
-            panic!("golden must produce a workbook");
-        };
-
-        assert_eq!(escaped_cell_count, 1);
-        assert_eq!(part(&bytes, "xl/styles.xml"), original_styles);
-        assert_eq!(
-            part(&bytes, "xl/worksheets/sheet2.xml"),
-            original_second_sheet
-        );
-        assert_eq!(part(&bytes, "xl/workbook.xml"), original_workbook);
-
-        let sheet = String::from_utf8(part(&bytes, "xl/worksheets/sheet1.xml")).unwrap();
-        assert!(sheet.contains(r#"r="A2" s="1" t="inlineStr""#));
-        assert!(sheet.contains("한글만"));
-        assert!(sheet.contains("mixed 한글"));
-        assert!(sheet.contains("12.5"));
-        assert!(sheet.contains("<f>B2*2</f>"));
-        assert!(sheet.contains("<f>SUM(F3,F4)</f>"));
-        assert!(sheet.contains(r#"mergeCell ref="D2:E3""#));
-        assert!(sheet.contains("&apos;=CMD()"));
-        assert!(!sheet.contains("<f>CMD()</f>"));
-    }
-
-    #[test]
-    fn structure_hash_ignores_data_values_but_detects_header_change() {
-        let input = fixture(&[], "데이터");
-        let baseline = template_structure_hash(&input).unwrap();
-        let XlsxFillOutcome::Written {
-            bytes: data_edit, ..
-        } = fill_workbook(
-            &input,
-            "데이터",
-            &headers(),
-            &[CellUpdate {
-                coordinate: "A2".to_owned(),
-                value: CellValue::Text("new data".to_owned()),
-            }],
-        )
-        .unwrap()
-        else {
-            panic!("data edit must produce a workbook")
-        };
-        assert_eq!(template_structure_hash(&data_edit).unwrap(), baseline);
-
-        let XlsxFillOutcome::Written {
-            bytes: header_edit, ..
-        } = fill_workbook(
-            &input,
-            "데이터",
-            &headers(),
-            &[CellUpdate {
-                coordinate: "B1".to_owned(),
-                value: CellValue::Text("변경된 헤더".to_owned()),
-            }],
-        )
-        .unwrap()
-        else {
-            panic!("header edit must produce a workbook")
-        };
-        assert_ne!(template_structure_hash(&header_edit).unwrap(), baseline);
-    }
-
-    #[test]
-    fn header_drift_returns_no_artifact_before_updates() {
-        let input = fixture(&[], "데이터");
-        let mut expected = headers();
-        expected[1].expected = "다른 헤더".to_owned();
-
-        let outcome = fill_workbook(
-            &input,
-            "데이터",
-            &expected,
-            &[CellUpdate {
-                coordinate: "A2".to_owned(),
-                value: CellValue::Text("must not be written".to_owned()),
-            }],
-        )
-        .unwrap();
-
-        assert_eq!(
-            outcome,
-            XlsxFillOutcome::HeaderDrift(HeaderDrift {
-                expected: vec!["WBS 코드".to_owned(), "다른 헤더".to_owned()],
-                actual: vec!["WBS 코드".to_owned(), "작업명".to_owned()],
-                first_mismatch_column: "B".to_owned(),
-            })
-        );
-        assert_eq!(
-            part(&input, "xl/worksheets/sheet1.xml"),
-            SHEET_ONE.as_bytes()
-        );
-    }
-
-    #[test]
-    fn sheet_lookup_compares_nfc_and_nfd_names() {
-        let input = fixture(&[], "데이터");
-        let outcome = fill_workbook(&input, "데이터", &headers(), &[]).unwrap();
-        assert!(matches!(outcome, XlsxFillOutcome::Written { .. }));
-    }
-
-    #[test]
-    fn unsafe_package_parts_are_rejected() {
-        let input = fixture(
-            &[("xl/externalLinks/externalLink1.xml", b"<externalLink/>")],
-            "데이터",
-        );
-        let error = fill_workbook(&input, "데이터", &headers(), &[]).unwrap_err();
-        assert!(matches!(error, XlsxWriterError::UnsafeWorkbookPart(_)));
-    }
-
-    #[test]
-    fn unsafe_formulas_and_duplicate_updates_fail_closed() {
-        let input = fixture(&[], "데이터");
-        let unsafe_formula = fill_workbook(
-            &input,
-            "데이터",
-            &headers(),
-            &[CellUpdate {
-                coordinate: "A2".to_owned(),
-                value: CellValue::Formula("HYPERLINK(\"https://example.com\")".to_owned()),
-            }],
-        )
-        .unwrap_err();
-        assert!(matches!(unsafe_formula, XlsxWriterError::UnsafeFormula(_)));
-
-        let duplicate = fill_workbook(
-            &input,
-            "데이터",
-            &headers(),
-            &[
-                CellUpdate {
-                    coordinate: "a2".to_owned(),
-                    value: CellValue::Text("one".to_owned()),
-                },
-                CellUpdate {
-                    coordinate: "A2".to_owned(),
-                    value: CellValue::Text("two".to_owned()),
-                },
-            ],
-        )
-        .unwrap_err();
-        assert!(matches!(duplicate, XlsxWriterError::DuplicateCellUpdate(_)));
-    }
-
-    #[test]
-    fn compressed_size_gate_runs_before_zip_parsing() {
-        let oversized = vec![0_u8; MAX_TEMPLATE_BYTES + 1];
-        let error = fill_workbook(&oversized, "데이터", &headers(), &[]).unwrap_err();
-        assert!(matches!(error, XlsxWriterError::TemplateTooLarge { .. }));
-    }
-
-    #[test]
-    fn atomic_persist_replaces_target_without_leaving_a_sibling_temp_file() {
-        let directory = tempdir().unwrap();
-        let target = directory.path().join("output.xlsx");
-        fs::write(&target, b"old").unwrap();
-
-        persist_atomic(&target, b"new workbook").unwrap();
-
-        assert_eq!(fs::read(&target).unwrap(), b"new workbook");
-        let siblings = fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect::<Vec<_>>();
-        assert_eq!(siblings, vec![target.file_name().unwrap()]);
-    }
-}
+#[path = "tmd_xlsx_writer_tests.rs"]
+mod tests;

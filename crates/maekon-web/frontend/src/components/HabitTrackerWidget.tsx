@@ -11,6 +11,7 @@ import type { HabitStreak } from '../api/coaching'
 import { useHabitStreaks } from '../hooks/useCoaching'
 import { colors, iconSize, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
+import { formatMinutes } from '../utils/formatters'
 import { Card, CardContent, CardTitle, Skeleton } from './ui'
 
 /** Build a map of `regime -> date -> HabitStreak` for quick lookups. */
@@ -147,7 +148,7 @@ export default function HabitTrackerWidget() {
                           ? Math.round((entry.minutes_logged / entry.target_minutes) * 100)
                           : 0
                       const tooltip = entry
-                        ? `${entry.minutes_logged}/${entry.target_minutes}m (${pct}%)`
+                        ? `${formatMinutes(entry.minutes_logged)}/${formatMinutes(entry.target_minutes)} (${pct}%)`
                         : t('coaching.habits.noData', 'No data')
                       return (
                         <td key={d} className="px-1 py-1 text-center">

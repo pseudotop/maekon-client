@@ -5,8 +5,12 @@
 //   adapter.rs   — VisionPiiSanitizer (PiiSanitizer port impl)
 
 mod adapter;
+pub(crate) mod capture_scene;
 mod detection;
 mod redaction;
+
+#[cfg(test)]
+mod capture_scene_tests;
 
 #[cfg(test)]
 #[path = "exact_app_tests.rs"]
@@ -14,6 +18,7 @@ mod exact_app_tests;
 
 // Public surface — all callers use `maekon_vision::privacy::{...}`
 pub use adapter::VisionPiiSanitizer;
+pub use capture_scene::validate_capture_scene;
 pub use detection::{
     detect_pii_markers_with_level, is_sensitive_app, is_sensitive_segment_with_level,
     matches_exclusion_pattern, sanitize_title, sanitize_title_with_level, should_exclude,
@@ -227,10 +232,33 @@ mod tests {
     }
 
     #[test]
+    fn email_mask_preserves_unmatched_at_signs_and_consumes_the_whole_domain() {
+        assert_eq!(redaction::mask_emails("@@a <b@c@d>"), "@@a <[EMAIL]>");
+    }
+
+    #[test]
     fn mask_korean_phone() {
         let result = redaction::mask_phone_numbers("call 010-1234-5678 now");
         assert!(result.contains("[PHONE]"));
         assert!(!result.contains("010-1234-5678"));
+    }
+
+    #[test]
+    fn phone_mask_preserves_unmatched_unicode_and_resumes_after_matches() {
+        let unchanged = "담당자 🙂+ 문의: 42. 다음";
+        assert_eq!(redaction::mask_phone_numbers(unchanged), unchanged);
+        assert_eq!(
+            redaction::mask_phone_numbers("☎010-1234-5678 / 192.0.2.1 / +82-10-2345-6789🙂"),
+            "☎[PHONE] / 192.0.2.1 / [PHONE]🙂"
+        );
+    }
+
+    #[test]
+    fn phone_mask_accepts_a_space_after_plus_at_the_nine_digit_boundary() {
+        assert_eq!(
+            redaction::mask_phone_numbers("Call + 123456789 / ID 123456789"),
+            "Call [PHONE] / ID 123456789"
+        );
     }
 
     #[test]
@@ -679,6 +707,24 @@ mod tests {
     #[test]
     fn mask_credit_cards_short_sequence() {
         assert_eq!(redaction::mask_credit_cards("123456789012"), "123456789012");
+    }
+
+    #[test]
+    fn credit_card_lengths_and_separators_preserve_surrounding_unicode() {
+        for digits in [12, 13, 19, 20] {
+            let number = "3".repeat(digits);
+            let input = format!("한글🙂({number}.)\t{number} 末");
+            let expected = if matches!(digits, 13 | 19) {
+                "한글🙂([CARD].)\t[CARD] 末".to_owned()
+            } else {
+                input.clone()
+            };
+            assert_eq!(redaction::mask_credit_cards(&input), expected);
+        }
+        assert_eq!(
+            redaction::mask_credit_cards("🙂1234.5678-9012 3..45 ６ 끝"),
+            "🙂[CARD]..45 ６ 끝"
+        );
     }
 
     // ── #6003: encrypted-messaging / password / 2FA app keyword coverage ──

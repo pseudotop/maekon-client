@@ -48,6 +48,7 @@ mod guarded_llm;
 mod guarded_ocr;
 mod helpers;
 mod llm_resolver;
+mod observed_llm;
 mod ocr_resolver;
 mod surface;
 mod types;
@@ -122,7 +123,7 @@ pub fn resolve_ai_provider_adapters(
     // `None` is safe and leaves those arms with no health tracking.
     llm_call_health: Option<Arc<LlmCallHealth>>,
 ) -> Result<AiProviderAdapters, CoreError> {
-    match config.access_mode.normalized_for_ai_surfaces() {
+    let mut adapters = match config.access_mode.normalized_for_ai_surfaces() {
         AiAccessMode::LocalModel => {
             // OCR: unchanged — best local OCR (Tesseract / macOS Vision).
             // LLM: C3 — route to loopback Ollama via FallbackLlmProvider;
@@ -255,7 +256,12 @@ pub fn resolve_ai_provider_adapters(
                 })
             }
         }
-    }
+    }?;
+    adapters.llm = Arc::new(observed_llm::ConfiguredLlmProvider::new(
+        adapters.llm,
+        config,
+    ));
+    Ok(adapters)
 }
 
 /// Build an inert advisory runtime. The trusted caller must separately bind a
@@ -288,4 +294,79 @@ pub fn build_candidate_decision_runtime(
         mode,
     );
     Ok((Arc::new(provider), control))
+}
+
+#[cfg(test)]
+#[cfg(feature = "analysis")]
+mod intent_observation_tests {
+    use super::*;
+    use maekon_core::config::{AiProviderType, ExternalApiEndpoint};
+    use maekon_core::models::intent_execution::*;
+    use maekon_core::ports::llm_provider::ScreenContext;
+
+    #[tokio::test]
+    async fn factory_rule_degradation_preserves_requested_model_and_one_actual_attempt() {
+        // The cleartext remote endpoint is refused at construction. No server,
+        // external inference or invented failed model call is needed.
+        let config = AiProviderConfig {
+            access_mode: AiAccessMode::LocalModel,
+            llm_api: Some(ExternalApiEndpoint {
+                endpoint: "http://canary.invalid:11434/v1/responses".into(),
+                api_key: String::new(),
+                model: Some("CANARY_MODEL".into()),
+                timeout_secs: 5,
+                provider_type: AiProviderType::Ollama,
+                surface_id: Some("provider_surface.ollama.local_http".into()),
+                credential: None,
+            }),
+            ..Default::default()
+        };
+        let adapters = resolve_ai_provider_adapters(
+            &config,
+            PiiFilterLevel::Standard,
+            None,
+            None,
+            None,
+            maekon_http_core::circuit_breaker::CircuitBreakerRegistry::new(),
+            None,
+        )
+        .unwrap();
+        let observer = IntentExecutionObserver::new(IntentSubmission::default());
+        observer.configure(
+            adapters.llm.intent_requested_provider_class(),
+            adapters.llm.intent_configuration_reason(),
+        );
+        let screen = ScreenContext {
+            visible_texts: vec![],
+            active_app: String::new(),
+            active_window_title: String::new(),
+            layout_description: None,
+        };
+        adapters
+            .llm
+            .interpret_intent_observed(&screen, "save", None, &observer)
+            .await
+            .unwrap();
+        observer.planning_succeeded();
+        let receipt = observer.snapshot();
+        assert_eq!(
+            receipt.requested_provider_class,
+            IntentProviderClass::LocalModel
+        );
+        assert_eq!(
+            receipt.configuration_reason,
+            Some(IntentConfigurationReason::RuleOnlyDegradation)
+        );
+        assert_eq!(receipt.attempts.len(), 1);
+        assert_eq!(
+            receipt.attempts[0].effective_provider_class,
+            IntentProviderClass::Rule
+        );
+        assert_eq!(receipt.attempts[0].outcome, IntentAttemptOutcome::Succeeded);
+        assert_eq!(receipt.planning_outcome, IntentPlanningOutcome::Rule);
+        assert!(!serde_json::to_string(&receipt).unwrap().contains("CANARY"));
+        assert!(!serde_json::to_string(&receipt)
+            .unwrap()
+            .contains("canary.invalid"));
+    }
 }

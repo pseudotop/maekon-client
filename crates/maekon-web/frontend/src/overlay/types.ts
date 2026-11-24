@@ -190,6 +190,8 @@ export interface ToastItem {
   message: string
   type: 'success' | 'error' | 'info'
   duration?: number
+  /** Raw support diagnostic, hidden until the user opens the detail panel. */
+  detail?: string | null
 }
 
 /**

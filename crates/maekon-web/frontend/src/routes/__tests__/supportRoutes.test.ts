@@ -3,13 +3,17 @@ import en from '../../i18n/locales/en.json'
 import { routeTree } from '../route-tree'
 
 // #8079 / #8080: the Support destination and the Integrations settings tab must
-// be registered in the single-source routeTree so navigation, ActivityBar, and
-// SettingsLayout tab derivation all pick them up.
+// be registered in the single-source routeTree so navigation, the side panel,
+// and SettingsLayout tab derivation all pick them up.
 describe('support + integrations route registration', () => {
-  it('registers a discoverable bottom-level /support destination', () => {
+  it('registers a discoverable /support destination in the System bundle', () => {
     const support = routeTree.find((route) => route.path === '/support')
     expect(support).toBeDefined()
-    expect(support?.bottom).toBe(true)
+    // #13736: one level back in the main tree instead of a bottom rail icon.
+    expect(support?.group).toBe('main')
+    expect(support?.section).toBe('system')
+    expect(support?.bottom).toBeUndefined()
+    // The icon keeps it listed in the command palette.
     expect(support?.icon).toBeDefined()
     expect(support?.labelKey).toBe('nav.support')
     // The nav label must resolve in the baseline locale.

@@ -20,6 +20,11 @@ maekon-vision/src/
 ├── capture.rs              # ScreenCapture - xcap 기반 멀티모니터 캡처
 ├── trigger.rs              # SmartCaptureTrigger - 이벤트 분류 + 중요도 + 쓰로틀
 ├── delta.rs                # DeltaEncoder - 16×16 tile 비교 → 변경 영역 추출
+├── screen_probe.rs         # AuthorizedScreenProbe - 표본마다 캡처 허가, 960px 이하 사본의 16px 칸 서명만 반환, 픽셀 버퍼 지움
+├── dirty_region/           # AuthorizedDirtyRegions - OS가 알린 바뀐 영역에서 제외 앱 창을 빼고, 가져갈 때마다 캡처 허가, OS 소스가 없으면 캡처 비교
+│   ├── macos.rs            # ScreenCaptureKitListener - 디스플레이마다 ScreenCaptureKit 스트림 + 창 목록 (기능 macos-screencapturekit, 기본 끔: macOS 12.3 필요, 컴파일만 확인, 실기기 실행 전)
+│   ├── windows.rs          # DxgiDuplicationListener - 모든 출력의 DXGI Desktop Duplication + 창 사건 (컴파일만 확인, 실기기 실행 전)
+│   └── x11.rs              # X11DamageListener - 루트 창의 DAMAGE + XFIXES (X11 세션만, Wayland는 캡처 비교)
 ├── encoder.rs              # WebpEncoder - Low/Medium/High 품질 + 통계 기반 품질 예측
 ├── thumbnail.rs            # ThumbnailGenerator - fast_image_resize + LRU 캐시 (100 entry, FNV-1a)
 ├── ring_buffer.rs          # 프레임 ring buffer (경계 있음)

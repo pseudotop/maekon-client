@@ -108,9 +108,26 @@ mod tests {
 
         // Fresh manager + same store => restore rehydrates without network.
         let tm2 = TokenManager::new(&server.url()).with_persistence(store.clone());
+        let mut restored_changes = tm2.subscribe_session_generation();
         assert!(
             tm2.restore_persisted_session().await,
             "restore must succeed"
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            restored_changes.changed(),
+        )
+        .await
+        .expect("restoring a session must notify existing subscribers")
+        .unwrap();
+        assert_eq!(*restored_changes.borrow_and_update(), 1);
+        let restored_scope = tm2.session_snapshot().await;
+        assert_eq!(restored_scope.generation, "1");
+        assert_ne!(restored_scope.instance_id, tm.session_instance_id());
+        assert_eq!(restored_scope.identifier.as_deref(), Some("mingyu_song"));
+        assert_eq!(
+            restored_scope.organization_id.as_deref(),
+            Some("org-e2e-futurepac")
         );
         assert!(tm2.is_authenticated().await);
         let info = tm2
@@ -119,6 +136,44 @@ mod tests {
             .expect("session info after restore");
         assert_eq!(info.identifier.as_deref(), Some("mingyu_song"));
         assert_eq!(info.organization_id.as_deref(), Some("org-e2e-futurepac"));
+    }
+
+    #[tokio::test]
+    async fn restored_session_snapshot_hides_identity_at_the_exact_expiry_boundary() {
+        let store = std::sync::Arc::new(MemorySecretStore::new());
+        let manager = TokenManager::new("http://127.0.0.1:19999").with_persistence(store.clone());
+        let expires_at = Utc::now() + Duration::hours(1);
+        let mut state = manager.state.write().await;
+        *state = Some(TokenState {
+            access_token: "expiry-boundary-fixture".into(),
+            refresh_token: None,
+            expires_at,
+            identifier: Some("boundary-actor".into()),
+            organization_id: Some("boundary-org".into()),
+        });
+        manager.bump_session_generation();
+        drop(state);
+        manager.persist_current_state().await;
+
+        let restored = TokenManager::new("http://127.0.0.1:19999").with_persistence(store);
+        assert!(restored.restore_persisted_session().await);
+        let before = restored
+            .session_snapshot_with_clock(|| expires_at - Duration::nanoseconds(1))
+            .await;
+        assert!(before.authenticated);
+        assert_eq!(before.identifier.as_deref(), Some("boundary-actor"));
+        assert_eq!(before.organization_id.as_deref(), Some("boundary-org"));
+        assert_eq!(before.expires_at, Some(expires_at.to_rfc3339()));
+
+        for observed_at in [expires_at, expires_at + Duration::nanoseconds(1)] {
+            let expired = restored.session_snapshot_with_clock(|| observed_at).await;
+            assert!(!expired.authenticated);
+            assert!(expired.identifier.is_none());
+            assert!(expired.organization_id.is_none());
+            assert!(expired.expires_at.is_none());
+            assert_eq!(expired.instance_id, before.instance_id);
+            assert_eq!(expired.generation, before.generation);
+        }
     }
 
     #[tokio::test]

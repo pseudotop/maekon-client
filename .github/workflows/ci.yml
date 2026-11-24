@@ -179,7 +179,10 @@ jobs:
 
       - name: TypeScript type check
         working-directory: crates/maekon-web/frontend
-        run: npx tsc --noEmit
+        # tsconfig.json references the composite tsconfig.node.json
+        # (vite.config.ts and src/constants.ts). Plain --noEmit fails with
+        # TS6305 until that reference is built; build mode checks both.
+        run: npx tsc -b
 
       - name: Run frontend unit tests (vitest)
         working-directory: crates/maekon-web/frontend

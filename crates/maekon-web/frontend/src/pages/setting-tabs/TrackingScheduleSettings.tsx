@@ -21,7 +21,7 @@ import {
   type TrackingWindow,
 } from '../../api/client'
 import type { Weekday } from '../../api/contracts'
-import { Button, Card, CardTitle, GuidancePanel, Input, Select } from '../../components/ui'
+import { Button, Card, CardTitle, GuidancePanel, Input, Select, Switch } from '../../components/ui'
 import { colors, form, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 
@@ -257,16 +257,11 @@ export function TrackingScheduleSettings() {
         )}
 
         <div className="space-y-6">
-          {/* Enabled toggle */}
-          <div className="flex items-center justify-between">
+          {/* Enabled toggle — the row is the switch's label (#13739). */}
+          <label className="flex cursor-pointer items-center justify-between">
             <span className={cn(typography.weight.medium, colors.text.secondary)}>{t('trackingSchedule.enabled')}</span>
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => setEnabled(e.target.checked)}
-              className={form.checkbox}
-            />
-          </div>
+            <Switch checked={enabled} onCheckedChange={setEnabled} />
+          </label>
 
           {/* Timezone dropdown */}
           <div>

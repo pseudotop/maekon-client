@@ -8,6 +8,7 @@
 //! 5. mTLS peer cert extraction + optional `MtlsVerifier` check.
 //! 6. Wrap accepted stream in `PeerAwareStream` and forward to the tonic server
 //!    via an `mpsc` channel that is consumed as a `ReceiverStream`.
+//! 7. Own pending handshakes and reclaim them when the accept loop stops.
 //!
 //! The accept loop runs until a `watch::Receiver<bool>` fires (signals shutdown).
 
@@ -17,6 +18,7 @@ use std::time::Duration;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
+use tokio::task::{JoinError, JoinSet};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
 
@@ -25,6 +27,15 @@ use super::spawn_config::ExternalGrpcSpawnConfig;
 
 /// How long to wait for a TLS handshake before dropping the connection.
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn resume_handshake_panic(outcome: Result<(), JoinError>) {
+    if let Err(error) = outcome {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+        // Cancellation is expected while reaping tasks during shutdown.
+    }
+}
 
 /// Run the accept loop.
 ///
@@ -52,6 +63,10 @@ pub(crate) async fn run_accept_loop(
         panic!("injected test panic in accept loop");
     }
 
+    // Dropping the parent future aborts every child, including tasks that have
+    // not been polled yet. Reap completed children so repeated connections do
+    // not accumulate finished JoinHandles for the lifetime of the server.
+    let mut handshakes = JoinSet::new();
     loop {
         tokio::select! {
             biased;
@@ -59,6 +74,10 @@ pub(crate) async fn run_accept_loop(
             _ = shutdown_rx.changed() => {
                 debug!("external_grpc: accept loop received shutdown signal");
                 break;
+            }
+
+            Some(outcome) = handshakes.join_next(), if !handshakes.is_empty() => {
+                resume_handshake_panic(outcome);
             }
 
             accept_result = listener.accept() => {
@@ -101,9 +120,11 @@ pub(crate) async fn run_accept_loop(
                 let acceptor_c = acceptor.clone();
                 let cfg_c = cfg.clone();
                 let conn_tx_c = conn_tx.clone();
-                let active_c = active_conns.clone();
+                // The same guard moves into the accepted stream on success.
+                // Before that, every error or cancellation returns this slot.
+                let guard = ActiveConnGuard::new(active_conns.clone());
 
-                tokio::spawn(async move {
+                handshakes.spawn(async move {
                     let tls_result = tokio::time::timeout(
                         TLS_HANDSHAKE_TIMEOUT,
                         acceptor_c.accept(tcp),
@@ -119,7 +140,6 @@ pub(crate) async fn run_accept_loop(
                                 "external_grpc: TLS handshake failed"
                             );
                             cfg_c.ip_ban.record_failure(remote);
-                            active_c.fetch_sub(1, Ordering::Relaxed);
                             return;
                         }
                         Err(_timeout) => {
@@ -128,7 +148,6 @@ pub(crate) async fn run_accept_loop(
                                 "external_grpc: TLS handshake timed out"
                             );
                             cfg_c.ip_ban.record_failure(remote);
-                            active_c.fetch_sub(1, Ordering::Relaxed);
                             return;
                         }
                     };
@@ -152,7 +171,6 @@ pub(crate) async fn run_accept_loop(
                                             "external_grpc: mTLS cert verification failed"
                                         );
                                         cfg_c.ip_ban.record_failure(remote);
-                                        active_c.fetch_sub(1, Ordering::Relaxed);
                                         return;
                                     }
                                 }
@@ -171,8 +189,6 @@ pub(crate) async fn run_accept_loop(
                         cert_subject_cn: None,
                         tls_version: "TLSv1.3".to_string(),
                     };
-                    // RAII guard: decrements active_conns when the stream is dropped.
-                    let guard = ActiveConnGuard::new(active_c.clone());
                     let wrapped = PeerAwareStream::new(tls_stream, peer_info, Some(guard));
 
                     // Forward to tonic. Drop on channel-closed (server shut down).
@@ -181,12 +197,13 @@ pub(crate) async fn run_accept_loop(
                         // Guard was moved into `wrapped`, which is now dropped here —
                         // the decrement happens automatically via Drop.
                     }
-                    // NOTE: for all pre-stream-creation error paths above (TLS failure,
-                    // handshake timeout, mTLS rejection) the manual fetch_sub calls
-                    // handle the decrement because no guard was created yet.
                 });
             }
         }
+    }
+    handshakes.abort_all();
+    while let Some(outcome) = handshakes.join_next().await {
+        resume_handshake_panic(outcome);
     }
 }
 
@@ -441,5 +458,75 @@ mod tests {
         result
             .expect("accept loop should exit within 2s of shutdown signal")
             .expect("run_accept_loop must not panic on clean shutdown");
+    }
+
+    #[tokio::test]
+    async fn pending_handshake_slots_are_returned_on_shutdown_and_abort() {
+        super::super::test_support::install_rustls_crypto_provider();
+        for abort in [false, true] {
+            let cfg = minimal_cfg(1, Arc::new(IpBan::new())).await;
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let acceptor =
+                TlsAcceptor::from(Arc::new(make_server_config(cfg.cert_resolver.clone())));
+            let (conn_tx, _conn_rx) = mpsc::channel(1);
+            let active = Arc::new(AtomicUsize::new(0));
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
+            let handle = tokio::spawn(run_accept_loop(
+                listener,
+                acceptor,
+                cfg,
+                conn_tx,
+                active.clone(),
+                shutdown_rx,
+            ));
+            let _client = tokio::net::TcpStream::connect(address).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while active.load(Ordering::Relaxed) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the real connection must reserve its handshake slot");
+            assert_eq!(active.load(Ordering::Relaxed), 1);
+            if abort {
+                handle.abort();
+                assert!(handle.await.unwrap_err().is_cancelled());
+            } else {
+                shutdown_tx.send_replace(true);
+                tokio::time::timeout(Duration::from_secs(1), handle)
+                    .await
+                    .expect("shutdown must reap pending handshakes")
+                    .unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while active.load(Ordering::Relaxed) != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("each admitted slot must be returned exactly once");
+        }
+    }
+
+    #[tokio::test]
+    async fn child_panic_is_preserved_while_expected_cancellation_is_reaped() {
+        resume_handshake_panic(Ok(()));
+        let canceled = tokio::spawn(std::future::pending::<()>());
+        canceled.abort();
+        resume_handshake_panic(canceled.await);
+
+        let parent = tokio::spawn(async {
+            let panicked = tokio::spawn(async { panic!("controlled handshake panic") }).await;
+            resume_handshake_panic(panicked);
+        })
+        .await
+        .expect_err("a child panic must reach the parent supervisor");
+        assert!(parent.is_panic());
+        let payload = parent.into_panic();
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"controlled handshake panic")
+        );
     }
 }

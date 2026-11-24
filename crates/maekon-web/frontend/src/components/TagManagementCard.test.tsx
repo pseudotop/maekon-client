@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../__tests__/helpers/render-helpers'
 import type { Tag } from '../api/contracts'
+import en from '../i18n/locales/en.json'
 import { TagManagementCard } from './TagManagementCard'
 
 const fetchTags = vi.fn()
@@ -79,7 +80,9 @@ describe('TagManagementCard', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
 
     // The message belongs inside the dialog the user is still looking at.
-    expect(await within(dialog).findByText('tag is still referenced')).toBeInTheDocument()
+    // #13737: it is a localized sentence; the raw text stays as support detail.
+    expect(await within(dialog).findByText(en.settings.tagActionFailed)).toBeInTheDocument()
+    expect(within(dialog).getByTestId('support-details-text')).toHaveTextContent('tag is still referenced')
   })
 
   it('refreshes the shared tag list after a rename', async () => {

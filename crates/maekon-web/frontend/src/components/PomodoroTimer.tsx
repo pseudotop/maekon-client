@@ -17,21 +17,16 @@ import {
 } from '../api/client'
 import { isStandaloneModeEnabled } from '../api/standalone'
 import { addToast } from '../hooks/useToast'
+import { type ErrorDisplay, useErrorDisplay } from '../i18n/errorDisplay'
 import { colors, dataViz, iconSize, motion, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
+import { formatClock } from '../utils/formatters'
 import { IS_MAC, IS_TAURI } from '../utils/platform'
+import { SupportDetails } from './SupportDetails'
 import { Button, Card, CardContent, CardHeader, CardTitle } from './ui'
 
 const DEFAULT_WORK_MINS = 25
 const DEFAULT_BREAK_MINS = 5
-
-/** Format seconds as MM:SS */
-function formatTime(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) return '00:00'
-  const m = Math.floor(secs / 60)
-  const s = secs % 60
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-}
 
 function statusColor(status: PomodoroStatus): string {
   switch (status) {
@@ -153,13 +148,10 @@ export default function PomodoroTimer() {
   const [remaining, setRemaining] = useState(0)
   const [status, setStatus] = useState<PomodoroStatus>('completed')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorDisplay | null>(null)
   const prevStatusRef = useRef<PomodoroStatus>('completed')
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const describeError = useCallback(
-    (value: unknown, fallback: string) => (value instanceof Error && value.message ? value.message : fallback),
-    [],
-  )
+  const describeError = useErrorDisplay()
   const statusLabelText = useCallback(
     (value: PomodoroStatus) => {
       switch (value) {
@@ -235,7 +227,7 @@ export default function PomodoroTimer() {
           console.warn('completePomodoro failed:', e)
           const message = describeError(e, t('focus.pomodoro.syncFailed', 'Failed to sync the completed session.'))
           setError(message)
-          addToast('warning', message, 5000)
+          addToast('warning', message.text, 5000, message.detail)
         })
       }
       prevStatusRef.current = loc.status
@@ -259,7 +251,7 @@ export default function PomodoroTimer() {
         console.warn('fetchCurrentPomodoro failed:', e)
         const message = describeError(e, t('focus.pomodoro.loadFailed', 'Failed to load the current timer.'))
         setError(message)
-        addToast('error', message, 5000)
+        addToast('error', message.text, 5000, message.detail)
       })
   }, [describeError, t])
 
@@ -281,7 +273,7 @@ export default function PomodoroTimer() {
     } catch (e: unknown) {
       const message = describeError(e, t('focus.pomodoro.startFailed', 'Failed to start the timer.'))
       setError(message)
-      addToast('error', message, 5000)
+      addToast('error', message.text, 5000, message.detail)
     } finally {
       setLoading(false)
     }
@@ -296,7 +288,7 @@ export default function PomodoroTimer() {
     } catch (e: unknown) {
       const message = describeError(e, t('focus.pomodoro.cancelFailed', 'Failed to cancel the timer.'))
       setError(message)
-      addToast('error', message, 5000)
+      addToast('error', message.text, 5000, message.detail)
     } finally {
       setLoading(false)
     }
@@ -326,11 +318,11 @@ export default function PomodoroTimer() {
           <TimerRing
             progress={progress}
             status={status}
-            timeText={isActive ? formatTime(remaining) : '--:--'}
+            timeText={isActive ? formatClock(remaining) : '--:--'}
             label={isActive ? statusLabelText(status) : t('focus.pomodoro.ready', 'Ready')}
           />
           <span className="sr-only" aria-live="polite">
-            {isActive ? `${statusLabelText(status)}: ${formatTime(remaining)}` : t('focus.pomodoro.ready', 'Ready')}
+            {isActive ? `${statusLabelText(status)}: ${formatClock(remaining)}` : t('focus.pomodoro.ready', 'Ready')}
           </span>
 
           {/* Controls */}
@@ -348,7 +340,12 @@ export default function PomodoroTimer() {
           </div>
 
           {/* Error feedback */}
-          {error && <p className={cn('text-xs', colors.semantic.error)}>{error}</p>}
+          {error && (
+            <div role="alert" className={cn('text-xs', colors.semantic.error)}>
+              <p>{error.text}</p>
+              <SupportDetails detail={error.detail} />
+            </div>
+          )}
 
           {/* Session info for completed */}
           {session && status === 'completed' && (

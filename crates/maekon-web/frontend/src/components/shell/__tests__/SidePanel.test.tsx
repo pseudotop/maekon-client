@@ -1,5 +1,6 @@
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useLocation } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../../__tests__/helpers/render-helpers'
 import SidePanel from '../SidePanel'
@@ -39,10 +40,10 @@ describe('SidePanel', () => {
     expect(separator).toHaveAttribute('aria-valuenow', '300')
   })
 
-  it('renders the full monitor group tree when on /day (leaf route in monitor)', () => {
-    // Previously /day was childless so the panel hid itself.  After the
-    // category restructure, /day belongs to the monitor group — the panel
-    // shows the entire monitor tree with Day highlighted as a leaf treeitem.
+  it('renders the main tree when on /day (a route inside the More bundle)', () => {
+    // Previously /day was childless so the panel hid itself.  /day belongs
+    // to the main group, so the panel shows the main tree with Day revealed
+    // inside its bundle and highlighted as a leaf treeitem.
     renderWithProviders(<SidePanel {...defaultProps} />, {
       routerProps: { initialEntries: ['/day'] },
     })
@@ -52,7 +53,7 @@ describe('SidePanel', () => {
     expect(selected).toHaveTextContent(/day view/i)
   })
 
-  it('renders the full data group tree when on /chat (leaf route in data)', () => {
+  it('renders the main tree when on /chat (a front leaf route)', () => {
     renderWithProviders(<SidePanel {...defaultProps} />, {
       routerProps: { initialEntries: ['/chat'] },
     })
@@ -101,5 +102,80 @@ describe('SidePanel', () => {
 
     await user.click(screen.getByTestId('sidepanel-collapse'))
     expect(onCollapse).toHaveBeenCalledTimes(1)
+  })
+})
+
+function LocationProbe() {
+  return <output data-testid="location">{useLocation().pathname}</output>
+}
+
+function firstLevelItems() {
+  return Array.from(screen.getByRole('tree').querySelectorAll<HTMLElement>('[role="treeitem"][aria-level="1"]'))
+}
+
+// #13736: six front destinations, then bundles that start folded.
+describe('SidePanel main tree', () => {
+  it('shows six front destinations and three folded bundles by default', () => {
+    renderWithProviders(<SidePanel {...defaultProps} />, { routerProps: { initialEntries: ['/overview'] } })
+    expect(firstLevelItems().map((item) => item.textContent)).toEqual([
+      'Dashboard',
+      'Timeline',
+      'Search',
+      'Focus',
+      'Reports',
+      'Chat',
+      'More',
+      'Tools',
+      'System',
+    ])
+    for (const bundle of ['More', 'Tools', 'System']) {
+      expect(screen.getByRole('treeitem', { name: bundle })).toHaveAttribute('aria-expanded', 'false')
+    }
+    // Only the path to the current page is open.
+    expect(screen.getByRole('treeitem', { name: 'Dashboard' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('treeitem', { name: 'Timeline' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('opens the bundle that holds the current page', () => {
+    renderWithProviders(<SidePanel {...defaultProps} />, {
+      routerProps: { initialEntries: ['/automation/history'] },
+    })
+    expect(screen.getByRole('treeitem', { name: 'Tools' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('treeitem', { name: 'More' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('treeitem', { selected: true })).toHaveTextContent('Execution History')
+  })
+
+  it('unfolds a bundle on click without navigating away', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <>
+        <SidePanel {...defaultProps} />
+        <LocationProbe />
+      </>,
+      { routerProps: { initialEntries: ['/overview'] } },
+    )
+    const system = screen.getByRole('treeitem', { name: 'System' })
+    await user.click(system)
+
+    expect(system).toHaveAttribute('aria-expanded', 'true')
+    const group = system.parentElement?.querySelector<HTMLElement>('[role="group"]')
+    expect(group).not.toBeNull()
+    expect(within(group as HTMLElement).getByRole('treeitem', { name: 'Updates' })).toBeInTheDocument()
+    expect(within(group as HTMLElement).getByRole('treeitem', { name: 'Support' })).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/overview')
+  })
+
+  it('navigates to a destination inside a bundle', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <>
+        <SidePanel {...defaultProps} />
+        <LocationProbe />
+      </>,
+      { routerProps: { initialEntries: ['/overview'] } },
+    )
+    await user.click(screen.getByRole('treeitem', { name: 'More' }))
+    await user.click(screen.getByRole('treeitem', { name: 'Week View' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/week')
   })
 })

@@ -2,7 +2,7 @@ import { Bell, Camera, CircleAlert, CircleCheckBig, Keyboard, Mic, Monitor, Rota
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AppSettings, DesktopPermissionSettingsKind, DesktopPermissionState } from '../../api/client'
-import { Alert, Badge, Button, Card, CardTitle, Checkbox, GuidancePanel, Input } from '../../components/ui'
+import { Alert, Badge, Button, Card, CardTitle, GuidancePanel, Input, Switch } from '../../components/ui'
 import { colors, form, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useLoadedFormData, useSettingsFormContext } from '../settings/SettingsFormContext'
@@ -347,9 +347,9 @@ export default function MonitoringTab() {
               <span className="text-content-strong">{t('settings.captureEnabled')}</span>
               <p className="text-content-secondary text-xs">{t('settings.captureEnabledDesc')}</p>
             </div>
-            <Checkbox
+            <Switch
               checked={formData.capture_enabled}
-              onChange={(e) => onRootChange('capture_enabled', e.target.checked)}
+              onCheckedChange={(next) => onRootChange('capture_enabled', next)}
             />
           </label>
 

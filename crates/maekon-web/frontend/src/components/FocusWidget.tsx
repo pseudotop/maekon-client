@@ -3,10 +3,12 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { NavLink } from 'react-router-dom'
 import { type FocusMetricsResponse, fetchFocusMetrics } from '../api/client'
+import { type ErrorDisplay, useErrorDisplay } from '../i18n/errorDisplay'
 import { colors, dataViz, iconSize, motion, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import { formatDuration } from '../utils/formatters'
 import { scoreColor } from '../utils/score-color'
+import { SupportDetails } from './SupportDetails'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/Card'
 import { Spinner } from './ui/Spinner'
 
@@ -68,24 +70,26 @@ function CircularGauge({ value, max = 100, size = 80 }: { value: number; max?: n
 
 export default function FocusWidget() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [data, setData] = useState<FocusMetricsResponse | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorDisplay | null>(null)
 
   useEffect(() => {
     fetchFocusMetrics()
       .then(setData)
       .catch((e: unknown) => {
-        if (e instanceof TypeError && e.message.toLowerCase().includes('fetch')) {
-          setError(t('errors.agentUnreachable'))
-        } else if (e instanceof Error) {
-          setError(`${e.message} — ${t('errors.agentCheck')}`)
-        } else {
-          setError(t('errors.unknownFetchError'))
-        }
+        // raw-error-text: a fetch TypeError means the agent is unreachable; never rendered
+        const unreachable = e instanceof TypeError && e.message.toLowerCase().includes('fetch')
+        const fallback = unreachable
+          ? 'errors.agentUnreachable'
+          : e instanceof Error
+            ? 'errors.agentCheck'
+            : 'errors.unknownFetchError'
+        setError(describeError(e, t(fallback)))
       })
       .finally(() => setLoading(false))
-  }, [t])
+  }, [t, describeError])
 
   if (loading) {
     return (
@@ -115,7 +119,8 @@ export default function FocusWidget() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-semantic-error">{error || t('common.error')}</p>
+          <p className="text-semantic-error">{error?.text ?? t('common.error')}</p>
+          <SupportDetails detail={error?.detail} />
         </CardContent>
       </Card>
     )

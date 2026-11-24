@@ -84,18 +84,16 @@ impl Updater {
     }
 
     pub(crate) fn is_allowed_metadata_host(host: &str) -> bool {
-        if host == "api.github.com" {
-            return true;
-        }
+        let allowlisted = host == "api.github.com";
 
         #[cfg(test)]
         {
-            matches!(host, "localhost" | "127.0.0.1")
+            allowlisted || matches!(host, "localhost" | "127.0.0.1")
         }
 
         #[cfg(not(test))]
         {
-            false
+            allowlisted
         }
     }
 
@@ -103,18 +101,15 @@ impl Updater {
         let allowlisted = Self::ALLOWED_DOWNLOAD_HOSTS.iter().any(|allowed_host| {
             host == *allowed_host || host.ends_with(&format!(".{}", allowed_host))
         });
-        if allowlisted {
-            return true;
-        }
 
         #[cfg(test)]
         {
-            matches!(host, "localhost" | "127.0.0.1")
+            allowlisted || matches!(host, "localhost" | "127.0.0.1")
         }
 
         #[cfg(not(test))]
         {
-            false
+            allowlisted
         }
     }
 }

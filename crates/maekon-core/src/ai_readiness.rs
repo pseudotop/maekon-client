@@ -69,6 +69,7 @@ pub enum AiReadinessReasonCode {
     ConsentRequired,
     AccessModeMismatch,
     EndpointOrProfileRequired,
+    HttpChatSettingsResaveRequired,
     ProviderNotDetected,
     ProviderAuthRequired,
     ProviderAuthUnverified,
@@ -93,6 +94,7 @@ impl AiReadinessReasonCode {
             Self::ConsentRequired => "consent_required",
             Self::AccessModeMismatch => "access_mode_mismatch",
             Self::EndpointOrProfileRequired => "endpoint_or_profile_required",
+            Self::HttpChatSettingsResaveRequired => "http_chat_settings_resave_required",
             Self::ProviderNotDetected => "provider_not_detected",
             Self::ProviderAuthRequired => "provider_auth_required",
             Self::ProviderAuthUnverified => "provider_auth_unverified",
@@ -222,6 +224,9 @@ pub struct AiReadinessDimensions {
     pub selected_access_mode: AiAccessMode,
     pub access_mode_compatible: bool,
     pub endpoint_or_profile_configured: bool,
+    /// Older HTTP Chat settings must be saved with an explicit provider selection.
+    #[serde(default)]
+    pub http_chat_settings_resave_required: bool,
     pub provider_detection: AiProviderDetection,
     pub provider_auth: AiProviderAuthReadiness,
     pub provider_invocation: AiProviderInvocationReadiness,
@@ -308,6 +313,9 @@ fn primary_blocker(dimensions: &AiReadinessDimensions) -> AiReadinessReasonCode 
     if !dimensions.endpoint_or_profile_configured {
         return AiReadinessReasonCode::EndpointOrProfileRequired;
     }
+    if dimensions.http_chat_settings_resave_required {
+        return AiReadinessReasonCode::HttpChatSettingsResaveRequired;
+    }
     if dimensions.provider_detection == AiProviderDetection::NotDetected {
         return AiReadinessReasonCode::ProviderNotDetected;
     }
@@ -375,7 +383,10 @@ const fn action_for_reason(reason: AiReadinessReasonCode) -> AiReadinessAction {
         AiReadinessReasonCode::RuntimeFlagDisabled => AiReadinessAction::EnableFeature,
         AiReadinessReasonCode::ConsentRequired => AiReadinessAction::OpenPrivacyConsent,
         AiReadinessReasonCode::AccessModeMismatch
-        | AiReadinessReasonCode::EndpointOrProfileRequired => AiReadinessAction::OpenAiSettings,
+        | AiReadinessReasonCode::EndpointOrProfileRequired
+        | AiReadinessReasonCode::HttpChatSettingsResaveRequired => {
+            AiReadinessAction::OpenAiSettings
+        }
         AiReadinessReasonCode::ProviderNotDetected => AiReadinessAction::InstallProvider,
         AiReadinessReasonCode::ProviderAuthRequired
         | AiReadinessReasonCode::ProviderAuthUnverified => AiReadinessAction::AuthenticateProvider,
@@ -404,6 +415,7 @@ mod tests {
             selected_access_mode: AiAccessMode::ProviderSubscriptionCli,
             access_mode_compatible: true,
             endpoint_or_profile_configured: true,
+            http_chat_settings_resave_required: false,
             provider_detection: AiProviderDetection::Detected,
             provider_auth: AiProviderAuthReadiness::Ready,
             provider_invocation: AiProviderInvocationReadiness::Ready,
@@ -461,6 +473,10 @@ mod tests {
             ReadinessMutation {
                 expected: AiReadinessReasonCode::EndpointOrProfileRequired,
                 mutate: |d| d.endpoint_or_profile_configured = false,
+            },
+            ReadinessMutation {
+                expected: AiReadinessReasonCode::HttpChatSettingsResaveRequired,
+                mutate: |d| d.http_chat_settings_resave_required = true,
             },
             ReadinessMutation {
                 expected: AiReadinessReasonCode::ProviderNotDetected,
@@ -632,6 +648,10 @@ mod tests {
                 "endpoint_or_profile_required",
             ),
             (
+                AiReadinessReasonCode::HttpChatSettingsResaveRequired,
+                "http_chat_settings_resave_required",
+            ),
+            (
                 AiReadinessReasonCode::ProviderNotDetected,
                 "provider_not_detected",
             ),
@@ -745,6 +765,28 @@ mod tests {
         for (action, expected) in cases {
             assert_eq!(action.copy_key(), expected);
         }
+    }
+
+    #[test]
+    fn old_snapshots_default_the_resave_dimension_and_new_snapshots_preserve_it() {
+        let mut old = serde_json::to_value(ready_dimensions()).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .remove("http_chat_settings_resave_required");
+        let mut dimensions: AiReadinessDimensions = serde_json::from_value(old).unwrap();
+        assert!(!dimensions.http_chat_settings_resave_required);
+        dimensions.http_chat_settings_resave_required = true;
+        let result = evaluate_ai_readiness(AiCapabilityId::ChatHttpApi, dimensions);
+        assert_eq!(
+            result.reason_code,
+            AiReadinessReasonCode::HttpChatSettingsResaveRequired
+        );
+        assert_eq!(result.action, AiReadinessAction::OpenAiSettings);
+        assert_eq!(result.action_copy_key, "aiReadiness.action.openAiSettings");
+        let round_trip: AiCapabilityReadiness =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(round_trip, result);
+        assert!(round_trip.dimensions.http_chat_settings_resave_required);
     }
 
     #[test]

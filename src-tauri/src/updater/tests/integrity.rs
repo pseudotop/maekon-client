@@ -104,21 +104,61 @@ fn validate_metadata_base_url_rejects_non_https_and_unknown_host() {
 }
 
 #[test]
-fn extract_zip_rejects_path_traversal_entries() {
-    use std::io::Write;
+fn extract_zip_extracts_valid_archive_and_finds_binary() {
+    use std::{fs, io::Write};
     let updater = Updater::new(test_config());
     let dir = tempdir().unwrap();
-    let zip_path = dir.path().join("malicious.zip");
-    {
-        let file = std::fs::File::create(&zip_path).unwrap();
-        let mut writer = zip::ZipWriter::new(file);
-        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
-        writer.start_file("../../outside", options).unwrap();
+    let path = dir.path().join("valid.zip");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    writer.add_directory("bin", options).unwrap();
+    let binary = if cfg!(windows) {
+        "maekon.exe"
+    } else {
+        "maekon"
+    };
+    writer.start_file(format!("bin/{binary}"), options).unwrap();
+    writer.write_all(b"executable").unwrap();
+    writer.finish().unwrap();
+    let found = updater.extract_zip(&path).unwrap();
+    assert_eq!(found, dir.path().join("bin").join(binary));
+    assert_eq!(fs::read(found).unwrap(), b"executable");
+}
+
+#[test]
+fn extract_zip_rejects_path_traversal_entries() {
+    use std::{fs, io::Write};
+    let updater = Updater::new(test_config());
+    for name in [
+        "../../outside",
+        r"..\..\outside",
+        r"\\?\C:\../outside",
+        r"\\?\UNC\server\share\../outside",
+    ] {
+        let root = tempdir().unwrap();
+        let dir = root.path().join("downloads/deep");
+        fs::create_dir_all(&dir).unwrap();
+        let outside = root.path().join("outside");
+        fs::write(&outside, b"unchanged").unwrap();
+        let path = dir.join("malicious.zip");
+        let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        writer
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
         writer.write_all(b"malicious").unwrap();
         writer.finish().unwrap();
+        let error = updater.extract_zip(&path).unwrap_err();
+        assert!(
+            matches!(&error,UpdateError::Install(message) if message.starts_with("Unsafe ZIP entry path:")),
+            "{name}: {error:?}"
+        );
+        assert_eq!(fs::read(&outside).unwrap(), b"unchanged");
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            1,
+            "entry was written for {name}"
+        );
     }
-    let result = updater.extract_zip(&zip_path);
-    assert!(matches!(result, Err(UpdateError::Install(_))));
 }
 
 #[test]

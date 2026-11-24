@@ -17,7 +17,8 @@ import { GuidanceEmptyState, Select } from '../../components/ui'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
-import { addToast } from '../../hooks/useToast'
+import { addErrorToast, addToast } from '../../hooks/useToast'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { useTypedOutletContext } from '../../routes'
 import { iconSize, interaction, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
@@ -50,6 +51,7 @@ function resolvePresetProfileLabel(
 
 export default function CommandsSection() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { status } = useTypedOutletContext<AutomationContext>('Automation')
@@ -90,8 +92,7 @@ export default function CommandsSection() {
       addToast('success', t('automation.profileBindingSaved', { name: variables.preset.name }))
     },
     onError: (error) => {
-      const message = error instanceof Error ? error.message : t('automation.profileBindingSaveError')
-      addToast('error', message)
+      addErrorToast(describeError(error, t('automation.profileBindingSaveError')))
     },
   })
 
@@ -109,13 +110,13 @@ export default function CommandsSection() {
         setRunFeedbacks((prev) => prev.filter((f) => f.presetId !== id))
       }, 8000)
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('automation.runError')
-      addToast('error', message)
+      const display = describeError(error, t('automation.runError'))
+      addErrorToast(display)
       setRunFeedbacks((prev) => [
         ...prev.filter((f) => f.presetId !== id),
         {
           presetId: id,
-          result: { preset_id: id, success: false, message },
+          result: { preset_id: id, success: false, message: display.text },
           timestamp: Date.now(),
         },
       ])

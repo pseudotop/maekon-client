@@ -9,7 +9,8 @@ pub mod sync_crypto;
 // #6923/#6925: shared response-body size cap (used by both remote + LAN transport).
 pub(crate) mod http_body;
 
-#[cfg(feature = "lan-sync")]
+// #13489: Exercise pure authentication helpers in default unit and mutation tests.
+#[cfg(any(feature = "lan-sync", test))]
 pub mod lan_crypto;
 #[cfg(feature = "lan-sync")]
 pub mod lan_discovery;

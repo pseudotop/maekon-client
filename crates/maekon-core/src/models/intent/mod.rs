@@ -243,11 +243,24 @@ mod tests {
             screen_changed: true,
             changed_regions: 3,
             text_found: Some(true),
+            settled: Some(false),
         };
         let json = serde_json::to_string(&result).unwrap();
         let deser: VerificationResult = serde_json::from_str(&json).unwrap();
         assert!(deser.screen_changed);
         assert_eq!(deser.changed_regions, 3);
+        assert_eq!(deser.settled, Some(false));
+    }
+
+    #[test]
+    fn verification_result_without_settle_keeps_the_previous_wire_shape() {
+        // Payloads written before `settled` existed still deserialize, and a
+        // result without settle sampling serializes without the new key.
+        let legacy = r#"{"screen_changed":false,"changed_regions":0,"text_found":null}"#;
+        let deser: VerificationResult = serde_json::from_str(legacy).unwrap();
+        assert_eq!(deser.settled, None);
+        let json = serde_json::to_value(&deser).unwrap();
+        assert!(json.get("settled").is_none());
     }
 
     #[test]
@@ -259,6 +272,7 @@ mod tests {
                 screen_changed: true,
                 changed_regions: 1,
                 text_found: None,
+                settled: Some(true),
             }),
             retry_count: 0,
             elapsed_ms: 250,

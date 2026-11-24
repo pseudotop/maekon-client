@@ -55,12 +55,11 @@ impl TryFrom<TrackingScheduleConfigRaw> for TrackingScheduleConfig {
     type Error = String;
 
     fn try_from(raw: TrackingScheduleConfigRaw) -> Result<Self, Self::Error> {
-        // Validate timezone: must be "Local" or a valid IANA timezone recognized
-        // by chrono_tz. An invalid value produces a "config.invalid" error.
-        if raw.timezone != "Local" {
-            raw.timezone
-                .parse::<chrono_tz::Tz>()
-                .map_err(|_| format!("config.invalid: unknown timezone '{}'", raw.timezone))?;
+        if raw.timezone != "Local" && !super::timezone::valid_tracking_zone(&raw.timezone) {
+            return Err(format!(
+                "config.invalid: unknown timezone '{}'",
+                raw.timezone
+            ));
         }
         Ok(TrackingScheduleConfig {
             enabled: raw.enabled,

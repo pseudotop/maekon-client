@@ -23,6 +23,7 @@ use maekon_core::models::work_context_projection::{ProjectionContent, TimelineEv
 use maekon_core::ports::work_context::{
     CommitOutcome, CommitPageRequest, CursorState, WorkContextStorePort,
 };
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{params, OptionalExtension, Transaction};
 
 use super::work_context_writers::{
@@ -46,6 +47,16 @@ fn parse_ts(value: &str) -> Result<DateTime<Utc>, StorageError> {
 
 fn parse_ts_opt(value: Option<String>) -> Result<Option<DateTime<Utc>>, StorageError> {
     value.map(|v| parse_ts(&v)).transpose()
+}
+
+struct StoredTimestamp(DateTime<Utc>);
+
+impl FromSql for StoredTimestamp {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        parse_ts(value.as_str()?)
+            .map(Self)
+            .map_err(|error| FromSqlError::Other(Box::new(error)))
+    }
 }
 
 /// Reads the current merge state of a single source object inside the transaction.
@@ -1105,16 +1116,6 @@ fn row_to_envelope(row: &rusqlite::Row) -> rusqlite::Result<WorkContextEnvelope>
     let consent_snapshot: Option<ConsentSnapshot> =
         consent_json.and_then(|s| serde_json::from_str(&s).ok());
 
-    let parse = |s: String| {
-        DateTime::parse_from_rfc3339(&s)
-            .map(|d| d.with_timezone(&Utc))
-            .ok()
-    };
-    let occurred_at: Option<String> = row.get("occurred_at")?;
-    let source_updated_at: Option<String> = row.get("source_updated_at")?;
-    let observed_at: String = row.get("observed_at")?;
-    let ingested_at: String = row.get("ingested_at")?;
-
     let revision_model: String = row.get("revision_model")?;
     let kind: String = row.get("kind")?;
     let classification: String = row.get("classification")?;
@@ -1142,10 +1143,14 @@ fn row_to_envelope(row: &rusqlite::Row) -> rusqlite::Result<WorkContextEnvelope>
         kind: WorkContextKind::from_str_lossy(&kind),
         classification: DataClassification::from_str_lossy(&classification),
         retention_class: row.get("retention_class")?,
-        occurred_at: occurred_at.and_then(parse),
-        source_updated_at: source_updated_at.and_then(parse),
-        observed_at: parse(observed_at).unwrap_or_else(Utc::now),
-        ingested_at: parse(ingested_at).unwrap_or_else(Utc::now),
+        occurred_at: row
+            .get::<_, Option<StoredTimestamp>>("occurred_at")?
+            .map(|ts| ts.0),
+        source_updated_at: row
+            .get::<_, Option<StoredTimestamp>>("source_updated_at")?
+            .map(|ts| ts.0),
+        observed_at: row.get::<_, StoredTimestamp>("observed_at")?.0,
+        ingested_at: row.get::<_, StoredTimestamp>("ingested_at")?.0,
         relations,
         access_snapshot,
         consent_snapshot,

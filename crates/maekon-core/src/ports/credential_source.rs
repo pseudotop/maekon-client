@@ -10,7 +10,8 @@ use crate::error::CoreError;
 use crate::ports::oauth::OAuthPort;
 use crate::ports::secret_store::{provider_api_key_secret_ref, SecretStore};
 use crate::provider_surface::{
-    canonical_provider_surface_id, provider_surface_uses_no_auth, provider_vendor_id_or_default,
+    canonical_provider_surface_id, provider_surface_spec, provider_surface_uses_no_auth,
+    provider_vendor_id_or_default, ProviderSurfaceTransport,
 };
 
 // --- Type definitions ---
@@ -67,6 +68,31 @@ pub enum CredentialSource {
 // --- Resolution logic ---
 
 impl CredentialSource {
+    /// Select the saved URL only for its own direct HTTP LLM surface (#12560).
+    /// Managed OAuth and CLI transports retain their catalog routing. This
+    /// selection grants no credential or egress permission: the session must
+    /// still enforce origin binding and its transport/privacy policy.
+    pub fn http_session_endpoint<'a>(
+        configured: Option<&'a ExternalApiEndpoint>,
+        surface_id: &str,
+        catalog_url: &'a str,
+    ) -> &'a str {
+        let applicable = configured.filter(|endpoint| {
+            provider_surface_spec(surface_id).is_some_and(|surface| {
+                surface.transport == ProviderSurfaceTransport::DirectApi
+                    && surface.supports_llm
+                    && surface.provider_type == endpoint.provider_type
+                    && endpoint
+                        .surface_id
+                        .as_deref()
+                        .and_then(canonical_provider_surface_id)
+                        == Some(surface.id.as_str())
+                    && !endpoint.endpoint.trim().is_empty()
+            })
+        });
+        applicable.map_or(catalog_url, |endpoint| endpoint.endpoint.trim())
+    }
+
     /// Build an API-key credential source from the configured secret backend.
     pub fn from_api_key_endpoint(
         endpoint: &ExternalApiEndpoint,
@@ -144,9 +170,9 @@ impl CredentialSource {
     /// for. The binding therefore applies only to a session on that catalog
     /// surface whose URL has the same scheme, host, and port. Another surface,
     /// such as the first HTTP surface the Chat page selects, gets no key.
-    /// Neither does the configured surface once its endpoint points at another
-    /// host, because the session sends to the catalog URL. No-auth surfaces
-    /// need no key.
+    /// Selecting a custom session URL does not relax this binding: the key
+    /// remains unavailable at the catalog host or any other origin. No-auth
+    /// surfaces need no key.
     ///
     /// # Errors
     /// `ConfigCode::Missing` when no configured binding applies; otherwise the
@@ -617,7 +643,7 @@ mod tests {
 
     #[test]
     fn http_session_gets_no_key_saved_for_a_custom_host() {
-        // The session sends to the catalog URL, not the configured endpoint.
+        // The saved custom key still cannot be requested for the catalog URL.
         let llm_api = settings_llm_api(
             AiProviderType::OpenAi,
             OPENAI_DIRECT,
@@ -663,6 +689,150 @@ mod tests {
             matches!(source, CredentialSource::NoAuth),
             "got {}",
             source_kind(&source)
+        );
+    }
+
+    #[test]
+    fn custom_session_endpoint_requires_the_same_direct_llm_surface_and_type() {
+        let custom = "https://proxy.example/v1/responses";
+        let mut endpoint = settings_llm_api(AiProviderType::OpenAi, OPENAI_DIRECT, custom);
+        assert_eq!(
+            CredentialSource::http_session_endpoint(Some(&endpoint), OPENAI_DIRECT, OPENAI_URL),
+            custom
+        );
+        assert_eq!(
+            CredentialSource::http_session_endpoint(
+                Some(&endpoint),
+                " Provider_Surface.OpenAI.Direct_API ",
+                OPENAI_URL
+            ),
+            custom
+        );
+        for surface in [
+            "provider_surface.groq.direct_api",
+            "provider_surface.openai.managed_oauth",
+            "provider_surface.openai.subprocess_cli",
+            "provider_surface.unknown",
+        ] {
+            assert_eq!(
+                CredentialSource::http_session_endpoint(Some(&endpoint), surface, OPENAI_URL),
+                OPENAI_URL
+            );
+        }
+        endpoint.provider_type = AiProviderType::Anthropic;
+        assert_eq!(
+            CredentialSource::http_session_endpoint(Some(&endpoint), OPENAI_DIRECT, OPENAI_URL),
+            OPENAI_URL
+        );
+        endpoint.provider_type = AiProviderType::OpenAi;
+        endpoint.surface_id = None;
+        assert_eq!(
+            CredentialSource::http_session_endpoint(Some(&endpoint), OPENAI_DIRECT, OPENAI_URL),
+            OPENAI_URL
+        );
+        endpoint.surface_id = Some(OPENAI_DIRECT.into());
+        endpoint.endpoint = "  ".into();
+        assert_eq!(
+            CredentialSource::http_session_endpoint(Some(&endpoint), OPENAI_DIRECT, OPENAI_URL),
+            OPENAI_URL
+        );
+        assert_eq!(
+            CredentialSource::http_session_endpoint(None, OPENAI_DIRECT, OPENAI_URL),
+            OPENAI_URL
+        );
+    }
+
+    #[test]
+    fn managed_and_cli_surfaces_cannot_override_their_own_catalog_routing() {
+        for (surface, provider) in [
+            (
+                "provider_surface.openai.managed_oauth",
+                AiProviderType::OpenAi,
+            ),
+            (
+                "provider_surface.openai.subprocess_cli",
+                AiProviderType::OpenAi,
+            ),
+            (
+                "provider_surface.google.managed_oauth",
+                AiProviderType::Google,
+            ),
+        ] {
+            let endpoint = settings_llm_api(provider, surface, "https://proxy.example/private");
+            assert_eq!(
+                CredentialSource::http_session_endpoint(
+                    Some(&endpoint),
+                    surface,
+                    "https://managed.example/fixed"
+                ),
+                "https://managed.example/fixed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_session_url_and_credential_agree_without_widening_origin_binding() {
+        let custom = "https://proxy.example:8443/v1/responses";
+        let store = Arc::new(TestSecretStore::new());
+        store
+            .store("provider/openai/llm", "api_key", "custom-key")
+            .await
+            .unwrap();
+        let endpoint = settings_llm_api(AiProviderType::OpenAi, OPENAI_DIRECT, custom);
+        let selected =
+            CredentialSource::http_session_endpoint(Some(&endpoint), OPENAI_DIRECT, OPENAI_URL);
+        let credential = CredentialSource::for_http_session(
+            Some(&endpoint),
+            Some("llm"),
+            OPENAI_DIRECT,
+            selected,
+            Some(store.clone()),
+        )
+        .unwrap();
+        assert_eq!(selected, custom);
+        assert_eq!(
+            credential.resolve_bearer_token().await.unwrap(),
+            "custom-key"
+        );
+        for other in [
+            OPENAI_URL,
+            "https://other.example:8443/v1/responses",
+            "https://proxy.example/v1/responses",
+            "http://proxy.example:8443/v1/responses",
+        ] {
+            assert_no_key_applies(
+                CredentialSource::for_http_session(
+                    Some(&endpoint),
+                    Some("llm"),
+                    OPENAI_DIRECT,
+                    other,
+                    Some(store.clone()),
+                ),
+                OPENAI_DIRECT,
+            );
+        }
+        let groq = settings_llm_api(
+            AiProviderType::Generic,
+            "provider_surface.groq.direct_api",
+            custom,
+        );
+        assert_eq!(
+            CredentialSource::http_session_endpoint(
+                Some(&groq),
+                "provider_surface.deepseek.direct_api",
+                OPENAI_URL
+            ),
+            OPENAI_URL
+        );
+        assert_no_key_applies(
+            CredentialSource::for_http_session(
+                Some(&groq),
+                Some("llm"),
+                "provider_surface.deepseek.direct_api",
+                custom,
+                Some(store),
+            ),
+            "provider_surface.deepseek.direct_api",
         );
     }
 }
