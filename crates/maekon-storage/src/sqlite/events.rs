@@ -4,6 +4,7 @@ use maekon_core::error::CoreError;
 use maekon_core::models::event::Event;
 use maekon_core::models::suggestion::Suggestion;
 use maekon_core::models::tiered_memory::SegmentSummary;
+use maekon_core::ports::batch_sink::{PendingEvent, UploadProvenance};
 use maekon_core::ports::storage::StorageService;
 use maekon_core::types::TimeWindow;
 use tracing::{debug, info, warn};
@@ -218,6 +219,41 @@ impl StorageService for SqliteStorage {
         .map_err(Into::into)
     }
 
+    async fn save_event_with_upload_provenance(
+        &self,
+        event: &Event,
+        provenance: Option<&UploadProvenance>,
+    ) -> Result<bool, CoreError> {
+        let event_id = Self::extract_event_id(event);
+        if provenance.is_some_and(|proof| !proof.is_bound_to(&event_id, event)) {
+            return Err(StorageError::Validation {
+                field: "upload_provenance".to_string(),
+                message: "Upload provenance is not bound to the stored event".to_string(),
+            }
+            .into());
+        }
+        let event_type = Self::extract_event_type(event);
+        let timestamp = Self::extract_timestamp(event).to_rfc3339();
+        let data = serde_json::to_string(event)?;
+        let provenance = provenance.map(serde_json::to_string).transpose()?;
+
+        // One INSERT binds the winner's original public data and private proof.
+        // The write funnel returns false without executing it during erasure.
+        self.with_conn(move |conn| {
+            let inserted = conn
+                .execute(
+                    "INSERT OR IGNORE INTO events \
+                     (event_id, event_type, timestamp, data, upload_provenance) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![event_id, event_type, timestamp, data, provenance],
+                )
+                .map_err(|e| StorageError::Internal(format!("event save failure: {e}")))?;
+            Ok(inserted > 0)
+        })
+        .await
+        .map_err(Into::into)
+    }
+
     async fn get_events(
         &self,
         from: DateTime<Utc>,
@@ -281,6 +317,56 @@ impl StorageService for SqliteStorage {
                 .collect();
 
             Ok(events)
+        })
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn get_pending_events_with_upload_provenance(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PendingEvent>, CoreError> {
+        // Preserve the existing pending-upload read's erasure-aware funnel.
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare_cached(
+                    "SELECT event_id, data, upload_provenance FROM events \
+                     WHERE is_sent = 0 ORDER BY timestamp ASC LIMIT ?1",
+                )
+                .map_err(|e| StorageError::Internal(format!("Failed to prepare query: {e}")))?;
+            let rows = stmt
+                .query_map(rusqlite::params![limit as i64], |row| {
+                    // Corrupt private metadata must not discard a valid Event.
+                    let proof = match row.get_ref(2)? {
+                        rusqlite::types::ValueRef::Text(bytes) => {
+                            String::from_utf8(bytes.to_vec()).ok()
+                        }
+                        _ => None,
+                    };
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, proof))
+                })
+                .map_err(|e| StorageError::Internal(format!("Failed to execute query: {e}")))?;
+            let mut pending = Vec::new();
+            for row in rows {
+                let Ok((storage_id, data, proof_json)) = row else {
+                    warn!("Pending event row could not be read; skipping row");
+                    continue;
+                };
+                let Ok(event) = serde_json::from_str::<Event>(&data) else {
+                    warn!("Pending event deserialization failed; skipping row");
+                    continue;
+                };
+                let provenance = proof_json
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<UploadProvenance>(value).ok())
+                    .filter(|proof| proof.is_bound_to(&storage_id, &event));
+                pending.push(PendingEvent {
+                    storage_id: Some(storage_id),
+                    event,
+                    provenance,
+                });
+            }
+            Ok(pending)
         })
         .await
         .map_err(Into::into)

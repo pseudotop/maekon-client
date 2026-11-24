@@ -103,20 +103,23 @@ impl Updater {
                 .by_index(i)
                 .map_err(|e| UpdateError::Install(format!("Failed to read ZIP entry: {}", e)))?;
 
-            let relative_path = file.enclosed_name().ok_or_else(|| {
-                UpdateError::Install(format!("Unsafe ZIP entry path: {}", file.name()))
-            })?;
+            let name = file
+                .name()
+                .map_err(|error| UpdateError::Install(format!("Invalid ZIP entry name: {error}")))?
+                .into_owned();
+            let relative_path = file
+                .enclosed_name()
+                .ok_or_else(|| UpdateError::Install(format!("Unsafe ZIP entry path: {name}")))?;
 
             if !Self::is_safe_archive_path(&relative_path) {
                 return Err(UpdateError::Install(format!(
-                    "Unsafe ZIP entry path: {}",
-                    file.name()
+                    "Unsafe ZIP entry path: {name}"
                 )));
             }
 
             let outpath = extract_dir.join(relative_path);
 
-            if file.name().ends_with('/') {
+            if name.ends_with('/') {
                 std::fs::create_dir_all(&outpath)?;
             } else {
                 if let Some(p) = outpath.parent() {

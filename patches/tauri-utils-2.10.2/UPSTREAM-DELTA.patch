@@ -1,0 +1,11 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -179,6 +179,8 @@
+ 
+ [dependencies.serde_with]
+ version = "3"
++default-features = false
++features = ["macros"]
+ 
+ [dependencies.serialize-to-javascript]
+ version = "0.1.2"

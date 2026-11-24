@@ -4,8 +4,10 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { deleteTag, fetchTags, TAGS_QUERY_KEY, updateTag } from '../api/client'
 import type { Tag } from '../api/contracts'
+import { type ErrorDisplay, useErrorDisplay } from '../i18n/errorDisplay'
 import { colors, iconSize, motion } from '../styles/tokens'
 import { cn } from '../utils/cn'
+import { SupportDetails } from './SupportDetails'
 import { TAG_COLORS } from './TagBadge'
 import {
   Alert,
@@ -32,12 +34,13 @@ import {
  */
 export function TagManagementCard() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState<Tag | null>(null)
   const [deleting, setDeleting] = useState<Tag | null>(null)
   const [draftName, setDraftName] = useState('')
   const [draftColor, setDraftColor] = useState<string>(TAG_COLORS[0])
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<ErrorDisplay | null>(null)
 
   const { data: tags = [], isLoading } = useQuery({
     queryKey: TAGS_QUERY_KEY,
@@ -78,7 +81,7 @@ export function TagManagementCard() {
   }
 
   const onMutationError = (error: unknown) => {
-    setActionError(error instanceof Error ? error.message : String(error))
+    setActionError(describeError(error, t('settings.tagActionFailed')))
   }
 
   const renameMutation = useMutation({
@@ -202,7 +205,7 @@ export function TagManagementCard() {
                 {t('settings.tagNameDuplicate', { defaultValue: 'Another tag already uses this name.' })}
               </Alert>
             )}
-            {actionError && editing && <Alert variant="error">{actionError}</Alert>}
+            {actionError && editing && <ActionErrorAlert error={actionError} />}
           </DialogBody>
           <DialogFooter>
             <Button type="button" variant="ghost" size="sm" onClick={closeEditing}>
@@ -232,7 +235,7 @@ export function TagManagementCard() {
                 defaultValue: '"{{name}}" will be removed from every frame it is attached to. This cannot be undone.',
               })}
             </p>
-            {actionError && deleting && <Alert variant="error">{actionError}</Alert>}
+            {actionError && deleting && <ActionErrorAlert error={actionError} />}
           </DialogBody>
           <DialogFooter>
             <Button type="button" variant="ghost" size="sm" onClick={closeDeleting}>
@@ -251,5 +254,14 @@ export function TagManagementCard() {
         </DialogContent>
       </Dialog>
     </Card>
+  )
+}
+
+function ActionErrorAlert({ error }: { error: ErrorDisplay }) {
+  return (
+    <Alert variant="error">
+      {error.text}
+      <SupportDetails detail={error.detail} />
+    </Alert>
   )
 }

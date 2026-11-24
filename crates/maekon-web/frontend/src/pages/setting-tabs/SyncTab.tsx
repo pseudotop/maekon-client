@@ -2,9 +2,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { updateSyncSetup } from '../../api/syncSetup'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Button } from '../../components/ui/Button'
 import { GuidancePanel } from '../../components/ui/Guidance'
 import { Spinner } from '../../components/ui/Spinner'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 
@@ -143,16 +145,17 @@ function UploadSpoolQcPanel() {
 
 export default function SyncTab() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [status, setStatus] = useState<SyncStatus | null>(null)
   const [peers, setPeers] = useState<SyncPeer[]>([])
   const [syncing, setSyncing] = useState(false)
   const [lastResult, setLastResult] = useState<SyncResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorDisplay | null>(null)
   // #8056 P2-2: keychain-backed enable/passphrase setup form.
   const [passphrase, setPassphrase] = useState('')
   const [transport, setTransport] = useState<'lan' | 'file' | 'remote'>('lan')
   const [enabling, setEnabling] = useState(false)
-  const [setupError, setSetupError] = useState<string | null>(null)
+  const [setupError, setSetupError] = useState<ErrorDisplay | null>(null)
   const [setupDone, setSetupDone] = useState(false)
   const [pendingForgetPeer, setPendingForgetPeer] = useState<SyncPeer | null>(null)
   const [forgettingPeerId, setForgettingPeerId] = useState<string | null>(null)
@@ -191,7 +194,7 @@ export default function SyncTab() {
       setLastResult(result)
       await fetchStatus()
     } catch (e) {
-      setError(String(e))
+      setError(describeError(e, t('syncTab.syncFailed')))
     } finally {
       setSyncing(false)
     }
@@ -223,12 +226,13 @@ export default function SyncTab() {
   const handleEnableSync = async () => {
     setSetupError(null)
     if (passphrase.length < MIN_SYNC_PASSPHRASE_LEN) {
-      setSetupError(
-        t('syncTab.passphraseTooShort', {
+      setSetupError({
+        text: t('syncTab.passphraseTooShort', {
           defaultValue: `Passphrase must be at least ${MIN_SYNC_PASSPHRASE_LEN} characters.`,
           count: MIN_SYNC_PASSPHRASE_LEN,
         }),
-      )
+        detail: null,
+      })
       return
     }
     setEnabling(true)
@@ -238,7 +242,7 @@ export default function SyncTab() {
       setSetupDone(true)
       await fetchStatus()
     } catch (e) {
-      setSetupError(e instanceof Error ? e.message : String(e))
+      setSetupError(describeError(e, t('syncTab.setupFailed')))
     } finally {
       setEnabling(false)
     }
@@ -351,7 +355,10 @@ export default function SyncTab() {
             {t('syncTab.enableButton', { defaultValue: 'Enable sync' })}
           </Button>
           {setupError && (
-            <div className={cn('rounded-md p-2 text-sm', 'bg-semantic-error/10 text-semantic-error')}>{setupError}</div>
+            <div className={cn('rounded-md p-2 text-sm', 'bg-semantic-error/10 text-semantic-error')}>
+              {setupError.text}
+              <SupportDetails detail={setupError.detail} />
+            </div>
           )}
           {setupDone && (
             <div className={cn('rounded-md p-2 text-sm', 'bg-semantic-success/10 text-semantic-success')}>
@@ -440,7 +447,8 @@ export default function SyncTab() {
 
       {error && (
         <div className={cn('space-y-2 rounded-md p-3 text-sm', 'bg-semantic-error/10 text-semantic-error')}>
-          <p>{error}</p>
+          <p>{error.text}</p>
+          <SupportDetails detail={error.detail} />
           {/* #8079 (CRT-PRV-UX-RECOVERY-001): a failed sync cycle now offers a
               retry instead of a dead-end error string. */}
           <Button onClick={handleSync} disabled={syncing} isLoading={syncing} variant="secondary" size="sm">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveDashboardEmptyState } from './dashboardEmptyState'
+import { resolveDashboardEmptyState, resolveDashboardFirstStep } from './dashboardEmptyState'
 
 describe('resolveDashboardEmptyState', () => {
   it('never claims capture is active before desktop status is known', () => {
@@ -40,5 +40,20 @@ describe('resolveDashboardEmptyState', () => {
         permitted: true,
       }),
     ).toBe('active')
+  })
+})
+
+describe('resolveDashboardFirstStep (#13735)', () => {
+  it('points consent and pause problems at Privacy → Data, where both controls live', () => {
+    expect(resolveDashboardFirstStep('consentRequired')).toEqual({ action: 'reviewConsent', path: '/privacy/data' })
+    expect(resolveDashboardFirstStep('paused')).toEqual({ action: 'resumeCapture', path: '/privacy/data' })
+  })
+
+  it('points an unknown capture state at Support diagnostics', () => {
+    expect(resolveDashboardFirstStep('unavailable')).toEqual({ action: 'checkStatus', path: '/support' })
+  })
+
+  it('has nothing to press while capture is running', () => {
+    expect(resolveDashboardFirstStep('active')).toBeNull()
   })
 })

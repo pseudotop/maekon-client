@@ -1,0 +1,2499 @@
+# UPSTREAM-DELTA.patch -- tao 0.37.1
+#
+# Unified diff: pristine crates.io source (static.crates.io tarball,
+# tao-0.37.1.crate) -> vendored source at patches/tao-0.37.1/.
+# This is the ground-truth record of what Maekon changed relative to
+# upstream. See ../README.md for the refresh procedure and the why/what
+# summary per crate.
+#
+# Regenerate with:
+#   curl -L https://static.crates.io/crates/tao/tao-0.37.1.crate -o /tmp/tao-0.37.1.crate
+#   mkdir -p /tmp/pristine && tar xzf /tmp/tao-0.37.1.crate -C /tmp/pristine
+#   diff -ruN --exclude=target --exclude=.cargo_vcs_info.json \
+#     --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock \
+#     /tmp/pristine/tao-0.37.1 patches/tao-0.37.1 > patches/tao-0.37.1/UPSTREAM-DELTA.patch
+#
+# Excluded as crates.io tarball / repo-local packaging noise (see README
+# 'Exclusions' section): .cargo_vcs_info.json, .cargo-ok, Cargo.toml.orig,
+# Cargo.lock (per-patch-crate lockfiles were removed as non-shipping
+# Dependabot noise, PR #5862 / commit 1a4a0a85f0), target/.
+#
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/Cargo.toml vendored/Cargo.toml
+--- upstream/Cargo.toml
++++ vendored/Cargo.toml
+@@ -71,7 +71,7 @@
+     "dpi/serde",
+ ]
+ x11 = [
+-    "dep:gdkx11-sys",
++    "dep:gdk_x11",
+     "dep:x11-dl",
+ ]
+ 
+@@ -262,15 +262,20 @@
+ [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.dlopen2]
+ version = "0.8.0"
+ 
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.gdkwayland-sys]
+-version = "0.18.0"
++[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.gdk_wayland_sys]
++version = "0.11"
++package = "gdk4-wayland-sys"
+ 
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.gdkx11-sys]
+-version = "0.18"
++[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.gdk_x11]
++version = "0.11"
++features = ["v4_4"]
+ optional = true
++package = "gdk4-x11"
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.gtk]
+-version = "0.18"
++version = "0.11"
++features = ["v4_6"]
++package = "gtk4"
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies.parking_lot]
+ version = "0.12"
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform/unix.rs vendored/src/platform/unix.rs
+--- upstream/src/platform/unix.rs
++++ vendored/src/platform/unix.rs
+@@ -28,6 +28,7 @@
+   platform_impl::{Parent, Window as UnixWindow},
+   window::{Window, WindowBuilder},
+ };
++use gtk::prelude::IsA;
+ 
+ #[cfg(feature = "x11")]
+ use self::x11::xdisplay::XConnection;
+@@ -119,11 +120,11 @@
+   fn with_skip_taskbar(self, skip: bool) -> WindowBuilder;
+   /// Set this window as a transient dialog for `parent`
+   /// <https://gtk-rs.org/gtk3-rs/stable/latest/docs/gdk/struct.Window.html#method.set_transient_for>
+-  fn with_transient_for(self, parent: &impl gtk::glib::IsA<gtk::Window>) -> WindowBuilder;
++  fn with_transient_for(self, parent: &impl IsA<gtk::Window>) -> WindowBuilder;
+ 
+   /// Whether to enable or disable the internal draw for transparent window.
+   ///
+-  /// When transparent attribute is enabled, we will call `connect_draw` and draw a transparent background.
++  /// When the transparent attribute is enabled, the GTK4 backend applies transparent styling.
+   /// For anyone who wants to draw the background themselves, set this to `false`.
+   /// Default is `true`.
+   fn with_transparent_draw(self, draw: bool) -> WindowBuilder;
+@@ -138,10 +139,8 @@
+   /// Default is `false` but is always `true` if [`WindowAttributes::transparent`](crate::window::WindowAttributes::transparent) is `true`
+   fn with_rgba_visual(self, rgba_visual: bool) -> WindowBuilder;
+ 
+-  /// Whether to set this window as app paintable
++  /// Whether to request legacy app-paintable behavior.
+   ///
+-  /// <https://docs.gtk.org/gtk3/method.Widget.set_app_paintable.html>
+-  ///
+   /// Default is `false` but is always `true` if [`WindowAttributes::transparent`](crate::window::WindowAttributes::transparent) is `true`
+   fn with_app_paintable(self, app_paintable: bool) -> WindowBuilder;
+ 
+@@ -163,8 +162,8 @@
+     self
+   }
+ 
+-  fn with_transient_for(mut self, parent: &impl gtk::glib::IsA<gtk::Window>) -> WindowBuilder {
+-    use gtk::glib::Cast;
++  fn with_transient_for(mut self, parent: &impl IsA<gtk::Window>) -> WindowBuilder {
++    use gtk::prelude::Cast;
+     self.platform_specific.parent = Parent::ChildOf(parent.clone().upcast());
+     self
+   }
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/linux/device.rs vendored/src/platform_impl/linux/device.rs
+--- upstream/src/platform_impl/linux/device.rs
++++ vendored/src/platform_impl/linux/device.rs
+@@ -3,7 +3,6 @@
+   ptr,
+ };
+ 
+-use gtk::glib;
+ use x11_dl::{xinput2, xlib};
+ 
+ use crate::event::{DeviceEvent, ElementState, RawKeyEvent};
+@@ -11,7 +10,7 @@
+ use super::keycode_from_scancode;
+ 
+ /// Spawn Device event thread. Only works on x11 since wayland doesn't have such global events.
+-pub fn spawn(device_tx: glib::Sender<DeviceEvent>) {
++pub fn spawn(device_tx: crossbeam_channel::Sender<DeviceEvent>) {
+   std::thread::spawn(move || unsafe {
+     let xlib = xlib::Xlib::open().unwrap();
+     let xinput2 = xinput2::XInput2::open().unwrap();
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/linux/event_loop.rs vendored/src/platform_impl/linux/event_loop.rs
+--- upstream/src/platform_impl/linux/event_loop.rs
++++ vendored/src/platform_impl/linux/event_loop.rs
+@@ -3,22 +3,21 @@
+ // SPDX-License-Identifier: Apache-2.0
+ 
+ use std::{
+-  cell::{Cell, RefCell},
++  cell::RefCell,
+   collections::{HashSet, VecDeque},
+   error::Error,
+   process,
+   rc::Rc,
+   sync::atomic::{AtomicBool, Ordering},
+-  time::Instant,
++  time::{Duration, Instant},
+ };
+ 
+-use cairo::{RectangleInt, Region};
+ use crossbeam_channel::SendError;
+-use gdk::{Cursor, CursorType, EventKey, EventMask, ScrollDirection, WindowEdge, WindowState};
++use gdk::{Cursor, SurfaceEdge};
+ use gio::Cancellable;
+-use glib::{source::Priority, MainContext};
++use glib::MainContext;
+ use gtk::{
+-  cairo, gdk, gio,
++  gdk, gio,
+   glib::{self},
+   prelude::*,
+   Settings,
+@@ -59,7 +58,7 @@
+   /// Window Ids of the application
+   pub(crate) windows: Rc<RefCell<HashSet<WindowId>>>,
+   /// Window requests sender
+-  pub(crate) window_requests_tx: glib::Sender<(WindowId, WindowRequest)>,
++  pub(crate) window_requests_tx: crossbeam_channel::Sender<(WindowId, WindowRequest)>,
+   /// Draw event sender
+   pub(crate) draw_tx: crossbeam_channel::Sender<WindowId>,
+   _marker: std::marker::PhantomData<T>,
+@@ -72,24 +71,12 @@
+   }
+   #[inline]
+   pub fn available_monitors(&self) -> VecDeque<MonitorHandle> {
+-    let mut handles = VecDeque::new();
+-    let display = &self.display;
+-    let numbers = display.n_monitors();
+-
+-    for i in 0..numbers {
+-      let monitor = MonitorHandle::new(display, i);
+-      handles.push_back(monitor);
+-    }
+-
+-    handles
++    monitor::available(&self.display)
+   }
+ 
+   #[inline]
+   pub fn primary_monitor(&self) -> Option<RootMonitorHandle> {
+-    let monitor = self.display.primary_monitor();
+-    monitor.map(|monitor| RootMonitorHandle {
+-      inner: MonitorHandle { monitor },
+-    })
++    monitor::primary(&self.display).map(|inner| RootMonitorHandle { inner })
+   }
+ 
+   #[cfg(feature = "rwh_05")]
+@@ -222,7 +209,6 @@
+   fn new_gtk(app_id: Option<&str>) -> Result<EventLoop<T>, Box<dyn Error>> {
+     // This should be done by gtk::Application::new, but does not work properly
+     gtk::init()?;
+-    let context = MainContext::default();
+     let app = gtk::Application::new(app_id, gio::ApplicationFlags::empty());
+     let app_ = app.clone();
+     let cancellable: Option<&Cancellable> = None;
+@@ -241,7 +227,7 @@
+     let user_event_tx = event_tx.clone();
+ 
+     // Create event loop window target.
+-    let (window_requests_tx, window_requests_rx) = glib::MainContext::channel(Priority::default());
++    let (window_requests_tx, window_requests_rx) = crossbeam_channel::unbounded();
+     let display = gdk::Display::default()
+       .expect("GdkDisplay not found. This usually means `gkt_init` hasn't called yet.");
+     let window_target = EventLoopWindowTarget {
+@@ -256,17 +242,19 @@
+     // Spawn x11 thread to receive Device events.
+     #[cfg(feature = "x11")]
+     let run_device_thread = if window_target.is_x11() {
+-      let (device_tx, device_rx) = glib::MainContext::channel(glib::Priority::default());
++      let (device_tx, device_rx) = crossbeam_channel::unbounded();
+       let user_event_tx = user_event_tx.clone();
+       let run_device_thread = Rc::new(AtomicBool::new(true));
+       let run = run_device_thread.clone();
+       device::spawn(device_tx);
+-      device_rx.attach(Some(&context), move |event| {
+-        if let Err(e) = user_event_tx.send(Event::DeviceEvent {
+-          device_id: DEVICE_ID,
+-          event,
+-        }) {
+-          log::warn!("Fail to send device event to event channel: {}", e);
++      glib::timeout_add_local(Duration::from_millis(8), move || {
++        while let Ok(event) = device_rx.try_recv() {
++          if let Err(e) = user_event_tx.send(Event::DeviceEvent {
++            device_id: DEVICE_ID,
++            event,
++          }) {
++            log::warn!("Fail to send device event to event channel: {}", e);
++          }
+         }
+         if run.load(Ordering::Relaxed) {
+           glib::ControlFlow::Continue
+@@ -286,457 +274,355 @@
+ 
+     // Receive portal events
+     #[cfg(feature = "dbus")]
++    let (portal_theme_tx, portal_theme_rx) = crossbeam_channel::unbounded::<Theme>();
++    #[cfg(not(feature = "dbus"))]
++    let (_portal_theme_tx, portal_theme_rx) = crossbeam_channel::unbounded::<Theme>();
++
++    #[cfg(feature = "dbus")]
+     {
+-      let tx_requests_clone = window_target.window_requests_tx.clone();
+-      if let Err(e) = super::portal::receive_theme_changed(tx_requests_clone) {
++      if let Err(e) = super::portal::receive_theme_changed(portal_theme_tx) {
+         log::debug!("Unable to receive theme changed events: {e}");
+       }
+     }
+ 
+     // Window Request
+-    window_requests_rx.attach(Some(&context), move |(id, request)| {
+-      if let Some(window) = app_.window_by_id(id.0) {
+-        match request {
+-          WindowRequest::Title(title) => window.set_title(&title),
+-          WindowRequest::Position((x, y)) => window.move_(x, y),
+-          WindowRequest::Size((w, h)) => window.resize(w, h),
+-          WindowRequest::SizeConstraints(constraints) => {
+-            util::set_size_constraints(&window, constraints);
++    glib::timeout_add_local(Duration::from_millis(8), move || {
++      while let Ok(theme) = portal_theme_rx.try_recv() {
++        if let Some(settings) = Settings::default() {
++          settings.set_gtk_application_prefer_dark_theme(theme == Theme::Dark);
++          if let Err(e) = event_tx.send(Event::WindowEvent {
++            window_id: RootWindowId(WindowId::dummy()),
++            event: WindowEvent::ThemeChanged(theme),
++          }) {
++            log::warn!("Failed to send window theme changed event to event channel: {e}");
+           }
+-          WindowRequest::Visible(visible) => {
+-            if visible {
+-              window.show_all();
+-            } else {
+-              window.hide();
++        }
++      }
++
++      while let Ok((id, request)) = window_requests_rx.try_recv() {
++        if let Some(window) = app_.window_by_id(id.0) {
++          match request {
++            WindowRequest::Title(title) => window.set_title(Some(&title)),
++            WindowRequest::Position((x, y)) => {
++              let _ = (x, y);
++              log::warn!("GTK4 does not support programmatic toplevel window positioning");
+             }
+-          }
+-          WindowRequest::Focus => {
+-            window.present_with_time(gdk::ffi::GDK_CURRENT_TIME as _);
+-          }
+-          WindowRequest::Resizable(resizable) => window.set_resizable(resizable),
+-          WindowRequest::Closable(closable) => window.set_deletable(closable),
+-          WindowRequest::Minimized(minimized) => {
+-            if minimized {
+-              window.iconify();
+-            } else {
+-              window.deiconify();
++            WindowRequest::Size((w, h)) => window.set_default_size(w, h),
++            WindowRequest::SizeConstraints(constraints) => {
++              util::set_size_constraints(&window, constraints);
+             }
+-          }
+-          WindowRequest::Maximized(maximized, resizable) => {
+-            if maximized {
+-              let maximize_process = util::WindowMaximizeProcess::new(window.clone(), resizable);
+-              glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+-                let mut maximize_process = maximize_process.borrow_mut();
+-                maximize_process.next_step()
+-              });
+-            } else {
+-              window.unmaximize();
++            WindowRequest::Visible(visible) => {
++              if visible {
++                window.show();
++              } else {
++                window.hide();
++              }
+             }
+-          }
+-          WindowRequest::DragWindow => {
+-            if let Some(cursor) = window
+-              .display()
+-              .default_seat()
+-              .and_then(|seat| seat.pointer())
+-            {
+-              let (_, x, y) = cursor.position();
+-              window.begin_move_drag(1, x, y, 0);
++            WindowRequest::Focus => {
++              window.present_with_time(gdk::ffi::GDK_CURRENT_TIME as _);
+             }
+-          }
+-          WindowRequest::DragResizeWindow(direction) => {
+-            if let Some(cursor) = window
+-              .display()
+-              .default_seat()
+-              .and_then(|seat| seat.pointer())
+-            {
+-              let (_, x, y) = cursor.position();
+-              window.begin_resize_drag(
+-                direction.to_gtk_edge(),
+-                1,
+-                x,
+-                y,
+-                gtk::gdk::ffi::GDK_CURRENT_TIME as _,
+-              );
++            WindowRequest::Resizable(resizable) => window.set_resizable(resizable),
++            WindowRequest::Closable(closable) => window.set_deletable(closable),
++            WindowRequest::Minimized(minimized) => {
++              if minimized {
++                window.minimize();
++              } else {
++                window.unminimize();
++              }
+             }
+-          }
+-          WindowRequest::Fullscreen(fullscreen) => match fullscreen {
+-            Some(f) => {
+-              if let Fullscreen::Borderless(m) = f {
+-                if let Some(monitor) = m {
+-                  let display = window.display();
+-                  let monitor = monitor.inner;
+-                  let monitors = display.n_monitors();
+-                  for i in 0..monitors {
+-                    let m = display.monitor(i).unwrap();
+-                    if m == monitor.monitor {
+-                      let screen = display.default_screen();
+-                      window.fullscreen_on_monitor(&screen, i);
+-                    }
++            WindowRequest::Maximized(maximized, resizable) => {
++              if maximized {
++                let maximize_process = util::WindowMaximizeProcess::new(window.clone(), resizable);
++                glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
++                  let mut maximize_process = maximize_process.borrow_mut();
++                  maximize_process.next_step()
++                });
++              } else {
++                window.unmaximize();
++              }
++            }
++            WindowRequest::DragWindow => {
++              if let (Some(toplevel), Some(cursor)) = (
++                window_toplevel(&window),
++                widget_display(&window)
++                  .default_seat()
++                  .and_then(|seat| seat.pointer()),
++              ) {
++                let (_, x, y) = cursor.surface_at_position();
++                toplevel.begin_move(&cursor, 1, x, y, cursor.timestamp());
++              }
++            }
++            WindowRequest::DragResizeWindow(direction) => {
++              if let (Some(toplevel), Some(cursor)) = (
++                window_toplevel(&window),
++                widget_display(&window)
++                  .default_seat()
++                  .and_then(|seat| seat.pointer()),
++              ) {
++                let (_, x, y) = cursor.surface_at_position();
++                toplevel.begin_resize(
++                  direction.to_surface_edge(),
++                  Some(&cursor),
++                  1,
++                  x,
++                  y,
++                  cursor.timestamp(),
++                );
++              }
++            }
++            WindowRequest::Fullscreen(fullscreen) => match fullscreen {
++              Some(f) => {
++                if let Fullscreen::Borderless(m) = f {
++                  if let Some(monitor) = m {
++                    window.fullscreen_on_monitor(&monitor.inner.monitor);
++                  } else {
++                    window.fullscreen();
+                   }
+-                } else {
+-                  window.fullscreen();
+                 }
+               }
++              None => window.unfullscreen(),
++            },
++            WindowRequest::Decorations(decorations) => window.set_decorated(decorations),
++            WindowRequest::AlwaysOnBottom(always_on_bottom) => {
++              let _ = always_on_bottom;
++              log::warn!("GTK4 does not support the always-on-bottom window hint");
+             }
+-            None => window.unfullscreen(),
+-          },
+-          WindowRequest::Decorations(decorations) => window.set_decorated(decorations),
+-          WindowRequest::AlwaysOnBottom(always_on_bottom) => {
+-            window.set_keep_below(always_on_bottom)
+-          }
+-          WindowRequest::AlwaysOnTop(always_on_top) => window.set_keep_above(always_on_top),
+-          WindowRequest::WindowIcon(window_icon) => {
+-            if let Some(icon) = window_icon {
+-              window.set_icon(Some(&icon.inner.into()));
++            WindowRequest::AlwaysOnTop(always_on_top) => {
++              let _ = always_on_top;
++              log::warn!("GTK4 does not support the always-on-top window hint");
+             }
+-          }
+-          WindowRequest::UserAttention(request_type) => {
+-            window.set_urgency_hint(request_type.is_some())
+-          }
+-          WindowRequest::SetSkipTaskbar(skip) => {
+-            window.set_skip_taskbar_hint(skip);
+-            window.set_skip_pager_hint(skip)
+-          }
+-          WindowRequest::BackgroundColor(css_provider, color) => {
+-            unsafe { window.set_data("background_color", color) };
++            WindowRequest::WindowIcon(window_icon) => {
++              let _ = window_icon;
++              log::warn!("GTK4 no longer supports setting a per-window pixbuf icon");
++            }
++            WindowRequest::UserAttention(request_type) => {
++              let _ = request_type;
++              log::warn!("GTK4 does not support urgency window hints");
++            }
++            WindowRequest::SetSkipTaskbar(skip) => {
++              let _ = skip;
++              log::warn!("GTK4 does not support skip-taskbar window hints");
++            }
++            WindowRequest::BackgroundColor(css_provider, color) => {
++              unsafe { window.set_data("background_color", color) };
+ 
+-            let style_context = window.style_context();
+-            style_context.remove_provider(&css_provider);
++              let style_context = window.style_context();
++              style_context.remove_provider(&css_provider);
+ 
+-            if let Some(color) = color {
+-              let theme = format!(
+-                r#"
++              if let Some(color) = color {
++                let theme = format!(
++                  r#"
+                   window {{
+                     background-color:  rgba({},{},{},{});
+                     }}
+                     "#,
+-                color.0,
+-                color.1,
+-                color.2,
+-                color.3 as f64 / 255.0
+-              );
+-              let _ = css_provider.load_from_data(theme.as_bytes());
+-              style_context.add_provider(&css_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+-            };
+-          }
+-          WindowRequest::SetVisibleOnAllWorkspaces(visible) => {
+-            if visible {
+-              window.stick();
+-            } else {
+-              window.unstick();
++                  color.0,
++                  color.1,
++                  color.2,
++                  color.3 as f64 / 255.0
++                );
++                css_provider.load_from_data(&theme);
++                style_context.add_provider(&css_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
++              };
+             }
+-          }
+-          WindowRequest::CursorIcon(cursor) => {
+-            if let Some(gdk_window) = window.window() {
+-              let display = window.display();
+-              match cursor {
+-                Some(cr) => {
+-                  gdk_window.set_cursor(Cursor::from_name(&display, cr.to_str()).as_ref())
+-                }
+-                None => gdk_window
+-                  .set_cursor(Cursor::for_display(&display, CursorType::BlankCursor).as_ref()),
+-              }
+-            };
+-          }
+-          WindowRequest::CursorPosition((x, y)) => {
+-            if let Some(cursor) = window
+-              .display()
+-              .default_seat()
+-              .and_then(|seat| seat.pointer())
+-            {
+-              if let Some(screen) = GtkWindowExt::screen(&window) {
+-                cursor.warp(&screen, x, y);
+-              }
++            WindowRequest::SetVisibleOnAllWorkspaces(visible) => {
++              let _ = visible;
++              log::warn!("GTK4 does not support visible-on-all-workspaces window hints");
+             }
+-          }
+-          WindowRequest::CursorIgnoreEvents(ignore) => {
+-            if ignore {
+-              let empty_region = Region::create_rectangle(&RectangleInt::new(0, 0, 1, 1));
+-              window
+-                .window()
+-                .unwrap()
+-                .input_shape_combine_region(&empty_region, 0, 0);
+-            } else {
+-              window.input_shape_combine_region(None)
+-            };
+-          }
+-          WindowRequest::ProgressBarState(_) => unreachable!(),
+-          WindowRequest::BadgeCount(_, _) => unreachable!(),
+-          WindowRequest::SetTheme(_) => unreachable!(),
+-          WindowRequest::WireUpEvents {
+-            transparent,
+-            fullscreen,
+-            cursor_moved,
+-          } => {
+-            window.add_events(
+-              EventMask::POINTER_MOTION_MASK
+-                | EventMask::BUTTON1_MOTION_MASK
+-                | EventMask::BUTTON_PRESS_MASK
+-                | EventMask::TOUCH_MASK
+-                | EventMask::STRUCTURE_MASK
+-                | EventMask::FOCUS_CHANGE_MASK
+-                | EventMask::SCROLL_MASK,
+-            );
++            WindowRequest::CursorIcon(cursor) => match cursor {
++              Some(cr) => window.set_cursor_from_name(Some(cr.to_str())),
++              None => window.set_cursor(Cursor::from_name("none", None).as_ref()),
++            },
++            WindowRequest::CursorPosition((x, y)) => {
++              let _ = (x, y);
++              log::warn!("GTK4 does not support global cursor warping");
++            }
++            WindowRequest::CursorIgnoreEvents(ignore) => {
++              if ignore {
++                window.set_can_target(false);
++              } else {
++                window.set_can_target(true);
++              };
++            }
++            WindowRequest::ProgressBarState(_) => unreachable!(),
++            WindowRequest::BadgeCount(_, _) => unreachable!(),
++            WindowRequest::SetTheme(_) => unreachable!(),
++            WindowRequest::WireUpEvents {
++              transparent,
++              fullscreen,
++              cursor_moved,
++            } => {
++              let fullscreen = Rc::new(AtomicBool::new(fullscreen));
++              let fullscreen_ = fullscreen.clone();
++              window.connect_fullscreened_notify(move |window| {
++                fullscreen_.store(window.is_fullscreen(), Ordering::Relaxed);
++              });
+ 
+-            let fullscreen = Rc::new(AtomicBool::new(fullscreen));
+-            let fullscreen_ = fullscreen.clone();
+-            window.connect_window_state_event(move |_window, event| {
+-              let state = event.changed_mask();
+-              if state.contains(WindowState::FULLSCREEN) {
+-                fullscreen_.store(
+-                  event.new_window_state().contains(WindowState::FULLSCREEN),
+-                  Ordering::Relaxed,
+-                );
+-              }
+-              glib::Propagation::Proceed
+-            });
++              let tx_clone = event_tx.clone();
++              window.connect_close_request(move |_| {
++                if let Err(e) = tx_clone.send(Event::WindowEvent {
++                  window_id: RootWindowId(id),
++                  event: WindowEvent::CloseRequested,
++                }) {
++                  log::warn!("Failed to send window close event to event channel: {}", e);
++                }
++                glib::Propagation::Stop
++              });
+ 
+-            // Allow resizing unmaximized non-fullscreen undecorated window
+-            let fullscreen_ = fullscreen.clone();
+-            window.connect_motion_notify_event(move |window, event| {
+-              if !window.is_decorated() && window.is_resizable() && !window.is_maximized() {
+-                if let Some(window) = window.window() {
+-                  let (cx, cy) = event.root();
+-                  let (left, top) = window.position();
+-                  let (w, h) = (window.width(), window.height());
+-                  let (right, bottom) = (left + w, top + h);
+-                  let border = window.scale_factor() * 5;
+-                  let edge = crate::window::hit_test(
+-                    (left, top, right, bottom),
+-                    cx as _,
+-                    cy as _,
+-                    border,
+-                    border,
++              let tx_clone = event_tx.clone();
++              window.connect_default_width_notify(move |window| {
++                let scale_factor = window.scale_factor();
++                let (w, h) = current_window_size(window);
++                if let Err(e) = tx_clone.send(Event::WindowEvent {
++                  window_id: RootWindowId(id),
++                  event: WindowEvent::Resized(
++                    LogicalSize::new(w, h).to_physical(scale_factor as f64),
++                  ),
++                }) {
++                  log::warn!(
++                    "Failed to send window resized event to event channel: {}",
++                    e
+                   );
++                }
++              });
+ 
+-                  let edge = match &edge {
+-                    Some(e) if !fullscreen_.load(Ordering::Relaxed) => e.to_cursor_str(),
+-                    _ => "default",
+-                  };
+-                  window.set_cursor(Cursor::from_name(&window.display(), edge).as_ref());
++              let tx_clone = event_tx.clone();
++              window.connect_default_height_notify(move |window| {
++                let scale_factor = window.scale_factor();
++                let (w, h) = current_window_size(window);
++                if let Err(e) = tx_clone.send(Event::WindowEvent {
++                  window_id: RootWindowId(id),
++                  event: WindowEvent::Resized(
++                    LogicalSize::new(w, h).to_physical(scale_factor as f64),
++                  ),
++                }) {
++                  log::warn!(
++                    "Failed to send window resized event to event channel: {}",
++                    e
++                  );
+                 }
+-              }
+-              glib::Propagation::Proceed
+-            });
+-            window.connect_button_press_event(move |window, event| {
+-              const LMB: u32 = 1;
+-              if (is_wayland || !window.is_decorated())
+-                && window.is_resizable()
+-                && !window.is_maximized()
+-                && event.button() == LMB
+-              {
+-                let (cx, cy) = event.root();
+-                let (left, top) = window.position();
+-                let (w, h) = window.size();
+-                let (right, bottom) = (left + w, top + h);
+-                let border = window.scale_factor() * 5;
+-                let edge = crate::window::hit_test(
+-                  (left, top, right, bottom),
+-                  cx as _,
+-                  cy as _,
+-                  border,
+-                  border,
+-                )
+-                .map(|d| d.to_gtk_edge())
+-                // we return `WindowEdge::__Unknown` to be ignored later.
+-                // we must return 8 or bigger, otherwise it will be the same as one of the other 7 variants of `WindowEdge` enum.
+-                .unwrap_or(WindowEdge::__Unknown(8));
+-                // Ignore the `__Unknown` variant so the window receives the click correctly if it is not on the edges.
+-                match edge {
+-                  WindowEdge::__Unknown(_) => (),
+-                  _ => {
+-                    // FIXME: calling `window.begin_resize_drag` uses the default cursor, it should show a resizing cursor instead
+-                    window.begin_resize_drag(edge, LMB as i32, cx as i32, cy as i32, event.time())
+-                  }
++              });
++
++              let tx_clone = event_tx.clone();
++              let focus_controller = gtk::EventControllerFocus::new();
++              focus_controller.connect_enter(move |_| {
++                if let Err(e) = tx_clone.send(Event::WindowEvent {
++                  window_id: RootWindowId(id),
++                  event: WindowEvent::Focused(true),
++                }) {
++                  log::warn!(
++                    "Failed to send window focus-in event to event channel: {}",
++                    e
++                  );
+                 }
+-              }
++              });
++              let tx_clone = event_tx.clone();
++              focus_controller.connect_leave(move |_| {
++                if let Err(e) = tx_clone.send(Event::WindowEvent {
++                  window_id: RootWindowId(id),
++                  event: WindowEvent::Focused(false),
++                }) {
++                  log::warn!(
++                    "Failed to send window focus-out event to event channel: {}",
++                    e
++                  );
++                }
++              });
++              window.add_controller(focus_controller);
+ 
+-              glib::Propagation::Proceed
+-            });
+-            window.connect_touch_event(move |window, event| {
+-              if !window.is_decorated() && window.is_resizable() && !window.is_maximized() {
+-                if let Some(window) = window.window() {
+-                  if let Some((cx, cy)) = event.root_coords() {
+-                    if let Some(device) = event.device() {
+-                      let (left, top) = window.position();
+-                      let (w, h) = (window.width(), window.height());
+-                      let (right, bottom) = (left + w, top + h);
+-                      let border = window.scale_factor() * 5;
+-                      let edge = crate::window::hit_test(
+-                        (left, top, right, bottom),
+-                        cx as _,
+-                        cy as _,
+-                        border,
+-                        border,
+-                      )
+-                      .map(|d| d.to_gtk_edge())
+-                      // we return `WindowEdge::__Unknown` to be ignored later.
+-                      // we must return 8 or bigger, otherwise it will be the same as one of the other 7 variants of `WindowEdge` enum.
+-                      .unwrap_or(WindowEdge::__Unknown(8));
++              let tx_clone = event_tx.clone();
++              window.connect_destroy(move |_| {
++                if let Err(e) = tx_clone.send(Event::WindowEvent {
++                  window_id: RootWindowId(id),
++                  event: WindowEvent::Destroyed,
++                }) {
++                  log::warn!(
++                    "Failed to send window destroyed event to event channel: {}",
++                    e
++                  );
++                }
++              });
+ 
+-                      // Ignore the `__Unknown` variant so the window receives the click correctly if it is not on the edges.
+-                      match edge {
+-                        WindowEdge::__Unknown(_) => (),
+-                        _ => window.begin_resize_drag_for_device(
+-                          edge,
+-                          &device,
+-                          0,
+-                          cx as i32,
+-                          cy as i32,
+-                          event.time(),
+-                        ),
+-                      }
+-                    }
+-                  }
++              let tx_clone = event_tx.clone();
++              let motion_controller = gtk::EventControllerMotion::new();
++              motion_controller.connect_enter(move |_, _, _| {
++                if let Err(e) = tx_clone.send(Event::WindowEvent {
++                  window_id: RootWindowId(id),
++                  event: WindowEvent::CursorEntered {
++                    device_id: DEVICE_ID,
++                  },
++                }) {
++                  log::warn!(
++                    "Failed to send cursor entered event to event channel: {}",
++                    e
++                  );
+                 }
+-              }
++              });
+ 
+-              glib::Propagation::Proceed
+-            });
++              let tx_clone = event_tx.clone();
++              // GTK4 `gtk_window_destroy()` only drops GTK's toplevel reference; it
++              // does not dispose the window the way GTK3 `gtk_widget_destroy()` did.
++              // A strong clone captured by a controller that the window owns is a
++              // reference cycle, so the window is never disposed, `destroy` never
++              // fires and `WindowEvent::Destroyed` is never sent — the runtime then
++              // keeps a dead window under its label (#12652). Capture weak refs.
++              let window_for_motion = window.downgrade();
++              let fullscreen_for_motion = fullscreen.clone();
++              motion_controller.connect_motion(move |_, x, y| {
++                let Some(window_for_motion) = window_for_motion.upgrade() else {
++                  return;
++                };
++                if !window_for_motion.is_decorated()
++                  && window_for_motion.is_resizable()
++                  && !window_for_motion.is_maximized()
++                {
++                  let (w, h) = current_window_size(&window_for_motion);
++                  let border = window_for_motion.scale_factor() * 5;
++                  let edge = crate::window::hit_test((0, 0, w, h), x as _, y as _, border, border);
+ 
+-            let tx_clone = event_tx.clone();
+-            window.connect_delete_event(move |_, _| {
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::CloseRequested,
+-              }) {
+-                log::warn!("Failed to send window close event to event channel: {}", e);
+-              }
+-              glib::Propagation::Stop
+-            });
++                  let edge = match &edge {
++                    Some(e) if !fullscreen_for_motion.load(Ordering::Relaxed) => e.to_cursor_str(),
++                    _ => "default",
++                  };
++                  window_for_motion.set_cursor(Cursor::from_name(edge, None).as_ref());
++                }
+ 
+-            let tx_clone = event_tx.clone();
+-            window.connect_configure_event(move |window, event| {
+-              let scale_factor = window.scale_factor();
+-
+-              let (x, y) = window
+-                .window()
+-                .map(|w| w.root_origin())
+-                .unwrap_or_else(|| event.position());
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::Moved(
+-                  LogicalPosition::new(x, y).to_physical(scale_factor as f64),
+-                ),
+-              }) {
+-                log::warn!("Failed to send window moved event to event channel: {}", e);
+-              }
+-
+-              let (w, h) = event.size();
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::Resized(
+-                  LogicalSize::new(w, h).to_physical(scale_factor as f64),
+-                ),
+-              }) {
+-                log::warn!(
+-                  "Failed to send window resized event to event channel: {}",
+-                  e
+-                );
+-              }
+-              false
+-            });
+-
+-            let tx_clone = event_tx.clone();
+-            window.connect_focus_in_event(move |_, _| {
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::Focused(true),
+-              }) {
+-                log::warn!(
+-                  "Failed to send window focus-in event to event channel: {}",
+-                  e
+-                );
+-              }
+-              glib::Propagation::Proceed
+-            });
+-
+-            let tx_clone = event_tx.clone();
+-            window.connect_focus_out_event(move |_, _| {
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::Focused(false),
+-              }) {
+-                log::warn!(
+-                  "Failed to send window focus-out event to event channel: {}",
+-                  e
+-                );
+-              }
+-              glib::Propagation::Proceed
+-            });
+-
+-            let tx_clone = event_tx.clone();
+-            window.connect_destroy(move |_| {
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::Destroyed,
+-              }) {
+-                log::warn!(
+-                  "Failed to send window destroyed event to event channel: {}",
+-                  e
+-                );
+-              }
+-            });
+-
+-            let tx_clone = event_tx.clone();
+-            window.connect_enter_notify_event(move |_, _| {
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::CursorEntered {
+-                  device_id: DEVICE_ID,
+-                },
+-              }) {
+-                log::warn!(
+-                  "Failed to send cursor entered event to event channel: {}",
+-                  e
+-                );
+-              }
+-              glib::Propagation::Proceed
+-            });
+-
+-            let tx_clone = event_tx.clone();
+-            let last_motion_time = Rc::new(Cell::new(0u32));
+-            window.connect_motion_notify_event(move |window, motion| {
+-              let last = last_motion_time.replace(motion.time());
+-              if cursor_moved && motion.time() != last {
+-                if let Some(cursor) = motion.device() {
+-                  let scale_factor = window.scale_factor();
+-                  let (_, x, y) = cursor.window_at_position();
++                if cursor_moved {
++                  let scale_factor = window_for_motion.scale_factor();
+                   if let Err(e) = tx_clone.send(Event::WindowEvent {
+                     window_id: RootWindowId(id),
+                     event: WindowEvent::CursorMoved {
+                       position: LogicalPosition::new(x, y).to_physical(scale_factor as f64),
+                       device_id: DEVICE_ID,
+-                      // this field is depracted so it is fine to pass empty state
++                      // this field is deprecated so it is fine to pass empty state
+                       modifiers: ModifiersState::empty(),
+                     },
+                   }) {
+                     log::warn!("Failed to send cursor moved event to event channel: {}", e);
+                   }
+                 }
+-              }
+-              glib::Propagation::Proceed
+-            });
++              });
+ 
+-            let tx_clone = event_tx.clone();
+-            window.connect_leave_notify_event(move |_, _| {
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::CursorLeft {
+-                  device_id: DEVICE_ID,
+-                },
+-              }) {
+-                log::warn!("Failed to send cursor left event to event channel: {}", e);
+-              }
+-              glib::Propagation::Proceed
+-            });
++              let tx_clone = event_tx.clone();
++              motion_controller.connect_leave(move |_| {
++                if let Err(e) = tx_clone.send(Event::WindowEvent {
++                  window_id: RootWindowId(id),
++                  event: WindowEvent::CursorLeft {
++                    device_id: DEVICE_ID,
++                  },
++                }) {
++                  log::warn!("Failed to send cursor left event to event channel: {}", e);
++                }
++              });
++              window.add_controller(motion_controller);
+ 
+-            let tx_clone = event_tx.clone();
+-            let last_press_time = Rc::new(Cell::new(0u32));
+-            window.connect_button_press_event(move |_, event| {
+-              let last = last_press_time.replace(event.time());
+-              if event.time() != last {
+-                let button = event.button();
++              let tx_clone = event_tx.clone();
++              let click_controller = gtk::GestureClick::builder().button(0).build();
++              // Weak for the same reason as `window_for_motion` (#12652).
++              let window_for_click = window.downgrade();
++              let fullscreen_for_click = fullscreen.clone();
++              click_controller.connect_pressed(move |gesture, _, x, y| {
++                let button = gesture.current_button();
+                 if let Err(e) = tx_clone.send(Event::WindowEvent {
+                   window_id: RootWindowId(id),
+                   event: WindowEvent::MouseInput {
+@@ -748,7 +634,7 @@
+                     },
+                     state: ElementState::Pressed,
+                     device_id: DEVICE_ID,
+-                    // this field is depracted so it is fine to pass empty state
++                    // this field is deprecated so it is fine to pass empty state
+                     modifiers: ModifiersState::empty(),
+                   },
+                 }) {
+@@ -757,16 +643,40 @@
+                     e
+                   );
+                 }
+-              }
+-              glib::Propagation::Proceed
+-            });
+ 
+-            let tx_clone = event_tx.clone();
+-            let last_release_time = Rc::new(Cell::new(0u32));
+-            window.connect_button_release_event(move |_, event| {
+-              let last = last_release_time.replace(event.time());
+-              if event.time() != last {
+-                let button = event.button();
++                let Some(window_for_click) = window_for_click.upgrade() else {
++                  return;
++                };
++                if (is_wayland || !window_for_click.is_decorated())
++                  && window_for_click.is_resizable()
++                  && !window_for_click.is_maximized()
++                  && button == 1
++                  && !fullscreen_for_click.load(Ordering::Relaxed)
++                {
++                  let (w, h) = current_window_size(&window_for_click);
++                  let border = window_for_click.scale_factor() * 5;
++                  if let Some(edge) =
++                    crate::window::hit_test((0, 0, w, h), x as _, y as _, border, border)
++                      .map(|d| d.to_surface_edge())
++                  {
++                    if let Some(toplevel) = window_toplevel(&window_for_click) {
++                      let device = gesture.current_event_device();
++                      toplevel.begin_resize(
++                        edge,
++                        device.as_ref(),
++                        button as i32,
++                        x,
++                        y,
++                        gesture.current_event_time(),
++                      );
++                    }
++                  }
++                }
++              });
++
++              let tx_clone = event_tx.clone();
++              click_controller.connect_released(move |gesture, _, _, _| {
++                let button = gesture.current_button();
+                 if let Err(e) = tx_clone.send(Event::WindowEvent {
+                   window_id: RootWindowId(id),
+                   event: WindowEvent::MouseInput {
+@@ -778,7 +688,7 @@
+                     },
+                     state: ElementState::Released,
+                     device_id: DEVICE_ID,
+-                    // this field is depracted so it is fine to pass empty state
++                    // this field is deprecated so it is fine to pass empty state
+                     modifiers: ModifiersState::empty(),
+                   },
+                 }) {
+@@ -787,198 +697,144 @@
+                     e
+                   );
+                 }
+-              }
+-              glib::Propagation::Proceed
+-            });
++              });
++              window.add_controller(click_controller);
+ 
+-            let tx_clone = event_tx.clone();
+-            window.connect_scroll_event(move |_, event| {
+-              let (x, y) = event.delta();
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::MouseWheel {
+-                  device_id: DEVICE_ID,
+-                  delta: MouseScrollDelta::LineDelta(-x as f32, -y as f32),
+-                  phase: match event.direction() {
+-                    ScrollDirection::Smooth => TouchPhase::Moved,
+-                    _ => TouchPhase::Ended,
+-                  },
+-                  modifiers: ModifiersState::empty(),
+-                },
+-              }) {
+-                log::warn!("Failed to send scroll event to event channel: {}", e);
+-              }
+-              glib::Propagation::Proceed
+-            });
+-
+-            let tx_clone = event_tx.clone();
+-            let keyboard_handler = Rc::new(move |event_key: EventKey, element_state| {
+-              // if we have a modifier lets send it
+-              let mut mods = keyboard::get_modifiers(event_key.clone());
+-              if !mods.is_empty() {
+-                // if we release the modifier tell the world
+-                if ElementState::Released == element_state {
+-                  mods = ModifiersState::empty();
+-                }
+-
++              let tx_clone = event_tx.clone();
++              let scroll_controller =
++                gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
++              scroll_controller.connect_scroll(move |_, x, y| {
+                 if let Err(e) = tx_clone.send(Event::WindowEvent {
+                   window_id: RootWindowId(id),
+-                  event: WindowEvent::ModifiersChanged(mods),
+-                }) {
+-                  log::warn!(
+-                    "Failed to send modifiers changed event to event channel: {}",
+-                    e
+-                  );
+-                } else {
+-                  // stop here we don't want to send the key event
+-                  // as we emit the `ModifiersChanged`
+-                  return glib::ControlFlow::Continue;
+-                }
+-              }
+-
+-              // todo: implement repeat?
+-              let event = keyboard::make_key_event(&event_key, false, None, element_state);
+-
+-              if let Some(event) = event {
+-                if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                  window_id: RootWindowId(id),
+-                  event: WindowEvent::KeyboardInput {
++                  event: WindowEvent::MouseWheel {
+                     device_id: DEVICE_ID,
+-                    event,
+-                    is_synthetic: false,
++                    delta: MouseScrollDelta::LineDelta(-x as f32, -y as f32),
++                    phase: TouchPhase::Moved,
++                    modifiers: ModifiersState::empty(),
+                   },
+                 }) {
+-                  log::warn!("Failed to send keyboard event to event channel: {}", e);
++                  log::warn!("Failed to send scroll event to event channel: {}", e);
+                 }
+-              }
+-              glib::ControlFlow::Continue
+-            });
++                glib::Propagation::Proceed
++              });
++              window.add_controller(scroll_controller);
+ 
+-            let tx_clone = event_tx.clone();
+-            // TODO Add actual IME from system
+-            let ime = gtk::IMContextSimple::default();
+-            ime.set_client_window(window.window().as_ref());
+-            ime.focus_in();
+-            ime.connect_commit(move |_, s| {
+-              if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::ReceivedImeText(s.to_string()),
+-              }) {
+-                log::warn!(
+-                  "Failed to send received IME text event to event channel: {}",
+-                  e
+-                );
+-              }
+-            });
++              let tx_clone = event_tx.clone();
++              let keyboard_handler = Rc::new(move |keyval, keycode: u32, element_state| {
++                let scancode = u16::try_from(keycode).unwrap_or(u16::MAX);
++                // if we have a modifier lets send it
++                let mut mods = keyboard::get_modifiers(keyval, scancode);
++                if !mods.is_empty() {
++                  // if we release the modifier tell the world
++                  if ElementState::Released == element_state {
++                    mods = ModifiersState::empty();
++                  }
+ 
+-            let handler = keyboard_handler.clone();
+-            window.connect_key_press_event(move |_, event_key| {
+-              handler(event_key.to_owned(), ElementState::Pressed);
+-              ime.filter_keypress(event_key);
++                  if let Err(e) = tx_clone.send(Event::WindowEvent {
++                    window_id: RootWindowId(id),
++                    event: WindowEvent::ModifiersChanged(mods),
++                  }) {
++                    log::warn!(
++                      "Failed to send modifiers changed event to event channel: {}",
++                      e
++                    );
++                  } else {
++                    // stop here we don't want to send the key event
++                    // as we emit the `ModifiersChanged`
++                    return glib::ControlFlow::Continue;
++                  }
++                }
+ 
+-              glib::Propagation::Proceed
+-            });
++                // todo: implement repeat?
++                let event = keyboard::make_key_event(keyval, scancode, false, None, element_state);
+ 
+-            let handler = keyboard_handler.clone();
+-            window.connect_key_release_event(move |_, event_key| {
+-              handler(event_key.to_owned(), ElementState::Released);
+-              glib::Propagation::Proceed
+-            });
+-
+-            let tx_clone = event_tx.clone();
+-            window.connect_window_state_event(move |window, event| {
+-              let state = event.changed_mask();
+-              if state.contains(WindowState::ICONIFIED) || state.contains(WindowState::MAXIMIZED) {
+-                let scale_factor = window.scale_factor();
+-
+-                let (x, y) = window.position();
+-                if let Err(e) = tx_clone.send(Event::WindowEvent {
+-                  window_id: RootWindowId(id),
+-                  event: WindowEvent::Moved(
+-                    LogicalPosition::new(x, y).to_physical(scale_factor as f64),
+-                  ),
+-                }) {
+-                  log::warn!("Failed to send window moved event to event channel: {}", e);
++                if let Some(event) = event {
++                  if let Err(e) = tx_clone.send(Event::WindowEvent {
++                    window_id: RootWindowId(id),
++                    event: WindowEvent::KeyboardInput {
++                      device_id: DEVICE_ID,
++                      event,
++                      is_synthetic: false,
++                    },
++                  }) {
++                    log::warn!("Failed to send keyboard event to event channel: {}", e);
++                  }
+                 }
++                glib::ControlFlow::Continue
++              });
+ 
+-                let (w, h) = window.size();
++              let tx_clone = event_tx.clone();
++              // TODO Add actual IME from system
++              let ime = gtk::IMContextSimple::default();
++              ime.set_client_widget(Some(&window));
++              ime.focus_in();
++              ime.connect_commit(move |_, s| {
+                 if let Err(e) = tx_clone.send(Event::WindowEvent {
+                   window_id: RootWindowId(id),
+-                  event: WindowEvent::Resized(
+-                    LogicalSize::new(w, h).to_physical(scale_factor as f64),
+-                  ),
++                  event: WindowEvent::ReceivedImeText(s.to_string()),
+                 }) {
+                   log::warn!(
+-                    "Failed to send window resized event to event channel: {}",
++                    "Failed to send received IME text event to event channel: {}",
+                     e
+                   );
+                 }
+-              }
+-              glib::Propagation::Proceed
+-            });
++              });
+ 
+-            // Receive draw events of the window.
+-            let draw_clone = draw_tx.clone();
+-            window.connect_draw(move |window, cr| {
+-              if let Err(e) = draw_clone.send(id) {
+-                log::warn!("Failed to send redraw event to event channel: {}", e);
+-              }
++              let handler = keyboard_handler.clone();
++              let key_controller = gtk::EventControllerKey::new();
++              key_controller.connect_key_pressed(move |controller, keyval, keycode, _| {
++                handler(keyval, keycode, ElementState::Pressed);
++                if let Some(event) = controller.current_event() {
++                  ime.filter_keypress(event);
++                }
++                glib::Propagation::Proceed
++              });
+ 
+-              if transparent {
+-                let background_color = unsafe {
+-                  window
+-                    .data::<Option<crate::window::RGBA>>("background_color")
+-                    .and_then(|c| *c.as_ref())
+-                };
++              let handler = keyboard_handler.clone();
++              key_controller.connect_key_released(move |_, keyval, keycode, _| {
++                handler(keyval, keycode, ElementState::Released);
++              });
++              window.add_controller(key_controller);
+ 
+-                let rgba = background_color
+-                  .map(|(r, g, b, a)| (r as f64, g as f64, b as f64, a as f64 / 255.0))
+-                  .unwrap_or((0., 0., 0., 0.));
++              // Receive draw events of the window.
++              let draw_clone = draw_tx.clone();
++              window.connect_map(move |_| {
++                if let Err(e) = draw_clone.send(id) {
++                  log::warn!("Failed to send redraw event to event channel: {}", e);
++                }
++              });
+ 
+-                let rect = window
+-                  .child()
+-                  .map(|c| c.allocation())
+-                  .unwrap_or_else(|| window.allocation());
+-
+-                cr.rectangle(
+-                  rect.x() as _,
+-                  rect.y() as _,
+-                  rect.width() as _,
+-                  rect.height() as _,
++              if transparent {
++                log::warn!(
++                  "GTK4 transparent background is handled through CSS instead of draw events"
+                 );
+-                cr.set_source_rgba(rgba.0, rgba.1, rgba.2, rgba.3);
+-                cr.set_operator(cairo::Operator::Source);
+-                let _ = cr.fill();
+-                cr.set_operator(cairo::Operator::Over);
+               }
+-
+-              glib::Propagation::Proceed
+-            });
++            }
+           }
+-        }
+-      } else if id == WindowId::dummy() {
+-        match request {
+-          WindowRequest::ProgressBarState(state) => {
+-            taskbar.update(state);
+-          }
+-          WindowRequest::BadgeCount(count, desktop_filename) => {
+-            taskbar.update_count(count, desktop_filename);
+-          }
+-          WindowRequest::SetTheme(theme) => {
+-            if let Some(settings) = Settings::default() {
+-              settings.set_gtk_application_prefer_dark_theme(theme == Some(Theme::Dark));
+-              if let Err(e) = event_tx.send(Event::WindowEvent {
+-                window_id: RootWindowId(id),
+-                event: WindowEvent::ThemeChanged(theme.unwrap_or_default()),
+-              }) {
+-                log::warn!(
+-                  "Failed to send window theme changed event to event channel: {}",
+-                  e
+-                );
++        } else if id == WindowId::dummy() {
++          match request {
++            WindowRequest::ProgressBarState(state) => {
++              taskbar.update(state);
++            }
++            WindowRequest::BadgeCount(count, desktop_filename) => {
++              taskbar.update_count(count, desktop_filename);
++            }
++            WindowRequest::SetTheme(theme) => {
++              if let Some(settings) = Settings::default() {
++                settings.set_gtk_application_prefer_dark_theme(theme == Some(Theme::Dark));
++                if let Err(e) = event_tx.send(Event::WindowEvent {
++                  window_id: RootWindowId(id),
++                  event: WindowEvent::ThemeChanged(theme.unwrap_or_default()),
++                }) {
++                  log::warn!(
++                    "Failed to send window theme changed event to event channel: {}",
++                    e
++                  );
++                }
+               }
+             }
++            _ => unreachable!(),
+           }
+-          _ => unreachable!(),
+         }
+       }
+       glib::ControlFlow::Continue
+@@ -1161,7 +1017,7 @@
+               }
+             },
+           }
+-          gtk::main_iteration_do(blocking);
++          gtk::glib::MainContext::default().iteration(blocking);
+         };
+         if let Some(run_device_thread) = run_device_thread {
+           run_device_thread.store(false, Ordering::Relaxed);
+@@ -1251,6 +1107,30 @@
+   std::thread::current().name() == Some("main")
+ }
+ 
++fn widget_display<W: IsA<gtk::Widget>>(window: &W) -> gdk::Display {
++  gtk::prelude::WidgetExt::display(window)
++}
++
++fn window_toplevel<W>(window: &W) -> Option<gdk::Toplevel>
++where
++  W: IsA<gtk::Widget> + IsA<gtk::Native>,
++{
++  gtk::prelude::NativeExt::surface(window)
++    .and_then(|surface| surface.downcast::<gdk::Toplevel>().ok())
++}
++
++fn current_window_size<W>(window: &W) -> (i32, i32)
++where
++  W: IsA<gtk::Widget> + IsA<gtk::Window>,
++{
++  let allocated = (window.allocated_width(), window.allocated_height());
++  if allocated.0 > 0 && allocated.1 > 0 {
++    allocated
++  } else {
++    window.default_size()
++  }
++}
++
+ impl CursorIcon {
+   fn to_str(&self) -> &str {
+     match self {
+@@ -1307,16 +1187,16 @@
+     }
+   }
+ 
+-  fn to_gtk_edge(&self) -> WindowEdge {
++  fn to_surface_edge(&self) -> SurfaceEdge {
+     match self {
+-      ResizeDirection::East => WindowEdge::East,
+-      ResizeDirection::North => WindowEdge::North,
+-      ResizeDirection::NorthEast => WindowEdge::NorthEast,
+-      ResizeDirection::NorthWest => WindowEdge::NorthWest,
+-      ResizeDirection::South => WindowEdge::South,
+-      ResizeDirection::SouthEast => WindowEdge::SouthEast,
+-      ResizeDirection::SouthWest => WindowEdge::SouthWest,
+-      ResizeDirection::West => WindowEdge::West,
++      ResizeDirection::East => SurfaceEdge::East,
++      ResizeDirection::North => SurfaceEdge::North,
++      ResizeDirection::NorthEast => SurfaceEdge::NorthEast,
++      ResizeDirection::NorthWest => SurfaceEdge::NorthWest,
++      ResizeDirection::South => SurfaceEdge::South,
++      ResizeDirection::SouthEast => SurfaceEdge::SouthEast,
++      ResizeDirection::SouthWest => SurfaceEdge::SouthWest,
++      ResizeDirection::West => SurfaceEdge::West,
+     }
+   }
+ }
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/linux/keyboard.rs vendored/src/platform_impl/linux/keyboard.rs
+--- upstream/src/platform_impl/linux/keyboard.rs
++++ vendored/src/platform_impl/linux/keyboard.rs
+@@ -7,19 +7,13 @@
+   event::{ElementState, KeyEvent},
+   keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NativeKeyCode},
+ };
+-use gtk::{
+-  gdk::{self, keys::constants::*, EventKey},
+-  glib,
+-};
++use gtk::gdk::{self, prelude::*};
+ use std::{
+   collections::HashSet,
+-  ffi::c_void,
+-  os::raw::{c_int, c_uint},
+-  ptr, slice,
+   sync::{LazyLock, Mutex},
+ };
+ 
+-pub type RawKey = gdk::keys::Key;
++pub type RawKey = gdk::Key;
+ 
+ static KEY_STRINGS: LazyLock<Mutex<HashSet<&'static str>>> =
+   LazyLock::new(|| Mutex::new(HashSet::new()));
+@@ -37,90 +31,90 @@
+ #[allow(clippy::just_underscores_and_digits, non_upper_case_globals)]
+ pub(crate) fn raw_key_to_key(gdk_key: RawKey) -> Option<Key<'static>> {
+   match gdk_key {
+-    Escape => Some(Key::Escape),
+-    BackSpace => Some(Key::Backspace),
+-    Tab | ISO_Left_Tab => Some(Key::Tab),
+-    Return => Some(Key::Enter),
+-    Control_L | Control_R => Some(Key::Control),
+-    Alt_L | Alt_R => Some(Key::Alt),
+-    Shift_L | Shift_R => Some(Key::Shift),
++    gdk::Key::Escape => Some(Key::Escape),
++    gdk::Key::BackSpace => Some(Key::Backspace),
++    gdk::Key::Tab | gdk::Key::ISO_Left_Tab => Some(Key::Tab),
++    gdk::Key::Return => Some(Key::Enter),
++    gdk::Key::Control_L | gdk::Key::Control_R => Some(Key::Control),
++    gdk::Key::Alt_L | gdk::Key::Alt_R => Some(Key::Alt),
++    gdk::Key::Shift_L | gdk::Key::Shift_R => Some(Key::Shift),
+     // TODO: investigate mapping. Map Meta_[LR]?
+-    Super_L | Super_R => Some(Key::Super),
+-    Caps_Lock => Some(Key::CapsLock),
+-    F1 => Some(Key::F1),
+-    F2 => Some(Key::F2),
+-    F3 => Some(Key::F3),
+-    F4 => Some(Key::F4),
+-    F5 => Some(Key::F5),
+-    F6 => Some(Key::F6),
+-    F7 => Some(Key::F7),
+-    F8 => Some(Key::F8),
+-    F9 => Some(Key::F9),
+-    F10 => Some(Key::F10),
+-    F11 => Some(Key::F11),
+-    F12 => Some(Key::F12),
+-    F13 => Some(Key::F13),
+-    F14 => Some(Key::F14),
+-    F15 => Some(Key::F15),
+-    F16 => Some(Key::F16),
+-    F17 => Some(Key::F17),
+-    F18 => Some(Key::F18),
+-    F19 => Some(Key::F19),
+-    F20 => Some(Key::F20),
+-    F21 => Some(Key::F21),
+-    F22 => Some(Key::F22),
+-    F23 => Some(Key::F23),
+-    F24 => Some(Key::F24),
++    gdk::Key::Super_L | gdk::Key::Super_R => Some(Key::Super),
++    gdk::Key::Caps_Lock => Some(Key::CapsLock),
++    gdk::Key::F1 => Some(Key::F1),
++    gdk::Key::F2 => Some(Key::F2),
++    gdk::Key::F3 => Some(Key::F3),
++    gdk::Key::F4 => Some(Key::F4),
++    gdk::Key::F5 => Some(Key::F5),
++    gdk::Key::F6 => Some(Key::F6),
++    gdk::Key::F7 => Some(Key::F7),
++    gdk::Key::F8 => Some(Key::F8),
++    gdk::Key::F9 => Some(Key::F9),
++    gdk::Key::F10 => Some(Key::F10),
++    gdk::Key::F11 => Some(Key::F11),
++    gdk::Key::F12 => Some(Key::F12),
++    gdk::Key::F13 => Some(Key::F13),
++    gdk::Key::F14 => Some(Key::F14),
++    gdk::Key::F15 => Some(Key::F15),
++    gdk::Key::F16 => Some(Key::F16),
++    gdk::Key::F17 => Some(Key::F17),
++    gdk::Key::F18 => Some(Key::F18),
++    gdk::Key::F19 => Some(Key::F19),
++    gdk::Key::F20 => Some(Key::F20),
++    gdk::Key::F21 => Some(Key::F21),
++    gdk::Key::F22 => Some(Key::F22),
++    gdk::Key::F23 => Some(Key::F23),
++    gdk::Key::F24 => Some(Key::F24),
+ 
+-    Print => Some(Key::PrintScreen),
+-    Scroll_Lock => Some(Key::ScrollLock),
++    gdk::Key::Print => Some(Key::PrintScreen),
++    gdk::Key::Scroll_Lock => Some(Key::ScrollLock),
+     // Pause/Break not audio.
+-    Pause => Some(Key::Pause),
++    gdk::Key::Pause => Some(Key::Pause),
+ 
+-    Insert => Some(Key::Insert),
+-    Delete => Some(Key::Delete),
+-    Home => Some(Key::Home),
+-    End => Some(Key::End),
+-    Page_Up => Some(Key::PageUp),
+-    Page_Down => Some(Key::PageDown),
+-    Num_Lock => Some(Key::NumLock),
++    gdk::Key::Insert => Some(Key::Insert),
++    gdk::Key::Delete => Some(Key::Delete),
++    gdk::Key::Home => Some(Key::Home),
++    gdk::Key::End => Some(Key::End),
++    gdk::Key::Page_Up => Some(Key::PageUp),
++    gdk::Key::Page_Down => Some(Key::PageDown),
++    gdk::Key::Num_Lock => Some(Key::NumLock),
+ 
+-    Up => Some(Key::ArrowUp),
+-    Down => Some(Key::ArrowDown),
+-    Left => Some(Key::ArrowLeft),
+-    Right => Some(Key::ArrowRight),
+-    Clear => Some(Key::Clear),
++    gdk::Key::Up => Some(Key::ArrowUp),
++    gdk::Key::Down => Some(Key::ArrowDown),
++    gdk::Key::Left => Some(Key::ArrowLeft),
++    gdk::Key::Right => Some(Key::ArrowRight),
++    gdk::Key::Clear => Some(Key::Clear),
+ 
+-    Menu => Some(Key::ContextMenu),
+-    WakeUp => Some(Key::WakeUp),
+-    Launch0 => Some(Key::LaunchApplication1),
+-    Launch1 => Some(Key::LaunchApplication2),
+-    ISO_Level3_Shift => Some(Key::AltGraph),
++    gdk::Key::Menu => Some(Key::ContextMenu),
++    gdk::Key::WakeUp => Some(Key::WakeUp),
++    gdk::Key::Launch0 => Some(Key::LaunchApplication1),
++    gdk::Key::Launch1 => Some(Key::LaunchApplication2),
++    gdk::Key::ISO_Level3_Shift => Some(Key::AltGraph),
+ 
+-    KP_Begin => Some(Key::Clear),
+-    KP_Delete => Some(Key::Delete),
+-    KP_Down => Some(Key::ArrowDown),
+-    KP_End => Some(Key::End),
+-    KP_Enter => Some(Key::Enter),
+-    KP_F1 => Some(Key::F1),
+-    KP_F2 => Some(Key::F2),
+-    KP_F3 => Some(Key::F3),
+-    KP_F4 => Some(Key::F4),
+-    KP_Home => Some(Key::Home),
+-    KP_Insert => Some(Key::Insert),
+-    KP_Left => Some(Key::ArrowLeft),
+-    KP_Page_Down => Some(Key::PageDown),
+-    KP_Page_Up => Some(Key::PageUp),
+-    KP_Right => Some(Key::ArrowRight),
++    gdk::Key::KP_Begin => Some(Key::Clear),
++    gdk::Key::KP_Delete => Some(Key::Delete),
++    gdk::Key::KP_Down => Some(Key::ArrowDown),
++    gdk::Key::KP_End => Some(Key::End),
++    gdk::Key::KP_Enter => Some(Key::Enter),
++    gdk::Key::KP_F1 => Some(Key::F1),
++    gdk::Key::KP_F2 => Some(Key::F2),
++    gdk::Key::KP_F3 => Some(Key::F3),
++    gdk::Key::KP_F4 => Some(Key::F4),
++    gdk::Key::KP_Home => Some(Key::Home),
++    gdk::Key::KP_Insert => Some(Key::Insert),
++    gdk::Key::KP_Left => Some(Key::ArrowLeft),
++    gdk::Key::KP_Page_Down => Some(Key::PageDown),
++    gdk::Key::KP_Page_Up => Some(Key::PageUp),
++    gdk::Key::KP_Right => Some(Key::ArrowRight),
+     // KP_Separator? What does it map to?
+-    KP_Tab => Some(Key::Tab),
+-    KP_Up => Some(Key::ArrowUp),
++    gdk::Key::KP_Tab => Some(Key::Tab),
++    gdk::Key::KP_Up => Some(Key::ArrowUp),
+ 
+     // JIS
+-    Zenkaku_Hankaku => Some(Key::ZenkakuHankaku),
+-    Hiragana_Katakana => Some(Key::HiraganaKatakana),
+-    Henkan => Some(Key::Convert),
+-    Muhenkan => Some(Key::NonConvert),
++    gdk::Key::Zenkaku_Hankaku => Some(Key::ZenkakuHankaku),
++    gdk::Key::Hiragana_Katakana => Some(Key::HiraganaKatakana),
++    gdk::Key::Henkan => Some(Key::Convert),
++    gdk::Key::Muhenkan => Some(Key::NonConvert),
+     // TODO: more mappings (media etc)
+     _ => None,
+   }
+@@ -129,14 +123,51 @@
+ #[allow(clippy::just_underscores_and_digits, non_upper_case_globals)]
+ pub(crate) fn raw_key_to_location(raw: RawKey) -> KeyLocation {
+   match raw {
+-    Control_L | Shift_L | Alt_L | Super_L | Meta_L => KeyLocation::Left,
+-    Control_R | Shift_R | Alt_R | Super_R | Meta_R => KeyLocation::Right,
+-    KP_0 | KP_1 | KP_2 | KP_3 | KP_4 | KP_5 | KP_6 | KP_7 | KP_8 | KP_9 | KP_Add | KP_Begin
+-    | KP_Decimal | KP_Delete | KP_Divide | KP_Down | KP_End | KP_Enter | KP_Equal | KP_F1
+-    | KP_F2 | KP_F3 | KP_F4 | KP_Home | KP_Insert | KP_Left | KP_Multiply | KP_Page_Down
+-    | KP_Page_Up | KP_Right | KP_Separator | KP_Space | KP_Subtract | KP_Tab | KP_Up => {
+-      KeyLocation::Numpad
+-    }
++    gdk::Key::Control_L
++    | gdk::Key::Shift_L
++    | gdk::Key::Alt_L
++    | gdk::Key::Super_L
++    | gdk::Key::Meta_L => KeyLocation::Left,
++    gdk::Key::Control_R
++    | gdk::Key::Shift_R
++    | gdk::Key::Alt_R
++    | gdk::Key::Super_R
++    | gdk::Key::Meta_R => KeyLocation::Right,
++    gdk::Key::KP_0
++    | gdk::Key::KP_1
++    | gdk::Key::KP_2
++    | gdk::Key::KP_3
++    | gdk::Key::KP_4
++    | gdk::Key::KP_5
++    | gdk::Key::KP_6
++    | gdk::Key::KP_7
++    | gdk::Key::KP_8
++    | gdk::Key::KP_9
++    | gdk::Key::KP_Add
++    | gdk::Key::KP_Begin
++    | gdk::Key::KP_Decimal
++    | gdk::Key::KP_Delete
++    | gdk::Key::KP_Divide
++    | gdk::Key::KP_Down
++    | gdk::Key::KP_End
++    | gdk::Key::KP_Enter
++    | gdk::Key::KP_Equal
++    | gdk::Key::KP_F1
++    | gdk::Key::KP_F2
++    | gdk::Key::KP_F3
++    | gdk::Key::KP_F4
++    | gdk::Key::KP_Home
++    | gdk::Key::KP_Insert
++    | gdk::Key::KP_Left
++    | gdk::Key::KP_Multiply
++    | gdk::Key::KP_Page_Down
++    | gdk::Key::KP_Page_Up
++    | gdk::Key::KP_Right
++    | gdk::Key::KP_Separator
++    | gdk::Key::KP_Space
++    | gdk::Key::KP_Subtract
++    | gdk::Key::KP_Tab
++    | gdk::Key::KP_Up => KeyLocation::Numpad,
+     _ => KeyLocation::Standard,
+   }
+ }
+@@ -148,15 +179,9 @@
+   (Key::Super, ModifiersState::SUPER),
+ ];
+ 
+-// we use the EventKey to extract the modifier mainly because
+-// we need to have the modifier before the second key is entered to follow
+-// other os' logic -- this way we can emit the new `ModifiersState` before
+-// we receive the next key, if needed the developer can update his local state.
+-pub(crate) fn get_modifiers(key: EventKey) -> ModifiersState {
+-  // a keycode (scancode in Windows) is a code that refers to a physical keyboard key.
+-  let scancode = key.hardware_keycode();
+-  // a keyval (keysym in X) is a "logical" key name, such as GDK_Enter, GDK_a, GDK_space, etc.
+-  let keyval = key.keyval();
++// We use keyval/keycode from `EventControllerKey` so modifier changes can be
++// emitted before the next key event, matching the other platform backends.
++pub(crate) fn get_modifiers(keyval: RawKey, scancode: u16) -> ModifiersState {
+   // unicode value
+   let unicode = keyval.to_unicode();
+   // translate to tao::keyboard::Key
+@@ -183,15 +208,12 @@
+ }
+ 
+ pub(crate) fn make_key_event(
+-  key: &EventKey,
++  keyval_without_modifiers: RawKey,
++  scancode: u16,
+   is_repeat: bool,
+   key_override: Option<KeyCode>,
+   state: ElementState,
+ ) -> Option<KeyEvent> {
+-  // a keycode (scancode in Windows) is a code that refers to a physical keyboard key.
+-  let scancode = key.hardware_keycode();
+-  // a keyval (keysym in X) is a "logical" key name, such as GDK_Enter, GDK_a, GDK_space, etc.
+-  let keyval_without_modifiers = key.keyval();
+   let keyval_with_modifiers =
+     hardware_keycode_to_keyval(scancode).unwrap_or(keyval_without_modifiers);
+   // get unicode value, with and without modifiers
+@@ -253,41 +275,10 @@
+ /// Map a hardware keycode to a keyval by performing a lookup in the keymap and finding the
+ /// keyval with the lowest group and level
+ fn hardware_keycode_to_keyval(keycode: u16) -> Option<RawKey> {
+-  use glib::translate::FromGlib;
+-  unsafe {
+-    let keymap = gdk::ffi::gdk_keymap_get_default();
+-
+-    let mut nkeys = 0;
+-    let mut keys: *mut gdk::ffi::GdkKeymapKey = ptr::null_mut();
+-    let mut keyvals: *mut c_uint = ptr::null_mut();
+-
+-    // call into gdk to retrieve the keyvals and keymap keys
+-    gdk::ffi::gdk_keymap_get_entries_for_keycode(
+-      keymap,
+-      c_uint::from(keycode),
+-      &mut keys as *mut *mut gdk::ffi::GdkKeymapKey,
+-      &mut keyvals as *mut *mut c_uint,
+-      &mut nkeys as *mut c_int,
+-    );
+-
+-    if nkeys > 0 {
+-      let keyvals_slice = slice::from_raw_parts(keyvals, nkeys as usize);
+-      let keys_slice = slice::from_raw_parts(keys, nkeys as usize);
+-
+-      let resolved_keyval = keys_slice.iter().enumerate().find_map(|(id, gdk_keymap)| {
+-        if gdk_keymap.group == 0 && gdk_keymap.level == 0 {
+-          Some(RawKey::from_glib(keyvals_slice[id]))
+-        } else {
+-          None
+-        }
+-      });
+-
+-      // notify glib to free the allocated arrays
+-      glib::ffi::g_free(keyvals as *mut c_void);
+-      glib::ffi::g_free(keys as *mut c_void);
+-
+-      return resolved_keyval;
+-    }
+-  }
+-  None
++  let display = gdk::Display::default()?;
++  display
++    .map_keycode(keycode as u32)?
++    .into_iter()
++    .min_by_key(|(key, _)| (key.group(), key.level()))
++    .map(|(_, keyval)| keyval)
+ }
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/linux/monitor.rs vendored/src/platform_impl/linux/monitor.rs
+--- upstream/src/platform_impl/linux/monitor.rs
++++ vendored/src/platform_impl/linux/monitor.rs
+@@ -2,8 +2,17 @@
+ // Copyright 2021-2023 Tauri Programme within The Commons Conservancy
+ // SPDX-License-Identifier: Apache-2.0
+ 
+-use gtk::gdk::{self, prelude::MonitorExt, Display};
++use std::collections::VecDeque;
+ 
++use gtk::{
++  gdk::{
++    self,
++    prelude::{Cast, DisplayExt, MonitorExt},
++    Display,
++  },
++  gio::prelude::ListModelExt,
++};
++
+ use crate::{
+   dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
+   monitor::{MonitorHandle as RootMonitorHandle, VideoMode as RootVideoMode},
+@@ -15,8 +24,8 @@
+ }
+ 
+ impl MonitorHandle {
+-  pub fn new(display: &gdk::Display, number: i32) -> Self {
+-    let monitor = display.monitor(number).unwrap();
++  pub fn new(display: &gdk::Display, number: u32) -> Self {
++    let monitor = monitor(display, number).unwrap();
+     Self { monitor }
+   }
+ 
+@@ -84,13 +93,33 @@
+   }
+ }
+ 
++pub fn monitor(display: &Display, number: u32) -> Option<gdk::Monitor> {
++  display
++    .monitors()
++    .item(number)
++    .and_then(|item| item.downcast::<gdk::Monitor>().ok())
++}
++
++pub fn available(display: &Display) -> VecDeque<MonitorHandle> {
++  let monitors = display.monitors();
++  (0..monitors.n_items())
++    .filter_map(|i| monitor(display, i).map(|monitor| MonitorHandle { monitor }))
++    .collect()
++}
++
++pub fn primary(display: &Display) -> Option<MonitorHandle> {
++  monitor(display, 0).map(|monitor| MonitorHandle { monitor })
++}
++
+ pub fn from_point(display: &Display, x: f64, y: f64) -> Option<MonitorHandle> {
+-  if let Some(monitor) = display.monitor_at_point(x as i32, y as i32) {
+-    (0..display.n_monitors())
+-      .map(|i| (i, display.monitor(i).unwrap()))
+-      .find(|cur| cur.1.geometry() == monitor.geometry())
+-      .map(|x| MonitorHandle::new(display, x.0))
+-  } else {
+-    None
+-  }
++  let monitors = display.monitors();
++  (0..monitors.n_items())
++    .filter_map(|i| monitor(display, i))
++    .find(|monitor| {
++      let rect = monitor.geometry();
++      let x = x as i32;
++      let y = y as i32;
++      x >= rect.x() && x < rect.x() + rect.width() && y >= rect.y() && y < rect.y() + rect.height()
++    })
++    .map(|monitor| MonitorHandle { monitor })
+ }
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/linux/portal.rs vendored/src/platform_impl/linux/portal.rs
+--- upstream/src/platform_impl/linux/portal.rs
++++ vendored/src/platform_impl/linux/portal.rs
+@@ -5,14 +5,10 @@
+   message::MatchRule,
+   Error,
+ };
+-use gtk::glib::{ControlFlow, MainContext, Priority, Sender};
+ use log::warn;
+ use std::{thread, time::Duration};
+ 
+-use crate::{
+-  platform_impl::{platform::window::WindowRequest, WindowId},
+-  window::Theme,
+-};
++use crate::window::Theme;
+ 
+ pub fn theme() -> Result<Theme, Error> {
+   let conn = Connection::new_session()?;
+@@ -31,10 +27,9 @@
+   Ok(color_scheme_to_theme(result.0 .0 .0))
+ }
+ 
+-pub fn receive_theme_changed(window_tx: Sender<(WindowId, WindowRequest)>) -> Result<(), Error> {
++pub fn receive_theme_changed(theme_tx: crossbeam_channel::Sender<Theme>) -> Result<(), Error> {
+   let conn = SyncConnection::new_session()?;
+   let match_rule = MatchRule::new_signal("org.freedesktop.portal.Settings", "SettingChanged");
+-  let (tx, rx) = MainContext::channel(Priority::DEFAULT);
+ 
+   conn.add_match(match_rule, move |_: (), _, msg| {
+     let mut iter = msg.iter_init();
+@@ -43,21 +38,12 @@
+       iter.read::<&str>(),         // Key
+       iter.read::<Variant<u32>>(), // Value
+     ) {
+-      if let Err(e) = tx.send(color_scheme_to_theme(value.0)) {
+-        warn!("Failed to send theme change via channel: {}", e);
++      if let Err(e) = theme_tx.send(color_scheme_to_theme(value.0)) {
++        warn!("Failed to send theme change request: {}", e);
+       }
+     }
+     true
+   })?;
+-
+-  rx.attach(None, move |theme| {
+-    if let Err(e) = window_tx.send((WindowId::dummy(), WindowRequest::SetTheme(Some(theme)))) {
+-      warn!("Failed to send theme change request: {}", e);
+-      ControlFlow::Break
+-    } else {
+-      ControlFlow::Continue
+-    }
+-  });
+ 
+   thread::spawn(move || loop {
+     if let Err(e) = conn.process(Duration::from_secs(5)) {
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/linux/util.rs vendored/src/platform_impl/linux/util.rs
+--- upstream/src/platform_impl/linux/util.rs
++++ vendored/src/platform_impl/linux/util.rs
+@@ -5,12 +5,11 @@
+ };
+ use gtk::{
+   gdk::{
+-    self,
+-    prelude::{DeviceExt, SeatExt},
++    prelude::{DeviceExt, DisplayExt, SeatExt},
+     Display,
+   },
+   glib::{self},
+-  traits::{GtkWindowExt, WidgetExt},
++  prelude::{GtkWindowExt, WidgetExt},
+ };
+ use std::{cell::RefCell, rc::Rc};
+ 
+@@ -20,16 +19,11 @@
+     Ok((0, 0).into())
+   } else {
+     Display::default()
+-      .map(|d| {
+-        (
+-          d.default_seat().and_then(|s| s.pointer()),
+-          d.default_group(),
+-        )
+-      })
+-      .map(|(p, g)| {
++      .map(|d| d.default_seat().and_then(|s| s.pointer()))
++      .map(|p| {
+         p.map(|p| {
+-          let (_, x, y) = p.position_double();
+-          LogicalPosition::new(x, y).to_physical(g.scale_factor() as _)
++          let (_, x, y) = p.surface_at_position();
++          LogicalPosition::new(x, y).to_physical(1.0)
+         })
+       })
+       .map(|p| p.ok_or(ExternalError::Os(os_error!(super::OsError))))
+@@ -41,37 +35,19 @@
+   window: &W,
+   constraints: WindowSizeConstraints,
+ ) {
+-  let mut geom_mask = gdk::WindowHints::empty();
+-  if constraints.has_min() {
+-    geom_mask |= gdk::WindowHints::MIN_SIZE;
+-  }
+-  if constraints.has_max() {
+-    geom_mask |= gdk::WindowHints::MAX_SIZE;
+-  }
+-
+   let scale_factor = window.scale_factor() as f64;
+-
+   let min_size: LogicalSize<i32> = constraints.min_size_logical(scale_factor);
+-  let max_size: LogicalSize<i32> = constraints.max_size_logical(scale_factor);
++  let min_width = constraints
++    .has_min()
++    .then_some(min_size.width)
++    .unwrap_or(-1);
++  let min_height = constraints
++    .has_min()
++    .then_some(min_size.height)
++    .unwrap_or(-1);
+ 
+-  let picky_none: Option<&gtk::Window> = None;
+-  window.set_geometry_hints(
+-    picky_none,
+-    Some(&gdk::Geometry::new(
+-      min_size.width,
+-      min_size.height,
+-      max_size.width,
+-      max_size.height,
+-      0,
+-      0,
+-      0,
+-      0,
+-      0f64,
+-      0f64,
+-      gdk::Gravity::Center,
+-    )),
+-    geom_mask,
+-  )
++  // GTK4 removed geometry hints; keep the enforceable minimum request here.
++  window.set_size_request(min_width, min_height);
+ }
+ 
+ pub struct WindowMaximizeProcess<W: GtkWindowExt + WidgetExt> {
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/linux/window.rs vendored/src/platform_impl/linux/window.rs
+--- upstream/src/platform_impl/linux/window.rs
++++ vendored/src/platform_impl/linux/window.rs
+@@ -12,11 +12,12 @@
+   },
+ };
+ 
++#[cfg(feature = "x11")]
++use gdk_x11::X11Surface;
+ use gtk::{
+-  gdk::WindowState,
+-  glib::{self, translate::ToGlibPtr},
++  glib::{self},
+   prelude::*,
+-  CssProvider, EventBox, Settings,
++  CssProvider, Settings,
+ };
+ 
+ use crate::{
+@@ -52,7 +53,7 @@
+   pub(crate) window: gtk::ApplicationWindow,
+   pub(crate) default_vbox: Option<gtk::Box>,
+   /// Window requests sender
+-  pub(crate) window_requests_tx: glib::Sender<(WindowId, WindowRequest)>,
++  pub(crate) window_requests_tx: crossbeam_channel::Sender<(WindowId, WindowRequest)>,
+   scale_factor: Rc<AtomicI32>,
+   inner_position: Rc<(AtomicI32, AtomicI32)>,
+   outer_position: Rc<(AtomicI32, AtomicI32)>,
+@@ -87,7 +88,7 @@
+ 
+     let mut window_builder = gtk::ApplicationWindow::builder()
+       .application(app)
+-      .accept_focus(attributes.focusable && attributes.focused);
++      .can_focus(attributes.focusable && attributes.focused);
+     if let Parent::ChildOf(parent) = pl_attribs.parent {
+       window_builder = window_builder.transient_for(&parent);
+     }
+@@ -106,25 +107,17 @@
+       .inner_size
+       .map(|size| size.to_logical::<f64>(win_scale_factor as f64).into())
+       .unwrap_or((800, 600));
+-
+     window.set_default_size(width, height);
+ 
+-    // Trying to prevent Wayland Protocol Error about mismatched xdg_surface_buffer sizes
+-    let maximized = attributes.maximized;
+-    let resizable = attributes.resizable;
+-    let configure_handler_id = Rc::new(RefCell::new(None));
+-    let configure_handler_id_ = configure_handler_id.clone();
+-    let id = window.connect_configure_event(move |window, _| {
+-      if let Some(id) = configure_handler_id_.take() {
+-        window.disconnect(id);
+-        if maximized {
+-          window.maximize();
+-        }
+-        window.set_resizable(resizable);
+-      }
+-      false
+-    });
+-    configure_handler_id.borrow_mut().replace(id);
++    if attributes.maximized {
++      let maximize_process = util::WindowMaximizeProcess::new(window.clone(), attributes.resizable);
++      glib::idle_add_local_full(glib::Priority::HIGH_IDLE, move || {
++        let mut maximize_process = maximize_process.borrow_mut();
++        maximize_process.next_step()
++      });
++    } else {
++      window.set_resizable(attributes.resizable);
++    }
+ 
+     window.set_deletable(attributes.closable);
+ 
+@@ -134,78 +127,55 @@
+     // Set Position
+     if let Some(position) = attributes.position {
+       let (x, y): (i32, i32) = position.to_logical::<i32>(win_scale_factor as f64).into();
+-      window.move_(x, y);
++      let _ = (x, y);
++      log::warn!("GTK4 does not support initial toplevel window positioning");
+     }
+ 
+-    // Set GDK Visual
+     if pl_attribs.rgba_visual || attributes.transparent {
+-      if let Some(screen) = GtkWindowExt::screen(&window) {
+-        if let Some(visual) = screen.rgba_visual() {
+-          window.set_visual(Some(&visual));
+-        }
+-      }
++      log::warn!("GTK4 no longer exposes per-window RGBA visual selection");
+     }
+ 
+     if pl_attribs.app_paintable || attributes.transparent {
+-      // Set a few attributes to make the window can be painted.
+-      // See Gtk drawing model for more info:
+-      // https://docs.gtk.org/gtk3/drawing-model.html
+-      window.set_app_paintable(true);
++      log::warn!("GTK4 removed GtkWidget app-paintable window setup");
+     }
+ 
+     if !pl_attribs.double_buffered {
+-      let widget = window.upcast_ref::<gtk::Widget>();
+-      if !event_loop_window_target.is_wayland() {
+-        unsafe {
+-          gtk::ffi::gtk_widget_set_double_buffered(widget.to_glib_none().0, 0);
+-        }
+-      }
++      log::warn!("GTK4 removed explicit double-buffer configuration");
+     }
+ 
+     let default_vbox = if pl_attribs.default_vbox {
+       let box_ = gtk::Box::new(gtk::Orientation::Vertical, 0);
+-      window.add(&box_);
++      window.set_child(Some(&box_));
+       Some(box_)
+     } else {
+       None
+     };
+ 
+     // Rest attributes
+-    window.set_title(&attributes.title);
++    window.set_title(Some(&attributes.title));
+     if let Some(Fullscreen::Borderless(m)) = &attributes.fullscreen {
+       if let Some(monitor) = m {
+-        let display = window.display();
+-        let monitor = &monitor.inner;
+-        let monitors = display.n_monitors();
+-        for i in 0..monitors {
+-          let m = display.monitor(i).unwrap();
+-          if m == monitor.monitor {
+-            let screen = display.default_screen();
+-            window.fullscreen_on_monitor(&screen, i);
+-          }
+-        }
++        window.fullscreen_on_monitor(&monitor.inner.monitor);
+       } else {
+         window.fullscreen();
+       }
+     }
+     window.set_visible(attributes.visible);
+     window.set_decorated(attributes.decorations);
+-    if window.display().backend().is_wayland() && !attributes.decorations {
+-      // Enable CSD to prevent compositor from rendering server-side decorations
+-      let event_box = EventBox::new();
+-      window.set_titlebar(Some(&event_box));
+-    }
++    // Maekon E31: upstream sets an empty GTK3 `EventBox` titlebar on undecorated Wayland windows
++    // so the compositor does not draw server-side decorations. GTK4 always draws client-side
++    // decorations on Wayland, so `set_decorated(false)` is enough here.
+ 
+     if attributes.always_on_bottom {
+-      window.set_keep_below(attributes.always_on_bottom);
++      log::warn!("GTK4 does not support the always-on-bottom window hint");
+     }
+ 
+     if attributes.always_on_top {
+-      window.set_keep_above(attributes.always_on_top);
++      log::warn!("GTK4 does not support the always-on-top window hint");
+     }
+ 
+     if attributes.visible_on_all_workspaces {
+-      window.stick();
++      log::warn!("GTK4 does not support visible-on-all-workspaces window hints");
+     }
+ 
+     // Set initial `preferred_theme` value to current portal color-scheme
+@@ -221,22 +191,21 @@
+     }
+ 
+     if attributes.visible {
+-      window.show_all();
++      window.show();
+     } else {
+       window.hide();
+     }
+ 
+-    // restore accept-focus after the window has been drawn
++    // restore accept-focus after the window has been mapped
+     // if the window was initially created without focus and is supposed to be focusable
+     if attributes.focusable && !attributes.focused {
+       let signal_id = Rc::new(RefCell::new(None));
+       let signal_id_ = signal_id.clone();
+-      let id = window.connect_draw(move |window, _| {
++      let id = window.connect_map(move |window| {
+         if let Some(id) = signal_id_.take() {
+-          window.set_accept_focus(true);
++          window.set_can_focus(true);
+           window.disconnect(id);
+         }
+-        glib::Propagation::Proceed
+       });
+       signal_id.borrow_mut().replace(id);
+     }
+@@ -270,7 +239,8 @@
+     ) = Self::setup_signals(&window, Some(&attributes));
+ 
+     if let Some(icon) = attributes.window_icon {
+-      window.set_icon(Some(&icon.inner.into()));
++      let _ = icon;
++      log::warn!("GTK4 no longer supports setting a per-window pixbuf icon");
+     }
+ 
+     let win = Self {
+@@ -314,64 +284,44 @@
+   ) {
+     let win_scale_factor = window.scale_factor();
+ 
+-    let w_pos = window.position();
+-    let inner_position: Rc<(AtomicI32, AtomicI32)> = Rc::new((w_pos.0.into(), w_pos.1.into()));
+-    let inner_position_clone = inner_position.clone();
++    let (w, h) = Self::current_window_size(window);
++    let inner_position: Rc<(AtomicI32, AtomicI32)> =
++      Rc::new((AtomicI32::new(0), AtomicI32::new(0)));
++    let outer_position: Rc<(AtomicI32, AtomicI32)> =
++      Rc::new((AtomicI32::new(0), AtomicI32::new(0)));
++    let inner_size: Rc<(AtomicI32, AtomicI32)> = Rc::new((AtomicI32::new(w), AtomicI32::new(h)));
++    let outer_size: Rc<(AtomicI32, AtomicI32)> = Rc::new((AtomicI32::new(w), AtomicI32::new(h)));
+ 
+-    let o_pos = window.window().map(|w| w.root_origin()).unwrap_or(w_pos);
+-    let outer_position: Rc<(AtomicI32, AtomicI32)> = Rc::new((o_pos.0.into(), o_pos.1.into()));
+-    let outer_position_clone = outer_position.clone();
+-
+-    let w_size = window.size();
+-    let inner_size: Rc<(AtomicI32, AtomicI32)> = Rc::new((w_size.0.into(), w_size.1.into()));
+     let inner_size_clone = inner_size.clone();
+-
+-    let o_size = window.window().map(|w| w.root_origin()).unwrap_or(w_pos);
+-    let outer_size: Rc<(AtomicI32, AtomicI32)> = Rc::new((o_size.0.into(), o_size.1.into()));
+     let outer_size_clone = outer_size.clone();
+-
+-    window.connect_configure_event(move |window, event| {
+-      let (x, y) = event.position();
+-      inner_position_clone.0.store(x, Ordering::Release);
+-      inner_position_clone.1.store(y, Ordering::Release);
+-
+-      let (w, h) = event.size();
+-      inner_size_clone.0.store(w as i32, Ordering::Release);
+-      inner_size_clone.1.store(h as i32, Ordering::Release);
+-
+-      let (x, y, w, h) = window
+-        .window()
+-        .map(|w| {
+-          let rect = w.frame_extents();
+-          (rect.x(), rect.y(), rect.width(), rect.height())
+-        })
+-        .unwrap_or((x, y, w as i32, h as i32));
+-
+-      outer_position_clone.0.store(x, Ordering::Release);
+-      outer_position_clone.1.store(y, Ordering::Release);
+-
++    window.connect_default_width_notify(move |window| {
++      let (w, h) = Self::current_window_size(window);
++      inner_size_clone.0.store(w, Ordering::Release);
++      inner_size_clone.1.store(h, Ordering::Release);
+       outer_size_clone.0.store(w, Ordering::Release);
+       outer_size_clone.1.store(h, Ordering::Release);
++    });
+ 
+-      false
++    let inner_size_clone = inner_size.clone();
++    let outer_size_clone = outer_size.clone();
++    window.connect_default_height_notify(move |window| {
++      let (w, h) = Self::current_window_size(window);
++      inner_size_clone.0.store(w, Ordering::Release);
++      inner_size_clone.1.store(h, Ordering::Release);
++      outer_size_clone.0.store(w, Ordering::Release);
++      outer_size_clone.1.store(h, Ordering::Release);
+     });
+ 
+     let w_max = window.is_maximized();
+     let maximized: Rc<AtomicBool> = Rc::new(w_max.into());
+     let max_clone = maximized.clone();
+     let minimized = Rc::new(AtomicBool::new(false));
+-    let minimized_clone = minimized.clone();
+     let is_always_on_top = Rc::new(AtomicBool::new(
+       attributes.map(|a| a.always_on_top).unwrap_or(false),
+     ));
+-    let is_always_on_top_clone = is_always_on_top.clone();
+ 
+-    window.connect_window_state_event(move |_, event| {
+-      let state = event.new_window_state();
+-      max_clone.store(state.contains(WindowState::MAXIMIZED), Ordering::Release);
+-      minimized_clone.store(state.contains(WindowState::ICONIFIED), Ordering::Release);
+-      is_always_on_top_clone.store(state.contains(WindowState::ABOVE), Ordering::Release);
+-      glib::Propagation::Proceed
++    window.connect_maximized_notify(move |window| {
++      max_clone.store(window.is_maximized(), Ordering::Release);
+     });
+ 
+     let scale_factor: Rc<AtomicI32> = Rc::new(win_scale_factor.into());
+@@ -392,6 +342,15 @@
+     )
+   }
+ 
++  fn current_window_size(window: &gtk::ApplicationWindow) -> (i32, i32) {
++    let allocated = (window.allocated_width(), window.allocated_height());
++    if allocated.0 > 0 && allocated.1 > 0 {
++      allocated
++    } else {
++      window.default_size()
++    }
++  }
++
+   pub(crate) fn new_from_gtk_window<T>(
+     event_loop_window_target: &EventLoopWindowTarget<T>,
+     window: gtk::ApplicationWindow,
+@@ -591,7 +550,7 @@
+   }
+ 
+   pub fn set_focusable(&self, focusable: bool) {
+-    self.window.set_accept_focus(focusable);
++    self.window.set_can_focus(focusable);
+   }
+ 
+   pub fn is_focused(&self) -> bool {
+@@ -828,69 +787,59 @@
+   }
+ 
+   pub fn current_monitor(&self) -> Option<RootMonitorHandle> {
+-    let display = self.window.display();
++    let display = widget_display(&self.window);
+     // `.window()` returns `None` if the window is invisible;
+     // we fallback to the primary monitor
+-    let monitor = self
+-      .window
+-      .window()
+-      .and_then(|window| display.monitor_at_window(&window))
+-      .or_else(|| display.primary_monitor());
+-
+-    monitor.map(|monitor| RootMonitorHandle {
+-      inner: MonitorHandle { monitor },
+-    })
++    self
++      .surface()
++      .and_then(|surface| display.monitor_at_surface(&surface))
++      .map(|monitor| RootMonitorHandle {
++        inner: MonitorHandle { monitor },
++      })
++      .or_else(|| monitor::primary(&display).map(|inner| RootMonitorHandle { inner }))
+   }
+ 
+   #[inline]
+   pub fn available_monitors(&self) -> VecDeque<MonitorHandle> {
+-    let mut handles = VecDeque::new();
+-    let display = self.window.display();
+-    let numbers = display.n_monitors();
+-
+-    for i in 0..numbers {
+-      let monitor = MonitorHandle::new(&display, i);
+-      handles.push_back(monitor);
+-    }
+-
+-    handles
++    monitor::available(&widget_display(&self.window))
+   }
+ 
+   pub fn primary_monitor(&self) -> Option<RootMonitorHandle> {
+-    let display = self.window.display();
+-    display.primary_monitor().map(|monitor| {
+-      let handle = MonitorHandle { monitor };
+-      RootMonitorHandle { inner: handle }
+-    })
++    monitor::primary(&widget_display(&self.window)).map(|inner| RootMonitorHandle { inner })
+   }
+ 
+   #[inline]
+   pub fn monitor_from_point(&self, x: f64, y: f64) -> Option<RootMonitorHandle> {
+-    let display = &self.window.display();
++    let display = widget_display(&self.window);
++    let display = &display;
+     monitor::from_point(display, x, y).map(|inner| RootMonitorHandle { inner })
+   }
+ 
+   fn is_wayland(&self) -> bool {
+-    self.window.display().backend().is_wayland()
++    widget_display(&self.window).backend().is_wayland()
+   }
+ 
++  fn surface(&self) -> Option<gtk::gdk::Surface> {
++    self.window.surface()
++  }
++
+   #[cfg(feature = "rwh_04")]
+   #[inline]
+   pub fn raw_window_handle_rwh_04(&self) -> rwh_04::RawWindowHandle {
+     if self.is_wayland() {
+       let mut window_handle = rwh_04::WaylandHandle::empty();
+-      if let Some(window) = self.window.window() {
+-        window_handle.surface =
+-          unsafe { gdk_wayland_sys::gdk_wayland_window_get_wl_surface(window.as_ptr() as *mut _) };
++      if let Some(surface) = self.surface() {
++        window_handle.surface = unsafe {
++          gdk_wayland_sys::gdk_wayland_surface_get_wl_surface(surface.as_ptr() as *mut _)
++        };
+       }
+ 
+       rwh_04::RawWindowHandle::Wayland(window_handle)
+     } else {
+       let mut window_handle = rwh_04::XlibHandle::empty();
+-      unsafe {
+-        if let Some(window) = self.window.window() {
+-          window_handle.window = gdk_x11_sys::gdk_x11_window_get_xid(window.as_ptr() as *mut _);
+-        }
++      #[cfg(feature = "x11")]
++      if let Some(surface) = self.surface().and_then(|s| s.downcast::<X11Surface>().ok()) {
++        window_handle.window = surface.xid();
+       }
+       rwh_04::RawWindowHandle::Xlib(window_handle)
+     }
+@@ -901,18 +850,18 @@
+   pub fn raw_window_handle_rwh_05(&self) -> rwh_05::RawWindowHandle {
+     if self.is_wayland() {
+       let mut window_handle = rwh_05::WaylandWindowHandle::empty();
+-      if let Some(window) = self.window.window() {
+-        window_handle.surface =
+-          unsafe { gdk_wayland_sys::gdk_wayland_window_get_wl_surface(window.as_ptr() as *mut _) };
++      if let Some(surface) = self.surface() {
++        window_handle.surface = unsafe {
++          gdk_wayland_sys::gdk_wayland_surface_get_wl_surface(surface.as_ptr() as *mut _)
++        };
+       }
+ 
+       rwh_05::RawWindowHandle::Wayland(window_handle)
+     } else {
+       let mut window_handle = rwh_05::XlibWindowHandle::empty();
+-      unsafe {
+-        if let Some(window) = self.window.window() {
+-          window_handle.window = gdk_x11_sys::gdk_x11_window_get_xid(window.as_ptr() as *mut _);
+-        }
++      #[cfg(feature = "x11")]
++      if let Some(surface) = self.surface().and_then(|s| s.downcast::<X11Surface>().ok()) {
++        window_handle.window = surface.xid();
+       }
+       rwh_05::RawWindowHandle::Xlib(window_handle)
+     }
+@@ -924,7 +873,9 @@
+     if self.is_wayland() {
+       let mut display_handle = rwh_05::WaylandDisplayHandle::empty();
+       display_handle.display = unsafe {
+-        gdk_wayland_sys::gdk_wayland_display_get_wl_display(self.window.display().as_ptr() as *mut _)
++        gdk_wayland_sys::gdk_wayland_display_get_wl_display(
++          widget_display(&self.window).as_ptr() as *mut _
++        )
+       };
+       rwh_05::RawDisplayHandle::Wayland(display_handle)
+     } else {
+@@ -944,24 +895,24 @@
+   #[cfg(feature = "rwh_06")]
+   #[inline]
+   pub fn raw_window_handle_rwh_06(&self) -> Result<rwh_06::RawWindowHandle, rwh_06::HandleError> {
+-    if let Some(window) = self.window.window() {
+-      if self.is_wayland() {
+-        let surface =
+-          unsafe { gdk_wayland_sys::gdk_wayland_window_get_wl_surface(window.as_ptr() as *mut _) };
+-        let surface = unsafe { std::ptr::NonNull::new_unchecked(surface) };
+-        let window_handle = rwh_06::WaylandWindowHandle::new(surface);
+-        Ok(rwh_06::RawWindowHandle::Wayland(window_handle))
+-      } else {
+-        #[cfg(feature = "x11")]
+-        {
+-          let xid = unsafe { gdk_x11_sys::gdk_x11_window_get_xid(window.as_ptr() as *mut _) };
+-          let window_handle = rwh_06::XlibWindowHandle::new(xid);
+-          Ok(rwh_06::RawWindowHandle::Xlib(window_handle))
+-        }
+-        #[cfg(not(feature = "x11"))]
+-        Err(rwh_06::HandleError::Unavailable)
+-      }
++    if self.is_wayland() {
++      let surface = self.surface().ok_or(rwh_06::HandleError::Unavailable)?;
++      let surface =
++        unsafe { gdk_wayland_sys::gdk_wayland_surface_get_wl_surface(surface.as_ptr() as *mut _) };
++      let surface = std::ptr::NonNull::new(surface).ok_or(rwh_06::HandleError::Unavailable)?;
++      let window_handle = rwh_06::WaylandWindowHandle::new(surface);
++      Ok(rwh_06::RawWindowHandle::Wayland(window_handle))
+     } else {
++      #[cfg(feature = "x11")]
++      {
++        let surface = self
++          .surface()
++          .and_then(|s| s.downcast::<X11Surface>().ok())
++          .ok_or(rwh_06::HandleError::Unavailable)?;
++        let window_handle = rwh_06::XlibWindowHandle::new(surface.xid());
++        Ok(rwh_06::RawWindowHandle::Xlib(window_handle))
++      }
++      #[cfg(not(feature = "x11"))]
+       Err(rwh_06::HandleError::Unavailable)
+     }
+   }
+@@ -971,7 +922,9 @@
+   pub fn raw_display_handle_rwh_06(&self) -> Result<rwh_06::RawDisplayHandle, rwh_06::HandleError> {
+     if self.is_wayland() {
+       let display = unsafe {
+-        gdk_wayland_sys::gdk_wayland_display_get_wl_display(self.window.display().as_ptr() as *mut _)
++        gdk_wayland_sys::gdk_wayland_display_get_wl_display(
++          widget_display(&self.window).as_ptr() as *mut _
++        )
+       };
+       let display = unsafe { std::ptr::NonNull::new_unchecked(display) };
+       let display_handle = rwh_06::WaylandDisplayHandle::new(display);
+@@ -1090,8 +1043,10 @@
+ 
+ impl Drop for Window {
+   fn drop(&mut self) {
+-    unsafe {
+-      self.window.destroy();
+-    }
++    self.window.destroy();
+   }
++}
++
++fn widget_display<W: IsA<gtk::Widget>>(window: &W) -> gtk::gdk::Display {
++  gtk::prelude::WidgetExt::display(window)
+ }

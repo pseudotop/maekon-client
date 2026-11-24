@@ -236,6 +236,13 @@ section = "utility"
 priority = "optional"
 assets = [
     ["target/release/maekon", "usr/bin/", "755"],
+    # #13986: the shipped Linux build enables `linux-sandbox`, which runs every
+    # sandboxed action in this worker and looks for it ONLY in the directory of
+    # the running executable (maekon-automation `sandbox/ipc.rs`). It must land
+    # beside the app, or the installed app starts and serves its dashboard while
+    # no sandboxed action can ever run. release.yml builds it before packaging;
+    # `--target` maps this path to `target/<triple>/release/` as for the app.
+    ["target/release/maekon-sandbox-worker", "usr/bin/", "755"],
     # #11023: without this profile the app aborts a few seconds after start on
     # stock Ubuntu 24.04, which restricts unprivileged user namespaces through
     # AppArmor and so stops WebKitGTK from sandboxing its helper processes.

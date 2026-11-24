@@ -5,6 +5,7 @@ use chrono::Utc;
 use maekon_core::error::CoreError;
 use maekon_core::models::intent::{ElementBounds, FinderSource, UiElement};
 use tracing::debug;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::VisionError;
 use maekon_core::config::PiiFilterLevel;
@@ -15,10 +16,58 @@ use maekon_core::ports::element_finder::ElementFinder;
 use maekon_core::ports::ocr_provider::{OcrProvider, OcrResult};
 use maekon_core::ports::rectangle_detector::{DetectedRectangle, RectangleDetector};
 
+/// The image a finder answers from, and the OCR results already read from it.
+///
+/// `screen_seq` moves only when the image bytes or format change, so lookups
+/// on an unchanged screen reuse `results` instead of running OCR again. A
+/// `WaitForText` poll asks every `retry_interval_ms`, while the stored frame
+/// changes only when the monitor saves a new one.
+#[derive(Default)]
+struct HeldScreen {
+    image: Option<(Vec<u8>, String)>,
+    screen_seq: u64,
+    results: Option<Zeroizing<HeldResults>>,
+}
+
+impl HeldScreen {
+    /// Hold `image`. A different image, or none, moves `screen_seq` and lets
+    /// go of the results read from the previous one.
+    fn hold(&mut self, image: Option<(Vec<u8>, String)>) {
+        if self.image == image {
+            return;
+        }
+        self.image = image;
+        self.screen_seq = self.screen_seq.wrapping_add(1);
+        self.results = None;
+    }
+}
+
+/// OCR results kept for one screen. They outlive the lookup that read them,
+/// so `Zeroizing` overwrites their text whenever they are let go: on a new
+/// image, on `clear_image`, and when the finder is dropped.
+struct HeldResults(Vec<OcrResult>);
+
+impl Zeroize for HeldResults {
+    fn zeroize(&mut self) {
+        for result in &mut self.0 {
+            result.text.zeroize();
+        }
+    }
+}
+
+/// What a lookup copies out of the held screen, so that no lock is held
+/// across an OCR call.
+struct HeldSnapshot {
+    image_data: Vec<u8>,
+    image_format: String,
+    screen_seq: u64,
+    kept: Option<Vec<OcrResult>>,
+}
+
 pub struct OcrElementFinder {
     ocr_provider: Arc<dyn OcrProvider>,
     rectangle_detector: Option<Arc<dyn RectangleDetector>>,
-    last_image: tokio::sync::RwLock<Option<(Vec<u8>, String)>>,
+    held: tokio::sync::RwLock<HeldScreen>,
     /// PII level applied to scene-element `text_masked` (review4 V10). Was a
     /// hardcoded Standard, which silently downgraded a Strict-configured user
     /// (leaving API key / IP / passport in OCR'd scene text on the localhost REST
@@ -31,7 +80,7 @@ impl OcrElementFinder {
         Self {
             ocr_provider,
             rectangle_detector: None,
-            last_image: tokio::sync::RwLock::new(None),
+            held: tokio::sync::RwLock::new(HeldScreen::default()),
             pii_level: PiiFilterLevel::Standard,
         }
     }
@@ -47,9 +96,67 @@ impl OcrElementFinder {
         self
     }
 
+    /// Hold the image later lookups answer from. Holding the same bytes and
+    /// format again keeps the OCR results already read from them.
     pub async fn set_image(&self, image_data: Vec<u8>, format: String) {
-        let mut img = self.last_image.write().await;
-        *img = Some((image_data, format));
+        self.held.write().await.hold(Some((image_data, format)));
+    }
+
+    /// Drop the held image and wipe the OCR results read from it, so no lookup
+    /// answers from a screen that could not be read again.
+    pub async fn clear_image(&self) {
+        self.held.write().await.hold(None);
+    }
+
+    async fn snapshot(&self) -> Option<HeldSnapshot> {
+        let held = self.held.read().await;
+        let (image_data, image_format) = held.image.clone()?;
+        Some(HeldSnapshot {
+            image_data,
+            image_format,
+            screen_seq: held.screen_seq,
+            kept: held.results.as_ref().map(|results| results.0.clone()),
+        })
+    }
+
+    /// Run OCR on a held image and keep the results for its screen number,
+    /// unless the image changed meanwhile or the provider is external.
+    async fn read_screen(
+        &self,
+        image_data: &[u8],
+        image_format: &str,
+        screen_seq: u64,
+    ) -> Result<Vec<OcrResult>, CoreError> {
+        let results = self
+            .ocr_provider
+            .extract_elements(image_data, image_format)
+            .await?;
+        if self.keeps_results() {
+            let mut held = self.held.write().await;
+            if held.screen_seq == screen_seq && held.results.is_none() {
+                held.results = Some(Zeroizing::new(HeldResults(results.clone())));
+            }
+        }
+        Ok(results)
+    }
+
+    /// External providers are called every time: each call passes their
+    /// consent, policy and redaction gate, and kept results would outlive a
+    /// revocation.
+    fn keeps_results(&self) -> bool {
+        !self.ocr_provider.is_external()
+    }
+
+    // A subscription may answer after a replacement frame arrives. A live
+    // lookup must not hand those coordinates to the overlay or input driver.
+    async fn check_external_snapshot(&self, expected: u64) -> Result<(), CoreError> {
+        if self.ocr_provider.is_external() && self.held.read().await.screen_seq != expected {
+            return Err(CoreError::ServiceUnavailable {
+                code: maekon_core::error_codes::ServiceCode::Unavailable,
+                message: "Screen changed while waiting for the text provider.".to_string(),
+            });
+        }
+        Ok(())
     }
 
     fn ocr_to_elements(
@@ -109,29 +216,32 @@ impl OcrElementFinder {
             .collect()
     }
 
-    // P2 PR-A: `#[allow]` — the block below already tightens the guard scope
-    // relative to what clippy's suggestion (`merge-with-single-usage`) would
-    // produce (that suggestion generates invalid Rust for this pattern, since
-    // the guard must outlive the Option::ok_or_else chain).
-    #[allow(clippy::significant_drop_tightening)]
     pub async fn analyze_scene(
         &self,
         app_name: Option<&str>,
         screen_id: Option<&str>,
     ) -> Result<UiScene, VisionError> {
-        // P2 PR-A: extract + drop the read guard before the async OCR call.
-        // Holding the guard across `analyze_scene_from_image_data` would
-        // block concurrent `set_image` writers for the duration of OCR.
-        let (image_data, image_format) = {
-            let image_guard = self.last_image.read().await;
-            let (data, format) = image_guard.as_ref().ok_or_else(|| {
-                VisionError::Internal("OCR finder: captured image is missing".to_string())
-            })?;
-            (data.clone(), format.to_string())
+        let HeldSnapshot {
+            image_data,
+            image_format,
+            screen_seq,
+            kept,
+        } = self.snapshot().await.ok_or_else(|| {
+            VisionError::Internal("OCR finder: captured image is missing".to_string())
+        })?;
+        let size = image_size(&image_data)?;
+        let image = Arc::new(image_data);
+        let text = async {
+            match kept {
+                Some(results) => Ok(results),
+                None => self.read_screen(&image, &image_format, screen_seq).await,
+            }
         };
-
-        self.analyze_scene_from_image_data(image_data, image_format, app_name, screen_id)
-            .await
+        let scene = self
+            .scene_with_text(image.clone(), size, text, app_name, screen_id)
+            .await?;
+        self.check_external_snapshot(screen_seq).await?;
+        Ok(scene)
     }
 
     async fn analyze_scene_from_image_data(
@@ -141,47 +251,92 @@ impl OcrElementFinder {
         app_name: Option<&str>,
         screen_id: Option<&str>,
     ) -> Result<UiScene, VisionError> {
-        let (screen_width, screen_height) = image::load_from_memory(&image_data)
-            .map(|img| (img.width().max(1), img.height().max(1)))
-            .map_err(|e| VisionError::Ocr(format!("Failed to parse image size: {e}")))?;
-
-        let ocr_results = self
-            .ocr_provider
-            .extract_elements(&image_data, &image_format)
+        let size = image_size(&image_data)?;
+        let image = Arc::new(image_data);
+        let text = self.ocr_provider.extract_elements(&image, &image_format);
+        self.scene_with_text(image.clone(), size, text, app_name, screen_id)
             .await
-            .map_err(VisionError::from)?;
+    }
 
+    // Start geometry on the same immutable frame as the text request. The combined
+    // scene preserves the configured provider's authorization and error semantics.
+    async fn scene_with_text(
+        &self,
+        image: Arc<Vec<u8>>,
+        size: (u32, u32),
+        text: impl std::future::Future<Output = Result<Vec<OcrResult>, CoreError>>,
+        app_name: Option<&str>,
+        screen_id: Option<&str>,
+    ) -> Result<UiScene, VisionError> {
+        let geometry = self.detect_regions(image, size);
+        let (regions, text) =
+            tokio::try_join!(geometry, async { text.await.map_err(VisionError::from) })?;
+        // A rectangle backend failure previously left a successful OCR scene usable.
+        let regions = regions.unwrap_or_else(|err| {
+            debug!(code = err.code(), "optional region detector failed");
+            Vec::new()
+        });
+        Ok(self.scene_from_parts(size, &regions, &text, app_name, screen_id))
+    }
+
+    /// Analyze visible geometry without calling the configured text provider.
+    /// The returned scene has no OCR labels and never starts a provider request.
+    pub async fn analyze_geometry_from_image(
+        &self,
+        image_data: Vec<u8>,
+        app_name: Option<&str>,
+        screen_id: Option<&str>,
+    ) -> Result<UiScene, VisionError> {
+        if self.rectangle_detector.is_none() {
+            return Err(VisionError::Internal(
+                "No region detector configured".to_string(),
+            ));
+        }
+        let size = image::ImageReader::new(std::io::Cursor::new(&image_data))
+            .with_guessed_format()
+            .map_err(|err| VisionError::Internal(err.to_string()))?
+            .into_dimensions()
+            .map_err(|err| VisionError::Internal(err.to_string()))?;
+        let regions = self.detect_regions(Arc::new(image_data), size).await??;
+        Ok(self.scene_from_parts(size, &regions, &[], app_name, screen_id))
+    }
+
+    async fn detect_regions(
+        &self,
+        image: Arc<Vec<u8>>,
+        (width, height): (u32, u32),
+    ) -> Result<Result<Vec<DetectedRectangle>, CoreError>, VisionError> {
+        let Some(detector) = self.rectangle_detector.clone() else {
+            return Ok(Ok(Vec::new()));
+        };
+        tokio::task::spawn_blocking(move || {
+            detector.detect_rectangles(&image, width, height, 0.02, 100)
+        })
+        .await
+        .map_err(|err| VisionError::Internal(format!("region detector task failed: {err}")))
+    }
+
+    fn scene_from_parts(
+        &self,
+        (screen_width, screen_height): (u32, u32),
+        regions: &[DetectedRectangle],
+        text: &[OcrResult],
+        app_name: Option<&str>,
+        screen_id: Option<&str>,
+    ) -> UiScene {
         let mut elements = Self::ocr_to_scene_elements(
-            &ocr_results,
+            text,
             screen_width,
             screen_height,
             app_name,
             screen_id,
             self.pii_level,
         );
+        let geometry = merge_rectangles(regions, &elements, screen_width, screen_height);
+        attach_text_to_regions(&mut elements, &geometry);
+        elements.extend(geometry);
 
-        // Run rectangle detection if available
-        if let Some(ref detector) = self.rectangle_detector {
-            let det = detector.clone();
-            let img = image_data.clone();
-            let rects = tokio::task::spawn_blocking(move || {
-                det.detect_rectangles(&img, screen_width, screen_height, 0.02, 100)
-            })
-            .await
-            .map_err(|e| VisionError::Internal(format!("spawn_blocking failed: {e}")))?;
-
-            if let Ok(rects) = rects {
-                let merged = merge_rectangles(&rects, &elements, screen_width, screen_height);
-                debug!(
-                    rect_count = rects.len(),
-                    new_elements = merged.len(),
-                    "merged rectangle detection results"
-                );
-                elements.extend(merged);
-            }
-        }
-
-        Ok(UiScene {
+        UiScene {
             schema_version: UI_SCENE_SCHEMA_VERSION.to_string(),
             scene_id: maekon_core::generate_id("scene"),
             app_name: app_name.map(str::to_string),
@@ -190,7 +345,7 @@ impl OcrElementFinder {
             screen_width,
             screen_height,
             elements,
-        })
+        }
     }
 
     fn ocr_to_scene_elements(
@@ -250,35 +405,37 @@ impl OcrElementFinder {
 
 #[async_trait]
 impl ElementFinder for OcrElementFinder {
-    // P2 PR-A: same rationale as `analyze_scene` above.
-    #[allow(clippy::significant_drop_tightening)]
     async fn find_element(
         &self,
         text: Option<&str>,
         role: Option<&str>,
         region: Option<&ElementBounds>,
     ) -> Result<Vec<UiElement>, CoreError> {
-        // P2 PR-A: extract + drop the read guard before the async OCR call.
-        let (image_data, image_format) = {
-            let image_guard = self.last_image.read().await;
-            let (data, format) = image_guard.as_ref().ok_or_else(|| CoreError::Internal {
-                code: maekon_core::error_codes::InternalCode::Generic,
-                message: "OCR finder: captured image is missing".to_string(),
-            })?;
-            (data.clone(), format.to_string())
-        };
+        let HeldSnapshot {
+            image_data,
+            image_format,
+            screen_seq,
+            kept,
+        } = self.snapshot().await.ok_or_else(|| CoreError::Internal {
+            code: maekon_core::error_codes::InternalCode::Generic,
+            message: "OCR finder: captured image is missing".to_string(),
+        })?;
 
         debug!(
             provider = self.ocr_provider.provider_name(),
             text_len = ?text.map(str::len),
             role = ?role,
+            reused_ocr = kept.is_some(),
             "OCR element search started"
         );
 
-        let ocr_results = self
-            .ocr_provider
-            .extract_elements(&image_data, &image_format)
-            .await?;
+        let ocr_results = match kept {
+            Some(results) => results,
+            None => {
+                self.read_screen(&image_data, &image_format, screen_seq)
+                    .await?
+            }
+        };
 
         let mut elements = Self::ocr_to_elements(&ocr_results, text, role, region);
 
@@ -288,6 +445,7 @@ impl ElementFinder for OcrElementFinder {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        self.check_external_snapshot(screen_seq).await?;
         debug!(count = elements.len(), "OCR element lookup completed");
 
         Ok(elements)
@@ -437,6 +595,12 @@ impl ElementFinder for ChainedElementFinder {
     }
 }
 
+fn image_size(image_data: &[u8]) -> Result<(u32, u32), VisionError> {
+    image::load_from_memory(image_data)
+        .map(|img| (img.width().max(1), img.height().max(1)))
+        .map_err(|e| VisionError::Ocr(format!("Failed to parse image size: {e}")))
+}
+
 fn merge_rectangles(
     rects: &[DetectedRectangle],
     ocr_elements: &[UiSceneElement],
@@ -448,12 +612,11 @@ fn merge_rectangles(
     let mut new_elements = Vec::new();
 
     for rect in rects {
-        let max_iou = ocr_elements
-            .iter()
-            .map(|el| compute_iou(&rect.bounds, &el.bbox_abs))
-            .fold(0.0_f32, f32::max);
-
-        if max_iou < 0.2 {
+        let duplicates_text = ocr_elements.iter().any(|el| {
+            let iou = compute_iou(&rect.bounds, &el.bbox_abs);
+            iou >= 0.80 || (iou >= 0.20 && !contains_box(&rect.bounds, &el.bbox_abs))
+        });
+        if !duplicates_text {
             new_elements.push(UiSceneElement {
                 element_id: maekon_core::generate_id("rect"),
                 bbox_abs: rect.bounds.clone(),
@@ -475,6 +638,40 @@ fn merge_rectangles(
     }
 
     new_elements
+}
+
+fn contains_box(outer: &ElementBounds, inner: &ElementBounds) -> bool {
+    inner.width > 0
+        && inner.height > 0
+        && inner.x >= outer.x
+        && inner.y >= outer.y
+        && i64::from(inner.x) + i64::from(inner.width)
+            <= i64::from(outer.x) + i64::from(outer.width)
+        && i64::from(inner.y) + i64::from(inner.height)
+            <= i64::from(outer.y) + i64::from(outer.height)
+}
+
+// Set only a parent reference. Raw text and its redacted copy stay on the OCR
+// observation; region proposals themselves remain unlabeled and non-actionable.
+fn attach_text_to_regions(text: &mut [UiSceneElement], regions: &[UiSceneElement]) {
+    for word in text {
+        let smallest = regions
+            .iter()
+            .filter(|region| contains_box(&region.bbox_abs, &word.bbox_abs))
+            // A containing box is at least as wide and tall as its child.
+            // The overlap check below handles crossing boxes.
+            .min_by_key(|region| (region.bbox_abs.width, region.bbox_abs.height));
+        if let Some(parent) = smallest {
+            // There is no z-order in a bitmap. Two intersecting, non-nested
+            // candidate owners are ambiguous even if one box is smaller.
+            if regions.iter().all(|region| {
+                compute_iou(&region.bbox_abs, &word.bbox_abs) == 0.0
+                    || contains_box(&region.bbox_abs, &parent.bbox_abs)
+            }) {
+                word.parent_id = Some(parent.element_id.clone());
+            }
+        }
+    }
 }
 
 fn compute_iou(a: &ElementBounds, b: &ElementBounds) -> f32 {
@@ -517,346 +714,5 @@ fn text_similarity(text: &str, query: &str) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_similarity_exact_match() {
-        assert!((text_similarity("save", "save") - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn text_similarity_partial_match() {
-        let sim = text_similarity("file save", "save");
-        assert!(sim > 0.0);
-        assert!(sim < 1.0);
-    }
-
-    #[test]
-    fn text_similarity_no_match() {
-        assert!((text_similarity("save", "open")).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn text_similarity_case_insensitive() {
-        assert!((text_similarity("Save", "save") - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn ocr_to_scene_elements_builds_normalized_coordinates() {
-        let results = vec![OcrResult {
-            text: "Save".to_string(),
-            x: 192,
-            y: 108,
-            width: 96,
-            height: 54,
-            confidence: 0.88,
-        }];
-
-        let scene_elements = OcrElementFinder::ocr_to_scene_elements(
-            &results,
-            1920,
-            1080,
-            Some("VSCode"),
-            Some("m1"),
-            PiiFilterLevel::Standard,
-        );
-        assert_eq!(scene_elements.len(), 1);
-        let first = &scene_elements[0];
-        assert_eq!(first.label, "Save");
-        assert!((first.bbox_norm.x - 0.1).abs() < 1e-6);
-        assert!((first.bbox_norm.y - 0.1).abs() < 1e-6);
-        assert!(first.text_masked.is_some());
-    }
-
-    #[test]
-    fn ocr_to_elements_text_filter() {
-        let results = vec![
-            OcrResult {
-                text: "file".to_string(),
-                x: 0,
-                y: 0,
-                width: 40,
-                height: 20,
-                confidence: 0.9,
-            },
-            OcrResult {
-                text: "save".to_string(),
-                x: 50,
-                y: 0,
-                width: 40,
-                height: 20,
-                confidence: 0.85,
-            },
-            OcrResult {
-                text: "edit".to_string(),
-                x: 100,
-                y: 0,
-                width: 40,
-                height: 20,
-                confidence: 0.88,
-            },
-        ];
-
-        let elements = OcrElementFinder::ocr_to_elements(&results, Some("save"), None, None);
-        assert_eq!(elements.len(), 1);
-        assert_eq!(elements[0].text, "save");
-    }
-
-    #[test]
-    fn ocr_to_elements_region_filter() {
-        let results = vec![
-            OcrResult {
-                text: "file".to_string(),
-                x: 0,
-                y: 0,
-                width: 40,
-                height: 20,
-                confidence: 0.9,
-            },
-            OcrResult {
-                text: "save".to_string(),
-                x: 200,
-                y: 200,
-                width: 40,
-                height: 20,
-                confidence: 0.85,
-            },
-        ];
-
-        let region = ElementBounds {
-            x: 0,
-            y: 0,
-            width: 100,
-            height: 50,
-        };
-        let elements = OcrElementFinder::ocr_to_elements(&results, None, None, Some(&region));
-        assert_eq!(elements.len(), 1);
-        assert_eq!(elements[0].text, "file");
-    }
-
-    #[test]
-    fn ocr_to_elements_all_filtered() {
-        let results = vec![OcrResult {
-            text: "file".to_string(),
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 20,
-            confidence: 0.9,
-        }];
-
-        let elements = OcrElementFinder::ocr_to_elements(&results, Some("no-text"), None, None);
-        assert!(elements.is_empty());
-    }
-
-    #[test]
-    fn ocr_to_elements_no_query_returns_all() {
-        let results = vec![
-            OcrResult {
-                text: "A".to_string(),
-                x: 0,
-                y: 0,
-                width: 20,
-                height: 20,
-                confidence: 0.8,
-            },
-            OcrResult {
-                text: "B".to_string(),
-                x: 30,
-                y: 0,
-                width: 20,
-                height: 20,
-                confidence: 0.9,
-            },
-        ];
-
-        let elements = OcrElementFinder::ocr_to_elements(&results, None, None, None);
-        assert_eq!(elements.len(), 2);
-    }
-
-    struct MockFinder {
-        name: String,
-        results: Vec<UiElement>,
-    }
-
-    #[async_trait]
-    impl ElementFinder for MockFinder {
-        async fn find_element(
-            &self,
-            _text: Option<&str>,
-            _role: Option<&str>,
-            _region: Option<&ElementBounds>,
-        ) -> Result<Vec<UiElement>, CoreError> {
-            Ok(self.results.clone())
-        }
-        fn name(&self) -> &str {
-            &self.name
-        }
-    }
-
-    struct FailingFinder;
-
-    #[async_trait]
-    impl ElementFinder for FailingFinder {
-        async fn find_element(
-            &self,
-            _text: Option<&str>,
-            _role: Option<&str>,
-            _region: Option<&ElementBounds>,
-        ) -> Result<Vec<UiElement>, CoreError> {
-            Err(CoreError::Internal {
-                code: maekon_core::error_codes::InternalCode::Generic,
-                message: "Search failed".to_string(),
-            })
-        }
-        fn name(&self) -> &str {
-            "failing"
-        }
-    }
-
-    /// #12515: the OCR search log names the query only by its length.
-    #[tokio::test]
-    async fn ocr_search_log_carries_query_length_not_query_text() {
-        /// Records each event's fields as ` name=value` text, one event per line.
-        #[derive(Clone, Default)]
-        struct FieldCapture(Arc<std::sync::Mutex<String>>);
-
-        struct FieldLine<'a>(&'a mut String);
-
-        impl tracing::field::Visit for FieldLine<'_> {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                use std::fmt::Write as _;
-                let _ = write!(self.0, " {}={:?}", field.name(), value);
-            }
-        }
-
-        impl tracing::Subscriber for FieldCapture {
-            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-                true
-            }
-            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-                tracing::span::Id::from_u64(1)
-            }
-            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
-            }
-            fn event(&self, event: &tracing::Event<'_>) {
-                let mut line = String::new();
-                event.record(&mut FieldLine(&mut line));
-                line.push('\n');
-                self.0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push_str(&line);
-            }
-            fn enter(&self, _span: &tracing::span::Id) {}
-            fn exit(&self, _span: &tracing::span::Id) {}
-        }
-
-        const QUERY: &str = "Jane Roe account 4471";
-        let capture = FieldCapture::default();
-        let _guard = tracing::subscriber::set_default(capture.clone());
-
-        let provider = maekon_core::ports::ocr_provider::FakeOcrProvider::new(vec![OcrResult {
-            text: QUERY.to_string(),
-            x: 10,
-            y: 10,
-            width: 120,
-            height: 20,
-            confidence: 0.9,
-        }]);
-        let finder = OcrElementFinder::new(Arc::new(provider));
-        finder.set_image(vec![0_u8; 4], "png".to_string()).await;
-        finder
-            .find_element(Some(QUERY), Some("button"), None)
-            .await
-            .expect("the fake provider answers");
-
-        let logs = capture.0.lock().unwrap().clone();
-        assert!(logs.contains("OCR element search started"), "{logs}");
-        assert!(
-            !logs.contains("Jane Roe"),
-            "query text reached the log: {logs}"
-        );
-        assert!(
-            logs.contains(&format!("text_len=Some({})", QUERY.len())),
-            "{logs}"
-        );
-    }
-
-    #[tokio::test]
-    async fn chained_finder_returns_first_success() {
-        let empty_finder = MockFinder {
-            name: "empty".to_string(),
-            results: vec![],
-        };
-        let success_finder = MockFinder {
-            name: "success".to_string(),
-            results: vec![UiElement {
-                text: "save".to_string(),
-                bounds: ElementBounds {
-                    x: 0,
-                    y: 0,
-                    width: 40,
-                    height: 20,
-                },
-                role: None,
-                confidence: 0.9,
-                source: FinderSource::Ocr,
-            }],
-        };
-
-        let chained =
-            ChainedElementFinder::new(vec![Box::new(empty_finder), Box::new(success_finder)]);
-
-        let result = chained
-            .find_element(Some("save"), None, None)
-            .await
-            .unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].text, "save");
-    }
-
-    #[tokio::test]
-    async fn chained_finder_skips_failing() {
-        let success_finder = MockFinder {
-            name: "success".to_string(),
-            results: vec![UiElement {
-                text: "confirm".to_string(),
-                bounds: ElementBounds {
-                    x: 10,
-                    y: 10,
-                    width: 50,
-                    height: 25,
-                },
-                role: Some("button".to_string()),
-                confidence: 0.85,
-                source: FinderSource::Accessibility,
-            }],
-        };
-
-        let chained =
-            ChainedElementFinder::new(vec![Box::new(FailingFinder), Box::new(success_finder)]);
-
-        let result = chained
-            .find_element(Some("confirm"), None, None)
-            .await
-            .unwrap();
-        assert_eq!(result.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn chained_finder_all_fail_returns_error() {
-        let chained = ChainedElementFinder::new(vec![Box::new(FailingFinder)]);
-
-        let err = chained
-            .find_element(Some("none"), None, None)
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, CoreError::ElementNotFound { .. }),
-            "all-finders-fail must produce ElementNotFound, got: {err:?}"
-        );
-    }
-}
+#[path = "element_finder_tests.rs"]
+mod tests;

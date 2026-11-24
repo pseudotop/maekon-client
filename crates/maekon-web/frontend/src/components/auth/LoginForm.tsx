@@ -20,7 +20,8 @@
 import { useCallback, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { addToast } from '../../hooks/useToast'
-import { describeIpcError, loginFormIpcErrorKey } from '../../i18n/tauriIpcErrors'
+import { describeErrorForDisplay } from '../../i18n/errorDisplay'
+import { loginFormIpcErrorKey } from '../../i18n/tauriIpcErrors'
 import { form, typography } from '../../styles/tokens'
 import { Button, Input } from '../ui'
 import { type AuthStatus, requestLogin } from './authIpc'
@@ -56,7 +57,7 @@ export function LoginForm({ onAuthenticated, headingLevel = 'h3', submitClassNam
   const Heading = headingLevel
 
   const describeLoginError = useCallback(
-    (e: unknown) => describeIpcError(e, (key) => t(key), i18n.language, loginFormIpcErrorKey),
+    (e: unknown) => describeErrorForDisplay(e, (key) => t(key), i18n.language, undefined, loginFormIpcErrorKey),
     [i18n.language, t],
   )
 
@@ -71,7 +72,10 @@ export function LoginForm({ onAuthenticated, headingLevel = 'h3', submitClassNam
         addToast('success', t('settings.account.login.success'))
         await onAuthenticated(next)
       } catch (e) {
-        addToast('error', t('settings.account.login.error', { error: describeLoginError(e) }))
+        const display = describeLoginError(e)
+        const message = t('settings.account.login.error', { error: display.text })
+        if (display.detail) addToast('error', message, 4000, display.detail)
+        else addToast('error', message)
       } finally {
         setSigningIn(false)
       }

@@ -3,6 +3,8 @@
 //! Starts the reference server, points a RemoteSyncTransport at it,
 //! and exercises push / pull / discover_peers through the real HTTP stack.
 
+#![cfg(test)]
+
 use maekon_core::config::RemoteSyncAuth;
 use maekon_core::models::sync::{ChangeSet, ChangeSetKind};
 use maekon_core::ports::sync_transport::SyncTransport;

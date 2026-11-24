@@ -28,7 +28,7 @@ use crate::common::{make_jwt_config, make_tls_channel, spawn_server};
 /// end-to-end through the real `serve_external` stack.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_request_id_header_returned() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let (handle, port) = spawn_server(cfg).await;
 
@@ -38,8 +38,9 @@ async fn external_grpc_request_id_header_returned() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     // Attach both authorization AND a valid x-request-id header.
@@ -95,7 +96,7 @@ async fn external_grpc_request_id_header_returned() {
 /// 3. The CapturingAudit Completed row's `command_id` matches the response header.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_request_id_generated_when_missing() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let capturing = CapturingAudit::new();
     cfg.audit_port = capturing.clone() as Arc<dyn AuditLogPort>;
@@ -107,8 +108,9 @@ async fn external_grpc_request_id_generated_when_missing() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     // No x-request-id header — RequestIdLayer must generate an ADR-022 prefix+ULID.
@@ -149,7 +151,7 @@ async fn external_grpc_request_id_generated_when_missing() {
     // 3. CapturingAudit's Completed row must carry the same ID as command_id.
     // Drop the lock before any `.await`.
     let (audit_cmd_id, entries_debug) = {
-        let entries = capturing.entries.lock().unwrap();
+        let entries = capturing.snapshot();
         let completed = entries
             .iter()
             .find(|e| matches!(e.status, AuditStatus::Completed) && e.grpc_status_code.is_some())
@@ -188,7 +190,7 @@ async fn external_grpc_request_id_generated_when_missing() {
 /// 2. Response's `x-request-id` does NOT equal the malformed client input.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_request_id_invalid_replaced() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let (handle, port) = spawn_server(cfg).await;
 
@@ -198,8 +200,9 @@ async fn external_grpc_request_id_invalid_replaced() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     // Malformed x-request-id: tab (0x09) is valid as an http HeaderValue byte
@@ -278,7 +281,7 @@ async fn external_grpc_request_id_invalid_replaced() {
 /// 3. That Failed row's `command_id` equals `"req-abc-123"`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_request_id_preserved_across_auth_reject() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let capturing = CapturingAudit::new();
     cfg.audit_port = capturing.clone() as Arc<dyn AuditLogPort>;
@@ -291,8 +294,9 @@ async fn external_grpc_request_id_preserved_across_auth_reject() {
         "wrong-issuer", // mismatch with verifier's "test-issuer" → verify fails
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     // Valid x-request-id — passes is_valid() (all ASCII graphic chars).
@@ -349,7 +353,7 @@ async fn external_grpc_request_id_preserved_across_auth_reject() {
     //
     // Drop the lock before any `.await`.
     let (auth_failed_count, auth_failed_cmd_id, entries_debug) = {
-        let entries = capturing.entries.lock().unwrap();
+        let entries = capturing.snapshot();
         let auth_failed: Vec<_> = entries
             .iter()
             .filter(|e| {

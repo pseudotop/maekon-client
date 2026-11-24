@@ -102,6 +102,7 @@ pub mod remote_embedding_client;
 pub mod sse_client;
 
 pub mod sync;
+pub mod wbs_assignment_candidates;
 pub mod wbs_xlsx_client;
 
 #[cfg(feature = "grpc")]

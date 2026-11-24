@@ -114,8 +114,16 @@ pub struct IntegrationSessionSummary {
     )]
     pub auth_scheme: IntegrationAuthScheme,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::optional_utc_timestamp_schema")
+    )]
     pub connected_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::optional_utc_timestamp_schema")
+    )]
     pub last_heartbeat_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub requested_scopes: Vec<String>,
@@ -128,6 +136,10 @@ pub struct IntegrationSessionSummary {
 pub struct IntegrationAckCursorSummary {
     pub stream_id: String,
     pub cursor: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::utc_timestamp_schema")
+    )]
     pub acknowledged_at: DateTime<Utc>,
 }
 
@@ -142,6 +154,10 @@ pub struct IntegrationAuditRecordSummary {
     pub reason: Option<String>,
     pub privacy_classification: String,
     pub capability_scope: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::utc_timestamp_schema")
+    )]
     pub occurred_at: DateTime<Utc>,
 }
 
@@ -162,11 +178,27 @@ pub struct IntegrationInboxPromptSummary {
     pub title: String,
     pub body: String,
     pub status: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::utc_timestamp_schema")
+    )]
     pub received_at: DateTime<Utc>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::utc_timestamp_schema")
+    )]
     pub status_updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::optional_utc_timestamp_schema")
+    )]
     pub presented_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::optional_utc_timestamp_schema")
+    )]
     pub expires_at: Option<DateTime<Utc>>,
     pub source_system: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -256,6 +288,10 @@ pub struct IntegrationBootstrapSessionBinding {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationSessionHeartbeatPayload {
     pub session_id: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::utc_timestamp_schema")
+    )]
     pub occurred_at: DateTime<Utc>,
     // Cross-crate `maekon-core` type — contained as an opaque object array.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -270,6 +306,10 @@ pub struct IntegrationSessionHeartbeatPayload {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IntegrationSessionDisconnectPayload {
     pub session_id: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::utc_timestamp_schema")
+    )]
     pub occurred_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,

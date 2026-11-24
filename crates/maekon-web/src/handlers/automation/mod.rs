@@ -64,6 +64,7 @@ mod tests {
             status: "Completed".to_string(),
             details: Some("OK".to_string()),
             elapsed_ms: Some(150),
+            execution_provenance: None,
         };
         let json = serde_json::to_string(&dto).unwrap();
         assert!(json.contains("cmd-001"));
@@ -192,6 +193,7 @@ mod tests {
     #[test]
     fn execute_intent_hint_response_serializes() {
         let response = ExecuteIntentHintResponse {
+            execution_provenance: None,
             command_id: "hint-1".to_string(),
             session_id: "sess-1".to_string(),
             planned_intent: maekon_core::models::intent::AutomationIntent::ExecuteHotkey {

@@ -34,6 +34,13 @@ pub trait ConsentManagerPort: Send + Sync {
     /// Owned snapshot of the current consent record (read under a read guard).
     fn current_consent(&self) -> Option<ConsentRecord>;
 
+    /// Valid grant identity and permissions from one atomic read. Authorities
+    /// that cannot provide that guarantee deny revocable work by default.
+    /// Never synthesize this from separate status/record calls.
+    fn effective_consent(&self) -> Option<ConsentRecord> {
+        None
+    }
+
     /// Fail-closed: returns permissions ONLY when consent is currently `Valid`,
     /// otherwise `ConsentPermissions::default()` (all false). This is the
     /// canonical gating accessor — use it instead of the removed generic
@@ -349,6 +356,25 @@ mod tests {
             );
             assert_eq!(writes, usize::from(permitted));
         }
+    }
+
+    #[test]
+    fn legacy_port_without_atomic_grant_binding_denies_effective_consent() {
+        let dir = tempfile::tempdir().unwrap();
+        let authority =
+            DefaultCriticalSection(ConsentManager::new(dir.path().join("consent.json")));
+        let port: &dyn ConsentManagerPort = &authority;
+        port.grant_consent(
+            ConsentPermissions {
+                screen_capture: true,
+                ..Default::default()
+            },
+            30,
+        )
+        .unwrap();
+        assert!(port.effective_permissions().screen_capture);
+        assert!(port.current_consent().is_some());
+        assert!(port.effective_consent().is_none());
     }
 
     /// `Arc<ConsentManager>` coerces to `Arc<dyn ConsentManagerPort>` (proves

@@ -9,6 +9,7 @@ import IntentHintBar from './IntentHintBar'
 // Mock entire api/client module — only executeIntentHint is called by this component.
 vi.mock('../../api/client', () => ({
   executeIntentHint: vi.fn(),
+  fetchIntentExecution: vi.fn(),
 }))
 
 // Minimal AutomationStatus shapes used across tests.
@@ -109,8 +110,8 @@ describe('IntentHintBar', () => {
     expect(screen.getByRole('link', { name: /execution history/i })).toBeInTheDocument()
   })
 
-  // (5) result.success=false renders result.error
-  it('renders result.error when result.success is false', async () => {
+  // (5) Failure is localized; raw executor messages are not displayed.
+  it('renders a localized failure when result.success is false', async () => {
     const failResponse = {
       ...makeSuccessResponse(),
       result: {
@@ -129,7 +130,8 @@ describe('IntentHintBar', () => {
     await clickRun()
 
     await waitFor(() => {
-      expect(screen.getByText('Element not found on screen')).toBeInTheDocument()
+      expect(screen.getByText('Command failed')).toBeInTheDocument()
+      expect(screen.queryByText('Element not found on screen')).not.toBeInTheDocument()
     })
   })
 

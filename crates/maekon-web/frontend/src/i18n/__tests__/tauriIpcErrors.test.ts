@@ -25,8 +25,45 @@ import {
   TAURI_IPC_ERROR_KEYS,
   wireLocaleFor,
 } from '../tauriIpcErrors'
+import wireEn from '../wire-errors.en.json'
+import wireEs from '../wire-errors.es.json'
+import wireJa from '../wire-errors.ja.json'
+import wireKo from '../wire-errors.ko.json'
+import wireZhCN from '../wire-errors.zh-CN.json'
 
 const LOCALES = { en, ko, ja, 'zh-CN': zhCN, es } as const
+const WIRE_LOCALES = { en: wireEn, ko: wireKo, ja: wireJa, 'zh-CN': wireZhCN, es: wireEs } as const
+
+const WIRE_LANGUAGE_CASES = [
+  ['ko', 'ko'],
+  ['ko-KR', 'ko'],
+  ['ko-Hang-KR', 'ko'],
+  ['ko-', 'ko'],
+  ['en', 'en'],
+  ['en-US', 'en'],
+  ['en-GB', 'en'],
+  ['ja', 'ja'],
+  ['ja-JP', 'ja'],
+  ['es', 'es'],
+  ['es-MX', 'es'],
+  ['es-419', 'es'],
+  ['zh-CN', 'zh-CN'],
+  [undefined, 'en'],
+  ['', 'en'],
+  ['de-DE', 'en'],
+  ['fr-FR', 'en'],
+  ['zh', 'en'],
+  ['zh-TW', 'en'],
+  ['zh-HK', 'en'],
+  ['zh-Hans-CN', 'en'],
+  ['zh-cn', 'en'],
+  ['JA', 'en'],
+  ['ja-jp', 'en'],
+  ['ja-Latn-JP', 'en'],
+  ['es-Latn-MX', 'en'],
+  [' ja', 'en'],
+  ['es ', 'en'],
+] as const
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -215,10 +252,26 @@ describe('Tauri-layer IpcError → UI key mapping (#9492)', () => {
     expect(loginFormIpcErrorKey({ code: 'config.invalid', message: 'bad toml' })).toBeUndefined()
   })
 
-  it('resolves the wire-error locale the same way every other surface does', () => {
-    expect(wireLocaleFor('ko')).toBe('ko')
-    expect(wireLocaleFor('ko-KR')).toBe('ko')
-    expect(wireLocaleFor('ja')).toBe('en')
-    expect(wireLocaleFor(undefined)).toBe('en')
+  it.each(WIRE_LANGUAGE_CASES)('selects the existing %s wire catalog as %s', (language, locale) => {
+    expect(wireLocaleFor(language)).toBe(locale)
+  })
+
+  it.each(WIRE_LANGUAGE_CASES)('renders a registry error in the catalog selected for %s', (language, locale) => {
+    const diagnostic = 'invalid provider configuration'
+    expect(describeIpcError({ code: 'config.invalid', message: diagnostic }, (key) => `t:${key}`, language)).toBe(
+      WIRE_LOCALES[locale]['config.invalid'].replace('{message}', diagnostic),
+    )
+  })
+
+  it.each(Object.keys(WIRE_LOCALES))('preserves the UI-key priority and legacy fallback for %s', (language) => {
+    const diagnostic = 'unregistered backend diagnostic'
+    expect(describeIpcError({ code: 'future.unknown', message: diagnostic }, (key) => `t:${key}`, language)).toBe(
+      diagnostic,
+    )
+    expect(describeIpcError(new Error(diagnostic), (key) => `t:${key}`, language)).toBe(diagnostic)
+    expect(describeIpcError(diagnostic, (key) => `t:${key}`, language)).toBe(diagnostic)
+    expect(describeIpcError({ code: 'storage.unavailable', message: diagnostic }, (key) => `t:${key}`, language)).toBe(
+      't:errors.ipc.storageUnavailable',
+    )
   })
 })

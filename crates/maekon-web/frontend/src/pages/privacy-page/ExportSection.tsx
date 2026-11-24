@@ -4,7 +4,9 @@
 
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Button, Card, CardTitle } from '../../components/ui'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import { useTypedOutletContext } from '../../routes'
 import { typography } from '../../styles/tokens'
 import { resolveApiUrl, withResolvedLocalAuthHeaders } from '../../utils/api-base'
@@ -12,6 +14,7 @@ import type { PrivacyContext } from './PrivacyLayout'
 
 export default function ExportSection() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const {
     backupOptions,
     setBackupOptions,
@@ -29,7 +32,7 @@ export default function ExportSection() {
   // #8056 P2-3: GDPR Art.20 full data-portability export. Streams the archive
   // from /api/export/full and triggers a browser download.
   const [fullExporting, setFullExporting] = useState(false)
-  const [fullExportError, setFullExportError] = useState<string | null>(null)
+  const [fullExportError, setFullExportError] = useState<ErrorDisplay | null>(null)
 
   const handleFullExport = async () => {
     setFullExportError(null)
@@ -50,7 +53,7 @@ export default function ExportSection() {
       anchor.remove()
       URL.revokeObjectURL(objectUrl)
     } catch (error) {
-      setFullExportError(error instanceof Error ? error.message : String(error))
+      setFullExportError(describeError(error, t('backup.fullExportFailed', { defaultValue: 'Export failed' })))
     } finally {
       setFullExporting(false)
     }
@@ -202,14 +205,16 @@ export default function ExportSection() {
 
       {/* Error display */}
       {backupMutation.isError && (
-        <div className="mt-3 text-semantic-error text-sm">
-          {t('backup.downloadFailed')}: {(backupMutation.error as Error).message}
-        </div>
+        <FailureLine
+          lead={t('backup.downloadFailed')}
+          display={describeError(backupMutation.error, t('errors.tryAgainLater'))}
+        />
       )}
       {restoreMutation.isError && (
-        <div className="mt-3 text-semantic-error text-sm">
-          {t('backup.restoreFailed')}: {(restoreMutation.error as Error).message}
-        </div>
+        <FailureLine
+          lead={t('backup.restoreFailed')}
+          display={describeError(restoreMutation.error, t('errors.tryAgainLater'))}
+        />
       )}
 
       {/* #8056 P2-3: GDPR Art.20 full data-portability export. */}
@@ -235,10 +240,23 @@ export default function ExportSection() {
         </Button>
         {fullExportError && (
           <div className="mt-2 text-semantic-error text-sm">
-            {t('backup.fullExportFailed', { defaultValue: 'Export failed' })}: {fullExportError}
+            <p>{fullExportError.text}</p>
+            <SupportDetails detail={fullExportError.detail} />
           </div>
         )}
       </div>
     </Card>
+  )
+}
+
+/** "What failed: why" under the backup buttons, with the raw detail collapsed (#13737). */
+function FailureLine({ lead, display }: { lead: string; display: ErrorDisplay }) {
+  return (
+    <div className="mt-3 text-semantic-error text-sm">
+      <p>
+        {lead}: {display.text}
+      </p>
+      <SupportDetails detail={display.detail} />
+    </div>
   )
 }

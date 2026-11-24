@@ -7,7 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 use maekon_core::error::CoreError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tracing::warn;
 
 use crate::http_client::build_reqwest_client;
@@ -56,6 +56,18 @@ pub(super) struct TokenState {
 pub struct SessionInfo {
     pub identifier: Option<String>,
     pub organization_id: Option<String>,
+}
+
+/// Non-secret, atomic identity of the session that may own a UI response.
+/// The generation is a decimal string so JavaScript never rounds a `u64`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSnapshot {
+    pub instance_id: String,
+    pub generation: String,
+    pub authenticated: bool,
+    pub identifier: Option<String>,
+    pub organization_id: Option<String>,
+    pub expires_at: Option<String>,
 }
 
 // ── TokenManager struct ───────────────────────────────────────────────────────
@@ -117,6 +129,8 @@ pub struct TokenManager {
     /// [`restore_persisted_session`]: TokenManager::restore_persisted_session
     /// [`bump_session_generation`]: TokenManager::bump_session_generation
     pub(super) session_generation: Arc<AtomicU64>,
+    session_instance_id: uuid::Uuid,
+    session_changes: watch::Sender<u64>,
 }
 
 impl TokenManager {
@@ -164,6 +178,8 @@ impl TokenManager {
             persistence: None,
             persist_lock: Arc::new(Mutex::new(())),
             session_generation: Arc::new(AtomicU64::new(0)),
+            session_instance_id: uuid::Uuid::new_v4(),
+            session_changes: watch::channel(0).0,
         }
     }
 
@@ -190,6 +206,8 @@ impl TokenManager {
             persistence: None,
             persist_lock: Arc::new(Mutex::new(())),
             session_generation: Arc::new(AtomicU64::new(0)),
+            session_instance_id: uuid::Uuid::new_v4(),
+            session_changes: watch::channel(0).0,
         }
     }
 
@@ -220,7 +238,52 @@ impl TokenManager {
     ///
     /// [`session_generation`]: TokenManager::session_generation
     pub(super) fn bump_session_generation(&self) {
-        self.session_generation.fetch_add(1, Ordering::SeqCst);
+        let generation = self
+            .session_generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        // Keep the latest invalidation even before the first WebView subscribes.
+        self.session_changes.send_replace(generation);
+    }
+
+    /// Subscribe to invalidations of the existing session epoch. An event is
+    /// not authentication evidence; consumers must read an atomic snapshot.
+    #[must_use]
+    pub fn subscribe_session_generation(&self) -> watch::Receiver<u64> {
+        self.session_changes.subscribe()
+    }
+
+    #[must_use]
+    pub fn session_instance_id(&self) -> String {
+        self.session_instance_id.to_string()
+    }
+
+    /// Read validity, metadata and epoch under one lock. Separate reads can
+    /// pair the previous actor with a new login's generation (#9621).
+    pub async fn session_snapshot(&self) -> SessionSnapshot {
+        self.session_snapshot_with_clock(Utc::now).await
+    }
+
+    pub(super) async fn session_snapshot_with_clock(
+        &self,
+        now: impl FnOnce() -> DateTime<Utc>,
+    ) -> SessionSnapshot {
+        let state = self.state.read().await;
+        let generation = self.session_generation.load(Ordering::SeqCst).to_string();
+        // Read the clock after acquiring the lock, since waiting for a writer
+        // may take us past the expiry boundary.
+        let observed_at = now();
+        let live = state
+            .as_ref()
+            .filter(|value| observed_at < value.expires_at);
+        SessionSnapshot {
+            instance_id: self.session_instance_id(),
+            generation,
+            authenticated: live.is_some(),
+            identifier: live.and_then(|value| value.identifier.clone()),
+            organization_id: live.and_then(|value| value.organization_id.clone()),
+            expires_at: live.map(|value| value.expires_at.to_rfc3339()),
+        }
     }
 
     // ── Session persistence (#9459) ───────────────────────────────────────────

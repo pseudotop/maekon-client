@@ -25,7 +25,7 @@ El canal público es un prerelease temprano para Global Alpha por invitación. N
 
 ## Inicio Rápido desde Source Build
 
-El repositorio público ya está disponible y este source snapshot apunta al release candidate `v0.0.1-rc.11`. Trátelo como publicado solo cuando existan el GitHub Release y sus artefactos correspondientes. Como el endpoint `latest` de GitHub excluye prereleases, use los comandos con versión fijada de la guía de instalación para validar binarios. Para desarrollo y builds de debug, ejecute Maekon desde un source checkout local.
+El repositorio público ya está disponible y este source snapshot apunta al release candidate `v0.0.1-rc.12`. Trátelo como publicado solo cuando existan el GitHub Release y sus artefactos correspondientes. Como el endpoint `latest` de GitHub excluye prereleases, use los comandos con versión fijada de la guía de instalación para validar binarios. Para desarrollo y builds de debug, ejecute Maekon desde un source checkout local.
 
 ```bash
 git clone https://github.com/pseudotop/maekon-client.git
@@ -136,7 +136,7 @@ Este repositorio es una **exportación de instantáneas verificadas** de la fuen
 
 ## Requisitos
 
-- Rust 1.88.0 o posterior
+- Rust 1.95.0 o posterior
 - macOS 10.15+ / Windows 10+ / Linux x64 (se recomienda X11; en Wayland no están disponibles el panel de seguimiento, la superposición ni «Encontrar mi siguiente paso»)
 
 ### Limitaciones por plataforma
@@ -257,22 +257,22 @@ Guía de instalación completa:
 
 ### Instalación Rápida (Terminal)
 
-Ejecute los siguientes comandos fijados a `v0.0.1-rc.11` únicamente después de que el GitHub Release correspondiente publique sus artefactos.
+Ejecute los siguientes comandos fijados a `v0.0.1-rc.12` únicamente después de que el GitHub Release correspondiente publique sus artefactos.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.12 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.12 -RequireSignature
 ```
 
 ### Recursos de Lanzamiento
@@ -363,19 +363,21 @@ Las credenciales de inicio de sesión no se leen del entorno. Inicia sesión des
 
 ## Arquitectura
 
-Un workspace de Cargo con 15 paquetes siguiendo Hexagonal Architecture (Ports & Adapters). Los 14 crates viven bajo `crates/`, y el binario principal/composition root vive en `src-tauri/` (Tauri v2, paquete `maekon-app`).
+Los miembros del workspace de Cargo se definen en [`Cargo.toml`](./Cargo.toml). Los crates viven en `crates/`; el composition root de `maekon-app` vive en `src-tauri/`.
 
 ```
 maekon-client/
 ├── src-tauri/              # Punto de entrada binario Tauri v2 + composition root
 │   ├── src/
-│   │   ├── main.rs         # Constructor de la app Tauri + cableado DI
+│   │   ├── main.rs         # Entrada mínima; llama a maekon_app::run()
 │   │   ├── tray.rs         # Menú de bandeja del sistema
 │   │   ├── commands/       # Comandos IPC de Tauri
 │   │   └── scheduler/      # Scheduler de fondo
 │   └── tauri.conf.json     # Configuración de Tauri
 ├── crates/
 │   ├── maekon-core/       # Modelos de dominio + traits de port + errores + config
+│   ├── maekon-http-core/  # base HTTP saliente compartida
+│   ├── maekon-integration/ # adapters de integración externa
 │   ├── maekon-network/    # HTTP/SSE/WebSocket/gRPC, compresión, auth
 │   ├── maekon-suggestion/ # Recepción y procesamiento de sugerencias
 │   ├── maekon-storage/    # Almacenamiento local SQLite + migraciones de schema
@@ -400,6 +402,8 @@ maekon-client/
 | Crate | Rol | Documentación |
 |----------|------|------|
 | maekon-core | Modelos de dominio, interfaces de port | [Detalles](./docs/crates/maekon-core.md) |
+| maekon-http-core | base HTTP saliente compartida | [source](./crates/maekon-http-core/) |
+| maekon-integration | adapters de integración externa | [source](./crates/maekon-integration/) |
 | maekon-network | HTTP/SSE/WebSocket/gRPC, compresión, autenticación | [Detalles](./docs/crates/maekon-network.md) |
 | maekon-vision | Captura, codificación delta, OCR | [Detalles](./docs/crates/maekon-vision.md) |
 | maekon-monitor | Métricas del sistema, ventanas activas | [Detalles](./docs/crates/maekon-monitor.md) |
@@ -434,7 +438,7 @@ Documento complementario de política en coreano: [docs/DOCUMENTATION_POLICY.ko.
 
 1. Defina traits de port en `maekon-core`
 2. Implemente adapters en el crate correspondiente
-3. Conecte el DI en `src-tauri/src/main.rs`
+3. Conecte el DI en `src-tauri/src/lib.rs` y `src-tauri/src/setup/`; `main.rs` delega en la biblioteca
 4. Agregue pruebas
 
 ### Compilación de Instaladores

@@ -20,7 +20,7 @@
         "noLabelWithoutControl": {
           "level": "error",
           "options": {
-            "inputComponents": ["Checkbox", "Input", "Select"]
+            "inputComponents": ["Checkbox", "Input", "Select", "Switch"]
           }
         }
       },

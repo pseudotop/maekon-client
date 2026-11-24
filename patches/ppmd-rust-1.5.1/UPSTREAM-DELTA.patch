@@ -1,0 +1,332 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -45,3 +45,7 @@
+ path = "tests/regression.rs"
+ 
+ [dependencies]
++
++[[test]]
++name = "thread_traits"
++path = "tests/thread_traits.rs"
+--- a/src/decoder_7.rs
++++ b/src/decoder_7.rs
+@@ -6,13 +6,39 @@
+ };
+ 
+ /// A decoder to decompress data using PPMd7 (PPMdH) with the 7z range coder.
++///
++/// Thread safety follows the inner stream.
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd7Decoder;
++/// struct Local(std::rc::Rc<()>);
++/// impl std::io::Read for Local {
++///     fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> { Ok(0) }
++/// }
++/// fn require_send<T: Send>() {}
++/// require_send::<Ppmd7Decoder<Local>>();
++/// ```
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd7Decoder;
++/// struct Local(std::cell::Cell<u8>);
++/// impl std::io::Read for Local {
++///     fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> { Ok(0) }
++/// }
++/// fn require_sync<T: Sync>() {}
++/// require_sync::<Ppmd7Decoder<Local>>();
++/// ```
+ pub struct Ppmd7Decoder<R: Read> {
+     ppmd: PPMd7<RangeDecoder<R>>,
+     finished: bool,
+ }
+ 
+-unsafe impl<R: Read> Send for Ppmd7Decoder<R> {}
+-unsafe impl<R: Read> Sync for Ppmd7Decoder<R> {}
++// SAFETY: model pointers refer to the owned heap allocation, which remains stable
++// when moved. The inner reader must also be safe to transfer to another thread.
++unsafe impl<R: Read + Send> Send for Ppmd7Decoder<R> {}
++// SAFETY: model mutation requires exclusive access. Shared access exposes only
++// the inner reader, which must itself permit shared access across threads.
++unsafe impl<R: Read + Sync> Sync for Ppmd7Decoder<R> {}
+ 
+ impl<R: Read> Ppmd7Decoder<R> {
+     /// Creates a new [`Ppmd7Decoder`] which provides a reader over the uncompressed data.
+--- a/src/decoder_7a.rs
++++ b/src/decoder_7a.rs
+@@ -6,13 +6,39 @@
+ };
+ 
+ /// A decoder to decompress data using PPMd7 (PPMdH) with the carryless range coder (PPMd7a).
++///
++/// Thread safety follows the inner stream.
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd7aDecoder;
++/// struct Local(std::rc::Rc<()>);
++/// impl std::io::Read for Local {
++///     fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> { Ok(0) }
++/// }
++/// fn require_send<T: Send>() {}
++/// require_send::<Ppmd7aDecoder<Local>>();
++/// ```
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd7aDecoder;
++/// struct Local(std::cell::Cell<u8>);
++/// impl std::io::Read for Local {
++///     fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> { Ok(0) }
++/// }
++/// fn require_sync<T: Sync>() {}
++/// require_sync::<Ppmd7aDecoder<Local>>();
++/// ```
+ pub struct Ppmd7aDecoder<R: Read> {
+     ppmd: PPMd7<RangeDecoder7a<R>>,
+     finished: bool,
+ }
+ 
+-unsafe impl<R: Read> Send for Ppmd7aDecoder<R> {}
+-unsafe impl<R: Read> Sync for Ppmd7aDecoder<R> {}
++// SAFETY: model pointers refer to the owned heap allocation, which remains stable
++// when moved. The inner reader must also be safe to transfer to another thread.
++unsafe impl<R: Read + Send> Send for Ppmd7aDecoder<R> {}
++// SAFETY: model mutation requires exclusive access. Shared access exposes only
++// the inner reader, which must itself permit shared access across threads.
++unsafe impl<R: Read + Sync> Sync for Ppmd7aDecoder<R> {}
+ 
+ impl<R: Read> Ppmd7aDecoder<R> {
+     /// Creates a new [`Ppmd7aDecoder`] which provides a reader over the uncompressed data.
+--- a/src/decoder_8.rs
++++ b/src/decoder_8.rs
+@@ -7,13 +7,39 @@
+ };
+ 
+ /// A decoder to decompress data using PPMd8 (PPMdI rev.1).
++///
++/// Thread safety follows the inner stream.
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd8Decoder;
++/// struct Local(std::rc::Rc<()>);
++/// impl std::io::Read for Local {
++///     fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> { Ok(0) }
++/// }
++/// fn require_send<T: Send>() {}
++/// require_send::<Ppmd8Decoder<Local>>();
++/// ```
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd8Decoder;
++/// struct Local(std::cell::Cell<u8>);
++/// impl std::io::Read for Local {
++///     fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> { Ok(0) }
++/// }
++/// fn require_sync<T: Sync>() {}
++/// require_sync::<Ppmd8Decoder<Local>>();
++/// ```
+ pub struct Ppmd8Decoder<R: Read> {
+     ppmd: PPMd8<RangeDecoder<R>>,
+     finished: bool,
+ }
+ 
+-unsafe impl<R: Read> Send for Ppmd8Decoder<R> {}
+-unsafe impl<R: Read> Sync for Ppmd8Decoder<R> {}
++// SAFETY: model pointers refer to the owned heap allocation, which remains stable
++// when moved. The inner reader must also be safe to transfer to another thread.
++unsafe impl<R: Read + Send> Send for Ppmd8Decoder<R> {}
++// SAFETY: model mutation requires exclusive access. Shared access exposes only
++// the inner reader, which must itself permit shared access across threads.
++unsafe impl<R: Read + Sync> Sync for Ppmd8Decoder<R> {}
+ 
+ impl<R: Read> Ppmd8Decoder<R> {
+     /// Creates a new [`Ppmd8Decoder`] which provides a reader over the uncompressed data.
+--- a/src/encoder_7.rs
++++ b/src/encoder_7.rs
+@@ -6,12 +6,40 @@
+ };
+ 
+ /// An encoder to compress data using PPMd7 (PPMdH) with the 7z range coder.
++///
++/// Thread safety follows the inner stream.
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd7Encoder;
++/// struct Local(std::rc::Rc<()>);
++/// impl std::io::Write for Local {
++///     fn write(&mut self, _: &[u8]) -> std::io::Result<usize> { Ok(0) }
++///     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
++/// }
++/// fn require_send<T: Send>() {}
++/// require_send::<Ppmd7Encoder<Local>>();
++/// ```
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd7Encoder;
++/// struct Local(std::cell::Cell<u8>);
++/// impl std::io::Write for Local {
++///     fn write(&mut self, _: &[u8]) -> std::io::Result<usize> { Ok(0) }
++///     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
++/// }
++/// fn require_sync<T: Sync>() {}
++/// require_sync::<Ppmd7Encoder<Local>>();
++/// ```
+ pub struct Ppmd7Encoder<W: Write> {
+     ppmd: PPMd7<RangeEncoder<W>>,
+ }
+ 
+-unsafe impl<W: Write> Send for Ppmd7Encoder<W> {}
+-unsafe impl<W: Write> Sync for Ppmd7Encoder<W> {}
++// SAFETY: model pointers refer to the owned heap allocation, which remains stable
++// when moved. The inner writer must also be safe to transfer to another thread.
++unsafe impl<W: Write + Send> Send for Ppmd7Encoder<W> {}
++// SAFETY: model mutation requires exclusive access. Shared access exposes only
++// the inner writer, which must itself permit shared access across threads.
++unsafe impl<W: Write + Sync> Sync for Ppmd7Encoder<W> {}
+ 
+ impl<W: Write> Ppmd7Encoder<W> {
+     /// Creates a new [`Ppmd7Encoder`] which provides a writer over the compressed data.
+--- a/src/encoder_7a.rs
++++ b/src/encoder_7a.rs
+@@ -6,12 +6,40 @@
+ };
+ 
+ /// An encoder to compress data using PPMd7 (PPMdH) with the carryless range coder (PPMd7a).
++///
++/// Thread safety follows the inner stream.
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd7aEncoder;
++/// struct Local(std::rc::Rc<()>);
++/// impl std::io::Write for Local {
++///     fn write(&mut self, _: &[u8]) -> std::io::Result<usize> { Ok(0) }
++///     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
++/// }
++/// fn require_send<T: Send>() {}
++/// require_send::<Ppmd7aEncoder<Local>>();
++/// ```
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd7aEncoder;
++/// struct Local(std::cell::Cell<u8>);
++/// impl std::io::Write for Local {
++///     fn write(&mut self, _: &[u8]) -> std::io::Result<usize> { Ok(0) }
++///     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
++/// }
++/// fn require_sync<T: Sync>() {}
++/// require_sync::<Ppmd7aEncoder<Local>>();
++/// ```
+ pub struct Ppmd7aEncoder<W: Write> {
+     ppmd: PPMd7<RangeEncoder7a<W>>,
+ }
+ 
+-unsafe impl<W: Write> Send for Ppmd7aEncoder<W> {}
+-unsafe impl<W: Write> Sync for Ppmd7aEncoder<W> {}
++// SAFETY: model pointers refer to the owned heap allocation, which remains stable
++// when moved. The inner writer must also be safe to transfer to another thread.
++unsafe impl<W: Write + Send> Send for Ppmd7aEncoder<W> {}
++// SAFETY: model mutation requires exclusive access. Shared access exposes only
++// the inner writer, which must itself permit shared access across threads.
++unsafe impl<W: Write + Sync> Sync for Ppmd7aEncoder<W> {}
+ 
+ impl<W: Write> Ppmd7aEncoder<W> {
+     /// Creates a new [`Ppmd7aEncoder`] which provides a writer over the compressed data.
+--- a/src/encoder_8.rs
++++ b/src/encoder_8.rs
+@@ -7,12 +7,40 @@
+ };
+ 
+ /// A encoder to compress data using PPMd8 (PPMdI rev.1).
++///
++/// Thread safety follows the inner stream.
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd8Encoder;
++/// struct Local(std::rc::Rc<()>);
++/// impl std::io::Write for Local {
++///     fn write(&mut self, _: &[u8]) -> std::io::Result<usize> { Ok(0) }
++///     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
++/// }
++/// fn require_send<T: Send>() {}
++/// require_send::<Ppmd8Encoder<Local>>();
++/// ```
++///
++/// ```compile_fail,E0277
++/// use ppmd_rust::Ppmd8Encoder;
++/// struct Local(std::cell::Cell<u8>);
++/// impl std::io::Write for Local {
++///     fn write(&mut self, _: &[u8]) -> std::io::Result<usize> { Ok(0) }
++///     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
++/// }
++/// fn require_sync<T: Sync>() {}
++/// require_sync::<Ppmd8Encoder<Local>>();
++/// ```
+ pub struct Ppmd8Encoder<W: Write> {
+     ppmd: PPMd8<RangeEncoder<W>>,
+ }
+ 
+-unsafe impl<W: Write> Send for Ppmd8Encoder<W> {}
+-unsafe impl<W: Write> Sync for Ppmd8Encoder<W> {}
++// SAFETY: model pointers refer to the owned heap allocation, which remains stable
++// when moved. The inner writer must also be safe to transfer to another thread.
++unsafe impl<W: Write + Send> Send for Ppmd8Encoder<W> {}
++// SAFETY: model mutation requires exclusive access. Shared access exposes only
++// the inner writer, which must itself permit shared access across threads.
++unsafe impl<W: Write + Sync> Sync for Ppmd8Encoder<W> {}
+ 
+ impl<W: Write> Ppmd8Encoder<W> {
+     /// Creates a new [`Ppmd8Encoder`] which provides a writer over the compressed data.
+--- a/tests/thread_traits.rs
++++ b/tests/thread_traits.rs
+@@ -0,0 +1,52 @@
++use ppmd_rust::*;
++use std::{
++    cell::Cell,
++    io::{Read, Write},
++    marker::PhantomData,
++    sync::MutexGuard,
++};
++
++// Cell is Send but not Sync; MutexGuard is Sync but not Send.
++struct LocalIo<T>(PhantomData<T>);
++impl<T> Read for LocalIo<T> {
++    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
++        Ok(0)
++    }
++}
++impl<T> Write for LocalIo<T> {
++    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
++        Ok(0)
++    }
++    fn flush(&mut self) -> std::io::Result<()> {
++        Ok(())
++    }
++}
++fn require_send<T: Send>() {}
++fn require_sync<T: Sync>() {}
++#[test]
++fn stream_traits_are_independent() {
++    require_send::<Ppmd7Decoder<LocalIo<Cell<u8>>>>();
++    require_sync::<Ppmd7Decoder<LocalIo<MutexGuard<'static, ()>>>>();
++    require_send::<Ppmd7Decoder<std::io::Cursor<Vec<u8>>>>();
++    require_sync::<Ppmd7Decoder<std::io::Cursor<Vec<u8>>>>();
++    require_send::<Ppmd7aDecoder<LocalIo<Cell<u8>>>>();
++    require_sync::<Ppmd7aDecoder<LocalIo<MutexGuard<'static, ()>>>>();
++    require_send::<Ppmd7aDecoder<std::io::Cursor<Vec<u8>>>>();
++    require_sync::<Ppmd7aDecoder<std::io::Cursor<Vec<u8>>>>();
++    require_send::<Ppmd8Decoder<LocalIo<Cell<u8>>>>();
++    require_sync::<Ppmd8Decoder<LocalIo<MutexGuard<'static, ()>>>>();
++    require_send::<Ppmd8Decoder<std::io::Cursor<Vec<u8>>>>();
++    require_sync::<Ppmd8Decoder<std::io::Cursor<Vec<u8>>>>();
++    require_send::<Ppmd7Encoder<LocalIo<Cell<u8>>>>();
++    require_sync::<Ppmd7Encoder<LocalIo<MutexGuard<'static, ()>>>>();
++    require_send::<Ppmd7Encoder<std::io::Cursor<Vec<u8>>>>();
++    require_sync::<Ppmd7Encoder<std::io::Cursor<Vec<u8>>>>();
++    require_send::<Ppmd7aEncoder<LocalIo<Cell<u8>>>>();
++    require_sync::<Ppmd7aEncoder<LocalIo<MutexGuard<'static, ()>>>>();
++    require_send::<Ppmd7aEncoder<std::io::Cursor<Vec<u8>>>>();
++    require_sync::<Ppmd7aEncoder<std::io::Cursor<Vec<u8>>>>();
++    require_send::<Ppmd8Encoder<LocalIo<Cell<u8>>>>();
++    require_sync::<Ppmd8Encoder<LocalIo<MutexGuard<'static, ()>>>>();
++    require_send::<Ppmd8Encoder<std::io::Cursor<Vec<u8>>>>();
++    require_sync::<Ppmd8Encoder<std::io::Cursor<Vec<u8>>>>();
++}

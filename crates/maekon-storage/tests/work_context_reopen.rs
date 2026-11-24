@@ -144,6 +144,186 @@ fn commit(
 }
 
 #[tokio::test]
+async fn cursor_timestamps_preserve_legacy_sqlite_text_on_reopen() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("wctx.db");
+    let mut store = SqliteStorage::open(&path, 30, None).unwrap();
+    let epoch = store
+        .begin_access_epoch("inst_1", "acct_opaque_1", Utc::now())
+        .await
+        .unwrap();
+    let cursor = "time-fixture";
+    let mut previous = None;
+    for (input, expected) in [
+        ("1970-01-01T00:00:00Z", "1970-01-01T00:00:00+00:00"),
+        (
+            "1969-12-31T23:59:59.999999999Z",
+            "1969-12-31T23:59:59.999999999+00:00",
+        ),
+        ("2026-06-25T12:34:56.1Z", "2026-06-25T12:34:56.100+00:00"),
+        (
+            "2026-06-25T12:34:56.0011Z",
+            "2026-06-25T12:34:56.001100+00:00",
+        ),
+        ("2026-11-01T01:30:00-05:00", "2026-11-01T06:30:00+00:00"),
+        ("2016-12-31T23:59:60Z", "2016-12-31T23:59:60+00:00"),
+    ] {
+        let mut request = commit(epoch, vec![], previous, Some(cursor));
+        let when = input.parse().unwrap();
+        request.now = when;
+        let outcome = store.commit_page(request).await.unwrap();
+        assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+        drop(store);
+
+        let raw = rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let text: String = raw.query_row(
+            "SELECT last_ingested_at FROM work_context_cursors WHERE install_id = 'inst_1' AND account_subject_ref = 'acct_opaque_1'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(text, expected, "{input}");
+        drop(raw);
+
+        store = SqliteStorage::open(&path, 30, None).unwrap();
+        let reread = store
+            .get_cursor("inst_1", "acct_opaque_1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reread.last_ingested_at, Some(when), "{input}");
+        previous = Some(cursor);
+    }
+    drop(store);
+
+    // Restore text written by an older client directly, bypassing the new writer.
+    for (raw_text, expected) in [
+        ("2026-11-01T01:30:00-04:00", Some("2026-11-01T05:30:00Z")),
+        ("2016-12-31T23:59:60+00:00", Some("2016-12-31T23:59:60Z")),
+        ("+010000-01-01T00:00:00Z", None),
+        ("2026-02-30T12:00:00Z", None),
+        ("2026-05-15T12:12:12", None),
+    ] {
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        let rows = raw
+            .execute(
+                "UPDATE work_context_cursors SET last_ingested_at = ?1",
+                [raw_text],
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        drop(raw);
+        let store = SqliteStorage::open(&path, 30, None).unwrap();
+        let reread = store.get_cursor("inst_1", "acct_opaque_1").await;
+        match expected {
+            Some(utc) => assert_eq!(
+                serde_json::to_value(reread.unwrap().unwrap().last_ingested_at.unwrap()).unwrap(),
+                utc,
+                "{raw_text}"
+            ),
+            None => {
+                let error = reread.unwrap_err();
+                assert_eq!(error.code(), "storage.failed", "{raw_text}");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("work-context timestamp decode failed"),
+                    "{error}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn envelope_timestamps_distinguish_invalid_text_from_null_after_reopen() {
+    use rusqlite::{params, Connection};
+
+    const LEGACY: &str = "2020-02-29T05:44:59.123456789+05:45";
+    const INVALID: &str = "private-invalid-fixture";
+    let expected = "2020-02-28T23:59:59.123456789Z"
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap();
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("wctx.db");
+    let store = SqliteStorage::open(&path, 30, None).unwrap();
+    let epoch = store
+        .begin_access_epoch("inst_1", "acct_opaque_1", Utc::now())
+        .await
+        .unwrap();
+    let item = envelope("time", 1, epoch, "time");
+    let key = item.source_object_key.clone();
+    let committed = store
+        .commit_page(commit(epoch, vec![item], None, Some("time")))
+        .await
+        .unwrap();
+    assert!(matches!(committed, CommitOutcome::Committed { .. }));
+    drop(store);
+
+    let conn = Connection::open(&path).unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE work_context_envelopes SET occurred_at = NULL, source_updated_at = ?1,
+                observed_at = ?1, ingested_at = ?1 WHERE source_object_key = ?2",
+            params![LEGACY, key],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    drop(conn);
+    let store = SqliteStorage::open(&path, 30, None).unwrap();
+    let single = store.get_envelope(&key, epoch).await.unwrap().unwrap();
+    let listed = store.list_projectable(2).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    for item in [&single, &listed[0]] {
+        assert_eq!(item.occurred_at, None);
+        assert_eq!(item.source_updated_at, Some(expected));
+        assert_eq!(item.observed_at, expected);
+        assert_eq!(item.ingested_at, expected);
+    }
+    drop(store);
+
+    for (column, previous) in [
+        ("occurred_at", None),
+        ("source_updated_at", Some(LEGACY)),
+        ("observed_at", Some(LEGACY)),
+        ("ingested_at", Some(LEGACY)),
+    ] {
+        let update =
+            format!("UPDATE work_context_envelopes SET {column} = ?1 WHERE source_object_key = ?2");
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(conn.execute(&update, params![INVALID, key]).unwrap(), 1);
+        drop(conn);
+        let store = SqliteStorage::open(&path, 30, None).unwrap();
+        let single = store.get_envelope(&key, epoch).await.unwrap_err();
+        let list = store.list_projectable(2).await.unwrap_err();
+        for error in [single, list] {
+            assert_eq!(error.code(), "storage.failed", "{column}");
+            let message = error.to_string();
+            assert!(
+                message.contains("work-context timestamp decode failed"),
+                "{column}"
+            );
+            assert!(!message.contains(INVALID), "{column}");
+        }
+        drop(store);
+        let conn = Connection::open(&path).unwrap();
+        let stored: String = conn
+            .query_row(
+                &format!(
+                    "SELECT {column} FROM work_context_envelopes WHERE source_object_key = ?1"
+                ),
+                [&key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, INVALID);
+        assert_eq!(conn.execute(&update, params![previous, key]).unwrap(), 1);
+    }
+}
+
+#[tokio::test]
 async fn cursor_and_envelopes_survive_reopen_without_duplicates() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("wctx.db");

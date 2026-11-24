@@ -1,4 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { type ErrorDisplay, useErrorDisplay } from '../i18n/errorDisplay'
 
 /**
  * Current-context recovery generation hook (MK-CONTEXT-01, #8892).
@@ -39,7 +41,7 @@ export type RecoveryPhase = 'idle' | 'loading' | 'done' | 'error'
 export interface UseContextRecovery {
   phase: RecoveryPhase
   result: RecoveryResult | null
-  error: string | null
+  error: ErrorDisplay | null
   generate: (sessionId?: string) => Promise<RecoveryResult | null>
   reset: () => void
 }
@@ -51,10 +53,13 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 }
 
 export function useContextRecovery(): UseContextRecovery {
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [phase, setPhase] = useState<RecoveryPhase>('idle')
   const [result, setResult] = useState<RecoveryResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [failure, setFailure] = useState<{ cause: unknown } | null>(null)
   const inFlight = useRef(false)
+  const generation = useRef(0)
 
   const generate = useCallback(async (sessionId?: string) => {
     // UI-level double-trigger guard. The backend also fails a concurrent request
@@ -62,17 +67,21 @@ export function useContextRecovery(): UseContextRecovery {
     // round-trip on a rapid double-click.
     if (inFlight.current) return null
     inFlight.current = true
+    const request = ++generation.current
     setPhase('loading')
-    setError(null)
+    setFailure(null)
+    setResult(null)
     try {
       const res = await invoke<RecoveryResult>('request_current_context_suggestions', {
         sessionId: sessionId ?? null,
       })
+      if (request !== generation.current) return null
       setResult(res)
       setPhase('done')
       return res
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (request !== generation.current) return null
+      setFailure({ cause: err })
       setPhase('error')
       return null
     } finally {
@@ -81,10 +90,13 @@ export function useContextRecovery(): UseContextRecovery {
   }, [])
 
   const reset = useCallback(() => {
+    // Reset invalidates the old outcome without opening a second native turn.
+    generation.current += 1
     setPhase('idle')
     setResult(null)
-    setError(null)
+    setFailure(null)
   }, [])
 
+  const error = failure ? describeError(failure.cause, t('recovery.outcome.errorDetail')) : null
   return { phase, result, error, generate, reset }
 }

@@ -24,7 +24,9 @@ import { downloadBlob, exportData, exportSessions, type ReportResponse } from '.
 import type { ExportDataType, ExportFormat, SessionExportKind } from '../../api/contracts'
 import { getCaptureReauthStatus, type ReauthStatus, requiresCaptureReauthForExport } from '../../api/reauth'
 import { CaptureReauthDialog } from '../../components/CaptureReauthGate'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Button, Card, CardTitle, Input, Select } from '../../components/ui'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import { useTypedOutletContext } from '../../routes'
 import { typography } from '../../styles/tokens'
 import { ReportsEmptyState } from './ReportsEmptyState'
@@ -110,6 +112,7 @@ const SESSION_EXPORTS: SessionExportOption[] = [
 
 export default function ExportSection() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const navigate = useNavigate()
   const { report, reportError } = useTypedOutletContext<ReportsContext>('Reports')
 
@@ -118,7 +121,7 @@ export default function ExportSection() {
   const [to, setTo] = useState(() => toDateInput(report?.to_date))
   const [format, setFormat] = useState<ExportFormat>('json')
   const [busy, setBusy] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorDisplay | null>(null)
   const [reauthStatus, setReauthStatus] = useState<ReauthStatus | null>(null)
 
   // Empty/error state is owned by the child (ReportsLayout always renders
@@ -145,10 +148,10 @@ export default function ExportSection() {
             await handleRawExport(dataType, false)
           }
         } catch (statusError) {
-          setError(statusError instanceof Error ? statusError.message : t('reauth.errors.failed'))
+          setError(describeError(statusError, t('reauth.errors.failed')))
         }
       } else {
-        setError(e instanceof Error ? e.message : t('reports.exportFailed', 'Export failed'))
+        setError(describeError(e, t('errors.tryAgainLater')))
       }
     } finally {
       setBusy(null)
@@ -164,7 +167,7 @@ export default function ExportSection() {
     } catch (e) {
       // No capture-reauth branch here: these export work sessions (start/end
       // times and titles), never frames, so the capture gate does not apply.
-      setError(e instanceof Error ? e.message : t('reports.exportFailed', 'Export failed'))
+      setError(describeError(e, t('errors.tryAgainLater')))
     } finally {
       setBusy(null)
     }
@@ -177,7 +180,7 @@ export default function ExportSection() {
       const blob = new Blob([serializeReportSummary(report)], { type: 'application/json' })
       downloadBlob(blob, buildReportSummaryFilename(from, to))
     } catch (e) {
-      setError(e instanceof Error ? e.message : t('reports.exportFailed', 'Export failed'))
+      setError(describeError(e, t('errors.tryAgainLater')))
     } finally {
       setBusy(null)
     }
@@ -320,7 +323,8 @@ export default function ExportSection() {
 
       {error && (
         <Alert variant="error" title={t('reports.exportFailed', 'Export failed')} className="mt-4">
-          {error}
+          {error.text}
+          <SupportDetails detail={error.detail} />
         </Alert>
       )}
 

@@ -47,15 +47,17 @@ export const TAURI_IPC_ERROR_KEYS: Readonly<Record<string, string>> = {
 /**
  * Wire-error locale for the active UI language.
  *
- * Deliberately narrow: every surface that routes through `translateError`
- * (AudioTab, SupportToolsCard, BugReportWizard, the overlay panels) resolves
- * ko-or-English the same way, so this helper only centralizes the existing
- * house rule. `translateError` itself covers all five runtime locales, so
- * broadening this (ja / zh-CN / es) is a standalone follow-up rather than a
- * side effect of any single slice.
+ * Select existing catalogs for supplied UI languages (#13756); application
+ * language detection and persistence remain separate. Preserve the legacy
+ * Korean prefix rule and accept base/region tags for Japanese and Spanish.
+ * Only the exact supported Chinese tag selects Simplified Chinese; script,
+ * case and whitespace aliases do not introduce new language support.
  */
 export function wireLocaleFor(language: string | undefined): WireErrorLocale {
-  return language?.split('-')[0] === 'ko' ? 'ko' : 'en'
+  if (language?.split('-')[0] === 'ko') return 'ko'
+  if (language === 'zh-CN') return 'zh-CN'
+  const regionalLanguage = language?.match(/^(ja|es)(?:-(?:[A-Z]{2}|[0-9]{3}))?$/u)?.[1]
+  return regionalLanguage === 'ja' || regionalLanguage === 'es' ? regionalLanguage : 'en'
 }
 
 /** Default lookup: the plain wire-code → UI-key table above. */

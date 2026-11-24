@@ -12,7 +12,9 @@ import { i18nRegex } from './helpers/i18n'
 import { mockStaticJson } from './helpers/mock-api'
 import { expect, type Page, test } from './helpers/test'
 
-const chatTitleName = i18nRegex('chat.title')
+// The session-load error ("Failed to load AI sessions.") repeats the title's words, so
+// match the title's whole text rather than any text that contains it (#13738).
+const chatTitleName = new RegExp(`^(?:${i18nRegex('chat.title').source})$`, 'i')
 const emptyChatTitleName = i18nRegex('emptyState.chat.title')
 
 async function mockChatApis(page: Page) {

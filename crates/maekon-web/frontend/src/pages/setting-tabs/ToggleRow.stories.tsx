@@ -40,3 +40,14 @@ export const LongDescription: Story = {
     onChange: () => {},
   },
 }
+
+/** #7678: a platform-capability gap disables the switch but keeps the row visible. */
+export const Disabled: Story = {
+  args: {
+    label: 'Pause on Battery Saver',
+    description: 'Not available on this platform.',
+    checked: false,
+    disabled: true,
+    onChange: () => {},
+  },
+}

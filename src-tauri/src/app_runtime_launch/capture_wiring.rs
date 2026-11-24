@@ -1,6 +1,7 @@
 use crate::capture_services::SharedCaptureServices;
 use anyhow::Result;
 use maekon_core::ports::consent_manager::ConsentManagerPort;
+use maekon_core::ports::vision::CapturePauseState;
 use maekon_storage::encryption::EncryptionKey;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -8,6 +9,7 @@ use std::sync::Arc;
 
 pub(super) struct CaptureLaunchWiring {
     pub(super) capture_paused: Arc<AtomicBool>,
+    pub(super) capture_pause_state: Arc<CapturePauseState>,
     pub(super) indicator_visible: Arc<AtomicBool>,
     pub(super) detection_active: Arc<AtomicBool>,
     /// #8039: NOT `Option` — `build_capture_wiring` only returns `Ok` once this
@@ -42,6 +44,7 @@ pub(super) fn build_capture_wiring(
     let (capture_paused_initial, indicator_visible_initial) =
         super::cua_safe_mode::initial_capture_flags(config.indicator.show_border, cua_safe_mode);
     let capture_paused = Arc::new(AtomicBool::new(capture_paused_initial));
+    let capture_pause_state = Arc::new(CapturePauseState::new(capture_paused.clone()));
     let indicator_visible = Arc::new(AtomicBool::new(indicator_visible_initial));
     let detection_active = Arc::new(AtomicBool::new(false));
 
@@ -63,6 +66,7 @@ pub(super) fn build_capture_wiring(
 
     Ok(CaptureLaunchWiring {
         capture_paused,
+        capture_pause_state,
         indicator_visible,
         detection_active,
         shared_capture_services,
@@ -135,34 +139,26 @@ pub(super) fn build_capture_reauth_gate(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_capture_wiring, CaptureLaunchWiring};
-    use crate::capture_services::SharedCaptureServices;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use super::build_capture_wiring;
+    use std::sync::atomic::Ordering;
 
-    #[tokio::test]
-    async fn capture_launch_wiring_exposes_shared_flags() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = maekon_core::config::AppConfig::default_config();
-        let shared_capture_services = Arc::new(
-            SharedCaptureServices::build(dir.path(), &config, None)
-                .await
-                .expect("SharedCaptureServices::build must succeed against a writable temp dir"),
-        );
-
-        let wiring = CaptureLaunchWiring {
-            capture_paused: Arc::new(AtomicBool::new(true)),
-            indicator_visible: Arc::new(AtomicBool::new(false)),
-            detection_active: Arc::new(AtomicBool::new(false)),
-            shared_capture_services,
-            consent_manager: Arc::new(maekon_core::consent::ConsentManager::new(
-                dir.path().join("consent.json"),
-            )),
-        };
-
-        assert!(wiring.capture_paused.load(Ordering::SeqCst));
-        assert!(!wiring.indicator_visible.load(Ordering::SeqCst));
-        assert!(!wiring.detection_active.load(Ordering::SeqCst));
+    #[test]
+    fn capture_launch_wiring_exposes_one_pause_flag_and_epoch() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        for safe_mode in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let config = maekon_core::config::AppConfig::default_config();
+            let wiring =
+                build_capture_wiring(runtime.handle(), dir.path(), &config, None, safe_mode)
+                    .unwrap();
+            assert_eq!(wiring.capture_paused.load(Ordering::Acquire), safe_mode);
+            assert_eq!(wiring.capture_pause_state.snapshot().is_err(), safe_mode);
+            assert_eq!(wiring.capture_pause_state.toggle().unwrap(), !safe_mode);
+            assert_eq!(wiring.capture_paused.load(Ordering::Acquire), !safe_mode);
+            assert_eq!(wiring.capture_pause_state.toggle().unwrap(), safe_mode);
+            assert_eq!(wiring.capture_paused.load(Ordering::Acquire), safe_mode);
+            assert!(!wiring.detection_active.load(Ordering::Acquire));
+        }
     }
 
     /// #8039 regression: previously, a `SharedCaptureServices::build` failure

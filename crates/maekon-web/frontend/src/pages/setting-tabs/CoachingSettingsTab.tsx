@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import type { CoachingSettings, ProfileConfig, TimeRange } from '../../api/contracts'
 import { Button, Card, CardContent, CardHeader, CardTitle, Input } from '../../components/ui'
 import { useGoalProgress, useUpdateGoals } from '../../hooks/useCoaching'
-import { colors, motion, radius, typography } from '../../styles/tokens'
+import { colors, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { useSettingsFormContext } from '../settings/SettingsFormContext'
 import ToggleRow from './ToggleRow'
@@ -252,24 +252,26 @@ export default function CoachingSettingsTab() {
               <label htmlFor="quiet-start" className="mb-1 block text-content-secondary text-xs">
                 {t('coaching.quietStart', 'Start')}
               </label>
-              <input
+              <Input
                 id="quiet-start"
                 type="time"
+                inputSize="sm"
                 value={newQuietStart}
                 onChange={(e) => setNewQuietStart(e.target.value)}
-                className={cn('border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
+                className="w-auto"
               />
             </div>
             <div>
               <label htmlFor="quiet-end" className="mb-1 block text-content-secondary text-xs">
                 {t('coaching.quietEnd', 'End')}
               </label>
-              <input
+              <Input
                 id="quiet-end"
                 type="time"
+                inputSize="sm"
                 value={newQuietEnd}
                 onChange={(e) => setNewQuietEnd(e.target.value)}
-                className={cn('border bg-surface-base px-3 py-2 text-sm', radius.md, colors.text.primary)}
+                className="w-auto"
               />
             </div>
             <Button type="button" variant="primary" size="sm" onClick={handleAddQuietHour}>

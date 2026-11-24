@@ -145,6 +145,21 @@ export default function WbsXlsxDraftPage() {
 
 function ResultPanel({ result, statusRef }: { result: GenerateWbsXlsxResult; statusRef: RefObject<HTMLDivElement> }) {
   const { t } = useTranslation()
+  if (result.outcome === 'unverified') {
+    const stateKey = result.reason === 'upload' ? 'uploadUnverified' : 'unverified'
+    return (
+      <Alert
+        ref={statusRef}
+        tabIndex={-1}
+        variant="warning"
+        title={t(`wbsXlsxDraft.states.${stateKey}.title`)}
+        data-testid="wbs-xlsx-unverified"
+      >
+        <p>{t(`wbsXlsxDraft.states.${stateKey}.body`)}</p>
+        {result.reason === 'upload' ? <LocalResultDetails result={result.local} /> : null}
+      </Alert>
+    )
+  }
   if (result.outcome === 'error') {
     const stateKey =
       result.error_kind === 'unsafe_workbook'
@@ -195,19 +210,7 @@ function ResultPanel({ result, statusRef }: { result: GenerateWbsXlsxResult; sta
       </CardHeader>
       <CardContent className="space-y-3">
         <p className={typography.body}>{t('wbsXlsxDraft.states.produced.body')}</p>
-        <dl className="grid gap-3 text-sm sm:grid-cols-2">
-          <HashRow label={t('wbsXlsxDraft.fields.assignmentReceipt')} value={result.assignment_receipt_id} />
-          <HashRow label={t('wbsXlsxDraft.fields.outputReceipt')} value={result.receipt_id} />
-          <HashRow label={t('wbsXlsxDraft.fields.assignment')} value={result.assignment_id} />
-          <HashRow label={t('wbsXlsxDraft.fields.mapping')} value={result.mapping_id} />
-          <HashRow label={t('wbsXlsxDraft.fields.assignmentHash')} value={result.assignment_hash} />
-          <HashRow label={t('wbsXlsxDraft.fields.sourceHash')} value={result.source_snapshot_hash} />
-          <HashRow label={t('wbsXlsxDraft.fields.mappingHash')} value={result.mapping_content_hash} />
-          <HashRow label={t('wbsXlsxDraft.fields.workbookStructureHash')} value={result.template_structure_hash} />
-          <HashRow label={t('wbsXlsxDraft.fields.templateHash')} value={result.approved_template_hash} />
-          <HashRow label={t('wbsXlsxDraft.fields.outputHash')} value={result.artifact_sha256} />
-          <HashRow label={t('wbsXlsxDraft.fields.outputPath')} value={result.output_path} />
-        </dl>
+        <LocalResultDetails result={result} />
         <p className={cn(typography.caption, 'text-content-secondary')}>
           {result.receipt_upload_pending
             ? t('wbsXlsxDraft.states.produced.uploadPending')
@@ -215,6 +218,29 @@ function ResultPanel({ result, statusRef }: { result: GenerateWbsXlsxResult; sta
         </p>
       </CardContent>
     </Card>
+  )
+}
+
+function LocalResultDetails({
+  result,
+}: {
+  result: Omit<Extract<GenerateWbsXlsxResult, { outcome: 'produced' }>, 'outcome' | 'receipt_upload_pending'>
+}) {
+  const { t } = useTranslation()
+  return (
+    <dl className="grid gap-3 text-sm sm:grid-cols-2">
+      <HashRow label={t('wbsXlsxDraft.fields.assignmentReceipt')} value={result.assignment_receipt_id} />
+      <HashRow label={t('wbsXlsxDraft.fields.outputReceipt')} value={result.receipt_id} />
+      <HashRow label={t('wbsXlsxDraft.fields.assignment')} value={result.assignment_id} />
+      <HashRow label={t('wbsXlsxDraft.fields.mapping')} value={result.mapping_id} />
+      <HashRow label={t('wbsXlsxDraft.fields.assignmentHash')} value={result.assignment_hash} />
+      <HashRow label={t('wbsXlsxDraft.fields.sourceHash')} value={result.source_snapshot_hash} />
+      <HashRow label={t('wbsXlsxDraft.fields.mappingHash')} value={result.mapping_content_hash} />
+      <HashRow label={t('wbsXlsxDraft.fields.workbookStructureHash')} value={result.template_structure_hash} />
+      <HashRow label={t('wbsXlsxDraft.fields.templateHash')} value={result.approved_template_hash} />
+      <HashRow label={t('wbsXlsxDraft.fields.outputHash')} value={result.artifact_sha256} />
+      <HashRow label={t('wbsXlsxDraft.fields.outputPath')} value={result.output_path} />
+    </dl>
   )
 }
 

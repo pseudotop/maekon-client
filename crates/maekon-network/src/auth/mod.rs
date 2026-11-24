@@ -19,7 +19,7 @@ mod tokens;
 
 // Re-export the sole public type so that `use maekon_network::auth::TokenManager` continues
 // to work without any callsite changes.
-pub use tokens::{SessionInfo, TokenManager};
+pub use tokens::{SessionInfo, SessionSnapshot, TokenManager};
 
 use chrono::{Duration, Utc};
 use maekon_core::error::CoreError;

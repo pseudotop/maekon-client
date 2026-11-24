@@ -1,47 +1,38 @@
 pub fn mask_emails(text: &str) -> String {
-    let mut result = String::new();
-    let mut i = 0;
-    let chars: Vec<char> = text.chars().collect();
+    let mut result = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let mut last_delimiter_end = None;
 
-    while i < chars.len() {
-        if let Some(at_pos) = chars[i..].iter().position(|&c| c == '@') {
-            let at_abs = i + at_pos;
-            let start = chars[..at_abs]
-                .iter()
-                .rposition(|c| c.is_whitespace() || *c == '<' || *c == '(')
-                .map(|p| p + 1)
-                .unwrap_or(i);
+    for (offset, character) in text.char_indices() {
+        if character.is_whitespace() || matches!(character, '<' | '(') {
+            last_delimiter_end = Some(offset + character.len_utf8());
+            continue;
+        }
+        if character != '@' || offset < cursor {
+            continue;
+        }
 
-            let end = chars[at_abs + 1..]
-                .iter()
-                .position(|c| c.is_whitespace() || *c == '>' || *c == ')')
-                .map(|p| at_abs + 1 + p)
-                .unwrap_or(chars.len());
-
-            if at_abs > start && end > at_abs + 1 {
-                // `start` (the position just after the preceding `<`/`(`/whitespace
-                // delimiter) can land *before* the current cursor `i` when an
-                // adjacent bracketed/parenthesized email precedes another at-token
-                // (e.g. `<a@b.com>x@y.com`). Emitting `chars[i..start]` with
-                // `start < i` is a reversed slice range and panics. Clamp the
-                // lower bound to `i` so the prefix slice is always non-reversed;
-                // any already-emitted prefix is simply not re-copied.
-                let pre_start = start.max(i);
-                result.extend(&chars[i..pre_start]);
+        let domain_start = offset + 1;
+        let local_start = last_delimiter_end.unwrap_or(cursor);
+        if local_start < offset {
+            let domain_end = text[domain_start..]
+                .find(|c: char| c.is_whitespace() || matches!(c, '>' | ')'))
+                .map_or(text.len(), |end| domain_start + end);
+            if domain_start < domain_end {
+                // Adjacent addresses can share a left delimiter. Emit only the
+                // prefix that has not already been consumed by an earlier match.
+                result.push_str(&text[cursor..local_start.max(cursor)]);
                 result.push_str("[EMAIL]");
-                i = end;
+                cursor = domain_end;
                 continue;
             }
         }
 
-        if i < chars.len() {
-            result.push(chars[i]);
-            i += 1;
-        } else {
-            break;
-        }
+        result.push_str(&text[cursor..domain_start]);
+        cursor = domain_start;
     }
 
+    result.push_str(&text[cursor..]);
     result
 }
 
@@ -50,27 +41,29 @@ pub fn mask_phone_numbers(text: &str) -> String {
     let len = chars.len();
 
     let mut masked = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < len {
+    let mut covered_until = 0;
+    for (i, &ch) in chars.iter().enumerate() {
+        if i < covered_until {
+            continue;
+        }
         // A dotted-quad IPv4 must not be masked as a phone now that '.' is a phone
         // separator (#8041): copy it verbatim and skip so it survives at Standard
         // (IP masking is Strict-only). Card (>=13 digits) already excludes IPv4.
-        if chars[i].is_ascii_digit() {
+        if ch.is_ascii_digit() {
             if let Some((ip_end, _)) = try_parse_ipv4(&chars, i, len) {
                 masked.extend(&chars[i..ip_end]);
-                i = ip_end;
+                covered_until = ip_end;
                 continue;
             }
         }
-        if (chars[i] == '+' || chars[i].is_ascii_digit()) && is_phone_number_start(&chars, i) {
-            if let Some(end) = find_phone_number_end(&chars, i, len) {
+        if is_phone_number_start(&chars, i) {
+            if let Some(end) = find_phone_number_end(&chars, i) {
                 masked.push_str("[PHONE]");
-                i = end;
+                covered_until = end;
                 continue;
             }
         }
-        masked.push(chars[i]);
-        i += 1;
+        masked.push(ch);
     }
     masked
 }
@@ -89,8 +82,7 @@ fn is_phone_number_start(chars: &[char], pos: usize) -> bool {
     chars[pos] == '+' || chars[pos].is_ascii_digit()
 }
 
-fn find_phone_number_end(chars: &[char], start: usize, len: usize) -> Option<usize> {
-    let mut i = start;
+fn find_phone_number_end(chars: &[char], start: usize) -> Option<usize> {
     let mut digit_count = 0usize;
     let mut separator_count = 0usize;
     let mut dot_used = false;
@@ -99,16 +91,13 @@ fn find_phone_number_end(chars: &[char], start: usize, len: usize) -> Option<usi
     // the following token and the adjacent-phone residual leak).
     let mut last_digit_end = start;
 
-    if i < len && chars[i] == '+' {
-        i += 1;
-    }
-
-    while i < len {
-        let c = chars[i];
+    for (i, &c) in chars.iter().enumerate().skip(start) {
+        if i == start && c == '+' {
+            continue;
+        }
         if c.is_ascii_digit() {
             digit_count += 1;
-            i += 1;
-            last_digit_end = i;
+            last_digit_end = i + 1;
         } else if c == '-' || c == ' ' || c == '.' {
             // A separator is internal only when it sits between digit groups AND we
             // do not yet hold a complete (>=9 digit) number. Once 9+ digits are
@@ -116,14 +105,13 @@ fn find_phone_number_end(chars: &[char], start: usize, len: usize) -> Option<usi
             // adjacent numbers do not merge into one match. '.' is a separator
             // (#8041 — `555.123.4567` was leaking); dotted-quad IPv4 is excluded
             // up-front by the IPv4 guard, so '.' here never eats an IP octet.
-            if digit_count >= 9 || i + 1 >= len || !chars[i + 1].is_ascii_digit() {
+            if digit_count >= 9 || !chars.get(i + 1).is_some_and(char::is_ascii_digit) {
                 break;
             }
             if c == '.' {
                 dot_used = true;
             }
             separator_count += 1;
-            i += 1;
         } else {
             break;
         }
@@ -144,45 +132,34 @@ fn find_phone_number_end(chars: &[char], start: usize, len: usize) -> Option<usi
 }
 
 pub fn mask_credit_cards(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-    let mut result = String::with_capacity(text.len());
-    let mut i = 0;
-
-    while i < len {
-        if chars[i].is_ascii_digit() {
-            let start = i;
-            let mut digit_count = 0;
-
-            while i < len {
-                if chars[i].is_ascii_digit() {
-                    digit_count += 1;
-                    i += 1;
-                } else if (chars[i] == ' ' || chars[i] == '-' || chars[i] == '.')
-                    && i + 1 < len
-                    && chars[i + 1].is_ascii_digit()
-                {
-                    // '.' is a group separator (#8041 — `4111.1111.1111.1111` leaked).
-                    // Card=13-19 digits, IPv4<=12, so '.' never masks an IP as a card.
-                    i += 1;
-                } else {
-                    break;
-                }
-            }
-
-            if (13..=19).contains(&digit_count) {
-                result.push_str("[CARD]");
-            } else {
-                for ch in &chars[start..i] {
-                    result.push(*ch);
-                }
-            }
-        } else {
-            result.push(chars[i]);
-            i += 1;
+    let mut masked = String::with_capacity(text.len());
+    let mut chars = text.char_indices().peekable();
+    while let Some((start, ch)) = chars.next() {
+        if !ch.is_ascii_digit() {
+            masked.push(ch);
+            continue;
         }
+
+        let mut digits = 1;
+        while let Some((_, next)) = chars.next_if(|&(offset, next)| {
+            next.is_ascii_digit()
+                || (matches!(next, ' ' | '-' | '.')
+                    && text
+                        .as_bytes()
+                        .get(offset + 1)
+                        .is_some_and(u8::is_ascii_digit))
+        }) {
+            digits += usize::from(next.is_ascii_digit());
+        }
+        // The excluded separator or the end of the input is a UTF-8 boundary.
+        let end = chars.peek().map_or(text.len(), |&(offset, _)| offset);
+        masked.push_str(if (13..=19).contains(&digits) {
+            "[CARD]"
+        } else {
+            &text[start..end]
+        });
     }
-    result
+    masked
 }
 
 pub fn mask_korean_id(text: &str) -> String {
@@ -193,11 +170,13 @@ pub fn mask_korean_id(text: &str) -> String {
     // the previous needle construction. Digit runs are bounded by separators, so the
     // back-scan is amortized O(N).
     let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
     let mut result = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < len {
-        if chars[i] == '-' {
+    let mut covered_until = 0;
+    for (i, &ch) in chars.iter().enumerate() {
+        if i < covered_until {
+            continue;
+        }
+        if ch == '-' {
             let digits_before = chars[..i]
                 .iter()
                 .rev()
@@ -219,12 +198,11 @@ pub fn mask_korean_id(text: &str) -> String {
                 // trailing run.
                 result.truncate(result.len() - digits_before);
                 result.push_str("[KR_ID]");
-                i += 1 + digits_after;
+                covered_until = i + 1 + digits_after;
                 continue;
             }
         }
-        result.push(chars[i]);
-        i += 1;
+        result.push(ch);
     }
     result
 }
@@ -243,23 +221,25 @@ pub fn mask_ssn(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
-    let mut i = 0;
+    let mut covered_until = 0;
 
-    while i < len {
-        if chars[i].is_ascii_digit() {
+    for (i, &ch) in chars.iter().enumerate() {
+        if i < covered_until {
+            continue;
+        }
+        if ch.is_ascii_digit() {
             // A start glued to a preceding digit is the interior of a longer
             // number, never the start of an SSN.
             let preceded_by_digit = i > 0 && chars[i - 1].is_ascii_digit();
             if !preceded_by_digit {
                 if let Some(consumed) = ssn_match_len(&chars, i, len) {
                     result.push_str("[SSN]");
-                    i += consumed;
+                    covered_until = i + consumed;
                     continue;
                 }
             }
         }
-        result.push(chars[i]);
-        i += 1;
+        result.push(ch);
     }
 
     result
@@ -320,8 +300,11 @@ pub fn mask_api_keys(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
     let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < len {
+    let mut covered_until = 0;
+    for (i, &ch) in chars.iter().enumerate() {
+        if i < covered_until {
+            continue;
+        }
         // Match the longest prefix starting at i (prefixes are pure ASCII).
         let mut matched_prefix_len = 0usize;
         for prefix in prefixes {
@@ -341,17 +324,16 @@ pub fn mask_api_keys(text: &str) -> String {
             }
             if j - token_start >= 8 {
                 out.push_str("[API_KEY]");
-                i = j;
+                covered_until = j;
                 continue;
             }
             // Short token (likely a false positive): emit the prefix verbatim and
             // continue scanning from just after it.
             out.extend(&chars[i..token_start]);
-            i = token_start;
+            covered_until = token_start;
             continue;
         }
-        out.push(chars[i]);
-        i += 1;
+        out.push(ch);
     }
 
     // Mask bearer tokens: "Bearer <token>" (case-insensitive)
@@ -382,8 +364,11 @@ fn mask_bearer_tokens(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
     let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < len {
+    let mut covered_until = 0;
+    for (i, &ch) in chars.iter().enumerate() {
+        if i < covered_until {
+            continue;
+        }
         let matches_needle = i + NEEDLE.len() <= len
             && chars[i..i + NEEDLE.len()]
                 .iter()
@@ -397,17 +382,16 @@ fn mask_bearer_tokens(text: &str) -> String {
             }
             if j - token_start >= 8 {
                 out.push_str("Bearer [API_KEY]");
-                i = j;
+                covered_until = j;
                 continue;
             }
             // Short token: emit the matched "bearer " verbatim (preserving case) and
             // continue scanning from just after it.
             out.extend(&chars[i..token_start]);
-            i = token_start;
+            covered_until = token_start;
             continue;
         }
-        out.push(chars[i]);
-        i += 1;
+        out.push(ch);
     }
     out
 }
@@ -455,18 +439,20 @@ fn mask_private_key_blocks(text: &str) -> String {
 }
 
 pub fn mask_ip_addresses(text: &str) -> String {
-    let mut result = text.to_string();
-    let chars: Vec<char> = result.chars().collect();
+    let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
-    let mut masked = String::new();
-    let mut i = 0;
+    let mut masked = String::with_capacity(text.len());
+    let mut covered_until = 0;
 
-    while i < len {
-        if chars[i].is_ascii_digit() {
+    for (i, &ch) in chars.iter().enumerate() {
+        if i < covered_until {
+            continue;
+        }
+        if ch.is_ascii_digit() {
             if let Some((ip_end, is_valid)) = try_parse_ipv4(&chars, i, len) {
                 if is_valid {
                     masked.push_str("[IP]");
-                    i = ip_end;
+                    covered_until = ip_end;
                     continue;
                 }
             }
@@ -474,19 +460,17 @@ pub fn mask_ip_addresses(text: &str) -> String {
         // An IPv6 address can start with a hex digit (0-9a-fA-F) or compressed
         // notation (`::`). Only attempt IPv6 parsing when IPv4 matching failed
         // (per-pattern approach).
-        if chars[i].is_ascii_hexdigit() || chars[i] == ':' {
+        if ch.is_ascii_hexdigit() || ch == ':' {
             if let Some(ip_end) = try_parse_ipv6(&chars, i, len) {
                 masked.push_str("[IP]");
-                i = ip_end;
+                covered_until = ip_end;
                 continue;
             }
         }
-        masked.push(chars[i]);
-        i += 1;
+        masked.push(ch);
     }
 
-    result = masked;
-    result
+    masked
 }
 
 /// Try to parse an IPv6 address starting at `start`. Returns the end index on match.
@@ -614,19 +598,21 @@ pub fn mask_iban(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
-    let mut i = 0;
+    let mut covered_until = 0;
 
-    while i < len {
+    for (i, &ch) in chars.iter().enumerate() {
+        if i < covered_until {
+            continue;
+        }
         if let Some((iban_end, prefix_len)) = try_parse_iban(&chars, i, len) {
             // Preserve the country code + check digits (first 4 chars), mask the rest
             let prefix: String = chars[i..i + prefix_len].iter().collect();
             result.push_str(&prefix);
             result.push_str("[IBAN]");
-            i = iban_end;
+            covered_until = iban_end;
             continue;
         }
-        result.push(chars[i]);
-        i += 1;
+        result.push(ch);
     }
 
     result
@@ -698,10 +684,13 @@ pub fn mask_passport(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
-    let mut i = 0;
+    let mut covered_until = 0;
 
-    while i < len {
-        if chars[i].is_ascii_alphabetic() && i + 8 <= len {
+    for (i, &ch) in chars.iter().enumerate() {
+        if i < covered_until {
+            continue;
+        }
+        if ch.is_ascii_alphabetic() && i + 8 <= len {
             // Must not be preceded by alphanumeric (avoid matching mid-word)
             let preceded_by_alnum = i > 0 && chars[i - 1].is_alphanumeric();
             if !preceded_by_alnum {
@@ -715,13 +704,12 @@ pub fn mask_passport(text: &str) -> String {
                 let followed_by_alnum = j < len && chars[j].is_alphanumeric();
                 if (7..=8).contains(&digit_count) && !followed_by_alnum {
                     result.push_str("[PASSPORT]");
-                    i = j;
+                    covered_until = j;
                     continue;
                 }
             }
         }
-        result.push(chars[i]);
-        i += 1;
+        result.push(ch);
     }
 
     result
@@ -845,6 +833,19 @@ mod tests {
             "emails must be masked: {masked}"
         );
         masked
+    }
+
+    #[test]
+    fn email_mask_preserves_unmatched_at_signs_and_unicode_boundaries() {
+        for (title, expected) in [
+            ("회의 자료", "회의 자료"),
+            ("@ team · name@ ", "@ team · name@ "),
+            ("(@ team) <@room>", "(@ team) <@room>"),
+            ("앞\u{2003}<한글@예시.한국>\t끝", "앞\u{2003}<[EMAIL]>\t끝"),
+            ("(first@example.org) next@site.test", "([EMAIL]) [EMAIL]"),
+        ] {
+            assert_eq!(mask_emails(title), expected);
+        }
     }
 
     #[test]

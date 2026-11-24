@@ -1,7 +1,7 @@
 import { Lock, Play, ShieldCheck } from 'lucide-react'
 import { memo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { translateError, type WireErrorLocale } from '../../i18n/translateError'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import type { SuggestionViewDto } from '../types'
@@ -30,14 +30,13 @@ const primaryActionClass =
 
 export const SuggestionItem = memo(function SuggestionItem({ item, onAction, onRan }: SuggestionItemProps) {
   const { t, i18n } = useTranslation()
+  const describeError = useErrorDisplay()
   const [showSnooze, setShowSnooze] = useState(false)
   const [running, setRunning] = useState(false)
   const badgeClass = priorityClasses[item.priority] ?? priorityClasses.low
   const requiresClarification = item.category === 'clarification-required'
   // #7917: present only on bound, live pending items (never on history/unbound).
   const action = item.action ?? null
-  // Mirror SuggestionsPanel's wire-error localization (ADR-019 Follow-up #3).
-  const errorLocale: WireErrorLocale = i18n.language?.startsWith('ko') ? 'ko' : 'en'
   const sourceLabel =
     item.source === 'server'
       ? t('suggestions.sourceServer')
@@ -66,7 +65,13 @@ export const SuggestionItem = memo(function SuggestionItem({ item, onAction, onR
       await Promise.resolve(onRan?.())
     } catch (e) {
       // Distinguishes policy-denied / disabled / error via the localized wire code.
-      showToast(`${t('suggestions.actionFailed', 'Could not run action:')} ${translateError(e, errorLocale)}`, 'error')
+      const display = describeError(e)
+      showToast(
+        `${t('suggestions.actionFailed', 'Could not run action:')} ${display.text}`,
+        'error',
+        undefined,
+        display.detail,
+      )
     } finally {
       setRunning(false)
     }

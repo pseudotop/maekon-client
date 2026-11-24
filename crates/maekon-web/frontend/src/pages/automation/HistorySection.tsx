@@ -63,7 +63,8 @@ export default function HistorySection() {
     <Card id="section-history">
       <CardHeader>
         <div className="flex items-center justify-between">
-          <CardTitle>{t('automation.auditLog')}</CardTitle>
+          {/* #13736: "Audit Log" names the audit destination; this card is the automation run list. */}
+          <CardTitle>{t('sidebar.executionHistory')}</CardTitle>
           <Select
             value={auditFilter}
             selectSize="sm"

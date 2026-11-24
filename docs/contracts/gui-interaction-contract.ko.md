@@ -277,10 +277,30 @@ click | double_click | right_click | type_text
 |------|------|------|
 | `success` | `bool` | 액션 성공 여부 |
 | `element` | `UiElement?` | `{text, bounds, role, confidence, source}` |
-| `verification` | `VerificationResult?` | `{screen_changed, changed_regions}` |
+| `verification` | `VerificationResult?` | 관측한 화면 변화, 아래 참조. 관측하지 않았으면 `null` |
 | `retry_count` | `u32` | 시도된 재시도 횟수 |
 | `elapsed_ms` | `u64` | 실행 소요 시간 |
 | `error` | `String?` | 실패 시 에러 메시지 |
+
+### VerificationResult
+
+실행기가 화면 표본 포트로 액션 전후 화면을 실제로 표본했을 때만 채워집니다.
+`verify_after_action`이 꺼져 있거나, 표본 포트가 연결되지 않았거나, 캡처가
+허가되지 않았거나 표본 중에 철회되면 `null`입니다. `success`에서 추정하지
+않습니다.
+
+| 필드 | 타입 | 비고 |
+|------|------|------|
+| `screen_changed` | `bool` | 액션 전 표본과 액션 뒤 마지막 표본 사이에 달라진 칸이 있음 |
+| `changed_regions` | `usize` | 바뀐 16px 칸 수. 화면 크기가 바뀌면 모든 칸 |
+| `text_found` | `bool?` | 실행기가 채우지 않음 (`null`) |
+| `settled` | `bool?` | 표본을 멈출 때 화면이 조용한 시간(300ms) 이상 그대로였음. `false`는 상한에서도 계속 바뀌던 화면. 값이 없으면 생략 |
+
+실행기는 액션 뒤 100ms마다 표본을 잡습니다. 화면이 바뀐 뒤 조용한 시간 동안
+그대로이면 멈추고, 아니면 상한(`verify_delay_ms`, 최대 10 000ms)에서 멈춥니다.
+끝내 바뀌지 않는 화면은 상한까지 표본하므로, 표본 포트가 없을 때 쓰는 고정
+`verify_delay_ms` 대기와 최악 시간이 같습니다. 표본에는 픽셀이 아니라 칸 서명만
+담깁니다.
 
 ## 티켓 보안
 

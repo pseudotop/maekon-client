@@ -11,6 +11,7 @@ use maekon_core::ports::secret_store::SecretStore;
 const OLLAMA_SURFACE: &str = "provider_surface.ollama.local_http";
 const LOCAL_COMPATIBLE_SURFACE: &str = "provider_surface.generic.local_openai_compatible";
 const OPENAI_SURFACE: &str = "provider_surface.openai.direct_api";
+const TEST_ENDPOINT: &str = "https://api.openai.com/v1/responses";
 
 #[derive(Default)]
 struct MemorySecretStore {
@@ -97,7 +98,7 @@ fn openai_target() -> HttpChatTarget {
     HttpChatTarget {
         surface_id: OPENAI_SURFACE.to_owned(),
         model: "gpt-5.4".to_owned(),
-        url: "https://api.openai.com/v1/responses".to_owned(),
+        url: TEST_ENDPOINT.to_owned(),
     }
 }
 
@@ -133,6 +134,7 @@ fn no_auth(_surface_id: &str, _url: &str) -> Option<CredentialSource> {
 fn fingerprint_changes_with_surface_model_or_secret() {
     let base = http_chat_fingerprint(
         OPENAI_SURFACE,
+        TEST_ENDPOINT,
         "gpt-5.4",
         FingerprintCredential::Secret("sk-one"),
     );
@@ -141,6 +143,7 @@ fn fingerprint_changes_with_surface_model_or_secret() {
         base,
         http_chat_fingerprint(
             OPENAI_SURFACE,
+            TEST_ENDPOINT,
             "gpt-5.4",
             FingerprintCredential::Secret("sk-one")
         ),
@@ -150,20 +153,28 @@ fn fingerprint_changes_with_surface_model_or_secret() {
     let variants = [
         http_chat_fingerprint(
             OLLAMA_SURFACE,
+            TEST_ENDPOINT,
             "gpt-5.4",
             FingerprintCredential::Secret("sk-one"),
         ),
         http_chat_fingerprint(
             OPENAI_SURFACE,
+            TEST_ENDPOINT,
             "gpt-5.2",
             FingerprintCredential::Secret("sk-one"),
         ),
         http_chat_fingerprint(
             OPENAI_SURFACE,
+            TEST_ENDPOINT,
             "gpt-5.4",
             FingerprintCredential::Secret("sk-two"),
         ),
-        http_chat_fingerprint(OPENAI_SURFACE, "gpt-5.4", FingerprintCredential::NoAuth),
+        http_chat_fingerprint(
+            OPENAI_SURFACE,
+            TEST_ENDPOINT,
+            "gpt-5.4",
+            FingerprintCredential::NoAuth,
+        ),
     ];
     for variant in variants {
         assert_ne!(base, variant);
@@ -171,19 +182,109 @@ fn fingerprint_changes_with_surface_model_or_secret() {
 }
 
 #[test]
+fn fingerprint_binds_the_full_endpoint_without_serializing_it() {
+    let endpoint = "https://proxy.example/private/CANARY_PATH?key=CANARY_KEY";
+    let base = http_chat_fingerprint(
+        OPENAI_SURFACE,
+        endpoint,
+        "model",
+        FingerprintCredential::Secret("same-key"),
+    );
+    for other in [
+        TEST_ENDPOINT,
+        "https://proxy.example/other",
+        "https://other.example/private/CANARY_PATH?key=CANARY_KEY",
+    ] {
+        assert_ne!(
+            base,
+            http_chat_fingerprint(
+                OPENAI_SURFACE,
+                other,
+                "model",
+                FingerprintCredential::Secret("same-key")
+            )
+        );
+    }
+    assert_ne!(
+        http_chat_fingerprint("surface", "ab", "c", FingerprintCredential::NoAuth),
+        http_chat_fingerprint("surface", "a", "bc", FingerprintCredential::NoAuth),
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(EVIDENCE_FILE_NAME);
+    write_evidence(&path, &base, verified_at()).expect("write evidence");
+    let stored = std::fs::read_to_string(&path).expect("evidence");
+    assert!(!stored.contains("CANARY"));
+    assert!(!stored.contains("proxy.example"));
+    assert!(!stored.contains("same-key"));
+    assert_eq!(read_recorded_fingerprint(&path), Some(base));
+}
+
+#[tokio::test]
+async fn a_different_endpoint_or_endpoint_unbound_v1_record_cannot_mark_ready() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(EVIDENCE_FILE_NAME);
+    let config = http_config(OLLAMA_SURFACE, Some("llama3"));
+    let target = HttpChatTarget::resolve(&config).expect("target");
+    let fingerprint = target
+        .fingerprint(&CredentialSource::NoAuth)
+        .await
+        .expect("fingerprint");
+    write_evidence(&path, &fingerprint, verified_at()).expect("write current evidence");
+    assert!(http_chat_invocation_verified(&config, no_auth, Some(&path)).await);
+    for endpoint in [
+        "http://localhost:11434/changed/path",
+        "http://127.0.0.1:11435/v1/responses",
+    ] {
+        let mut changed = config.clone();
+        changed
+            .llm_api
+            .as_mut()
+            .expect("configured endpoint")
+            .endpoint = endpoint.into();
+        assert!(!http_chat_invocation_verified(&changed, no_auth, Some(&path)).await);
+    }
+    // Old records did not observe an endpoint. Neither their original schema
+    // nor copying their digest into the new schema grants verification.
+    let mut old = Sha256::new();
+    old.update(b"http-chat-invocation/v1\0");
+    update_part(&mut old, target.surface_id.as_bytes());
+    update_part(&mut old, target.model.as_bytes());
+    update_part(&mut old, NO_AUTH_CREDENTIAL);
+    let hex: String = old
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let legacy = format!("sha256:{hex}");
+    for schema in [1, 2] {
+        std::fs::write(&path, record(schema, &legacy, "2026-09-23T06:00:00Z"))
+            .expect("legacy fixture");
+        assert!(!http_chat_invocation_verified(&config, no_auth, Some(&path)).await);
+    }
+    std::fs::write(&path, record(1, &fingerprint, "2026-09-23T06:00:00Z")).expect("old schema");
+    assert_eq!(read_recorded_fingerprint(&path), None);
+}
+
+#[test]
 fn fingerprint_parts_cannot_shift_between_fields() {
     assert_ne!(
-        http_chat_fingerprint("ab", "c", FingerprintCredential::NoAuth),
-        http_chat_fingerprint("a", "bc", FingerprintCredential::NoAuth),
+        http_chat_fingerprint("ab", TEST_ENDPOINT, "c", FingerprintCredential::NoAuth),
+        http_chat_fingerprint("a", TEST_ENDPOINT, "bc", FingerprintCredential::NoAuth),
     );
     // A secret spelled like the no-auth marker is still a secret.
     assert_ne!(
         http_chat_fingerprint(
             OLLAMA_SURFACE,
+            TEST_ENDPOINT,
             "m",
             FingerprintCredential::Secret("no-auth")
         ),
-        http_chat_fingerprint(OLLAMA_SURFACE, "m", FingerprintCredential::NoAuth),
+        http_chat_fingerprint(
+            OLLAMA_SURFACE,
+            TEST_ENDPOINT,
+            "m",
+            FingerprintCredential::NoAuth
+        ),
     );
 }
 
@@ -194,6 +295,7 @@ fn the_record_never_carries_the_secret_or_its_bare_digest() {
     let secret = "sk-live-0123456789abcdef";
     let fingerprint = http_chat_fingerprint(
         OPENAI_SURFACE,
+        TEST_ENDPOINT,
         "gpt-5.4",
         FingerprintCredential::Secret(secret),
     );
@@ -214,8 +316,18 @@ fn the_record_never_carries_the_secret_or_its_bare_digest() {
 fn write_replaces_the_record_and_leaves_no_temporary_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(EVIDENCE_FILE_NAME);
-    let first = http_chat_fingerprint(OLLAMA_SURFACE, "qwen3:8b", FingerprintCredential::NoAuth);
-    let second = http_chat_fingerprint(OLLAMA_SURFACE, "llama3", FingerprintCredential::NoAuth);
+    let first = http_chat_fingerprint(
+        OLLAMA_SURFACE,
+        TEST_ENDPOINT,
+        "qwen3:8b",
+        FingerprintCredential::NoAuth,
+    );
+    let second = http_chat_fingerprint(
+        OLLAMA_SURFACE,
+        TEST_ENDPOINT,
+        "llama3",
+        FingerprintCredential::NoAuth,
+    );
 
     write_evidence(&path, &first, verified_at()).expect("first write");
     write_evidence(&path, &second, verified_at()).expect("second write");
@@ -229,7 +341,7 @@ fn write_replaces_the_record_and_leaves_no_temporary_file() {
 
     let stored: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
-    assert_eq!(stored["schema_version"], 1);
+    assert_eq!(stored["schema_version"], 2);
     assert_eq!(stored["fingerprint"], second);
     assert_eq!(stored["verified_at"], "2026-09-23T06:00:00Z");
 }
@@ -244,8 +356,18 @@ fn a_concurrent_reader_never_observes_a_partial_record() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(EVIDENCE_FILE_NAME);
     let fingerprints = [
-        http_chat_fingerprint(OLLAMA_SURFACE, "qwen3:8b", FingerprintCredential::NoAuth),
-        http_chat_fingerprint(OLLAMA_SURFACE, "llama3", FingerprintCredential::NoAuth),
+        http_chat_fingerprint(
+            OLLAMA_SURFACE,
+            TEST_ENDPOINT,
+            "qwen3:8b",
+            FingerprintCredential::NoAuth,
+        ),
+        http_chat_fingerprint(
+            OLLAMA_SURFACE,
+            TEST_ENDPOINT,
+            "llama3",
+            FingerprintCredential::NoAuth,
+        ),
     ];
     write_evidence(&path, &fingerprints[0], verified_at()).expect("seed record");
 
@@ -277,8 +399,12 @@ fn a_concurrent_reader_never_observes_a_partial_record() {
 fn erasure_removes_the_record_and_treats_a_missing_one_as_erased() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(EVIDENCE_FILE_NAME);
-    let fingerprint =
-        http_chat_fingerprint(OLLAMA_SURFACE, "qwen3:8b", FingerprintCredential::NoAuth);
+    let fingerprint = http_chat_fingerprint(
+        OLLAMA_SURFACE,
+        TEST_ENDPOINT,
+        "qwen3:8b",
+        FingerprintCredential::NoAuth,
+    );
     write_evidence(&path, &fingerprint, verified_at()).expect("write evidence");
 
     erase_evidence(&path).expect("erase the record");
@@ -296,8 +422,12 @@ fn erasure_removes_the_record_and_treats_a_missing_one_as_erased() {
 fn a_written_record_reads_back() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(EVIDENCE_FILE_NAME);
-    let fingerprint =
-        http_chat_fingerprint(OLLAMA_SURFACE, "qwen3:8b", FingerprintCredential::NoAuth);
+    let fingerprint = http_chat_fingerprint(
+        OLLAMA_SURFACE,
+        TEST_ENDPOINT,
+        "qwen3:8b",
+        FingerprintCredential::NoAuth,
+    );
     write_evidence(&path, &fingerprint, verified_at()).expect("write evidence");
     assert_eq!(read_recorded_fingerprint(&path), Some(fingerprint));
 }
@@ -306,8 +436,12 @@ fn a_written_record_reads_back() {
 fn missing_or_corrupt_evidence_is_no_evidence() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(EVIDENCE_FILE_NAME);
-    let fingerprint =
-        http_chat_fingerprint(OLLAMA_SURFACE, "qwen3:8b", FingerprintCredential::NoAuth);
+    let fingerprint = http_chat_fingerprint(
+        OLLAMA_SURFACE,
+        TEST_ENDPOINT,
+        "qwen3:8b",
+        FingerprintCredential::NoAuth,
+    );
 
     assert_eq!(read_recorded_fingerprint(&path), None, "missing file");
     assert_eq!(read_recorded_fingerprint(dir.path()), None, "a directory");
@@ -317,21 +451,21 @@ fn missing_or_corrupt_evidence_is_no_evidence() {
         .replace("SHA256:", "sha256:");
     let corrupt = [
         "not json".to_owned(),
-        record(1, &fingerprint, "2026-09-23T06:00:00Z")[..40].to_owned(),
+        record(2, &fingerprint, "2026-09-23T06:00:00Z")[..40].to_owned(),
         "{}".to_owned(),
-        record(2, &fingerprint, "2026-09-23T06:00:00Z"),
+        record(3, &fingerprint, "2026-09-23T06:00:00Z"),
         record(
-            1,
+            2,
             fingerprint.trim_start_matches("sha256:"),
             "2026-09-23T06:00:00Z",
         ),
-        record(1, &upper, "2026-09-23T06:00:00Z"),
+        record(2, &upper, "2026-09-23T06:00:00Z"),
         record(
-            1,
+            2,
             &fingerprint[..fingerprint.len() - 2],
             "2026-09-23T06:00:00Z",
         ),
-        record(1, &fingerprint, "yesterday"),
+        record(2, &fingerprint, "yesterday"),
     ];
     for contents in corrupt {
         std::fs::write(&path, &contents).expect("write fixture");
@@ -342,7 +476,7 @@ fn missing_or_corrupt_evidence_is_no_evidence() {
         );
     }
 
-    std::fs::write(&path, record(1, &fingerprint, "2026-09-23T06:00:00Z")).expect("write fixture");
+    std::fs::write(&path, record(2, &fingerprint, "2026-09-23T06:00:00Z")).expect("write fixture");
     assert_eq!(read_recorded_fingerprint(&path), Some(fingerprint));
 }
 
@@ -372,10 +506,9 @@ fn resolve_uses_the_configured_model_or_the_catalog_default() {
     assert!(HttpChatTarget::resolve(&http_config("provider_surface.unknown", Some("m"))).is_none());
 }
 
-/// The session factory sends to the catalog transport URL, not to the
-/// endpoint `llm_api` stores, so the credential is resolved for that URL.
+/// Runtime and readiness use the same saved endpoint selector (#12560).
 #[test]
-fn resolve_targets_the_catalog_transport_url() {
+fn resolve_targets_the_saved_direct_http_endpoint() {
     let target =
         HttpChatTarget::resolve(&http_config(OLLAMA_SURFACE, Some("llama3"))).expect("resolves");
     let expected = provider_specs::resolved_transport_spec(
@@ -394,7 +527,7 @@ fn resolve_targets_the_catalog_transport_url() {
     }
     assert_eq!(
         HttpChatTarget::resolve(&proxied).expect("resolves").url,
-        expected
+        "https://gateway.example/v1"
     );
 }
 
@@ -439,7 +572,7 @@ async fn readiness_input_matches_only_the_recorded_fingerprint() {
         .fingerprint(&CredentialSource::NoAuth)
         .await
         .expect("fingerprint");
-    std::fs::write(&path, record(1, &current, "2026-09-23T06:00:00Z")).expect("write record");
+    std::fs::write(&path, record(2, &current, "2026-09-23T06:00:00Z")).expect("write record");
     assert!(
         http_chat_invocation_verified(&config, no_auth, Some(&path)).await,
         "matching record"
@@ -496,7 +629,7 @@ async fn readiness_asks_for_the_credential_of_the_target_session() {
         .fingerprint(&CredentialSource::NoAuth)
         .await
         .expect("fingerprint");
-    std::fs::write(&path, record(1, &current, "2026-09-23T06:00:00Z")).expect("write record");
+    std::fs::write(&path, record(2, &current, "2026-09-23T06:00:00Z")).expect("write record");
     assert!(http_chat_invocation_verified(&config, session_credential, Some(&path)).await);
     assert_eq!(
         *asked.lock(),
@@ -521,6 +654,7 @@ async fn rotating_the_secret_under_the_same_ref_changes_the_fingerprint() {
         first,
         http_chat_fingerprint(
             OPENAI_SURFACE,
+            TEST_ENDPOINT,
             "gpt-5.4",
             FingerprintCredential::Secret("sk-one")
         )

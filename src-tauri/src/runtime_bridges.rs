@@ -8,14 +8,32 @@ use tracing::{debug, info};
 pub(crate) struct RuntimeBridgeSpawner;
 
 impl RuntimeBridgeSpawner {
-    pub(crate) fn spawn_os_signal_bridge(handle: &Handle, shutdown_tx: &watch::Sender<bool>) {
+    /// #13933: SIGINT/SIGTERM quit through `AppHandle::exit`, the same path as
+    /// the tray Quit item. Tauri then runs `RunEvent::Exit` and ends the
+    /// process on the main thread once its event loop has stopped.
+    pub(crate) fn spawn_os_signal_bridge(
+        handle: &Handle,
+        app_handle: &AppHandle,
+        shutdown_tx: &watch::Sender<bool>,
+    ) {
         let signal_shutdown_tx = shutdown_tx.clone();
+        let exit_app_handle = app_handle.clone();
         handle.spawn(async move {
             let lifecycle = crate::lifecycle::LifecycleManager::default();
-            lifecycle.wait_for_signal().await;
-            info!("OS signal received — triggering shutdown");
-            if let Err(e) = signal_shutdown_tx.send(true) {
-                debug!("channel send failed: {e}");
+            let outcome = lifecycle
+                .wait_for_signal(move || {
+                    info!("OS signal received — requesting app exit");
+                    exit_app_handle.exit(0);
+                })
+                .await;
+            match outcome {
+                crate::lifecycle::SignalOutcome::ForceExit => std::process::exit(1),
+                crate::lifecycle::SignalOutcome::ListenerFailed => {
+                    info!("OS signal listener unavailable — triggering shutdown");
+                    if let Err(e) = signal_shutdown_tx.send(true) {
+                        debug!("channel send failed: {e}");
+                    }
+                }
             }
         });
     }

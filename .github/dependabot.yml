@@ -11,29 +11,15 @@ updates:
     # rustc 1.95 while the workspace declared 1.88.0 — a declaration the lockfile
     # had already stopped honouring. The workspace now declares 1.95.0, so the
     # gap this entry guarded no longer exists.
-    ignore:
-      # time 0.3.52 changed the `Parsable::parse` signature by adding parser
-      # defaults; cookie 0.18.1 still calls the one-argument API. This is an API
-      # incompatibility, NOT a version-range one — cookie 0.18.1 requires
-      # `time ^0.3`, so the range alone would happily accept 0.3.55.
-      #
-      # #11339: cookie 0.18.2 (2026-08-08) postdates that change and is the
-      # first version that could carry the fix, so this hold is releasable once
-      # the lockfile moves cookie forward. `test-release-export-guardrails.sh`
-      # derives that condition from the locked cookie version and will fail if
-      # this entry outlives it.
-      #
-      # Not released here: `time` already carries a deferred-audit exemption
-      # (#11281) sized at 21,951 insertions with 166 added unsafe lines in 88
-      # distinct forms. Bumping stacks more unaudited delta onto that backlog,
-      # which is a supply-chain decision rather than a dependency one.
-      - dependency-name: "time"
-        versions: [">=0.3.52"]
-      # Dependabot grouped cargo updater가 tauri-build 2.6.3 lockfile 갱신 중
-      # updater 내부 RuntimeError로 실패한다. updater 또는 Tauri 체인이 안정화될
-      # 때까지 정확히 해당 버전만 보류한다.
-      - dependency-name: "tauri-build"
-        versions: ["2.6.3"]
+    #
+    # #13995: the time hold is released too. time 0.3.52 changed the
+    # `Parsable::parse` signature by adding parser defaults, and cookie 0.18.1
+    # still called the one-argument API. The lockfile now carries cookie 0.18.3
+    # (the RUSTSEC-2026-0594 fix), which postdates that change, so the gap this
+    # entry guarded no longer exists. `test-release-export-guardrails.sh` derives
+    # the condition from the locked cookie version and fails if the hold comes
+    # back while cookie is at or past 0.18.2. A time bump still has to clear
+    # `cargo vet`: 0.3.51 is fully audited and the #11281 exemption is gone.
     groups:
       cargo-minor-patch:
         patterns: ["*"]

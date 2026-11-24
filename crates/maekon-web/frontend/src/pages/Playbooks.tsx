@@ -23,7 +23,8 @@ import {
 import { Button, EmptyState, GuidanceEmptyState, ListSkeleton, Select } from '../components/ui'
 import { Badge } from '../components/ui/Badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card'
-import { addToast } from '../hooks/useToast'
+import { addErrorToast, addToast } from '../hooks/useToast'
+import { useErrorDisplay } from '../i18n/errorDisplay'
 import { colors, iconSize, motion, typography } from '../styles/tokens'
 import type { BadgeColor } from '../styles/variants'
 import { cn } from '../utils/cn'
@@ -176,6 +177,7 @@ interface PresetCardProps {
 
 function PresetCard({ preset }: PresetCardProps) {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const queryClient = useQueryClient()
   const catColor: BadgeColor = categoryBadgeColor[preset.category] ?? 'default'
 
@@ -191,7 +193,7 @@ function PresetCard({ preset }: PresetCardProps) {
       addToast(result.success ? 'success' : 'error', result.message)
     },
     onError: (error: Error) => {
-      addToast('error', error.message)
+      addErrorToast(describeError(error, t('automation.runError')))
     },
   })
 

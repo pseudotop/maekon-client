@@ -69,7 +69,11 @@ impl<'a> BackgroundRuntimeCoordinator<'a> {
     }
 
     pub(crate) fn spawn_runtime_bridges(&self) {
-        RuntimeBridgeSpawner::spawn_os_signal_bridge(self.runtime_handle, &self.shutdown_tx);
+        RuntimeBridgeSpawner::spawn_os_signal_bridge(
+            self.runtime_handle,
+            &self.app_handle,
+            &self.shutdown_tx,
+        );
         RuntimeBridgeSpawner::spawn_realtime_event_bridge(
             self.runtime_handle,
             &self.app_handle,

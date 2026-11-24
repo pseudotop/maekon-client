@@ -26,7 +26,7 @@ Maekon은 ONESHIM 없이도 독립 사용 가능한 Apache-2.0 local-first 데�
 
 ## Source Build 빠른 시작
 
-공개 저장소는 준비되었고, 이 source snapshot은 `v0.0.1-rc.11` release
+공개 저장소는 준비되었고, 이 source snapshot은 `v0.0.1-rc.12` release
 candidate를 대상으로 합니다. 같은 GitHub Release와 자산이 실제로 존재할 때만
 게시된 버전으로 취급합니다. GitHub의 `latest` release endpoint는 prerelease를
 포함하지 않으므로 릴리즈 바이너리 테스트는 설치 문서의 버전 고정 명령을
@@ -152,7 +152,7 @@ Connected 모드는 opt-in 프리뷰 경로로만 제공됩니다.
 
 ## 요구 사항
 
-- Rust 1.88.0 이상
+- Rust 1.95.0 이상
 - macOS 10.15+ / Windows 10+ / Linux x64(X11 권장. Wayland에서는 트래킹 패널, 오버레이, "다음 할 일 찾기"를 쓸 수 없습니다)
 
 ### 플랫폼별 제한
@@ -258,31 +258,31 @@ cd crates/maekon-web/frontend && pnpm test:e2e
 
 ### 빠른 설치 (터미널)
 
-> 이 source snapshot의 prerelease 대상은 `v0.0.1-rc.11`입니다. 같은 GitHub
+> 이 source snapshot의 prerelease 대상은 `v0.0.1-rc.12`입니다. 같은 GitHub
 > Release에 자산이 게시된 뒤에만 아래 명령을 실행하세요. `latest` stable URL은
 > 첫 stable 릴리즈 전까지 사용할 수 없습니다.
 
 macOS / Linux:
 ```bash
 curl -fsSL -o /tmp/maekon-install.sh \
-  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.sh
-MAEKON_VERSION=v0.0.1-rc.11 bash /tmp/maekon-install.sh --require-signature
+  https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.sh
+MAEKON_VERSION=v0.0.1-rc.12 bash /tmp/maekon-install.sh --require-signature
 ```
 
 Windows (PowerShell):
 ```powershell
 $tmp = Join-Path $env:TEMP "maekon-install.ps1"
 Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.11/scripts/install.ps1" `
+  -Uri "https://raw.githubusercontent.com/pseudotop/maekon-client/v0.0.1-rc.12/scripts/install.ps1" `
   -OutFile $tmp
-powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.11 -RequireSignature
+powershell -ExecutionPolicy Bypass -File $tmp -Version v0.0.1-rc.12 -RequireSignature
 ```
 
 ### 릴리즈 아티팩트
 
 [Releases](https://github.com/pseudotop/maekon-client/releases)에서 플랫폼별 파일을 받을 수 있습니다.
 
-release-candidate source 버전은 `v0.0.1-rc.11`입니다. 아래 표는 설치 프로그램,
+release-candidate source 버전은 `v0.0.1-rc.12`입니다. 아래 표는 설치 프로그램,
 업데이터, checksum, signature 흐름에서 기대하는 자산 이름을 문서화하며, 실제
 게시 여부는 같은 GitHub Release를 정본으로 판단합니다.
 
@@ -368,19 +368,21 @@ Maekon은 앱 표시 이름입니다. 현재 릴리즈 파일명은 설치 프�
 
 ## 아키텍처
 
-Hexagonal Architecture (Ports & Adapters) 패턴을 따르는 15개 패키지 Cargo 워크스페이스입니다. 14개 크레이트는 `crates/` 아래에 있고, 메인 바이너리/composition root는 `src-tauri/` (Tauri v2, 패키지명 `maekon-app`)에 있습니다.
+Cargo 워크스페이스 구성은 [`Cargo.toml`](./Cargo.toml)의 members가 정본입니다. 크레이트는 `crates/`, `maekon-app` composition root는 `src-tauri/`에 있습니다.
 
 ```
 maekon-client/
 ├── src-tauri/              # Tauri v2 바이너리 진입점 + composition root
 │   ├── src/
-│   │   ├── main.rs         # Tauri 앱 빌더 + DI 연결
+│   │   ├── main.rs         # 라이브러리 maekon_app::run()을 호출하는 얇은 진입점
 │   │   ├── tray.rs         # 시스템 트레이 메뉴
 │   │   ├── commands/       # Tauri IPC 명령
 │   │   └── scheduler/      # 백그라운드 스케줄러
 │   └── tauri.conf.json     # Tauri 설정
 ├── crates/
 │   ├── maekon-core/       # 도메인 모델 + 포트 트레이트 + 에러 + 설정
+│   ├── maekon-http-core/  # 공통 outbound HTTP 기반
+│   ├── maekon-integration/ # 외부 integration adapter
 │   ├── maekon-network/    # HTTP/SSE/WebSocket/gRPC, 압축, 인증
 │   ├── maekon-suggestion/ # 제안 수신 및 처리
 │   ├── maekon-storage/    # SQLite 로컬 저장소 + 스키마 마이그레이션
@@ -405,6 +407,8 @@ maekon-client/
 | 크레이트 | 역할 | 문서 |
 |----------|------|------|
 | maekon-core | 도메인 모델, 포트 인터페이스 | [상세](./docs/crates/maekon-core.md) |
+| maekon-http-core | 공통 outbound HTTP 기반 | [source](./crates/maekon-http-core/) |
+| maekon-integration | 외부 integration adapter | [source](./crates/maekon-integration/) |
 | maekon-network | HTTP/SSE/WebSocket, 압축, 인증 | [상세](./docs/crates/maekon-network.md) |
 | maekon-vision | 캡처, 델타 인코딩, OCR | [상세](./docs/crates/maekon-vision.md) |
 | maekon-monitor | 시스템 지표, 활성 창 | [상세](./docs/crates/maekon-monitor.md) |
@@ -438,7 +442,7 @@ maekon-client/
 
 1. `maekon-core`에서 포트 트레이트를 정의합니다
 2. 해당 크레이트에서 어댑터를 구현합니다
-3. `src-tauri/src/main.rs`에서 DI를 연결합니다
+3. `src-tauri/src/lib.rs`와 `src-tauri/src/setup/`에서 DI를 연결합니다. `main.rs`는 라이브러리 호출만 위임합니다
 4. 테스트를 추가합니다
 
 ### 인스톨러 빌드

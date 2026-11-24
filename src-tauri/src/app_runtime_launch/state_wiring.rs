@@ -34,6 +34,7 @@ pub(super) struct ManagedStateWiringParts {
     pub(super) magic_overlay: MagicOverlayHandle,
     pub(super) coaching_engine: Arc<maekon_analysis::CoachingEngine>,
     pub(super) capture_paused: Arc<AtomicBool>,
+    pub(super) capture_pause_state: Arc<maekon_core::ports::vision::CapturePauseState>,
     pub(super) indicator_visible: Arc<AtomicBool>,
     pub(super) server_connected: Arc<AtomicBool>,
     pub(super) llm_connected: Arc<AtomicBool>,
@@ -85,6 +86,7 @@ pub(super) fn build_managed_state_builder(parts: ManagedStateWiringParts) -> Man
         magic_overlay,
         coaching_engine,
         capture_paused,
+        capture_pause_state,
         indicator_visible,
         server_connected,
         llm_connected,
@@ -168,6 +170,7 @@ pub(super) fn build_managed_state_builder(parts: ManagedStateWiringParts) -> Man
                 coaching_engine as Arc<dyn maekon_core::ports::coaching::CoachingPort>,
             ),
             capture_paused,
+            capture_pause_state,
             indicator_visible,
             connection: ConnectionStatus {
                 server_connected,

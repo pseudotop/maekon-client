@@ -7,8 +7,10 @@ import { Settings2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AiSummaryArtifact, CreateOverrideRequest, RegimeOverride } from '../api/contracts'
+import { workTypeLabel } from '../features/activityLabels'
 import { colors, motion, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
+import { formatMinutes } from '../utils/formatters'
 import SegmentContextMenu from './SegmentContextMenu'
 import { Badge, Card, Spinner } from './ui'
 
@@ -171,7 +173,10 @@ export default function TimelineView({
                     backgroundColor: `${entry.regime_color}15`,
                   }}
                   onClick={() => handleClick(entry.segment_id)}
-                  aria-label={`${entry.regime_label} ${entry.duration_mins} minutes - click to expand`}
+                  aria-label={t('timeline.entryExpandLabel', {
+                    regime: entry.regime_label,
+                    duration: formatMinutes(entry.duration_mins),
+                  })}
                   aria-expanded={isExpanded}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -191,7 +196,7 @@ export default function TimelineView({
                           {getOverrideLabel(override)}
                         </Badge>
                       )}
-                      <span className={cn('text-xs', colors.text.tertiary)}>{entry.duration_mins}m</span>
+                      <span className={cn('text-xs', colors.text.tertiary)}>{formatMinutes(entry.duration_mins)}</span>
                     </div>
                   </div>
                   <span className={cn('text-xs', colors.text.secondary)}>{entry.dominant_app}</span>
@@ -205,7 +210,7 @@ export default function TimelineView({
                           className="flex items-center gap-1.5"
                         >
                           <span className={cn('text-xs', colors.text.tertiary)}>
-                            {item.work_type} ({item.mins}m)
+                            {workTypeLabel(item.work_type, t)} ({formatMinutes(item.mins)})
                           </span>
                           <span className={cn('truncate text-xs', colors.text.secondary)}>{item.content}</span>
                         </div>

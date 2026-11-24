@@ -166,6 +166,30 @@ describe('ChatHttpVerification (#12530)', () => {
     expect(invalidateQueries).not.toHaveBeenCalled()
   })
 
+  it('hands every finished check to its owner, a rejected command included (#13734)', async () => {
+    const onOutcome = vi.fn()
+    verifyChatHttpProvider
+      .mockResolvedValueOnce({ status: 'provider_error' })
+      .mockRejectedValueOnce({ code: 'service.unavailable', message: 'session manager not available' })
+      .mockResolvedValueOnce({ status: 'verified' })
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ChatHttpVerification
+          snapshot={snapshot('chat.http_api', 'provider_invocation_unverified')}
+          hasUnsavedChanges={false}
+          onOutcome={onOutcome}
+        />
+      </QueryClientProvider>,
+    )
+
+    for (const expected of ['provider_error', 'failed', 'verified']) {
+      fireEvent.click(screen.getByTestId('settings-chat-http-verify'))
+      await waitFor(() => expect(onOutcome).toHaveBeenLastCalledWith(expected))
+      expect(screen.getByTestId('settings-chat-http-verification-result')).toHaveAttribute('data-status', expected)
+    }
+    expect(onOutcome).toHaveBeenCalledTimes(3)
+  })
+
   it('waits for unsaved settings, because the check uses the saved configuration', () => {
     renderPanel(snapshot('chat.http_api', 'provider_invocation_unverified'), true)
 

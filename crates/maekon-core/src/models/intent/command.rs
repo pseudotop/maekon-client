@@ -17,11 +17,22 @@ pub struct IntentResult {
     pub error: Option<String>,
 }
 
+/// What post-action verification observed on screen.
+///
+/// Present only when the screen was actually sampled before and after the
+/// action; the executor reports `None` instead of inferring a change from the
+/// action result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
+    /// Some tile differs between the pre-action and the final sample.
     pub screen_changed: bool,
+    /// Number of changed 16 px tiles (every tile when the screen size changed).
     pub changed_regions: usize,
     pub text_found: Option<bool>,
+    /// The screen ended unchanged for the settle quiet period. `None` for
+    /// results produced without settle sampling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled: Option<bool>,
 }
 
 // NOTE: Debug is hand-written (not derived) to mask `policy_token` (#7600).
@@ -66,6 +77,9 @@ pub struct IntentConfig {
     pub retry_interval_ms: u64,
     #[serde(default = "default_verify")]
     pub verify_after_action: bool,
+    /// With a screen probe attached, the upper bound on waiting for the screen
+    /// to settle after an action (capped by `SettlePolicy::MAX_TIMEOUT_MS`).
+    /// Without one, a fixed pause after the action.
     #[serde(default = "default_verify_delay_ms")]
     pub verify_delay_ms: u64,
 }

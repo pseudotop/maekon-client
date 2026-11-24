@@ -33,7 +33,7 @@ use crate::common::{make_jwt_config, make_tls_channel, next_test_port, spawn_ser
 /// blob (D26).  The CapturingAudit mock extracts this from the JSON details.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_audit_denied_for_permission_denied() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let capturing = CapturingAudit::new();
     cfg.audit_port = capturing.clone() as Arc<dyn AuditLogPort>;
@@ -45,8 +45,9 @@ async fn external_grpc_audit_denied_for_permission_denied() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     // Set a "host" metadata header to a non-allowlisted authority — this is the
@@ -81,7 +82,7 @@ async fn external_grpc_audit_denied_for_permission_denied() {
 
     // Extract Denied entry with grpc_status_code — drop lock before any await.
     let (denied_count, grpc_code, entries_debug) = {
-        let entries = capturing.entries.lock().unwrap();
+        let entries = capturing.snapshot();
         let denied: Vec<_> = entries
             .iter()
             .filter(|e| matches!(e.status, AuditStatus::Denied))
@@ -115,7 +116,7 @@ async fn external_grpc_audit_denied_for_permission_denied() {
 ///   proving D26 raw-code persistence for the success path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_audit_completed_entry_written_after_ok_response() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let capturing = CapturingAudit::new();
     cfg.audit_port = capturing.clone() as Arc<dyn AuditLogPort>;
@@ -127,8 +128,9 @@ async fn external_grpc_audit_completed_entry_written_after_ok_response() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
     let mut req = tonic::Request::new(GetAgentInfoRequest {});
     req.metadata_mut().insert(
@@ -147,7 +149,7 @@ async fn external_grpc_audit_completed_entry_written_after_ok_response() {
     // Copy all needed data into locals + drop the lock BEFORE any `await` to avoid
     // `await_holding_lock` clippy — std::sync::MutexGuard is not `Send`.
     let (started_count, completed_count, completed_cmd_id, completed_grpc_code, entries_debug) = {
-        let entries = capturing.entries.lock().unwrap();
+        let entries = capturing.snapshot();
         let started = entries
             .iter()
             .filter(|e| matches!(e.status, AuditStatus::Started))
@@ -208,7 +210,7 @@ async fn external_grpc_audit_completed_entry_written_after_ok_response() {
 /// acceptable since skip_serializing_if drops zero values).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn external_grpc_streaming_audit_records_message_count() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let capturing = CapturingAudit::new();
     cfg.audit_port = capturing.clone() as Arc<dyn AuditLogPort>;
@@ -220,8 +222,9 @@ async fn external_grpc_streaming_audit_records_message_count() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     let mut req = tonic::Request::new(SubscribeEventsRequest::default());
@@ -242,7 +245,7 @@ async fn external_grpc_streaming_audit_records_message_count() {
     // Copy counts into locals + drop the lock BEFORE any `await` to avoid
     // `await_holding_lock` clippy — std::sync::MutexGuard is not `Send`.
     let (has_subscribe_row, entries_debug) = {
-        let entries = capturing.entries.lock().unwrap();
+        let entries = capturing.snapshot();
         // There must be at least a Started row for the subscribe_events call.
         // The Completed row may or may not appear depending on timing and
         // whether tonic has drained the trailer — at minimum, the audit trail
@@ -541,7 +544,7 @@ async fn spawn_server_with_fixture_service(
 /// previous body-trailer-only observation defaulted to `Completed`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_audit_denied_when_handler_returns_permission_denied() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let capturing = CapturingAudit::new();
     cfg.audit_port = capturing.clone() as Arc<dyn AuditLogPort>;
@@ -554,8 +557,9 @@ async fn external_grpc_audit_denied_when_handler_returns_permission_denied() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     let mut req = tonic::Request::new(GetAgentInfoRequest {});
@@ -578,7 +582,7 @@ async fn external_grpc_audit_denied_when_handler_returns_permission_denied() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     let (denied_count, grpc_code, entries_debug) = {
-        let entries = capturing.entries.lock().unwrap();
+        let entries = capturing.snapshot();
         let denied: Vec<_> = entries
             .iter()
             .filter(|e| matches!(e.status, AuditStatus::Denied))
@@ -610,7 +614,7 @@ async fn external_grpc_audit_denied_when_handler_returns_permission_denied() {
 /// `AuditStatus::Timeout` + `grpc_status_code=1`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_audit_timeout_when_handler_returns_cancelled() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let capturing = CapturingAudit::new();
     cfg.audit_port = capturing.clone() as Arc<dyn AuditLogPort>;
@@ -623,8 +627,9 @@ async fn external_grpc_audit_timeout_when_handler_returns_cancelled() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     let mut req =
@@ -647,7 +652,7 @@ async fn external_grpc_audit_timeout_when_handler_returns_cancelled() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     let (timeout_count, grpc_code, entries_debug) = {
-        let entries = capturing.entries.lock().unwrap();
+        let entries = capturing.snapshot();
         let timeout: Vec<_> = entries
             .iter()
             .filter(|e| matches!(e.status, AuditStatus::Timeout))
@@ -677,7 +682,7 @@ async fn external_grpc_audit_timeout_when_handler_returns_cancelled() {
 /// AuditLayer records `AuditStatus::Failed` + `grpc_status_code=13`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_audit_failed_when_handler_returns_internal() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let capturing = CapturingAudit::new();
     cfg.audit_port = capturing.clone() as Arc<dyn AuditLogPort>;
@@ -689,8 +694,9 @@ async fn external_grpc_audit_failed_when_handler_returns_internal() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     let mut req = tonic::Request::new(GetAgentInfoRequest {});
@@ -712,7 +718,7 @@ async fn external_grpc_audit_failed_when_handler_returns_internal() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     let (failed_count, grpc_code, entries_debug) = {
-        let entries = capturing.entries.lock().unwrap();
+        let entries = capturing.snapshot();
         let failed: Vec<_> = entries
             .iter()
             .filter(|e| matches!(e.status, AuditStatus::Failed))
@@ -752,7 +758,7 @@ async fn external_grpc_audit_failed_when_handler_returns_internal() {
 /// (mapped to `Completed`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn external_grpc_audit_completed_when_client_drops_before_trailer() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let capturing = CapturingAudit::new();
     cfg.audit_port = capturing.clone() as Arc<dyn AuditLogPort>;
@@ -765,8 +771,9 @@ async fn external_grpc_audit_completed_when_client_drops_before_trailer() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     let mut req =
@@ -816,7 +823,7 @@ async fn external_grpc_audit_completed_when_client_drops_before_trailer() {
     // silently matches both Started+Completed rows; the msg_count assertion
     // would fail with 0 because Started rows have no count to extract.
     let (completion_row_count, msg_count, entries_debug) = {
-        let entries = capturing.entries.lock().unwrap();
+        let entries = capturing.snapshot();
         let completion_rows: Vec<_> = entries
             .iter()
             .filter(|e| {

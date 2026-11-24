@@ -2,10 +2,94 @@ use chrono::Utc;
 use maekon_core::config::{AppConfig, PrivacyConfig};
 use maekon_core::models::context::{UserContext, WindowBounds};
 use maekon_core::models::focused_element::{AccessibilityElement, FocusedElementInfo};
+use maekon_core::models::frame::OcrRegion;
+use maekon_core::models::gui_activity::GuiActivitySummary;
 use maekon_core::ports::monitor::ActivityMonitor;
-use maekon_core::ports::vision::FrameProcessor;
+use maekon_core::ports::vision::{CapturePauseState, FrameProcessor};
 use maekon_vision::ring_buffer::{CaptureRingBuffer, RingFrame};
 use std::time::{Duration, Instant};
+// Normal ZIP/HMAC dependencies enable digest's public zeroize re-export.
+use sha2::digest::zeroize::Zeroize;
+
+use crate::scheduler::gui_pipeline::GuiPipelineState;
+
+pub(super) fn clear_capture_pixels(
+    frame: &mut Option<(Vec<u8>, u32, u32)>,
+    regions: &mut Vec<OcrRegion>,
+) {
+    if let Some((mut pixels, _, _)) = frame.take() {
+        pixels.zeroize();
+    }
+    for region in regions.iter_mut() {
+        region.text.zeroize();
+    }
+    regions.clear();
+}
+
+/// Bind retained monitor content to the shared pause generation, including ABA.
+/// This is a cache veto, not capture permission or cancellation of in-flight work.
+#[derive(Default)]
+pub(super) struct CaptureCacheEpoch(Option<u64>);
+
+#[derive(Clone, Copy)]
+pub(super) struct CaptureCacheDecision {
+    preserve: bool,
+    proceed: bool,
+    pub(super) pause_epoch: Option<u64>,
+}
+
+impl CaptureCacheEpoch {
+    pub(super) fn observe(
+        &mut self,
+        allowed: bool,
+        pause: &CapturePauseState,
+    ) -> CaptureCacheDecision {
+        let current = pause.snapshot().ok().filter(|_| allowed);
+        let preserve = current.is_some() && self.0 == current;
+        self.0 = current;
+        CaptureCacheDecision {
+            preserve,
+            proceed: current.is_some(),
+            pause_epoch: current,
+        }
+    }
+}
+
+/// Retire closed or superseded cache before any next-tick consumer runs.
+/// A fresh open epoch may proceed after cleanup; an unavailable epoch may not.
+pub(super) fn discard_closed_capture_cache(
+    decision: CaptureCacheDecision,
+    ring: &CaptureRingBuffer,
+    frame: &mut Option<(Vec<u8>, u32, u32)>,
+    regions: &mut Vec<OcrRegion>,
+    focused: &mut Option<FocusedElementInfo>,
+    summary: &mut Option<GuiActivitySummary>,
+    gui: Option<&mut GuiPipelineState>,
+) -> bool {
+    if decision.preserve {
+        return false;
+    }
+    ring.clear();
+    clear_capture_pixels(frame, regions);
+    if let Some(mut element) = focused.take() {
+        if let Some(label) = element.label.as_mut() {
+            label.zeroize();
+        }
+        if let Some(text) = element.extracted_text.as_mut() {
+            text.zeroize();
+        }
+    }
+    *summary = None;
+    if let Some(state) = gui {
+        // Discard the accumulator result instead of publishing it after resume.
+        let _ = state.aggregator.flush();
+        state.uncertain_queue.clear();
+        state.pending_summaries.clear();
+        state.app_type_cache.clear();
+        state.feedback_tick_counter = 0;
+    }
+    !decision.proceed
+}
 
 /// Capture-time exclusion decision for one monitor tick (#7909, T1.1).
 ///
@@ -43,8 +127,8 @@ pub(super) fn tick_capture_excluded(
 /// are taken from the tick-start snapshot, but the actual grab happens later in
 /// the tick. If the user switched windows in between, the grab would pair stale
 /// metadata with fresh pixels — and could capture an app that became frontmost
-/// after the tick-start exclusion check. A failed re-read reports `false`
-/// (fail-open: a transient monitor error must not silently drop every capture).
+/// after the tick-start exclusion check. Missing or failed observations veto
+/// the grab; unavailable foreground information is not evidence of stability.
 pub(super) async fn frontmost_app_switched_since(
     activity_monitor: &dyn ActivityMonitor,
     snapshot_app: &str,
@@ -53,8 +137,8 @@ pub(super) async fn frontmost_app_switched_since(
         Ok(ctx) => ctx
             .active_window
             .map(|window| window.app_name != snapshot_app)
-            .unwrap_or(false),
-        Err(_) => false,
+            .unwrap_or(true),
+        Err(_) => true,
     }
 }
 
@@ -129,30 +213,87 @@ impl RingThumbnailCadence {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Late observation shared by ring and main/post acquisition routes.
+/// App names and the existing visible-owner adapter are not native scene permits.
+pub(super) struct CaptureGrabGuard<'a> {
+    pub(super) activity_monitor: &'a dyn ActivityMonitor,
+    pub(super) snapshot_app: &'a str,
+    pub(super) config: Option<&'a AppConfig>,
+    pub(super) visible_apps: &'a (dyn Fn() -> Vec<String> + Sync),
+}
+
+impl CaptureGrabGuard<'_> {
+    pub(super) async fn denied(&self) -> bool {
+        frontmost_app_switched_since(self.activity_monitor, self.snapshot_app).await
+            || any_excluded_app_visible(self.config, &(self.visible_apps)())
+    }
+}
+
+pub(super) struct RingThumbnailContext<'a> {
+    pub(super) guard: CaptureGrabGuard<'a>,
+    pub(super) pause: &'a CapturePauseState,
+    pub(super) accepted_epoch: Option<u64>,
+    pub(super) window_title: &'a str,
+    pub(super) focused_element: Option<&'a FocusedElementInfo>,
+    pub(super) window_bounds: Option<&'a WindowBounds>,
+}
+
+impl RingThumbnailContext<'_> {
+    fn pause_denied(&self) -> bool {
+        self.accepted_epoch
+            .is_none_or(|epoch| self.pause.check(epoch).is_err())
+    }
+
+    /// Recheck the tick's epoch after the asynchronous app observation.
+    pub(super) async fn denied(&self, ring: &CaptureRingBuffer) -> bool {
+        let denied = self.pause_denied() || self.guard.denied().await || self.pause_denied();
+        if denied {
+            ring.clear();
+        }
+        denied
+    }
+}
+
 pub(super) async fn capture_ring_thumbnail_if_due(
     cadence: &mut RingThumbnailCadence,
     processor: &dyn FrameProcessor,
     ring_buffer: &CaptureRingBuffer,
-    app_name: &str,
-    window_title: &str,
-    focused_element: Option<&FocusedElementInfo>,
-    window_bounds: Option<&WindowBounds>,
+    context: &RingThumbnailContext<'_>,
     throttle: Duration,
 ) {
+    if context.pause_denied() {
+        ring_buffer.clear();
+        return;
+    }
     if !cadence.should_capture(Instant::now(), throttle) {
         return;
     }
+    if context.denied(ring_buffer).await {
+        return;
+    }
 
-    // #8054 P2-3: capture the monitor holding the active window so the dashcam
-    // pre-event ring buffer follows the user across displays.
-    if let Ok(thumb_data) = processor.capture_thumbnail(window_bounds).await {
+    // The processor may yield while acquiring pixels. Observe again before
+    // retaining them, and retire prior ring content on a late policy denial.
+    let thumbnail = processor.capture_thumbnail(context.window_bounds).await;
+    if context.pause_denied() {
+        if let Ok(mut pixels) = thumbnail {
+            pixels.zeroize();
+        }
+        ring_buffer.clear();
+        return;
+    }
+    if let Ok(mut thumb_data) = thumbnail {
+        if context.denied(ring_buffer).await {
+            thumb_data.zeroize();
+            return;
+        }
         ring_buffer.push(RingFrame {
             timestamp: Utc::now(),
             thumbnail_data: thumb_data,
-            app_name: app_name.to_string(),
-            window_title: window_title.to_string(),
-            accessibility_elements: focused_element
+            app_name: context.guard.snapshot_app.to_string(),
+            window_title: context.window_title.to_string(),
+            accessibility_elements: context
+                .focused_element
                 .map(|focused| {
                     vec![AccessibilityElement {
                         role: focused.role.clone(),
@@ -166,187 +307,4 @@ pub(super) async fn capture_ring_thumbnail_if_due(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use maekon_core::error::CoreError;
-    use maekon_core::models::context::WindowInfo;
-
-    /// Minimal `ActivityMonitor` double returning a fixed active-window app
-    /// name (or an error) so the grab-time TOCTOU re-check is testable without
-    /// a live window server.
-    struct StubActivityMonitor {
-        active_app: Option<String>,
-        fail: bool,
-    }
-
-    #[async_trait]
-    impl ActivityMonitor for StubActivityMonitor {
-        async fn collect_context(&self) -> Result<UserContext, CoreError> {
-            if self.fail {
-                return Err(CoreError::Internal {
-                    code: maekon_core::error_codes::InternalCode::Generic,
-                    message: "stub failure".to_string(),
-                });
-            }
-            let active_window = self.active_app.as_ref().map(|app| WindowInfo {
-                title: "Doc".to_string(),
-                app_name: app.clone(),
-                app_bundle_id: None,
-                pid: 1,
-                bounds: None,
-            });
-            Ok(UserContext {
-                timestamp: Utc::now(),
-                active_window,
-                processes: vec![],
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn frontmost_switch_detected_when_app_changed() {
-        let monitor = StubActivityMonitor {
-            active_app: Some("Terminal".to_string()),
-            fail: false,
-        };
-        // Snapshot said "Notes" but the frontmost is now "Terminal" → switched.
-        assert!(frontmost_app_switched_since(&monitor, "Notes").await);
-        // Same app → no switch.
-        assert!(!frontmost_app_switched_since(&monitor, "Terminal").await);
-    }
-
-    #[tokio::test]
-    async fn frontmost_switch_fails_open_on_monitor_error() {
-        let monitor = StubActivityMonitor {
-            active_app: None,
-            fail: true,
-        };
-        // A transient monitor error must NOT report a switch (fail-open: never
-        // silently drop every capture).
-        assert!(!frontmost_app_switched_since(&monitor, "Notes").await);
-    }
-
-    #[test]
-    fn excluded_app_visible_flags_background_sensitive_window() {
-        let mut cfg = AppConfig::default_config();
-        cfg.privacy = PrivacyConfig {
-            excluded_apps: vec!["Slack".to_string()],
-            ..Default::default()
-        };
-        // A background Slack window sharing the display → occlusion guard trips.
-        assert!(any_excluded_app_visible(
-            Some(&cfg),
-            &["Chrome".to_string(), "Slack".to_string()],
-        ));
-        // Only non-excluded apps visible → no skip.
-        assert!(!any_excluded_app_visible(
-            Some(&cfg),
-            &["Chrome".to_string(), "Notes".to_string()],
-        ));
-    }
-
-    #[test]
-    fn excluded_app_visible_uses_fail_safe_default_without_config() {
-        // No config → PrivacyConfig::default() (auto_exclude_sensitive = true)
-        // must still flag a visible sensitive app.
-        assert!(any_excluded_app_visible(None, &["1Password".to_string()]));
-        assert!(!any_excluded_app_visible(None, &["Chrome".to_string()]));
-    }
-
-    #[test]
-    fn active_window_snapshot_defaults_without_window() {
-        let ctx = UserContext {
-            timestamp: Utc::now(),
-            active_window: None,
-            processes: vec![],
-        };
-
-        let snapshot = ActiveWindowSnapshot::from_context(&ctx);
-        assert!(snapshot.app_name.is_empty());
-        assert!(snapshot.window_title.is_empty());
-        assert!(snapshot.window_bounds.is_none());
-        assert!(snapshot.app_bundle_id.is_none());
-    }
-
-    #[test]
-    fn active_window_snapshot_keeps_window_target_fields() {
-        let bounds = WindowBounds {
-            x: 10,
-            y: 20,
-            width: 300,
-            height: 200,
-        };
-        let ctx = UserContext {
-            timestamp: Utc::now(),
-            active_window: Some(WindowInfo {
-                title: "Notes".to_string(),
-                app_name: "Notes.app".to_string(),
-                app_bundle_id: Some("com.apple.Notes".to_string()),
-                pid: 44,
-                bounds: Some(bounds),
-            }),
-            processes: vec![],
-        };
-
-        let snapshot = ActiveWindowSnapshot::from_context(&ctx);
-        assert_eq!(snapshot.app_name, "Notes.app");
-        assert_eq!(snapshot.window_title, "Notes");
-        assert!(snapshot.window_bounds.is_some());
-        let actual_bounds = snapshot.window_bounds.unwrap();
-        assert_eq!(actual_bounds.x, bounds.x);
-        assert_eq!(actual_bounds.y, bounds.y);
-        assert_eq!(actual_bounds.width, bounds.width);
-        assert_eq!(actual_bounds.height, bounds.height);
-        assert_eq!(snapshot.app_bundle_id.as_deref(), Some("com.apple.Notes"));
-    }
-
-    #[test]
-    fn ring_thumbnail_cadence_respects_capture_throttle() {
-        let mut cadence = RingThumbnailCadence::default();
-        let throttle = Duration::from_secs(5);
-        let start = Instant::now();
-
-        assert!(cadence.should_capture(start, throttle));
-        assert!(!cadence.should_capture(start + Duration::from_secs(1), throttle));
-        assert!(!cadence.should_capture(start + Duration::from_secs(4), throttle));
-        assert!(cadence.should_capture(start + Duration::from_secs(5), throttle));
-    }
-
-    #[test]
-    fn tick_capture_excluded_matches_configured_excluded_app() {
-        let mut cfg = AppConfig::default_config();
-        cfg.privacy = PrivacyConfig {
-            excluded_apps: vec!["Slack".to_string()],
-            ..Default::default()
-        };
-
-        assert!(tick_capture_excluded(Some(&cfg), "Slack", "General"));
-        assert!(!tick_capture_excluded(Some(&cfg), "Chrome", "Google"));
-    }
-
-    #[test]
-    fn tick_capture_excluded_auto_excludes_sensitive_app_by_default() {
-        let cfg = AppConfig::default_config();
-        assert!(tick_capture_excluded(Some(&cfg), "1Password", "Unlock"));
-    }
-
-    #[test]
-    fn tick_capture_excluded_without_config_stays_fail_safe_for_sensitive_apps() {
-        // No config snapshot → PrivacyConfig::default() (auto_exclude_sensitive
-        // = true) must still auto-exclude sensitive apps.
-        assert!(tick_capture_excluded(None, "1Password", "Unlock"));
-        assert!(!tick_capture_excluded(None, "Chrome", "Google"));
-    }
-
-    #[test]
-    fn tick_capture_excluded_respects_auto_exclude_opt_out() {
-        let mut cfg = AppConfig::default_config();
-        cfg.privacy = PrivacyConfig {
-            auto_exclude_sensitive: false,
-            ..Default::default()
-        };
-
-        assert!(!tick_capture_excluded(Some(&cfg), "1Password", "Unlock"));
-    }
-}
+mod tests;

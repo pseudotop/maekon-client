@@ -8,14 +8,14 @@
  * rename goes red.
  */
 
-import { fireEvent, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../__tests__/helpers/render-helpers'
 import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../api/contracts'
 import type { VaultLastCycleSummary } from '../../api/vault'
 import * as toastModule from '../../hooks/useToast'
+import i18n from '../../i18n'
 import en from '../../i18n/locales/en.json'
-import wireErrors from '../../i18n/wire-errors.en.json'
 import MemoryVaultSettings from './MemoryVaultSettings'
 
 // `api/vault` and `api/client` both dynamically import @tauri-apps/api/core, so
@@ -154,7 +154,7 @@ function mockVaultIpc(handlers: Handlers = {}) {
 const copy = en.settings.memoryVault
 
 /**
- * `ToggleRow` wraps the checkbox in a `<label>` whose text content is the label
+ * `ToggleRow` wraps the switch in a `<label>` whose text content is the label
  * AND the description, so the computed accessible name is the concatenation.
  * Match the label as a substring rather than pinning that concatenation.
  */
@@ -173,7 +173,7 @@ describe('MemoryVaultSettings — enable gate', () => {
     mockVaultIpc()
     renderWithProviders(<MemoryVaultSettings />)
 
-    const toggle = await screen.findByRole('checkbox', { name: ENABLE_TOGGLE })
+    const toggle = await screen.findByRole('switch', { name: ENABLE_TOGGLE })
     expect(toggle).not.toBeChecked()
     expect(screen.getByText(copy.oneWayNotice)).toBeInTheDocument()
   })
@@ -185,7 +185,7 @@ describe('MemoryVaultSettings — enable gate', () => {
     mockVaultIpc()
     renderWithProviders(<MemoryVaultSettings />)
 
-    const toggle = await screen.findByRole('checkbox', { name: ENABLE_TOGGLE })
+    const toggle = await screen.findByRole('switch', { name: ENABLE_TOGGLE })
     const describedBy = toggle.getAttribute('aria-describedby')
     expect(describedBy).toBe('memory-vault-one-way-disclosure')
     const disclosure = document.getElementById(describedBy as string)
@@ -199,7 +199,7 @@ describe('MemoryVaultSettings — enable gate', () => {
     mockVaultIpc({ settings: { enabled: true }, consent: consentSnapshot('Valid') })
     renderWithProviders(<MemoryVaultSettings />)
 
-    const toggle = await screen.findByRole('checkbox', { name: ENABLE_TOGGLE })
+    const toggle = await screen.findByRole('switch', { name: ENABLE_TOGGLE })
     expect(toggle).not.toBeChecked()
     expect(screen.getByText(copy.consentPending)).toBeInTheDocument()
   })
@@ -211,7 +211,7 @@ describe('MemoryVaultSettings — enable gate', () => {
     })
     renderWithProviders(<MemoryVaultSettings />)
 
-    const toggle = await screen.findByRole('checkbox', { name: ENABLE_TOGGLE })
+    const toggle = await screen.findByRole('switch', { name: ENABLE_TOGGLE })
     expect(toggle).not.toBeChecked()
   })
 
@@ -222,7 +222,7 @@ describe('MemoryVaultSettings — enable gate', () => {
     })
     renderWithProviders(<MemoryVaultSettings />)
 
-    const toggle = await screen.findByRole('checkbox', { name: ENABLE_TOGGLE })
+    const toggle = await screen.findByRole('switch', { name: ENABLE_TOGGLE })
     expect(toggle).toBeChecked()
     expect(screen.queryByText(copy.consentPending)).not.toBeInTheDocument()
   })
@@ -233,7 +233,7 @@ describe('MemoryVaultSettings — enable gate', () => {
     })
     renderWithProviders(<MemoryVaultSettings />)
 
-    const toggle = await screen.findByRole('checkbox', { name: ENABLE_TOGGLE })
+    const toggle = await screen.findByRole('switch', { name: ENABLE_TOGGLE })
     fireEvent.click(toggle)
 
     await waitFor(() => expect(ipc.of('set_consent')).toHaveLength(1))
@@ -255,7 +255,7 @@ describe('MemoryVaultSettings — enable gate', () => {
     })
     renderWithProviders(<MemoryVaultSettings />)
 
-    const toggle = await screen.findByRole('checkbox', { name: ENABLE_TOGGLE })
+    const toggle = await screen.findByRole('switch', { name: ENABLE_TOGGLE })
     fireEvent.click(toggle)
 
     await waitFor(() => expect(ipc.of('set_consent')).toHaveLength(1))
@@ -502,10 +502,14 @@ describe('MemoryVaultSettings — Export now', () => {
 
     await waitFor(() => expect(toastSpy).toHaveBeenCalledWith('error', copy.exportFailed))
     const alert = await screen.findByRole('alert')
-    // `describeIpcError` routed the registry code through the localized
-    // wire-error catalog: the sentence carries the catalog prefix, not just the
-    // raw Rust Display string the command threw.
-    expect(alert.textContent).toContain(wireErrors['storage.failed'].split('{')[0].trim())
+    // The catalog sentence is primary; the original Rust diagnostic is collapsed.
+    expect(alert.querySelector('p')).toHaveTextContent('Local storage operation failed')
+    expect(alert.querySelector('p')).not.toHaveTextContent('disk full')
+    const details = within(alert).getByTestId('support-details')
+    expect(details).not.toHaveAttribute('open')
+    expect(within(details).getByTestId('support-details-text')).toHaveTextContent(
+      'storage.failed: Storage error [storage.failed]: disk full',
+    )
     toastSpy.mockRestore()
   })
 })
@@ -576,5 +580,47 @@ describe('MemoryVaultSettings — degraded environments', () => {
     renderWithProviders(<MemoryVaultSettings />)
 
     await waitFor(() => expect(screen.getByText(copy.windowOutOfBound.replace('{{days}}', '120'))).toBeInTheDocument())
+  })
+})
+
+describe('Vault diagnostic separation (#13756)', () => {
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    toastModule.clearToasts()
+    await i18n.changeLanguage('en')
+  })
+  it.each([
+    ['en', 'Something went wrong. Try again.'],
+    ['ko', '문제가 발생했습니다. 다시 시도하세요.'],
+    ['ja', '問題が発生しました。もう一度お試しください。'],
+    ['zh-CN', '出现了问题。请重试。'],
+    ['es', 'Algo salió mal. Inténtelo de nuevo.'],
+  ])('keeps preview read-only and requires acknowledgement after recovery in %s', async (language, generic) => {
+    await i18n.changeLanguage(language)
+    const fixture: Handlers = {
+      failWith: { cmd: 'set_vault_mirror_path', error: { code: 'future.vault', message: 'path probe diagnostic' } },
+    }
+    const ipc = mockVaultIpc(fixture)
+    renderWithProviders(<MemoryVaultSettings />)
+    const input = await screen.findByRole('textbox')
+    fireEvent.change(input, { target: { value: '/tmp/chosen-vault' } })
+    fireEvent.click(screen.getByTestId('vault-propose-path'))
+    const details = await screen.findByTestId('support-details')
+    expect(details.previousElementSibling).toHaveTextContent(generic)
+    expect(details.previousElementSibling).not.toHaveTextContent('path probe diagnostic')
+    expect(details).not.toHaveAttribute('open')
+    expect(within(details).getByTestId('support-details-text')).toHaveTextContent('future.vault: path probe diagnostic')
+    expect(ipc.of('set_vault_mirror_path')).toHaveLength(1)
+    expect(ipc.of('set_vault_mirror_path')[0].args).toEqual({ path: '/tmp/chosen-vault', acknowledged: false })
+    fixture.failWith = undefined
+    fireEvent.click(screen.getByTestId('vault-propose-path'))
+    const confirm = await screen.findByTestId('vault-confirm-path')
+    expect(confirm).toBeDisabled()
+    expect(ipc.of('set_vault_mirror_path').every(({ args }) => args?.acknowledged === false)).toBe(true)
+    fireEvent.click(screen.getByTestId('vault-acknowledge'))
+    fireEvent.click(confirm)
+    await waitFor(() => expect(ipc.of('set_vault_mirror_path')).toHaveLength(3))
+    expect(ipc.of('set_vault_mirror_path')[2].args).toEqual({ path: '/tmp/chosen-vault', acknowledged: true })
+    expect(screen.queryByTestId('support-details')).toBeNull()
   })
 })

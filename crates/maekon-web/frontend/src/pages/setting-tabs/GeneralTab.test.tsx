@@ -1,7 +1,9 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../__tests__/helpers/render-helpers'
+import { ToastContainer } from '../../components/ui/Toast'
 import * as toastModule from '../../hooks/useToast'
+import i18n from '../../i18n'
 import { AccountSection, StartupSection } from './GeneralTab'
 
 // ---------------------------------------------------------------------------
@@ -85,7 +87,7 @@ describe('GeneralTab — Startup section', () => {
 
     await waitFor(() => {
       // en.json: settings.autostart.toggle = "Start Maekon at login"
-      const toggle = screen.getByRole('checkbox', {
+      const toggle = screen.getByRole('switch', {
         name: /Start Maekon at login/i,
       })
       expect(toggle).toBeChecked()
@@ -107,7 +109,7 @@ describe('GeneralTab — Startup section', () => {
     renderWithProviders(<StartupSection />)
 
     await waitFor(() => {
-      const toggle = screen.getByRole('checkbox', {
+      const toggle = screen.getByRole('switch', {
         name: /Start Maekon at login/i,
       })
       expect(toggle).toBeDisabled()
@@ -127,7 +129,7 @@ describe('GeneralTab — Startup section', () => {
     // Wait until the toggle is enabled (IPC has resolved) before clicking.
     // findByRole returns as soon as the element exists — even disabled —
     // so we must waitFor the enabled state explicitly.
-    const toggle = await screen.findByRole('checkbox', { name: /Start Maekon at login/i })
+    const toggle = await screen.findByRole('switch', { name: /Start Maekon at login/i })
     await waitFor(() => expect(toggle).not.toBeDisabled())
 
     await act(async () => {
@@ -152,7 +154,7 @@ describe('GeneralTab — Startup section', () => {
 
     renderWithProviders(<StartupSection />)
 
-    const toggle = await screen.findByRole('checkbox', { name: /Start Maekon at login/i })
+    const toggle = await screen.findByRole('switch', { name: /Start Maekon at login/i })
     await waitFor(() => expect(toggle).toBeChecked())
     await waitFor(() => expect(toggle).not.toBeDisabled())
 
@@ -179,9 +181,13 @@ describe('GeneralTab — Startup section', () => {
 
     renderWithProviders(<StartupSection />)
 
-    const toggle = await screen.findByRole('checkbox', {
+    const toggle = await screen.findByRole('switch', {
       name: /Start Maekon at login/i,
     })
+    // #13739: wait for the IPC-backed enable like the two tests above. This test
+    // used to click while the toggle was still disabled; jsdom lets a synthetic
+    // click flip a disabled checkbox, but not a disabled button (nor a user).
+    await waitFor(() => expect(toggle).not.toBeDisabled())
     fireEvent.click(toggle)
 
     // Initial mount query + post-error re-fetch = at least 2 calls
@@ -561,5 +567,142 @@ describe('GeneralTab — Account sign-in form', () => {
 
     expect(screen.getByText('Signed in as mingyu_song @ org-e2e-futurepac')).toBeInTheDocument()
     expect(screen.queryByLabelText(/identifier/i)).not.toBeInTheDocument()
+  })
+})
+
+const GENERIC_BY_LANGUAGE = {
+  en: 'Something went wrong. Try again.',
+  ko: '문제가 발생했습니다. 다시 시도하세요.',
+  ja: '問題が発生しました。もう一度お試しください。',
+  'zh-CN': '出现了问题。请重试。',
+  es: 'Algo salió mal. Inténtelo de nuevo.',
+} as const
+
+describe('General settings localized failure recovery (#13756)', () => {
+  beforeEach(() => {
+    ;(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
+      invoke: (...args: unknown[]) => mockInvoke(...args),
+    }
+  })
+  afterEach(async () => {
+    cleanup()
+    await vi.dynamicImportSettled()
+    toastModule.clearToasts()
+    vi.restoreAllMocks()
+    await i18n.changeLanguage('en')
+  })
+
+  it.each(
+    Object.entries(GENERIC_BY_LANGUAGE),
+  )('preserves OS re-read and retry with collapsed diagnostics in %s', async (language, generic) => {
+    await i18n.changeLanguage(language)
+    mockInvoke.mockReset()
+    let attempts = 0
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === 'is_autostart_enabled') return false
+      if (command === 'autostart_capabilities') return { supported: true, environment: 'mac_os' }
+      if (command === 'enable_autostart' && ++attempts === 1)
+        throw { code: 'future.startup', message: 'OS diagnostic only' }
+      return undefined
+    })
+    renderWithProviders(<StartupSection />)
+    const toggle = screen.getByRole('switch')
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+    const alert = await screen.findByRole('alert')
+    expect(mockInvoke).toHaveBeenCalledWith('enable_autostart', undefined)
+    expect(alert.querySelector('p')).toHaveTextContent(generic)
+    expect(alert.querySelector('p')).not.toHaveTextContent('OS diagnostic only')
+    const details = within(alert).getByTestId('support-details')
+    expect(details).not.toHaveAttribute('open')
+    expect(within(details).getByTestId('support-details-text')).toHaveTextContent('future.startup: OS diagnostic only')
+    await waitFor(() => expect(toggle).toBeEnabled())
+    expect(mockInvoke.mock.calls.filter(([command]) => command === 'is_autostart_enabled')).toHaveLength(2)
+    expect(toggle).not.toBeChecked()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle).toBeChecked())
+    expect(attempts).toBe(2)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('refreshes locale once without duplicate OS reads on ordinary rerenders', async () => {
+    let failRead = false
+    mockInvoke.mockReset().mockImplementation(async (command: string) => {
+      if (command === 'autostart_capabilities') return { supported: true, environment: 'mac_os' }
+      if (command === 'is_autostart_enabled') {
+        if (failRead) throw new Error('locale read diagnostic')
+        return false
+      }
+    })
+    const view = renderWithProviders(<StartupSection />)
+    await waitFor(() => expect(screen.getByRole('switch')).toBeEnabled())
+    const reads = () => mockInvoke.mock.calls.filter(([command]) => command === 'is_autostart_enabled').length
+    expect(reads()).toBe(1)
+    view.rerender(<StartupSection />)
+    await vi.dynamicImportSettled()
+    expect(reads()).toBe(1)
+    failRead = true
+    await act(async () => {
+      await i18n.changeLanguage('ja')
+    })
+    const details = await screen.findByTestId('support-details')
+    expect(screen.getByRole('alert').querySelector('p')).toHaveTextContent(
+      '問題が発生しました。もう一度お試しください。',
+    )
+    expect(within(details).getByTestId('support-details-text')).toHaveTextContent('locale read diagnostic')
+    expect(reads()).toBe(2)
+    view.rerender(<StartupSection />)
+    await vi.dynamicImportSettled()
+    expect(reads()).toBe(2)
+    expect(mockInvoke.mock.calls.filter(([command]) => command === 'autostart_capabilities')).toHaveLength(2)
+  })
+
+  it('shows a failed initial read even when rejection contains no diagnostic', async () => {
+    mockInvoke.mockReset()
+    mockInvoke.mockRejectedValue(null)
+    renderWithProviders(<StartupSection />)
+    expect(await screen.findByRole('alert')).toHaveTextContent(GENERIC_BY_LANGUAGE.en)
+    expect(screen.getByRole('switch')).toBeDisabled()
+    expect(screen.queryByTestId('support-details')).toBeNull()
+  })
+
+  it.each(
+    Object.entries(GENERIC_BY_LANGUAGE),
+  )('keeps logout confirmation retry and localized toast detail in %s', async (language, generic) => {
+    await i18n.changeLanguage(language)
+    mockInvoke.mockReset()
+    let attempts = 0
+    let status = { ...SIGNED_OUT, authenticated: true, identifier: 'person', organization_id: 'org' }
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === 'auth_status') return status
+      if (command === 'logout_all_sessions') {
+        attempts++
+        if (attempts === 1) throw new Error('revocation transport diagnostic')
+        status = { ...SIGNED_OUT, identifier: '', organization_id: '' }
+      }
+      return undefined
+    })
+    renderWithProviders(
+      <>
+        <AccountSection />
+        <ToastContainer />
+      </>,
+    )
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('auth_status', undefined))
+    fireEvent.click(screen.getAllByRole('button')[0])
+    const dialog = screen.getByRole('dialog')
+    const confirm = within(dialog).getAllByRole('button').at(-1)!
+    fireEvent.click(confirm)
+    const detail = await screen.findByTestId('support-details')
+    expect(attempts).toBe(1)
+    expect(detail.previousElementSibling).toHaveTextContent(generic)
+    expect(detail.previousElementSibling).not.toHaveTextContent('revocation transport diagnostic')
+    expect(detail).not.toHaveAttribute('open')
+    expect(within(detail).getByTestId('support-details-text')).toHaveTextContent('revocation transport diagnostic')
+    await waitFor(() => expect(confirm).toBeEnabled())
+    fireEvent.click(confirm)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(attempts).toBe(2)
+    expect(mockInvoke.mock.calls.filter(([command]) => command === 'auth_status').length).toBeGreaterThanOrEqual(2)
   })
 })
