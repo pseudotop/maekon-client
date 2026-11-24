@@ -276,6 +276,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Vitest, Storybook, undici, glob, minimatch, brace-expansion, source-map-js,
   and fast-xml-parser. These tools build and test the interface and do not
   run in the installed app.
+- The interface's translation library moves to i18next 26.7.2 and
+  react-i18next 17.1.13. i18next 23.16.8 is affected by GHSA-6jcc-5g8w-32mx
+  (CVE-2026-63402), where merging translation resources could corrupt shared
+  built-in objects. Maekon does not call the affected function.
 - Supply-chain checks now compare every package in the Rust lockfile,
   including locally patched crates, with the OSV database, which also covers
   advisories published only on GitHub, and fail on any advisory that is not

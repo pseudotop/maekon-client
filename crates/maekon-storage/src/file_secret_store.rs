@@ -625,14 +625,16 @@ mod tests {
         let Err(err) = FileSecretStore::new(path.clone(), None) else {
             panic!("opening an encrypted file without a key must fail-closed, not return Ok");
         };
+        // The error is built from the secret file, so the failure messages
+        // below must not echo it (CodeQL rust/cleartext-logging).
         assert!(
             matches!(err, StorageError::SecretStore(_)),
-            "expected StorageError::SecretStore for no-key encrypted open, got: {err}"
+            "expected StorageError::SecretStore for no-key encrypted open"
         );
         let msg = err.to_string();
         assert!(
             msg.contains("MKSEC1"),
-            "error message must mention the MKSEC1 magic header; got: {msg}"
+            "error message must mention the MKSEC1 magic header"
         );
     }
 
@@ -662,14 +664,15 @@ mod tests {
         let Err(err) = FileSecretStore::new(path.clone(), Some(Arc::clone(&key_b))) else {
             panic!("opening an encrypted file with the wrong key must fail-closed, not return Ok");
         };
+        // As above, the failure messages must not echo the error.
         assert!(
             matches!(err, StorageError::SecretStore(_)),
-            "expected StorageError::SecretStore for wrong-key decrypt failure, got: {err}"
+            "expected StorageError::SecretStore for wrong-key decrypt failure"
         );
         let msg = err.to_string();
         assert!(
             msg.contains("decrypt"),
-            "error message must mention decryption failure; got: {msg}"
+            "error message must mention decryption failure"
         );
     }
 }
