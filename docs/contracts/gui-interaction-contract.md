@@ -277,10 +277,30 @@ click | double_click | right_click | type_text
 |-------|------|-------|
 | `success` | `bool` | Whether action succeeded |
 | `element` | `UiElement?` | `{text, bounds, role, confidence, source}` |
-| `verification` | `VerificationResult?` | `{screen_changed, changed_regions}` |
+| `verification` | `VerificationResult?` | Observed screen change, see below; `null` when not observed |
 | `retry_count` | `u32` | Retries attempted |
 | `elapsed_ms` | `u64` | Execution duration |
 | `error` | `String?` | Error message if failed |
+
+### VerificationResult
+
+Filled only when the executor sampled the screen before and after the action
+through a screen probe. It is `null` when `verify_after_action` is off, when no
+probe is attached, or when capture is not authorized or is revoked while
+sampling. It is never inferred from `success`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `screen_changed` | `bool` | A tile differs between the pre-action sample and the last post-action sample |
+| `changed_regions` | `usize` | Number of changed 16 px tiles; every tile when the screen size changed |
+| `text_found` | `bool?` | Not filled by the executor (`null`) |
+| `settled` | `bool?` | The screen had been unchanged for the quiet period (300 ms) when sampling stopped; `false` means it was still changing at the bound. Omitted when absent |
+
+After the action the executor samples every 100 ms. It stops once the screen has
+changed and then stayed unchanged for the quiet period, or at the bound
+(`verify_delay_ms`, at most 10 000 ms). A screen that never changes is sampled
+until the bound, the same worst case as the fixed `verify_delay_ms` pause used
+when no probe is attached. Samples carry per-tile signatures, never pixels.
 
 ## Ticket security
 

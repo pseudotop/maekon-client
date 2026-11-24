@@ -8,7 +8,7 @@ use maekon_api_contracts::automation::{
 };
 
 use crate::error::ApiError;
-use crate::services::automation_assembler::map_audit_entry;
+use crate::services::automation_assembler::{map_audit_entry, map_intent_observation};
 use crate::services::web_contexts::AutomationWebContext;
 
 use super::helpers::{
@@ -89,6 +89,28 @@ impl AutomationQueryService {
         &self,
         query: AuditQuery,
     ) -> Result<Vec<maekon_api_contracts::automation::AuditEntryDto>, ApiError> {
+        if let Some(submission_id) = query.submission_id {
+            // Same authenticated local-profile controller as execution. Never
+            // search recent N entries, command/session IDs or latest health.
+            let Some(controller) = &self.ctx.automation_controller else {
+                return Ok(Vec::new());
+            };
+            return Ok(
+                match controller
+                    .intent_execution_by_submission(submission_id)
+                    .await
+                {
+                    maekon_core::models::intent_execution::IntentExecutionLookup::Found(
+                        receipt,
+                    ) => map_intent_observation(*receipt).into_iter().collect(),
+                    // Missing, ambiguous, expired and unavailable are all unknown;
+                    // an empty exact lookup is never a safe-retry signal.
+                    maekon_core::models::intent_execution::IntentExecutionLookup::Unknown(_) => {
+                        Vec::new()
+                    }
+                },
+            );
+        }
         let Some(ref logger) = self.ctx.audit_logger else {
             return Ok(Vec::new());
         };

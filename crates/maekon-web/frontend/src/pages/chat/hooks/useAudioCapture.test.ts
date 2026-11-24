@@ -148,8 +148,19 @@ describe('useAudioCapture — mic permission guidance (#8053)', () => {
       await result.current.handleVadToggle()
     })
 
-    expect(addToastSpy).toHaveBeenCalledWith('error', expect.stringContaining('System Settings'), 8000)
-    expect(addToastSpy).toHaveBeenCalledWith('error', expect.stringContaining('If microphone access was blocked'), 8000)
+    // The fourth argument is the collapsed support detail (#13737).
+    expect(addToastSpy).toHaveBeenCalledWith(
+      'error',
+      expect.stringContaining('System Settings'),
+      8000,
+      expect.anything(),
+    )
+    expect(addToastSpy).toHaveBeenCalledWith(
+      'error',
+      expect.stringContaining('If microphone access was blocked'),
+      8000,
+      expect.anything(),
+    )
   })
 })
 

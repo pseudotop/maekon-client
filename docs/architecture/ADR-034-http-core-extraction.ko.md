@@ -8,6 +8,8 @@
 **Related**: ADR-001 §3(DI·어댑터 경계), D7 circuit-breaker broadening(2026-04-20), #9855(Google Calendar OAuth 팩토리), #9639(integration 롤업)
 **Issue**: TBD
 
+> 2026-10-10 구현 참조 갱신: 상단 Proposed와 Issue TBD는 2026-08-05의 제안 메타데이터입니다. 아래 P3(2026-08-05)·P4(2026-08-06) 실행 기록과 현재 [maekon-http-core](../../crates/maekon-http-core/)·[maekon-integration](../../crates/maekon-integration/)을 함께 확인합니다. 추출 자체를 아직 미구현인 작업으로 다시 제안하지 않습니다. 이 참조 갱신은 새로운 ADR 승인 기록이 아닙니다.
+
 ---
 
 ## 배경 (Context)

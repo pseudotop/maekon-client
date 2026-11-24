@@ -14,9 +14,8 @@
 //! embedded core type is rendered as an opaque object. This is a technical
 //! build-containment necessity, NOT a privacy/opacity choice.
 //!
-//! The module itself is gated at the `lib.rs` declaration
-//! (`#[cfg(feature = "schema")] pub mod schema_support;`), so no inner
-//! `#![cfg(...)]` is needed here.
+//! Schema generation and unit tests compile this module. Normal runtime builds
+//! keep schemars out of the dependency graph.
 
 use schemars::{json_schema, Schema, SchemaGenerator};
 
@@ -58,4 +57,31 @@ pub fn opaque_string_array(_generator: &mut SchemaGenerator) -> Schema {
         "items": { "type": "string" },
         "description": "Array of opaque maekon-core string enums (build containment)."
     })
+}
+
+/// UTC timestamps serialize as RFC 3339 strings in the public API.
+pub fn utc_timestamp_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({"type": "string", "format": "date-time"})
+}
+
+pub fn optional_utc_timestamp_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({"type": ["string", "null"], "format": "date-time"})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utc_timestamp_schemas_preserve_format_and_nullability() {
+        let mut generator = SchemaGenerator::default();
+        assert_eq!(
+            utc_timestamp_schema(&mut generator).as_value(),
+            &serde_json::json!({"type": "string", "format": "date-time"})
+        );
+        assert_eq!(
+            optional_utc_timestamp_schema(&mut generator).as_value(),
+            &serde_json::json!({"type": ["string", "null"], "format": "date-time"})
+        );
+    }
 }

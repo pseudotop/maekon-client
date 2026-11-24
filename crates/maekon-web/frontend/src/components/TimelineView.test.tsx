@@ -2,8 +2,11 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import TimelineView from './TimelineView'
 
+// Keys come back as-is; interpolation values are appended so a test can see what was passed.
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, values?: Record<string, unknown>) => (values ? `${key} ${JSON.stringify(values)}` : key),
+  }),
 }))
 
 const baseEntry = {
@@ -56,5 +59,46 @@ describe('TimelineView AI provenance (#11738)', () => {
     expect(screen.getByText(/summaryProvenance\.aiSegmentUnavailable/)).toHaveTextContent(
       'summaryProvenance.failure.provider_failed',
     )
+  })
+})
+
+// #13740: segment lengths read like every other duration instead of a raw minute count.
+describe('TimelineView durations', () => {
+  it('shows segment and content lengths with the shared duration format', () => {
+    render(
+      <TimelineView
+        timeline={[
+          {
+            ...baseEntry,
+            duration_mins: 135,
+            content_summary: [{ work_type: 'ACTIVE_CODING', mins: 45, content: 'parser' }],
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText('2h 15m')).toBeInTheDocument()
+    expect(screen.getByText('workTypes.ACTIVE_CODING (45m)')).toBeInTheDocument()
+  })
+})
+
+// #13738: the expand hint and work type names go through translation keys instead of English text.
+describe('TimelineView labels', () => {
+  it('builds the expand hint from a key with the shared duration format', () => {
+    render(<TimelineView timeline={[{ ...baseEntry, duration_mins: 135 }]} />)
+
+    expect(
+      screen.getByRole('button', { name: 'timeline.entryExpandLabel {"regime":"Focus","duration":"2h 15m"}' }),
+    ).toBeInTheDocument()
+  })
+
+  it('names a work type this build does not know in plain words', () => {
+    render(
+      <TimelineView
+        timeline={[{ ...baseEntry, content_summary: [{ work_type: 'SPATIAL_DESIGN', mins: 5, content: 'canvas' }] }]}
+      />,
+    )
+
+    expect(screen.getByText('Spatial Design (5m)')).toBeInTheDocument()
   })
 })

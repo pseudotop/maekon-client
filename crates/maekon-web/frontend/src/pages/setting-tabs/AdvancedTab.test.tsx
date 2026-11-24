@@ -153,7 +153,7 @@ describe('AdvancedTab tiered-memory disclosure (#9687)', () => {
     formData.analysis.embedding_enabled = false
     formData.analysis.llm_summary_enabled = false
 
-    fireEvent.click(screen.getByRole('checkbox', { name: /^Enable AI features/ }))
+    fireEvent.click(screen.getByRole('switch', { name: /^Enable AI features/ }))
 
     const updater = setFormData.mock.calls.at(-1)?.[0]
     expect(typeof updater).toBe('function')

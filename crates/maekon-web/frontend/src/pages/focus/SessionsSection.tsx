@@ -59,7 +59,7 @@ export default function SessionsSection() {
                 </div>
                 <div className="text-right">
                   <p className={`${typography.weight.medium} text-content text-sm`}>
-                    {formatDuration(session.duration_secs, true)}
+                    {formatDuration(session.duration_secs)}
                   </p>
                   <Badge color={session.state === 'active' ? 'success' : 'default'} size="sm">
                     {session.state === 'active' ? t('focus.active') : t('focus.completed')}

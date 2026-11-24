@@ -1,5 +1,6 @@
 mod gate;
 mod intent;
+mod intent_provenance;
 mod port_impl;
 mod preset;
 mod types;
@@ -38,6 +39,7 @@ const GUI_ACTION_TIMEOUT_SECS: u64 = 10;
 // AutomationController
 
 pub struct AutomationController {
+    intent_observations: intent_provenance::IntentObservationStore,
     pub(super) policy_client: Arc<PolicyClient>,
     pub(super) audit_logger: Arc<RwLock<AuditLogger>>,
     pub(super) action_dispatcher: Arc<dyn AutomationActionDispatcher>,
@@ -89,6 +91,7 @@ impl AutomationController {
             "automation controller initialized - sandbox connected"
         );
         Self {
+            intent_observations: intent_provenance::IntentObservationStore::default(),
             policy_client,
             audit_logger,
             action_dispatcher: Arc::new(SandboxActionDispatcher::new(sandbox.clone())),

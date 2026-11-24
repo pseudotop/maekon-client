@@ -70,6 +70,7 @@ pub async fn put_config(
                 code: "validation.invalid_arguments".to_string(),
                 error: msg,
                 status: 400,
+                execution_provenance: None,
             };
             return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
         }
@@ -91,6 +92,7 @@ pub async fn put_config(
                 code: "internal.generic".to_string(),
                 error: format!("internal: {e}"),
                 status: 500,
+                execution_provenance: None,
             };
             (StatusCode::INTERNAL_SERVER_ERROR, Json(resp)).into_response()
         }
@@ -165,9 +167,8 @@ fn convert_to_target_tz(local: &DateTime<Local>, tz_name: &str) -> DateTime<chro
     if tz_name == "Local" {
         return local.fixed_offset();
     }
-    if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
-        let utc_instant: DateTime<Utc> = local.with_timezone(&Utc);
-        return utc_instant.with_timezone(&tz).fixed_offset();
+    if let Some(offset) = maekon_core::config::tracking_zone_offset(tz_name, local.timestamp()) {
+        return local.with_timezone(&offset);
     }
     // Fallback: return local (validation should have caught invalid names).
     local.fixed_offset()

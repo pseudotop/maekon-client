@@ -42,14 +42,13 @@ use maekon_web::grpc::external::ip_ban::IpBan;
 use maekon_web::grpc::external::jwt_verifier::JwtVerifier;
 use maekon_web::grpc::external::live_config::{LiveExternalConfig, LiveSnapshot};
 use maekon_web::grpc::external::metrics::ExternalMetrics;
-use maekon_web::grpc::external::serve_external;
 use maekon_web::grpc::external::spawn_config::ExternalGrpcSpawnConfig;
 // #7730: NoopAudit / server_cert_pem are shared with
 // `tests/external_grpc_integration.rs` via `test_support` — de-duplicated
 // from the verbatim copies that used to live in this file.
 use maekon_web::grpc::external::test_support::{
-    install_rustls_crypto_provider, server_cert_pem, test_cert_pair, test_jwt_keypair,
-    test_mint_jwt, NoopAudit,
+    install_rustls_crypto_provider, server_cert_pem, spawn_server_with_config_manager,
+    test_cert_pair, test_jwt_keypair, test_mint_jwt, NoopAudit, ServerHandle,
 };
 use maekon_web::grpc::external::tls_config::load_certified_key;
 use maekon_web::grpc::test_support::mock_system_monitor::MockSystemMonitor;
@@ -77,7 +76,7 @@ fn make_jwt_stress_config(
     max_connections: usize,
     bind_addr: SocketAddr,
 ) -> ExternalGrpcSpawnConfig {
-    let (cert_path, key_path) = test_cert_pair();
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load certified key");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
@@ -135,53 +134,51 @@ fn make_jwt_stress_config(
     }
 }
 
-// ── Server spawn helper ──────────────────────────────────────────────────────
-//
-// Mirrors spawn_server in external_grpc_integration.rs:253. Uses the OS-assigned
-// port (caller passes bind_addr with port 0). Returns the actual bound port
-// observed via TCP probing — not via a port allocator, since serve_external
-// rebinds the port itself and we do not have a public accessor for the resolved
-// port.
-//
-// Strategy: caller passes bind_addr with port 0; we replicate the bind ourselves
-// to discover the OS-assigned port, drop our listener, then pass the resolved
-// addr to serve_external. The window between drop and rebind is tight (same
-// process, same thread, no TIME_WAIT because drop() immediately releases the
-// port) but NOT theoretically zero. If a flaky "AddrInUse" ever appears in CI,
-// retry in a loop or use a free-port allocator (external_grpc_integration.rs:74).
+// Own the actual bound server and reload task for deterministic startup/teardown.
+struct StressServer {
+    addr: SocketAddr,
+    server: ServerHandle,
+    reload: tokio::task::JoinHandle<()>,
+    shutdown: Arc<tokio::sync::watch::Sender<bool>>,
+    _manager: Arc<maekon_core::config_manager::ConfigManager>,
+    _directory: tempfile::TempDir,
+}
 
-async fn spawn_stress_server(
-    mut cfg: ExternalGrpcSpawnConfig,
-) -> (tokio::task::JoinHandle<()>, SocketAddr) {
-    install_rustls_crypto_provider();
-
-    // Bind once locally to discover the OS-assigned port for the requested
-    // family (v4 vs v6), then close and let serve_external rebind it.
-    let std_listener =
-        std::net::TcpListener::bind(cfg.bind_addr).expect("std bind for port discovery");
-    let bound = std_listener.local_addr().expect("local_addr");
-    drop(std_listener);
-    cfg.bind_addr = bound;
-
-    let probe_addr = bound;
-    let handle = tokio::spawn(async move {
-        if let Err(e) = serve_external(cfg).await {
-            eprintln!("serve_external error: {e:?}");
-        }
-    });
-
-    // Wait until the server accepts TCP connections (timeout: 5s).
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if tokio::net::TcpStream::connect(probe_addr).await.is_ok() {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("external gRPC server did not start at {probe_addr} within 5s");
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+impl StressServer {
+    async fn shutdown(self) {
+        self.shutdown.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(5), self.server)
+            .await
+            .expect("server shutdown deadline")
+            .expect("server task must not panic")
+            .expect("server shutdown must succeed");
+        tokio::time::timeout(Duration::from_secs(5), self.reload)
+            .await
+            .expect("reload shutdown deadline")
+            .expect("reload task must not panic");
     }
-    (handle, probe_addr)
+}
+
+async fn spawn_stress_server(cfg: ExternalGrpcSpawnConfig) -> StressServer {
+    install_rustls_crypto_provider();
+    let ip = cfg.bind_addr.ip();
+    let shutdown = cfg.shutdown_tx.clone();
+    let directory = tempfile::tempdir().expect("config directory");
+    let manager = Arc::new(
+        maekon_core::config_manager::ConfigManager::with_path(directory.path().join("config.json"))
+            .expect("config manager"),
+    );
+    let (server, reload, port) = spawn_server_with_config_manager(cfg, manager.clone())
+        .await
+        .expect("real server readiness");
+    StressServer {
+        addr: SocketAddr::new(ip, port),
+        server,
+        reload,
+        shutdown,
+        _manager: manager,
+        _directory: directory,
+    }
 }
 
 // ── TLS channel helper (stress variant) ───────────────────────────────────────
@@ -212,6 +209,72 @@ async fn make_stress_tls_channel(
         .connect_timeout(Duration::from_secs(3))
         .connect()
         .await
+}
+
+// Verify the actual pre-TLS boundary instead of accepting arbitrary RPC errors.
+async fn assert_transport_rejected(addr: SocketAddr, cert_pem: &[u8]) {
+    use tokio::io::AsyncReadExt;
+    let mut tcp = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("TCP reaches the listening server");
+    let mut byte = [0u8; 1];
+    let count = tokio::time::timeout(Duration::from_secs(1), tcp.read(&mut byte))
+        .await
+        .expect("admission rejection must close TCP before TLS")
+        .expect("pre-TLS close must be observable");
+    assert_eq!(count, 0, "admission rejection must send no TLS data");
+    drop(tcp);
+
+    let error = make_stress_tls_channel(addr, cert_pem)
+        .await
+        .expect_err("rejected admission must not complete TLS");
+    let mut cause: &(dyn std::error::Error + 'static) = &error;
+    let io_kind = loop {
+        if let Some(error) = cause.downcast_ref::<std::io::Error>() {
+            break Some(error.kind());
+        }
+        match cause.source() {
+            Some(source) => cause = source,
+            None => break None,
+        }
+    };
+    assert!(
+        matches!(
+            io_kind,
+            Some(std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset)
+        ),
+        "expected a peer-close transport cause, got {error:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn process_fd_count() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .expect("read this test process's descriptors")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("enumerate every descriptor")
+        .len()
+}
+
+#[cfg(target_os = "linux")]
+async fn assert_fd_count_recovers(baseline: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let current = process_fd_count();
+            if current <= baseline {
+                eprintln!("descriptor recovery: baseline={baseline}, current={current}");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "descriptor leak after connection cleanup: baseline={baseline}, current={}",
+            process_fd_count()
+        )
+    });
 }
 
 // ── Server liveness probe (V4 fallback for active_connection_count) ──────────
@@ -335,13 +398,14 @@ async fn retry_stream_open_until_success(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_connection_cap_enforced() {
     const CAP: usize = 1024;
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let cfg = make_jwt_stress_config(
         &jwt_kp.pub_pem_path,
         CAP,
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
     );
-    let (handle, addr) = spawn_stress_server(cfg).await;
+    let server = spawn_stress_server(cfg).await;
+    let addr = server.addr;
 
     let token = test_mint_jwt(
         &jwt_kp.enc_key,
@@ -349,8 +413,9 @@ async fn concurrent_connection_cap_enforced() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
 
     // ── Phase 1: open CAP concurrent streams ────────────────────────────────
     let mut tasks = JoinSet::new();
@@ -389,33 +454,8 @@ async fn concurrent_connection_cap_enforced() {
         "Phase 1 should establish all {CAP} streams"
     );
 
-    // ── Phase 2: (CAP+1)th attempt rejected ─────────────────────────────────
-    //
-    // Cap rejection is silent (V2: TCP dropped before TLS). From the client
-    // side this manifests as one of:
-    //   - Endpoint::connect fails (TLS handshake error / EOF).
-    //   - Channel created but first RPC fails with transport error.
-    // Either is acceptable; we assert that the over-cap path eventually errors.
-    let over_cap_result = async {
-        let channel = make_stress_tls_channel(addr, &cert_pem).await?;
-        let mut req = tonic::Request::new(SubscribeEventsRequest::default());
-        req.metadata_mut().insert(
-            "authorization",
-            format!("Bearer {token}").parse().expect("valid header"),
-        );
-        DashboardServiceClient::new(channel)
-            .subscribe_events(req)
-            .await
-            .map(|_| ())
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
-    }
-    .await;
-    let over_cap_err = over_cap_result.unwrap_err();
-    let err_str = over_cap_err.to_string();
-    assert!(
-        err_str.contains("ResourceExhausted") || err_str.contains("resource exhausted"),
-        "(CAP+1)th channel must be rejected with ResourceExhausted; got: {over_cap_err}"
-    );
+    // The cap is enforced before TLS, so no HTTP/2 or gRPC status is possible.
+    assert_transport_rejected(addr, &cert_pem).await;
 
     // ── Phase 3: drop one slot, retry ───────────────────────────────────────
     // Dropping a held (Channel, Stream) pair on the client closes client-side TCP.
@@ -444,8 +484,7 @@ async fn concurrent_connection_cap_enforced() {
 
     // Cleanup
     drop(held);
-    handle.abort();
-    let _ = handle.await;
+    server.shutdown().await;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -467,13 +506,16 @@ async fn fd_pressure_resilience() {
     const CAP: usize = 1024;
     const ROUNDS: usize = 3;
 
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let cfg = make_jwt_stress_config(
         &jwt_kp.pub_pem_path,
         CAP,
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
     );
-    let (handle, addr) = spawn_stress_server(cfg).await;
+    let server = spawn_stress_server(cfg).await;
+    let addr = server.addr;
+    #[cfg(target_os = "linux")]
+    let baseline_fds = process_fd_count();
 
     let token = test_mint_jwt(
         &jwt_kp.enc_key,
@@ -481,8 +523,9 @@ async fn fd_pressure_resilience() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
 
     for round in 0..ROUNDS {
         // ── 2a: open CAP concurrent streams ─────────────────────────────────
@@ -533,6 +576,8 @@ async fn fd_pressure_resilience() {
         poll_unary_until_success(addr, &cert_pem, &token, deadline)
             .await
             .unwrap_or_else(|e| panic!("round {round} cleanup poll failed: {e}"));
+        #[cfg(target_os = "linux")]
+        assert_fd_count_recovers(baseline_fds).await;
     }
 
     // ── Post-loop verification ─────────────────────────────────────────────
@@ -579,37 +624,29 @@ async fn fd_pressure_resilience() {
     );
 
     drop(held);
-    handle.abort();
-    let _ = handle.await;
+    server.shutdown().await;
+    #[cfg(target_os = "linux")]
+    assert_fd_count_recovers(baseline_fds).await;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Test 3: ipv6_64_prefix_ban_full_stack
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Invariant: IpBan::record_failure (auth_layer / accept_loop on TLS error)
-/// + IpBan::is_banned (accept_loop pre-TLS) are wired on the IPv6 path.
-/// After ≥5 total failures from [::1] (auth rejections + TLS probe failure
-/// from the readiness probe in spawn_stress_server), subsequent connections
-/// from [::1] are rejected before TLS handshake (V1 verified accept_loop:77
-/// ordering).
-///
-/// Single-/128 limitation (spec §4.3 known limitations): CI loopback is one
-/// ::1/128. All attempts share that /128. The test verifies WIRING
-/// (IpBan called on IPv6 accept path), not the /64 prefix logic — which
-/// is unit-tested at ip_ban.rs::ipv6_64_prefix_shared_ban.
-///
-/// Runtime estimate: ~2–5s.
+/// Five real JWT failures from IPv6 loopback trigger pre-TLS rejection.
+/// This checks IPv6 accept-path wiring; distinct addresses in a /64 are covered
+/// separately by the IpBan prefix unit contract.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ipv6_64_prefix_ban_full_stack() {
     const SMALL_CAP: usize = 32; // small; never the rejecting layer
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let cfg = make_jwt_stress_config(
         &jwt_kp.pub_pem_path,
         SMALL_CAP,
         SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
     );
-    let (handle, addr) = spawn_stress_server(cfg).await;
+    let server = spawn_stress_server(cfg).await;
+    let addr = server.addr;
     assert!(addr.is_ipv6(), "Test 3 must bind IPv6 ::1, got {addr}");
 
     let bad_token = test_mint_jwt(
@@ -618,117 +655,32 @@ async fn ipv6_64_prefix_ban_full_stack() {
         "test-issuer",
         "wrong-audience", // intentional aud mismatch → JWT verifier rejects
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
 
-    // ── Phase 1: accumulate ≥ 5 failures from [::1] ─────────────────────────
-    //
-    // The IpBan THRESHOLDS ladder in ip_ban.rs requires 5 total failures within
-    // the sliding window for a 60s ban. `record_failure` is called both by
-    // auth_layer (JWT rejection) AND by accept_loop's TLS-handshake-failure path.
-    //
-    // spawn_stress_server's readiness probe makes a raw TCP connection from [::1]
-    // that immediately closes without a TLS handshake, causing accept_loop to
-    // call record_failure([::1]) once. This means the IpBan counter may already
-    // be at 1 before Phase 1 RPCs begin, so only 4 more auth failures are needed
-    // to hit the threshold of 5.
-    //
-    // Strategy: loop up to MAX_PHASE1_RPC_ATTEMPTS (8, well above threshold) RPC
-    // attempts. If make_stress_tls_channel fails (pre-TLS rejection) the ban is
-    // already active — break early. This makes the test self-calibrating regardless
-    // of how many probe-induced failures the startup probe contributes.
-    // MAX_PHASE1_RPC_ATTEMPTS must exceed IpBan threshold (5) by >=3 to
-    // tolerate variable probe-induced failure count from spawn_stress_server.
-    // See accept_loop.rs:77/114/123 for the record_failure call sites.
-    const MAX_PHASE1_RPC_ATTEMPTS: usize = 8;
-    let mut rpc_done = 0_usize;
-    // Plan §Task 5 had `for attempt in 0..5`; deviated to self-calibrating
-    // MAX_PHASE1_RPC_ATTEMPTS=8 because the spawn_stress_server TCP probe
-    // contributes record_failure([::1]) via accept_loop.rs:114. See commit
-    // 9fb6f488 for deviation rationale.
-    for attempt in 0..MAX_PHASE1_RPC_ATTEMPTS {
-        let channel = match make_stress_tls_channel(addr, &cert_pem).await {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!(
-                    "Phase 1 attempt {attempt}: pre-TLS rejection after {rpc_done} RPCs: {e}"
-                );
-                break;
-            }
-        };
+    // Startup sends no probe connections, so exactly five authentication
+    // failures must reach the service before the next connection is banned.
+    for attempt in 0..5 {
+        let channel = make_stress_tls_channel(addr, &cert_pem)
+            .await
+            .expect("IPv6 connection before the ban threshold");
         let mut req = tonic::Request::new(GetAgentInfoRequest {});
         req.metadata_mut().insert(
             "authorization",
             format!("Bearer {bad_token}").parse().expect("valid header"),
         );
-        let err = DashboardServiceClient::new(channel)
+        let error = DashboardServiceClient::new(channel)
             .get_agent_info(req)
             .await
-            .expect_err(&format!(
-                "attempt {attempt}: bad-aud token must be rejected"
-            ));
+            .expect_err("bad-audience token must be rejected");
         assert_eq!(
-            err.code(),
+            error.code(),
             tonic::Code::Unauthenticated,
-            "attempt {attempt}: expected Unauthenticated; got {err:?}"
+            "attempt {attempt}"
         );
-        rpc_done += 1;
     }
-    assert!(
-        rpc_done > 0,
-        "Phase 1: at least one RPC must be served before ban. Zero RPCs implies \
-         probe contributed >=5 record_failure calls (unexpected — see \
-         accept_loop.rs:77/114/123) OR IpBan was banned from server start (regression)."
-    );
+    assert_transport_rejected(addr, &cert_pem).await;
 
-    // Brief wait for ip_ban state to commit (record_failure is sync but the
-    // channel-shutdown side of the auth-failure path is async).
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // ── Phase 2: next attempt rejected before TLS ────────────────────────────
-    //
-    // accept_loop:77 calls ip_ban.is_banned(remote) immediately after TCP
-    // accept. is_banned == true → accept_loop drops the TCP. From the client
-    // side, the TLS handshake fails (server closed connection mid-handshake)
-    // OR the connect itself fails. Either is acceptable — we assert any
-    // error path, not a specific gRPC Code.
-    let result = make_stress_tls_channel(addr, &cert_pem).await;
-    let banned_path_result: Result<(), Box<dyn std::error::Error + Send + Sync>> = match result {
-        Err(e) => Err(Box::new(e)),
-        Ok(channel) => {
-            // Channel created lazily; the failure may surface on first RPC.
-            let mut req = tonic::Request::new(GetAgentInfoRequest {});
-            req.metadata_mut().insert(
-                "authorization",
-                format!("Bearer {bad_token}").parse().expect("valid header"),
-            );
-            DashboardServiceClient::new(channel)
-                .get_agent_info(req)
-                .await
-                .map(|_| ())
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
-        }
-    };
-    // Regression guard (spec §4.3 / V1): banned_path must fail via transport-level
-    // rejection (accept_loop:77 drops TCP) OR an Unavailable RPC — NOT via
-    // Unauthenticated (which would indicate accept_loop:77 is a no-op and
-    // auth_layer is still being reached, meaning the ban wiring regressed).
-    match &banned_path_result {
-        Ok(()) => panic!(
-            "Phase 2: 6th attempt from ::1 must fail. It succeeded — ban wiring \
-             regression or /128 sliding-window expired."
-        ),
-        Err(e) => {
-            let s = format!("{e}");
-            assert!(
-                !s.contains("Unauthenticated"),
-                "Phase 2: got Unauthenticated from ::1 after ban threshold met — \
-                 this implies accept_loop.rs:77 is NOT rejecting before TLS; \
-                 auth_layer is still being reached. Ban wiring regression. Got: {s}"
-            );
-        }
-    }
-
-    handle.abort();
-    let _ = handle.await;
+    server.shutdown().await;
 }

@@ -6,11 +6,14 @@ import { Outlet } from 'react-router-dom'
 import { fetchAutomationScene, fetchSceneCalibration, fetchSettings, fetchTimeline } from '../../api/client'
 import type { TimelineResponse, UiScene } from '../../api/contracts'
 import DateRangePicker from '../../components/DateRangePicker'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert } from '../../components/ui'
 import { Card, CardContent } from '../../components/ui/Card'
 import { Spinner } from '../../components/ui/Spinner'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { formatDuration } from '../../utils/formatters'
 import { usePlaybackState } from './hooks/usePlaybackState'
 import { SceneAssistantPanel, type SceneState, useSceneState } from './SceneOverlay'
 import { TimelineScrubberSection } from './SessionPlayback'
@@ -41,6 +44,7 @@ export interface ReplayOutletContext {
 
 export default function ReplayLayout() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
 
   const [fromDate, setFromDate] = useState(() => {
     const d = new Date()
@@ -53,16 +57,13 @@ export default function ReplayLayout() {
     data: timelineData,
     isLoading: loading,
     error: timelineError,
+    isError: timelineFailed,
   } = useQuery({
     queryKey: ['timeline', fromDate, toDate],
     queryFn: () => fetchTimeline({ from: new Date(fromDate).toISOString(), to: new Date(toDate).toISOString() }),
   })
   const timeline = timelineData ?? null
-  const error = timelineError
-    ? timelineError instanceof Error
-      ? timelineError.message
-      : '타임라인 로드 failure'
-    : null
+  const error = timelineFailed ? describeError(timelineError) : null
 
   // usePlaybackState's signature accepts `TimelineData | undefined`; pass the
   // raw query data so the hook's own undefined checks handle the loading/
@@ -144,7 +145,8 @@ export default function ReplayLayout() {
       {/* Error state */}
       {error && (
         <Alert variant="error" icon={<AlertCircle className={iconSize.md} />}>
-          {error}
+          <p>{error.text}</p>
+          <SupportDetails detail={error.detail} />
         </Alert>
       )}
 
@@ -220,8 +222,7 @@ export default function ReplayLayout() {
                   <div>
                     <p className="text-content-secondary text-xs">{t('replay.duration', 'session 시간')}</p>
                     <p className={`${typography.weight.semibold} text-content text-lg`}>
-                      {Math.round(timeline.session.duration_secs / 60)}
-                      {t('dashboard.minutes', '분')}
+                      {formatDuration(timeline.session.duration_secs)}
                     </p>
                   </div>
                   <div>
@@ -239,8 +240,7 @@ export default function ReplayLayout() {
                   <div>
                     <p className="text-content-secondary text-xs">{t('replay.totalIdle', '총 idle')}</p>
                     <p className={`${typography.weight.semibold} text-content text-lg`}>
-                      {Math.round(timeline.session.total_idle_secs / 60)}
-                      {t('dashboard.minutes', '분')}
+                      {formatDuration(timeline.session.total_idle_secs)}
                     </p>
                   </div>
                   <div>

@@ -329,6 +329,17 @@ impl ConsentManager {
         self.state.read().current_consent.clone()
     }
 
+    /// Atomically bind a grant identity and its valid permissions. Revocable
+    /// work must not combine separately read status and raw grant snapshots.
+    pub fn effective_consent(&self) -> Option<ConsentRecord> {
+        let state = self.state.read();
+        if Self::check_consent_locked(&state) == ConsentStatus::Valid {
+            state.current_consent.clone()
+        } else {
+            None
+        }
+    }
+
     /// Returns the permissions only when consent is currently Valid, and returns
     /// all-false otherwise. Every gate uses this method so that the
     /// Expired/UpdateRequired/absent states fail closed.
@@ -645,6 +656,10 @@ impl crate::ports::consent_manager::ConsentManagerPort for ConsentManager {
         ConsentManager::current_consent(self)
     }
 
+    fn effective_consent(&self) -> Option<ConsentRecord> {
+        ConsentManager::effective_consent(self)
+    }
+
     fn effective_permissions(&self) -> ConsentPermissions {
         ConsentManager::effective_permissions(self)
     }
@@ -707,6 +722,71 @@ impl crate::ports::consent_manager::ConsentManagerPort for ConsentManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_consent_binds_only_a_valid_grant_through_the_port() {
+        use crate::ports::consent_manager::ConsentManagerPort;
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ConsentManager::new(dir.path().join("consent.json"));
+        let port: &dyn ConsentManagerPort = &manager;
+        assert!(port.effective_consent().is_none());
+        port.grant_consent(
+            ConsentPermissions {
+                screen_capture: true,
+                ..Default::default()
+            },
+            30,
+        )
+        .unwrap();
+        let first = port.effective_consent().unwrap();
+        assert!(first.permissions.screen_capture);
+        assert_eq!(first.consent_id, port.current_consent().unwrap().consent_id);
+
+        manager
+            .state
+            .write()
+            .current_consent
+            .as_mut()
+            .unwrap()
+            .expires_at = Some(Utc::now() - chrono::Duration::seconds(1));
+        assert!(port.current_consent().unwrap().permissions.screen_capture);
+        assert!(port.effective_consent().is_none());
+
+        port.grant_consent(ConsentPermissions::default(), 30)
+            .unwrap();
+        assert!(!port.effective_consent().unwrap().permissions.screen_capture);
+        manager
+            .state
+            .write()
+            .current_consent
+            .as_mut()
+            .unwrap()
+            .version = "outdated".into();
+        assert!(port.effective_consent().is_none());
+        port.grant_consent(
+            ConsentPermissions {
+                screen_capture: true,
+                ..Default::default()
+            },
+            30,
+        )
+        .unwrap();
+        port.revoke_consent().unwrap();
+        assert!(port.effective_consent().is_none());
+        port.grant_consent(
+            ConsentPermissions {
+                screen_capture: true,
+                ..Default::default()
+            },
+            30,
+        )
+        .unwrap();
+        assert_ne!(
+            first.consent_id,
+            port.effective_consent().unwrap().consent_id
+        );
+    }
 
     /// #4684: `save_to_file` (the grant persistence path) is atomic (tmp+rename),
     /// matching `revoke_consent` — after a grant the consent file exists, no `.tmp`

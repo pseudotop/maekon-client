@@ -5,6 +5,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../__tests__/helpers/render-helpers'
 import { confirmGuiSession, createGuiSession, executeGuiSession, highlightGuiSession } from '../../api/client'
+import en from '../../i18n/locales/en.json'
 import GuiPickerPanel from './GuiPickerPanel'
 
 // Mock the whole client module — only the four GUI-V2 session functions are used.
@@ -142,9 +143,12 @@ describe('GuiPickerPanel', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('gui-picker-scan'))
     })
+    // #13737: the sentence is localized; the raw backend text is kept for
+    // support behind the collapsed details instead of being the message.
     await waitFor(() => {
-      expect(screen.getByText('scene analysis failed')).toBeInTheDocument()
+      expect(screen.getByRole('alert')).toHaveTextContent(en.guiPicker.error)
     })
+    expect(screen.getByTestId('support-details-text')).toHaveTextContent('scene analysis failed')
     // No candidate list, so confirm never renders.
     expect(screen.queryByTestId('gui-picker-confirm')).not.toBeInTheDocument()
     expect(confirmGuiSession).not.toHaveBeenCalled()

@@ -170,7 +170,10 @@ Converts high-level intents (AutomationIntent) into low-level action (Automation
   - Confidence verification + retry logic (`IntentConfig`)
 - `IntentExecutor` — Sequential execution of converted actions + result verification
   - `execute_intent(intent, config)` → `IntentResult`
-  - Post-execution text verification (`verify_after_action`)
+  - Post-execution screen verification (`verify_after_action`): with a `ScreenChangeProbe` attached
+    (`with_screen_probe`), compares a sample taken before the action with samples taken until the
+    screen settles (`screen_settle.rs`); without one, a fixed `verify_delay_ms` pause and no
+    `verification`
   - Retry (`max_retries`, `retry_interval_ms`)
 
 ### `presets.rs` — Builtin Workflow Presets

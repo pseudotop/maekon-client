@@ -32,7 +32,7 @@ describe('FocusAutoTab', () => {
 
     renderWithProviders(<FocusAutoTab />)
 
-    expect(screen.getByRole('checkbox', { name: /enable auto-switch/i })).not.toBeChecked()
+    expect(screen.getByRole('switch', { name: /enable auto-switch/i })).not.toBeChecked()
     expect(screen.getByLabelText('Focus duration')).toHaveValue('25')
     expect(screen.getByLabelText('Cooldown')).toHaveValue('5')
     expect(screen.getByRole('heading', { name: 'Trigger Apps' })).toBeInTheDocument()

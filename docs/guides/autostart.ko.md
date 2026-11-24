@@ -64,8 +64,10 @@ Linux에서는 먼저 `systemctl --user`를 사용할 수 있는지 확인하고
 > systemd 218 이하 환경에서는 XDG fallback이 자동 적용됩니다.
 >
 > **이것은 지원 배포판 하한이 아닙니다.** systemd 요구사항은 autostart 가 동작하는지를
-> 말할 뿐 릴리스가 설치되는지를 말하지 않습니다. 출하되는 `.deb` 는 `ubuntu-latest`
+> 말할 뿐 릴리스가 설치되는지를 말하지 않습니다. 출하되는 `.deb` 는 `ubuntu-24.04`
 > 에서 빌드되며, 그 메타데이터 자체가 **Ubuntu 24.04 이상**을 요구합니다 (#11246).
+> `ubuntu-latest` 는 이제 Ubuntu 26.04 를 가리켜 이 하한을 올리므로 릴리스 워크플로는
+> 그 이미지를 고정합니다.
 >
 > ```
 > Depends: libasound2t64 (>= 1.1.0), libc6 (>= 2.39), ..., libglib2.0-0t64

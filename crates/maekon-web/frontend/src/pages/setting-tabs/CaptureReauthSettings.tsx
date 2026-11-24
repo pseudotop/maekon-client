@@ -23,6 +23,7 @@ import {
 import { Alert, Button, Card, CardTitle, Input } from '../../components/ui'
 import { addToast } from '../../hooks/useToast'
 import { typography } from '../../styles/tokens'
+import { minutesFromSeconds } from '../../utils/formatters'
 import ToggleRow from './ToggleRow'
 
 const MIN_PIN_LEN = 4
@@ -111,7 +112,7 @@ export default function CaptureReauthSettings() {
   // The standard (non-Tauri) environment has no re-auth feature, so don't render this section.
   if (status === null) return null
 
-  const idleMinutes = Math.max(1, Math.round(status.idle_timeout_secs / 60))
+  const idleMinutes = Math.max(1, minutesFromSeconds(status.idle_timeout_secs))
 
   return (
     <Card variant="default" padding="lg" id="section-reauth">

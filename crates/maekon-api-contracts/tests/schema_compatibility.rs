@@ -109,6 +109,29 @@ fn integration_session_summary_enums_are_opaque_strings() {
     }
 }
 
+#[test]
+fn inbox_prompt_timestamp_fields_match_the_wire_contract() {
+    let schema = schema_for!(maekon_api_contracts::integration::IntegrationInboxPromptSummary);
+    let value = schema.as_value();
+    let properties = &value["properties"];
+    let required = value["required"].as_array().expect("required fields");
+
+    for name in ["received_at", "status_updated_at"] {
+        assert_eq!(properties[name]["type"], "string", "{name}");
+        assert_eq!(properties[name]["format"], "date-time", "{name}");
+        assert!(required.iter().any(|field| field == name), "{name}");
+    }
+    for name in ["presented_at", "expires_at"] {
+        assert_eq!(
+            properties[name]["type"],
+            json!(["string", "null"]),
+            "{name}"
+        );
+        assert_eq!(properties[name]["format"], "date-time", "{name}");
+        assert!(required.iter().all(|field| field != name), "{name}");
+    }
+}
+
 /// Guard the exact opaque-object containment description so a future refactor
 /// of `schema_support` that silently widens the schema (e.g. to `true`) is
 /// noticed. This is the single most load-bearing containment marker.

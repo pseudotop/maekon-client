@@ -3,17 +3,18 @@ import { useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
-  getRoutesForGroup,
+  getGroupLayout,
   joinChildPath,
   navGroups,
   type RouteLeaf,
+  type RouteNode,
   useCurrentGroup,
   useCurrentRoute,
 } from '../../routes'
 import { iconSize, interaction, layout, motion } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { MOD_KEY } from '../../utils/platform'
-import TreeView, { type TreeNode } from './TreeView'
+import TreeView, { type TreeExpandMode, type TreeNode } from './TreeView'
 
 interface SidePanelProps {
   collapsed: boolean
@@ -36,7 +37,14 @@ interface PanelContents {
   selectedId: string | null
   /** Stable React key — forces TreeView remount when the group switches. */
   treeKey: string
+  expandMode: TreeExpandMode
 }
+
+/**
+ * Bundle rows are disclosure nodes, not destinations: the `__` prefix makes
+ * `handleNodeSelect` ignore them, so clicking one only folds or unfolds it.
+ */
+const SECTION_NODE_PREFIX = '__section-'
 
 export default function SidePanel({
   collapsed,
@@ -53,9 +61,11 @@ export default function SidePanel({
   const { node: currentRoute } = useCurrentRoute()
 
   // Build the tree to display in the panel.  Two modes:
-  //   1. Group mode — activeGroup !== null.  Show every route in the group
-  //      as a top-level tree item, with its children nested one level deep.
-  //      Node IDs are fully-qualified paths so onSelect can navigate directly.
+  //   1. Group mode — activeGroup !== null.  Show the group's front routes as
+  //      top-level tree items, then one folded bundle row per `navSections`
+  //      entry holding the remaining routes (#13736).  Routes carry their
+  //      children one level deeper.  Node IDs are fully-qualified paths so
+  //      onSelect can navigate directly.
   //   2. Bottom mode — activeGroup === null (Settings / Privacy).  Fall back
   //      to the legacy "children of current route" view with child paths as
   //      IDs; handleNodeSelect composes the full path from the parent.
@@ -64,11 +74,11 @@ export default function SidePanel({
       const group = navGroups.find((g) => g.id === activeGroup)
       if (!group) return null
 
-      const routes = getRoutesForGroup(activeGroup)
+      const { front, sections } = getGroupLayout(activeGroup)
       const pathname = location.pathname
       let selectedId: string | null = null
 
-      const nodes: TreeNode[] = routes.map((route) => {
+      const toNode = (route: RouteNode): TreeNode => {
         const node: TreeNode = {
           id: route.path,
           label: t(route.labelKey),
@@ -96,13 +106,24 @@ export default function SidePanel({
         }
 
         return node
-      })
+      }
+
+      const nodes: TreeNode[] = [
+        ...front.map(toNode),
+        ...sections.map(({ section, routes }) => ({
+          id: `${SECTION_NODE_PREFIX}${section.id}`,
+          label: t(section.labelKey),
+          children: routes.map(toNode),
+        })),
+      ]
 
       return {
         headerLabelKey: group.labelKey,
         sidebarNodes: nodes,
         selectedId,
         treeKey: `group:${activeGroup}`,
+        // Bundles start folded; the bundle that holds the current page opens.
+        expandMode: 'selected',
       }
     }
 
@@ -133,6 +154,7 @@ export default function SidePanel({
         sidebarNodes: nodes,
         selectedId,
         treeKey: `route:${currentRoute.path}`,
+        expandMode: 'all',
       }
     }
 
@@ -152,6 +174,7 @@ export default function SidePanel({
       sidebarNodes: nodes,
       selectedId,
       treeKey: `route:${currentRoute.path}`,
+      expandMode: 'all',
     }
   }, [activeGroup, currentRoute, location.pathname, t])
 
@@ -191,10 +214,10 @@ export default function SidePanel({
           className={cn('flex flex-shrink-0 items-center justify-between gap-2 px-4 py-2', layout.sidePanel.headerBg)}
         >
           {/*
-           * aria-live on the header text announces the group label whenever
-           * it changes — clicking Monitor → Data swaps the tree contents but
-           * a screen-reader user wouldn't otherwise perceive the region
-           * change.  "polite" avoids interrupting current announcements.
+           * aria-live on the header text announces the panel label whenever
+           * it changes — moving from the main tree to Settings swaps the tree
+           * contents but a screen-reader user wouldn't otherwise perceive the
+           * region change.  "polite" avoids interrupting current announcements.
            */}
           <span className={cn(layout.sidePanel.headerText, 'truncate')} aria-live="polite" aria-atomic="true">
             {t(contents.headerLabelKey)}
@@ -247,6 +270,7 @@ export default function SidePanel({
             nodes={contents.sidebarNodes}
             selectedId={contents.selectedId ?? undefined}
             onSelect={handleNodeSelect}
+            expandMode={contents.expandMode}
           />
         </div>
       </div>

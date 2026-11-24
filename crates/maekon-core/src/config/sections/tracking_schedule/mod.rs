@@ -4,7 +4,9 @@
 //! Public API (`TrackingScheduleConfig`, `TrackingWindow`) unchanged.
 
 mod overlap;
+mod timezone;
 mod types;
+pub use timezone::tracking_zone_offset;
 
 pub use types::{TrackingScheduleConfig, TrackingWindow};
 
@@ -218,84 +220,31 @@ mod tests {
 
     #[test]
     fn dst_fall_back_fires_twice() {
-        // US/Eastern fall-back 2024-11-03: clocks go 02:00 EST → 01:00 EST.
-        // A window covering 01:00–02:30 on Sunday must match BOTH the EDT
-        // occurrence (01:30 EDT = 05:30 UTC) and the EST occurrence
-        // (01:30 EST = 06:30 UTC).
-        //
-        // Per CONS-C04 / spec §3.7: window_is_active is defined on wall-clock
-        // time (local HH:MM + day). Both absolute instants that share the same
-        // local wall-clock value must match.
-
-        use chrono::MappedLocalTime;
-        use chrono::NaiveDate;
-        use chrono::TimeZone as _;
-        use chrono_tz::US::Eastern;
-
-        let w = window("01:00", "02:30", vec![Weekday::Sun]);
-
-        let naive_130 = NaiveDate::from_ymd_opt(2024, 11, 3)
-            .unwrap()
-            .and_hms_opt(1, 30, 0)
-            .unwrap();
-
-        // On fall-back day, 01:30 is ambiguous — two UTC instants share it.
-        let mapped = Eastern.from_local_datetime(&naive_130);
-        let (early, late) = match mapped {
-            MappedLocalTime::Ambiguous(a, b) => (a, b),
-            other => panic!("expected Ambiguous, got {:?}", other),
+        use chrono::{DateTime, Utc};
+        let local = |s: &str| {
+            let utc = s.parse::<DateTime<Utc>>().unwrap();
+            utc.with_timezone(&tracking_zone_offset("US/Eastern", utc.timestamp()).unwrap())
         };
-
-        // Use fixed_offset() instead of to_local() so that now.time() returns
-        // Eastern wall-clock 01:30 regardless of machine timezone. Both early
-        // (EDT, UTC-4) and late (EST, UTC-5) have wall-clock 01:30 in Eastern,
-        // which fixed_offset() preserves exactly.
-        let t_early = early.fixed_offset();
-        let t_late = late.fixed_offset();
-
-        assert!(
-            w.window_is_active(t_early),
-            "01:30 EDT (early / DST occurrence) should be in window"
-        );
-        assert!(
-            w.window_is_active(t_late),
-            "01:30 EST (late / standard occurrence) should be in window"
-        );
+        let first = local("2024-11-03T05:30:00Z");
+        let second = local("2024-11-03T06:30:00Z");
+        assert_ne!(first.offset(), second.offset());
+        assert_eq!(first.naive_local(), second.naive_local());
+        let w = window("01:00", "02:30", vec![Weekday::Sun]);
+        assert!(w.window_is_active(first) && w.window_is_active(second));
     }
-
-    // ── 8. DST spring-forward — skipped hour never fires ─────────────────
 
     #[test]
     fn dst_spring_forward_window_in_skipped_hour_never_fires() {
-        // US/Eastern spring-forward 2024-03-10: clocks jump 02:00 → 03:00.
-        // Local time 02:30 does not exist on that day.
-        // A window configured "02:30"–"02:59" on that Sunday must never match
-        // any real instant because no real instant has that local time.
-        //
-        // This test is GREEN by construction: we build the "would-be" timestamp
-        // via chrono-tz and verify MappedLocalTime::None, then skip calling
-        // window_is_active (there is no valid DateTime<Local> to pass in).
-        // The assertion is structural: the local time literally does not exist.
-
-        use chrono::MappedLocalTime;
-        use chrono::NaiveDate;
-        use chrono::TimeZone as _;
-        use chrono_tz::US::Eastern;
-
-        let naive_0230 = NaiveDate::from_ymd_opt(2024, 3, 10)
-            .unwrap()
-            .and_hms_opt(2, 30, 0)
-            .unwrap();
-
-        let mapped = Eastern.from_local_datetime(&naive_0230);
-        // The skipped hour must produce MappedLocalTime::None — no real instant.
-        assert!(
-            matches!(mapped, MappedLocalTime::None),
-            "02:30 on spring-forward day must be MappedLocalTime::None, got {:?}",
-            mapped
-        );
-        // No call to window_is_active because there is no valid local instant
-        // to pass in. The absence of any matching instant IS the assertion.
+        use chrono::{DateTime, Timelike, Utc};
+        let start = "2024-03-10T06:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let w = window("02:00", "03:00", vec![Weekday::Sun]);
+        for minute in 0..120 {
+            let utc = start + chrono::TimeDelta::minutes(minute);
+            let local =
+                utc.with_timezone(&tracking_zone_offset("US/Eastern", utc.timestamp()).unwrap());
+            assert_eq!(local.hour(), if minute < 60 { 1 } else { 3 });
+            assert!(!w.window_is_active(local));
+        }
     }
 
     // ── 9. Serde rejects invalid HH:MM ────────────────────────────────────

@@ -2,6 +2,8 @@
 
 mod error_recovery;
 pub(crate) mod factory;
+#[cfg(feature = "analysis")]
+mod http_api;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

@@ -16,6 +16,7 @@ import PomodoroTimer from '../components/PomodoroTimer'
 import StatisticsPanel from '../components/StatisticsPanel'
 import TimelineView from '../components/TimelineView'
 import { Button, Card, Skeleton } from '../components/ui'
+import { defaultRegimeOptions } from '../features/activityLabels'
 import { useAiReadinessSnapshot } from '../hooks/useAiReadinessSnapshot'
 import { useCreateOverride, useOverrides } from '../hooks/useRecalibration'
 import { colors, iconSize, typography } from '../styles/tokens'
@@ -45,15 +46,6 @@ function formatDisplayDate(dateStr: string): string {
   }
 }
 
-// Default regime options — in practice these would come from server config
-const DEFAULT_REGIME_OPTIONS = [
-  { id: 'deep-work', label: 'Deep Work' },
-  { id: 'communication', label: 'Communication' },
-  { id: 'meeting', label: 'Meeting' },
-  { id: 'break', label: 'Break' },
-  { id: 'admin', label: 'Admin' },
-]
-
 export default function DashboardDay() {
   const { t } = useTranslation()
   const aiReadinessSnapshot = useAiReadinessSnapshot()
@@ -74,9 +66,9 @@ export default function DashboardDay() {
   const { data: overrides } = useOverrides(dateFrom, dateTo)
   const createOverrideMutation = useCreateOverride()
 
-  // Derive regime options from timeline data or use defaults
+  // Derive regime options from timeline data or use the translated defaults (#13738)
   const regimeOptions = useMemo(() => {
-    if (!data?.timeline || data.timeline.length === 0) return DEFAULT_REGIME_OPTIONS
+    if (!data?.timeline || data.timeline.length === 0) return defaultRegimeOptions(t)
     const seen = new Map<string, string>()
     for (const seg of data.timeline) {
       if (seg.regime_id && !seen.has(seg.regime_id)) {
@@ -86,8 +78,8 @@ export default function DashboardDay() {
     if (seen.size > 0) {
       return Array.from(seen.entries()).map(([id, label]) => ({ id, label }))
     }
-    return DEFAULT_REGIME_OPTIONS
-  }, [data?.timeline])
+    return defaultRegimeOptions(t)
+  }, [data?.timeline, t])
 
   const isToday = date === todayStr()
 

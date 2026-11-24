@@ -18,8 +18,8 @@ contracts, privacy/sandbox policy surfaces, and release/export guardrails.
   - Manage routes: automation policies/commands/history, recalibration segments/
     overrides, execution policies, GUI point-and-confirm automation, audit
     summary/entries, and updates status/channel.
-  - Bottom routes: all Settings tabs (General, Telemetry, Monitoring, Coaching,
-    Audio, AI Automation, Data Storage, Sync, Focus Auto, Advanced, Tracking
+  - Bottom routes: all Settings tabs (General, Capture Protection, Monitoring,
+    Coaching Preferences, Audio, AI Automation, Data Storage, Sync, Focus Auto, Advanced, Tracking
     Schedule) and Privacy data/egress ledger/memory claims/consent/export.
   - Desktop-only surfaces: overlay suggestions, pointer context highlight,
     GUI candidate highlights, capture border, tracking panel, tray-adjacent
@@ -80,7 +80,7 @@ Use this map when deciding whether a full QC run has covered the current client.
 | Monitor | Dashboard overview/monitoring/insights, Day, Week, Timeline all/filters, Replay timeline/events, Focus score/sessions/interruptions |
 | Insights | Reports activity/focus/export, Coaching goals/history, Chat, Playbooks, Search text/tag/keyword/semantic states |
 | Manage | Automation policies/commands/history, GUI point-and-confirm flow, Recalibration segments/overrides, Execution Policies, Audit summary/entries, Updates status/channel |
-| Settings | General, Telemetry, Monitoring, Coaching, Audio, AI Automation, Data Storage, Sync, Focus Auto, Advanced, Tracking Schedule |
+| Settings | General, Capture Protection, Monitoring, Coaching Preferences, Audio, AI Automation, Data Storage, Sync, Focus Auto, Advanced, Tracking Schedule |
 | Privacy | Data controls, egress ledger, memory claims/retraction, consent/danger zone, export/backup/restore, audio disclosure, erasure and delete-all flows |
 | Desktop runtime | Overlay suggestions, GUI candidate highlights, pointer context highlight, capture border, tracking panel, tray/menu handoffs, resource health, debug/runtime smoke |
 | Release/export | Version/config sync, route integrity, HTTP/OpenAPI contract sync, release notes policy, export guardrails, provenance/secret scans, supply-chain alert acceptance |
@@ -111,9 +111,11 @@ user-flow scenarios, use `docs/qa/customer-journey-tc-map.md`.
 
 ### A. Information Architecture and Navigation
 
-- [ ] ActivityBar group labels are concise and group membership is obvious.
+- [ ] The main tree shows at most eight front destinations, its bundle labels
+      (More, Tools, System) are concise, and bundle membership is obvious.
 - [ ] SidePanel tree selection, grouping, collapse/resize, and keyboard resize
-      work across Monitor, Insights, Manage, Settings, and Privacy modes.
+      work across the main tree, Settings, and Privacy modes; at 900px wide
+      or less the panel starts collapsed and can be opened again.
 - [ ] CommandPalette includes every top-level route and child route from
       `routeTree`; search, keyboard selection, Escape, and focus trap work.
 - [ ] Direct route URLs and default-child redirects land on the expected view.

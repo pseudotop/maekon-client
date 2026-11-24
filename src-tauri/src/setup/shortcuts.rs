@@ -48,45 +48,52 @@ fn collision_list_contains(list: Option<&str>, component: &str) -> bool {
 /// capture pause state. Emits state change events to overlay and tracking panel,
 /// and rebuilds the tray menu to reflect the new state.
 fn register_capture_shortcut(app: &App) {
+    use crate::commands::capture_status::{apply_capture_pause_request, CapturePauseRequest};
     use tauri::Manager;
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
     let result =
         app.global_shortcut()
             .on_shortcut("CmdOrCtrl+Shift+\\", |app_handle, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    let handle = app_handle.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Some(state) = handle.try_state::<crate::runtime_state::AppState>() {
-                            let was_paused = state
-                                .capture_paused
-                                .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-                            let new_paused = !was_paused;
-                            let indicator_visible = state
-                                .indicator_visible
-                                .load(std::sync::atomic::Ordering::Relaxed);
-                            crate::commands::capture_status::emit_current_capture_status(
-                                &handle, &state,
-                            );
-                            if let Err(e) =
-                                crate::tray::sync_tray_state(&handle, new_paused, indicator_visible)
-                            {
-                                tracing::debug!("sync_tray_state failed: {e}");
+                let phase = event.state;
+                let handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(state) = handle.try_state::<crate::runtime_state::AppState>() {
+                        let new_paused = match apply_capture_pause_request(
+                            &state,
+                            CapturePauseRequest::Shortcut(phase),
+                        ) {
+                            Ok(Some(paused)) => paused,
+                            Ok(None) => return,
+                            Err(error) => {
+                                tracing::warn!("shortcut pause transition failed: {error}");
+                                return;
                             }
-                            crate::magic_overlay::sync_passive_tracking_surface(
-                                &handle,
-                                new_paused,
-                                indicator_visible,
-                            );
-                            // Immediately re-gate the VAD receiver so a pause tears
-                            // down the microphone at once (the ≤2 s tick is the
-                            // backstop for other gate terms), AND remember/auto-rearm
-                            // VAD across the pause toggle. Shared helper so every
-                            // capture-pause site routes through the same path.
-                            crate::commands::audio::on_capture_pause_toggled(&handle, new_paused);
+                        };
+                        let indicator_visible = state
+                            .indicator_visible
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        crate::commands::capture_status::emit_current_capture_status(
+                            &handle, &state,
+                        );
+                        if let Err(e) =
+                            crate::tray::sync_tray_state(&handle, new_paused, indicator_visible)
+                        {
+                            tracing::debug!("sync_tray_state failed: {e}");
                         }
-                    });
-                }
+                        crate::magic_overlay::sync_passive_tracking_surface(
+                            &handle,
+                            new_paused,
+                            indicator_visible,
+                        );
+                        // Immediately re-gate the VAD receiver so a pause tears
+                        // down the microphone at once (the ≤2 s tick is the
+                        // backstop for other gate terms), AND remember/auto-rearm
+                        // VAD across the pause toggle. Shared helper so every
+                        // capture-pause site routes through the same path.
+                        crate::commands::audio::on_capture_pause_toggled(&handle, new_paused);
+                    }
+                });
             });
 
     match result {

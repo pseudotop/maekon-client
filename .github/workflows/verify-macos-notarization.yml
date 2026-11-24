@@ -28,7 +28,6 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   verify-published-notarization:
@@ -52,82 +51,29 @@ jobs:
           MAEKON_NOTARIZATION_TAGS: ${{ inputs.tags }}
         run: |
           set -uo pipefail
+          status=0
           ./scripts/verify-published-macos-notarization.sh --from-env \
-            >notarization-report.txt 2>&1
-          status=$?
+            >notarization-report.txt 2>&1 || status=$?
           cat notarization-report.txt
           exit "$status"
 
-      # "This release is not notarized" is maintainer news before it is public
-      # news, so the finding goes to the SSOT (#10948). Scoped to issues:write
-      # on that one repository — no wider grant than the alert needs.
-      - name: Mint an SSOT-scoped token for issue filing
-        id: ssot_token
-        if: failure()
-        continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
-        with:
-          client-id: ${{ secrets.MAEKON_AUTOMATION_APP_CLIENT_ID }}
-          private-key: ${{ secrets.MAEKON_AUTOMATION_APP_PRIVATE_KEY }}
-          owner: pseudotop
-          repositories: oneshim
-          permission-issues: write
-
-      - name: Open or update the unstapled-release issue
+      # #10935/#10948: the independent macOS sweep remains public. The private
+      # owner observer (#12892) receives its run/attempt; no SSOT credential is exported.
+      - name: Record verification failure for the private maintainer observer
         if: failure()
         shell: bash
-        env:
-          ISSUE_TITLE: "release(maekon): published macOS assets are not stapled"
-          SSOT_TOKEN: ${{ steps.ssot_token.outputs.token }}
-          PUBLIC_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          # An unstapled release that nobody hears about is the condition this
-          # workflow exists to prevent, so a failed mint degrades to the public
-          # repo rather than to silence.
-          SSOT_ISSUE_REPO="pseudotop/oneshim"
-          FALLBACK_NOTE=""
-          if [[ -n "${SSOT_TOKEN:-}" ]]; then
-            TARGET_REPO="$SSOT_ISSUE_REPO"
-            export GH_TOKEN="$SSOT_TOKEN"
-          else
-            TARGET_REPO="$GITHUB_REPOSITORY"
-            export GH_TOKEN="$PUBLIC_TOKEN"
-            FALLBACK_NOTE="yes"
-            echo "::error::Could not mint the ${SSOT_ISSUE_REPO} token; filing publicly so the finding is not lost."
-          fi
-
-          BODY_FILE="$(mktemp)"
+          # #12892: the private owner observer polls this exact run/attempt.
+          # Public jobs carry no private Issue/Project credentials.
+          printf 'MAEKON_NOTARIZATION_FAILURE_V1 workflow=verify-macos-notarization.yml run_id=%s attempt=%s source_sha=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA"
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
           {
-            echo "\`verify-published-macos-notarization.sh\` found macOS release assets that are not stapled."
-            echo
-            echo "Gatekeeper refuses these on a user machine. Re-run \`Notarize macOS Release Assets\` for the affected tag, then re-run this workflow to confirm."
-            echo
-            echo '```'
-            cat notarization-report.txt 2>/dev/null || echo "(report unavailable)"
-            echo '```'
-            if [[ -n "$FALLBACK_NOTE" ]]; then
-              echo
-              echo "> Filed here rather than in ${SSOT_ISSUE_REPO} because the automation App token could not be minted. Check the App installation and its private key."
-            fi
-            echo
-            echo "Detected by [run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) — see #10935."
-          } > "$BODY_FILE"
-
-          EXISTING="$(gh issue list \
-            --repo "$TARGET_REPO" \
-            --state open \
-            --search "\"$ISSUE_TITLE\" in:title" \
-            --limit 1 \
-            --json number \
-            --jq '.[0].number // empty')"
-
-          if [[ -n "$EXISTING" ]]; then
-            gh issue comment "$EXISTING" --repo "$TARGET_REPO" --body-file "$BODY_FILE"
-          else
-            gh issue create \
-              --repo "$TARGET_REPO" \
-              --title "$ISSUE_TITLE" \
-              --body-file "$BODY_FILE"
-          fi
+            echo '### macOS notarization failure'
+            printf 'Workflow: verify-macos-notarization.yml\nRun: %s\nAttempt: %s\nSource SHA: %s\n\n' \
+              "$RUN_URL" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA"
+            echo 'The private ONESHIM maintainer observer files the owner alert for this incident.'
+            echo 'Keep the macOS checks and inspect the first failing step in the original run.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::macOS notarization failed; private observer incident: $RUN_URL"

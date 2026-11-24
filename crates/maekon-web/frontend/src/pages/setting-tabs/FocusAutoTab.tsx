@@ -2,9 +2,10 @@ import { Plus, X } from 'lucide-react'
 import { useCallback, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AppSettings, FocusAutoSettings, FocusScheduleSettings } from '../../api/contracts'
-import { Card, CardTitle, FieldHint, SettingPreview, type SettingPreviewRow } from '../../components/ui'
+import { Card, CardTitle, FieldHint, Input, SettingPreview, type SettingPreviewRow, Switch } from '../../components/ui'
 import { colors, form, iconSize, motion, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { minutesFromSeconds } from '../../utils/formatters'
 import { useSettingsFormContext } from '../settings/SettingsFormContext'
 
 const DURATION_PRESETS = [15, 25, 45, 60, 90, 120]
@@ -106,7 +107,7 @@ export default function FocusAutoTab() {
     },
     {
       label: t('focusAuto.cooldown'),
-      value: formatMinutes(focusAuto.cooldown_secs / 60),
+      value: formatMinutes(minutesFromSeconds(focusAuto.cooldown_secs)),
     },
     {
       label: t('focusAuto.triggerApps'),
@@ -129,12 +130,7 @@ export default function FocusAutoTab() {
             <span className={cn('text-sm', colors.text.primary)}>{t('focusAuto.enabled')}</span>
             <FieldHint>{t('focusAuto.description')}</FieldHint>
           </div>
-          <input
-            type="checkbox"
-            className={form.checkbox}
-            checked={focusAuto.enabled}
-            onChange={(e) => updateFocusAuto({ enabled: e.target.checked })}
-          />
+          <Switch checked={focusAuto.enabled} onCheckedChange={(next) => updateFocusAuto({ enabled: next })} />
         </label>
 
         {/* Duration + Cooldown */}
@@ -177,7 +173,7 @@ export default function FocusAutoTab() {
                 'w-full rounded-md border border-DEFAULT bg-surface-base px-3 py-2 text-sm',
                 colors.text.primary,
               )}
-              value={focusAuto.cooldown_secs / 60}
+              value={minutesFromSeconds(focusAuto.cooldown_secs)}
               onChange={(e) => updateFocusAuto({ cooldown_secs: Number(e.target.value) * 60 })}
             >
               {COOLDOWN_PRESETS.map((m) => (
@@ -267,26 +263,22 @@ export default function FocusAutoTab() {
             {focusAuto.trigger_schedules.map((sched, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: schedules have no stable ID
               <div key={i} className="flex items-center gap-2">
-                <input
+                <Input
                   type="time"
+                  inputSize="sm"
                   value={sched.start}
                   onChange={(e) => updateSchedule(i, { start: e.target.value })}
-                  className={cn(
-                    'rounded-md border border-DEFAULT bg-surface-base px-2 py-1.5 text-sm',
-                    colors.text.primary,
-                  )}
+                  className="w-auto"
                   aria-label={t('focusAuto.scheduleStartLabel', { index: i + 1 })}
                   aria-describedby={schedulesHintId}
                 />
                 <span className={cn('text-xs', colors.text.secondary)}>–</span>
-                <input
+                <Input
                   type="time"
+                  inputSize="sm"
                   value={sched.end}
                   onChange={(e) => updateSchedule(i, { end: e.target.value })}
-                  className={cn(
-                    'rounded-md border border-DEFAULT bg-surface-base px-2 py-1.5 text-sm',
-                    colors.text.primary,
-                  )}
+                  className="w-auto"
                   aria-label={t('focusAuto.scheduleEndLabel', { index: i + 1 })}
                   aria-describedby={schedulesHintId}
                 />

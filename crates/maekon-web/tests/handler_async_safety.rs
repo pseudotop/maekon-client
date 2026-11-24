@@ -366,7 +366,7 @@ mod accept_loop_abort_tests {
         shutdown_tx: Arc<watch::Sender<bool>>,
         shutdown_rx: watch::Receiver<bool>,
     ) -> ExternalGrpcSpawnConfig {
-        let (cert_path, key_path) = test_cert_pair();
+        let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
         let certified_key = load_certified_key(&cert_path, &key_path).expect("load certified key");
         let resolver = Arc::new(HotReloadCertResolver::new(certified_key));
         let storage =

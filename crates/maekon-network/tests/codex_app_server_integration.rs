@@ -23,6 +23,7 @@
 //!
 //! Unix-only (the spawn/reap path + every existing codex test are unix-gated).
 
+#![cfg(test)]
 #![cfg(unix)]
 // Integration test binary (`tests/*.rs` is its own crate root, entirely
 // test-only) — not covered by the library's crate-wide allow (#7719

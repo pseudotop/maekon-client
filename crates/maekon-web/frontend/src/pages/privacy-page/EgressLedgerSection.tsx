@@ -19,7 +19,9 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { fetchEgressLedger } from '../../api/client'
 import type { EgressLedgerEntry } from '../../api/contracts'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Badge, type BadgeProps, Card, CardTitle, EmptyState, Select, Spinner } from '../../components/ui'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { formatBytes, formatDateTime, formatNumber } from '../../utils/formatters'
@@ -62,6 +64,7 @@ function dispositionBadgeColor(disposition: string): BadgeProps['color'] {
 
 export default function EgressLedgerSection() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [range, setRange] = useState<RangePreset>('7d')
   const [disposition, setDisposition] = useState<DispositionFilter>('all')
 
@@ -89,6 +92,7 @@ export default function EgressLedgerSection() {
   // Distinguish "the ledger is empty" (nothing has ever left this device) from
   // "no entries in the selected range / disposition filter".
   const ledgerLikelyEmpty = range === 'all' && disposition === 'all' && rawEntries.length === 0
+  const loadError = isError ? describeError(error, t('errors.tryAgainLater')) : null
 
   return (
     <>
@@ -141,9 +145,10 @@ export default function EgressLedgerSection() {
           </div>
         )}
 
-        {isError && (
+        {loadError && (
           <Alert variant="error" title={t('privacy.egress.loadError')} className="mb-2">
-            {(error as Error).message}
+            {loadError.text}
+            <SupportDetails detail={loadError.detail} />
           </Alert>
         )}
 

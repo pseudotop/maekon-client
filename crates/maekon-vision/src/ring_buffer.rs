@@ -6,7 +6,9 @@
 //! continue capturing "after" frames.
 
 use chrono::{DateTime, Utc};
+use maekon_core::error::CoreError;
 use maekon_core::models::focused_element::AccessibilityElement;
+use maekon_core::ports::vision::{capture_denied, CaptureAccess, CapturePermit};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -24,6 +26,25 @@ pub struct RingFrame {
     pub accessibility_elements: Vec<AccessibilityElement>,
 }
 
+impl RingFrame {
+    fn erase(&mut self) {
+        self.thumbnail_data.zeroize();
+        self.app_name.zeroize();
+        self.window_title.zeroize();
+        for element in &mut self.accessibility_elements {
+            element.label.zeroize();
+        }
+        self.accessibility_elements.clear();
+    }
+}
+
+/// A buffered image can only be saved under its originating authority.
+#[derive(Debug)]
+pub struct AuthorizedRingFrame {
+    pub frame: RingFrame,
+    pub permit: CapturePermit,
+}
+
 /// Result of flushing the ring buffer on a significant event.
 #[derive(Debug)]
 pub struct RingBufferFlush {
@@ -36,6 +57,9 @@ pub struct RingBufferFlush {
 /// Dashcam-style ring buffer that retains recent frames for context.
 pub struct CaptureRingBuffer {
     buffer: Mutex<VecDeque<RingFrame>>,
+    // Keep legacy users separate: an unguarded drain cannot retrieve authorized
+    // runtime images while discarding their origin permits.
+    authorized: Mutex<VecDeque<AuthorizedRingFrame>>,
     capacity: usize,
     /// Remaining post-event frames to force-capture after a significant event.
     post_event_remaining: AtomicU32,
@@ -56,12 +80,86 @@ impl CaptureRingBuffer {
     pub fn new(capacity: usize, post_event_count: u32, flush_threshold: f32) -> Self {
         Self {
             buffer: Mutex::new(VecDeque::with_capacity(capacity)),
+            authorized: Mutex::new(VecDeque::with_capacity(capacity)),
             capacity,
             post_event_remaining: AtomicU32::new(0),
             post_event_count,
             flush_threshold,
             evicted_count: AtomicU64::new(0),
         }
+    }
+
+    pub fn push_authorized(
+        &self,
+        mut frame: RingFrame,
+        permit: CapturePermit,
+    ) -> Result<(), CoreError> {
+        let result = (|| {
+            let mut buffer = self
+                .authorized
+                .lock()
+                .map_err(|_| capture_denied("ring authority poisoned"))?;
+            permit.check(CaptureAccess::Retain)?;
+            if self.capacity == 0 {
+                return Err(capture_denied("ring capacity is zero"));
+            }
+            if buffer.len() >= self.capacity {
+                if let Some(mut evicted) = buffer.pop_front() {
+                    evicted.frame.erase();
+                }
+                self.evicted_count.fetch_add(1, Ordering::Relaxed);
+            }
+            buffer.push_back(AuthorizedRingFrame {
+                frame: frame.clone(),
+                permit,
+            });
+            drop(buffer);
+            Ok(())
+        })();
+        // The sole retained copy belongs to the guarded queue, even on failure.
+        frame.erase();
+        result
+    }
+
+    /// Revoke stale entries even if pause/resume happened between scheduler
+    /// ticks. This only performs live policy reads, never native enumeration.
+    pub fn purge_denied(&self) {
+        if let Ok(mut buffer) = self.authorized.lock() {
+            buffer.retain_mut(|entry| {
+                if entry.permit.check(CaptureAccess::Retain).is_ok() {
+                    return true;
+                }
+                entry.frame.erase();
+                false
+            });
+        }
+    }
+
+    pub fn flush_authorized(
+        &self,
+        importance: f32,
+        trigger: &CapturePermit,
+    ) -> Result<Vec<AuthorizedRingFrame>, CoreError> {
+        if importance < self.flush_threshold {
+            return Ok(Vec::new());
+        }
+        let mut buffer = self
+            .authorized
+            .lock()
+            .map_err(|_| capture_denied("ring authority poisoned"))?;
+        trigger.check(CaptureAccess::Retain)?;
+        let mut frames = Vec::new();
+        for mut entry in buffer.drain(..) {
+            if entry.permit.check(CaptureAccess::Retain).is_ok() {
+                frames.push(entry);
+            } else {
+                entry.frame.erase();
+            }
+        }
+        self.post_event_remaining
+            .store(self.post_event_count, Ordering::Relaxed);
+        drop(buffer);
+        Ok(frames)
     }
 
     /// Push a thumbnail frame into the ring buffer (circular overwrite).
@@ -138,6 +236,7 @@ impl CaptureRingBuffer {
     /// Current number of frames in the buffer.
     pub fn len(&self) -> usize {
         self.buffer.lock().map(|b| b.len()).unwrap_or(0)
+            + self.authorized.lock().map(|b| b.len()).unwrap_or(0)
     }
 
     /// Whether the buffer is empty.
@@ -175,6 +274,12 @@ impl CaptureRingBuffer {
     /// after the user stops consenting. Zeroizing (not just dropping) overwrites
     /// the pixel/title bytes so they do not persist in freed heap pages.
     pub fn clear(&self) {
+        if let Ok(mut buffer) = self.authorized.lock() {
+            for entry in buffer.iter_mut() {
+                entry.frame.erase();
+            }
+            buffer.clear();
+        }
         let Ok(mut buf) = self.buffer.lock() else {
             error!("CaptureRingBuffer lock poisoned on clear");
             return;
@@ -202,6 +307,171 @@ impl CaptureRingBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maekon_core::ports::vision::{CaptureGuard, CapturePauseState};
+    use std::sync::Arc;
+
+    struct OriginPauseGuard {
+        state: Arc<CapturePauseState>,
+        origin: u64,
+    }
+    impl CaptureGuard for OriginPauseGuard {
+        fn check(&self, _: CaptureAccess) -> Result<(), CoreError> {
+            self.state.check(self.origin)
+        }
+    }
+    fn pause_permit(state: &Arc<CapturePauseState>) -> CapturePermit {
+        CapturePermit::new(Arc::new(OriginPauseGuard {
+            state: state.clone(),
+            origin: state.snapshot().unwrap(),
+        }))
+    }
+
+    #[test]
+    fn denied_pixel_marker_never_enters_authorized_ring() {
+        let state = Arc::new(CapturePauseState::new(Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        )));
+        let permit = pause_permit(&state);
+        state.toggle().unwrap();
+        state.toggle().unwrap();
+        let rb = CaptureRingBuffer::new(3, 2, 0.5);
+        let mut frame = make_frame("Allowed", "synthetic");
+        frame.thumbnail_data = b"denied-synthetic-pixel-marker".to_vec();
+        let result = rb.push_authorized(frame, permit);
+        // Inspect retained bytes, not a mock guard invocation count. Deleting
+        // the real push guard makes this retention assertion fail (#12018).
+        assert!(
+            rb.authorized.lock().unwrap().is_empty(),
+            "denied pixels entered the ring"
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            CoreError::PermissionDenied {
+                code: maekon_core::error_codes::PermissionCode::PrivacyDenied,
+                ..
+            }
+        ));
+        assert_eq!(rb.len(), 0);
+        assert!(rb
+            .flush_authorized(1.0, &pause_permit(&state))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn pause_aba_cannot_flush_an_old_marker_under_a_new_permit() {
+        let state = Arc::new(CapturePauseState::new(Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        )));
+        let rb = CaptureRingBuffer::new(3, 2, 0.5);
+        let mut old = make_frame("Allowed", "before pause");
+        old.thumbnail_data = b"old-pixel-marker".to_vec();
+        rb.push_authorized(old, pause_permit(&state)).unwrap();
+        state.toggle().unwrap();
+        state.toggle().unwrap();
+        let fresh = pause_permit(&state);
+        let mut new = make_frame("Allowed", "after resume");
+        new.thumbnail_data = b"fresh-pixel-marker".to_vec();
+        rb.push_authorized(new, fresh.clone()).unwrap();
+        let frames = rb.flush_authorized(1.0, &fresh).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].frame.thumbnail_data, b"fresh-pixel-marker");
+        assert_eq!(rb.len(), 0);
+        assert_eq!(rb.post_event_remaining(), 2);
+    }
+
+    #[test]
+    fn legacy_drain_cannot_strip_authority_from_runtime_pixels() {
+        let state = Arc::new(CapturePauseState::new(Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        )));
+        let rb = CaptureRingBuffer::new(2, 1, 0.5);
+        rb.push_authorized(make_frame("Allowed", "authorized"), pause_permit(&state))
+            .unwrap();
+        assert!(rb
+            .check_and_flush(1.0, make_frame("Allowed", "legacy"))
+            .unwrap()
+            .pre_event_frames
+            .is_empty());
+        assert_eq!(
+            rb.flush_authorized(1.0, &pause_permit(&state))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn erase_removes_all_sensitive_frame_fields() {
+        let mut frame = make_frame("private app", "private title");
+        frame.thumbnail_data = b"private pixels".to_vec();
+        frame.accessibility_elements.push(AccessibilityElement {
+            role: "Editor".into(),
+            label: "private text".into(),
+            bounds: None,
+        });
+        frame.erase();
+        assert!(frame.thumbnail_data.is_empty());
+        assert!(frame.app_name.is_empty());
+        assert!(frame.window_title.is_empty());
+        assert!(frame.accessibility_elements.is_empty());
+    }
+
+    #[test]
+    fn authorized_capacity_evicts_oldest_and_counts_both_queues() {
+        let state = Arc::new(CapturePauseState::new(Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        )));
+        let rb = CaptureRingBuffer::new(2, 2, 0.5);
+        rb.push(make_frame("legacy", "legacy"));
+        rb.push_authorized(make_frame("allowed", "first"), pause_permit(&state))
+            .unwrap();
+        assert_eq!(rb.len(), 2);
+        assert_eq!(rb.evicted_count(), 0);
+        rb.push_authorized(make_frame("allowed", "second"), pause_permit(&state))
+            .unwrap();
+        rb.push_authorized(make_frame("allowed", "third"), pause_permit(&state))
+            .unwrap();
+        assert_eq!(rb.len(), 3);
+        assert_eq!(rb.evicted_count(), 1);
+        let frames = rb.flush_authorized(0.5, &pause_permit(&state)).unwrap();
+        assert_eq!(
+            frames
+                .iter()
+                .map(|entry| entry.frame.window_title.as_str())
+                .collect::<Vec<_>>(),
+            ["second", "third"]
+        );
+        assert_eq!(rb.len(), 1);
+    }
+
+    #[test]
+    fn purge_removes_revoked_pixels_before_any_flush_and_keeps_fresh_pixels() {
+        let state = Arc::new(CapturePauseState::new(Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        )));
+        let rb = CaptureRingBuffer::new(3, 2, 0.5);
+        rb.push_authorized(make_frame("allowed", "stale"), pause_permit(&state))
+            .unwrap();
+        state.toggle().unwrap();
+        state.toggle().unwrap();
+        rb.push_authorized(make_frame("allowed", "fresh"), pause_permit(&state))
+            .unwrap();
+        rb.purge_denied();
+        assert_eq!(rb.len(), 1);
+        assert_eq!(rb.authorized.lock().unwrap()[0].frame.window_title, "fresh");
+        assert!(rb
+            .flush_authorized(0.49, &pause_permit(&state))
+            .unwrap()
+            .is_empty());
+        assert_eq!(rb.len(), 1);
+        assert_eq!(rb.post_event_remaining(), 0);
+        let frames = rb.flush_authorized(0.5, &pause_permit(&state)).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].frame.window_title, "fresh");
+        assert_eq!(rb.post_event_remaining(), 2);
+        assert_eq!(rb.len(), 0);
+    }
 
     fn make_frame(app: &str, title: &str) -> RingFrame {
         RingFrame {

@@ -11,18 +11,69 @@ export interface TreeNode {
   children?: TreeNode[]
 }
 
+/**
+ * Which parents start expanded.
+ * - `all`: every parent, at every depth (the Settings and Privacy trees).
+ * - `selected`: only the ancestors of `selectedId`. When `selectedId` later
+ *   moves under a collapsed parent, those ancestors expand so the selection
+ *   stays visible. Used by the main tree, whose bundles start folded (#13736).
+ */
+export type TreeExpandMode = 'all' | 'selected'
+
 interface TreeViewProps {
   nodes: TreeNode[]
   selectedId?: string
   onSelect?: (id: string) => void
-  depth?: number
+  expandMode?: TreeExpandMode
 }
 
-export default function TreeView({ nodes, selectedId, onSelect, depth = 0 }: TreeViewProps) {
-  const [expanded, setExpanded] = useState<Set<string>>(() => {
-    return new Set(nodes.filter((n) => n.children?.length).map((n) => n.id))
-  })
+function collectParentIds(nodes: TreeNode[], into: Set<string>): Set<string> {
+  for (const node of nodes) {
+    if (node.children?.length) {
+      into.add(node.id)
+      collectParentIds(node.children, into)
+    }
+  }
+  return into
+}
+
+/** Ids of the parents on the way to `id`, outermost first; `null` when `id` is not in the tree. */
+function findAncestorIds(nodes: TreeNode[], id: string): string[] | null {
+  for (const node of nodes) {
+    if (node.id === id) return []
+    if (node.children?.length) {
+      const below = findAncestorIds(node.children, id)
+      if (below) return [node.id, ...below]
+    }
+  }
+  return null
+}
+
+function initialExpanded(nodes: TreeNode[], mode: TreeExpandMode, selectedId: string | undefined): Set<string> {
+  if (mode === 'all') return collectParentIds(nodes, new Set())
+  return new Set(selectedId ? (findAncestorIds(nodes, selectedId) ?? []) : [])
+}
+
+export default function TreeView({ nodes, selectedId, onSelect, expandMode = 'all' }: TreeViewProps) {
+  // Expansion lives at the root so every depth shares one state: keyboard
+  // expand/collapse works on nested parents too, and a nested parent keeps its
+  // state when an outer parent is folded and unfolded again.
+  const [expanded, setExpanded] = useState<Set<string>>(() => initialExpanded(nodes, expandMode, selectedId))
+  const [revealedFor, setRevealedFor] = useState(selectedId)
   const treeRef = useRef<HTMLDivElement>(null)
+
+  // Reveal a selection that moved under a collapsed parent (a command-palette
+  // jump, a deep link, an in-page link). Adjusting state during render keeps
+  // the first paint correct instead of flashing the folded tree.
+  if (selectedId !== revealedFor) {
+    setRevealedFor(selectedId)
+    if (expandMode === 'selected' && selectedId) {
+      const ancestors = findAncestorIds(nodes, selectedId) ?? []
+      if (ancestors.some((id) => !expanded.has(id))) {
+        setExpanded(new Set([...expanded, ...ancestors]))
+      }
+    }
+  }
 
   const toggleExpand = useCallback((id: string) => {
     setExpanded((prev) => {
@@ -42,7 +93,7 @@ export default function TreeView({ nodes, selectedId, onSelect, depth = 0 }: Tre
     })
   }, [])
 
-  // Arrow-key navigation for ARIA tree pattern (root level only)
+  // Arrow-key navigation for the ARIA tree pattern, handled once at the root
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (!treeRef.current) return
@@ -118,13 +169,33 @@ export default function TreeView({ nodes, selectedId, onSelect, depth = 0 }: Tre
   )
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: role="tree" is interactive; onKeyDown only at root depth for roving tabindex
-    <div
-      ref={depth === 0 ? treeRef : undefined}
-      className="text-sm"
-      role={depth === 0 ? 'tree' : 'group'}
-      onKeyDown={depth === 0 ? handleKeyDown : undefined}
-    >
+    <div ref={treeRef} className="text-sm" role="tree" onKeyDown={handleKeyDown}>
+      <TreeLevel
+        nodes={nodes}
+        depth={0}
+        expanded={expanded}
+        onToggle={toggleExpand}
+        selectedId={selectedId}
+        onSelect={onSelect}
+      />
+    </div>
+  )
+}
+
+TreeView.displayName = 'TreeView'
+
+interface TreeLevelProps {
+  nodes: TreeNode[]
+  depth: number
+  expanded: ReadonlySet<string>
+  onToggle: (id: string) => void
+  selectedId?: string
+  onSelect?: (id: string) => void
+}
+
+function TreeLevel({ nodes, depth, expanded, onToggle, selectedId, onSelect }: TreeLevelProps) {
+  return (
+    <>
       {nodes.map((node, index) => {
         const hasChildren = node.children && node.children.length > 0
         const isExpanded = expanded.has(node.id)
@@ -141,7 +212,7 @@ export default function TreeView({ nodes, selectedId, onSelect, depth = 0 }: Tre
               data-node-id={hasChildren ? node.id : undefined}
               tabIndex={depth === 0 && index === 0 ? 0 : -1}
               onClick={() => {
-                if (hasChildren) toggleExpand(node.id)
+                if (hasChildren) onToggle(node.id)
                 onSelect?.(node.id)
               }}
               className={cn(
@@ -176,14 +247,22 @@ export default function TreeView({ nodes, selectedId, onSelect, depth = 0 }: Tre
             </button>
             {hasChildren && isExpanded && (
               <div role="none" className={layout.sidePanel.childBorder}>
-                <TreeView nodes={node.children ?? []} selectedId={selectedId} onSelect={onSelect} depth={depth + 1} />
+                {/* biome-ignore lint/a11y/useSemanticElements: the ARIA tree pattern nests treeitems in role="group"; <fieldset> groups form controls */}
+                <div className="text-sm" role="group">
+                  <TreeLevel
+                    nodes={node.children ?? []}
+                    depth={depth + 1}
+                    expanded={expanded}
+                    onToggle={onToggle}
+                    selectedId={selectedId}
+                    onSelect={onSelect}
+                  />
+                </div>
               </div>
             )}
           </div>
         )
       })}
-    </div>
+    </>
   )
 }
-
-TreeView.displayName = 'TreeView'

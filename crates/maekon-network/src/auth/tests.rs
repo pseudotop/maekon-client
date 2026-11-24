@@ -779,4 +779,120 @@ mod tests {
         let err = run_refresh_status_test(500).await;
         assert_eq!(err.code(), "auth.failed");
     }
+
+    #[tokio::test]
+    async fn session_snapshot_reads_metadata_and_generation_under_one_lock() {
+        let manager = TokenManager::new("http://127.0.0.1:19999");
+        let mut state = manager.state.write().await;
+        let reader = manager.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let pending = tokio::spawn(async move {
+            started.send(()).unwrap();
+            reader.session_snapshot().await
+        });
+        ready.await.unwrap();
+        assert!(
+            !pending.is_finished(),
+            "snapshot must wait for the state lock"
+        );
+        *state = Some(TokenState {
+            access_token: uuid::Uuid::new_v4().to_string(),
+            refresh_token: None,
+            expires_at: Utc::now() + Duration::hours(1),
+            identifier: Some("new-actor".into()),
+            organization_id: Some("new-org".into()),
+        });
+        manager.bump_session_generation();
+        drop(state);
+        let snapshot = pending.await.unwrap();
+        assert!(snapshot.authenticated);
+        assert_eq!(snapshot.generation, "1");
+        assert_eq!(snapshot.identifier.as_deref(), Some("new-actor"));
+        assert_eq!(snapshot.organization_id.as_deref(), Some("new-org"));
+        assert!(snapshot.expires_at.is_some());
+        assert_eq!(snapshot.instance_id, manager.session_instance_id());
+    }
+
+    #[tokio::test]
+    async fn session_watch_and_snapshot_follow_real_same_actor_logout_login_across_clones() {
+        let mut server = mockito::Server::new_async().await;
+        let login = server
+            .mock("POST", "/api/v1/auth/tokens")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"fixture-access","expires_in":3600}"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let manager = TokenManager::new(&server.url());
+        let other = manager.clone();
+        let mut changes = other.subscribe_session_generation();
+        manager
+            .login_with_org("same-actor", &primary_password(), "same-org")
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), changes.changed())
+            .await
+            .expect("login must notify existing subscribers")
+            .unwrap();
+        assert_eq!(*changes.borrow_and_update(), 1);
+        let before = other.session_snapshot().await;
+        other.logout().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), changes.changed())
+            .await
+            .expect("logout must notify existing subscribers")
+            .unwrap();
+        assert_eq!(*changes.borrow_and_update(), 2);
+        let logged_out = manager.session_snapshot().await;
+        assert!(!logged_out.authenticated);
+        assert!(logged_out.identifier.is_none());
+        assert!(logged_out.organization_id.is_none());
+        assert!(logged_out.expires_at.is_none());
+        manager
+            .login_with_org("same-actor", &primary_password(), "same-org")
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), changes.changed())
+            .await
+            .expect("a new login must notify existing subscribers")
+            .unwrap();
+        assert_eq!(*changes.borrow_and_update(), 3);
+        let after = other.session_snapshot().await;
+        assert_eq!(before.instance_id, after.instance_id);
+        assert_eq!(before.identifier, after.identifier);
+        assert_eq!(before.organization_id, after.organization_id);
+        assert_ne!(before.generation, after.generation);
+        login.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn expired_session_snapshot_hides_identity_and_late_subscribers_keep_latest_generation() {
+        let manager = TokenManager::new("http://127.0.0.1:19999");
+        let mut state = manager.state.write().await;
+        *state = Some(TokenState {
+            access_token: "expired-fixture-access".into(),
+            refresh_token: None,
+            expires_at: Utc::now() - Duration::seconds(1),
+            identifier: Some("expired-actor".into()),
+            organization_id: Some("expired-org".into()),
+        });
+        manager.bump_session_generation();
+        drop(state);
+
+        let changes = manager.subscribe_session_generation();
+        assert_eq!(*changes.borrow(), 1);
+        let snapshot = manager.session_snapshot().await;
+        assert!(!snapshot.authenticated);
+        assert_eq!(snapshot.generation, "1");
+        assert!(snapshot.identifier.is_none());
+        assert!(snapshot.organization_id.is_none());
+        assert!(snapshot.expires_at.is_none());
+        let instance = uuid::Uuid::parse_str(&snapshot.instance_id).unwrap();
+        assert_eq!(instance.get_version_num(), 4);
+        assert_eq!(snapshot.instance_id, manager.clone().session_instance_id());
+        assert_ne!(
+            snapshot.instance_id,
+            TokenManager::new("http://127.0.0.1:19999").session_instance_id()
+        );
+    }
 }

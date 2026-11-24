@@ -204,8 +204,8 @@ mod tests {
         }
 
         async fn apply_jitter_window(&self) {
-            for i in 0..self.jitter_pattern_ms.len() {
-                tokio::time::sleep(Duration::from_millis(self.jitter_pattern_ms[i])).await;
+            for &sleep_ms in &self.jitter_pattern_ms {
+                tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
             }
         }
 

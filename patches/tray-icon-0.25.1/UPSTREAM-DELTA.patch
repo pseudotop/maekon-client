@@ -1,0 +1,613 @@
+# UPSTREAM-DELTA.patch -- tray-icon 0.25.1
+#
+# Unified diff: pristine crates.io source (static.crates.io tarball,
+# tray-icon-0.25.1.crate) -> vendored source at patches/tray-icon-0.25.1/.
+# This is the ground-truth record of what Maekon changed relative to
+# upstream. See ../README.md for the refresh procedure and the why/what
+# summary per crate.
+#
+# Regenerate with:
+#   curl -L https://static.crates.io/crates/tray-icon/tray-icon-0.25.1.crate -o /tmp/tray-icon-0.25.1.crate
+#   mkdir -p /tmp/pristine && tar xzf /tmp/tray-icon-0.25.1.crate -C /tmp/pristine
+#   diff -ruN --exclude=target --exclude=.cargo_vcs_info.json \
+#     --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock \
+#     /tmp/pristine/tray-icon-0.25.1 patches/tray-icon-0.25.1 > patches/tray-icon-0.25.1/UPSTREAM-DELTA.patch
+#
+# Excluded as crates.io tarball / repo-local packaging noise (see README
+# 'Exclusions' section): .cargo_vcs_info.json, .cargo-ok, Cargo.toml.orig,
+# Cargo.lock (per-patch-crate lockfiles were removed as non-shipping
+# Dependabot noise, PR #5862 / commit 1a4a0a85f0), target/.
+#
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/Cargo.toml vendored/Cargo.toml
+--- upstream/Cargo.toml
++++ vendored/Cargo.toml
+@@ -37,21 +37,12 @@
+ repository = "https://github.com/tauri-apps/tray-icon"
+ 
+ [features]
+-default = [
+-    "muda-libxdo",
+-    "libappindicator",
+-]
++default = ["muda-libxdo"]
+ ksni = [
+     "dep:ksni",
+     "muda-snapshot",
+ ]
+-libappindicator = [
+-    "dep:dirs",
+-    "dep:libappindicator",
+-    "muda-gtk3",
+-]
+ muda-common-controls-v6 = ["muda/common-controls-v6"]
+-muda-gtk3 = ["muda/gtk3"]
+ muda-gtk4 = ["muda/gtk4"]
+ muda-libxdo = ["muda/libxdo"]
+ muda-serde = ["muda/serde"]
+@@ -99,10 +90,6 @@
+ [dev-dependencies.winit]
+ version = "0.30"
+ 
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies.dirs]
+-version = "7"
+-optional = true
+-
+ [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies.ksni]
+ version = "0.3.6"
+ features = [
+@@ -111,13 +98,6 @@
+ ]
+ optional = true
+ default-features = false
+-
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies.libappindicator]
+-version = "0.9"
+-optional = true
+-
+-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dev-dependencies.gtk]
+-version = "0.18"
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies.png]
+ version = "0.18"
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/README.md vendored/README.md
+--- upstream/README.md
++++ vendored/README.md
+@@ -1,11 +1,15 @@
+ tray-icon lets you create tray icons for desktop applications.
+ 
++## Maekon E31 patch note
++
++This local patch keeps Windows and macOS tray support available for Tauri while removing the GTK3/libappindicator dependency path from the Maekon Linux graph. Do not enable a GTK tray backend for Linux until a GTK4/WebKitGTK 6 compatible replacement is selected.
++
+ ## Platforms supported:
+ 
+ - Windows
+ - macOS
+-- Linux (AppIndicator or KSNI)
+-- FreeBSD (AppIndicator or KSNI)
++- Linux (disabled in the Maekon E31 patch; KSNI with the `ksni` feature)
++- FreeBSD (disabled in the Maekon E31 patch; KSNI with the `ksni` feature)
+ 
+ ## Platform-specific notes:
+ 
+@@ -14,19 +18,16 @@
+ 
+ ### Cargo Features
+ 
+-- `libappindicator`: Uses the GTK 3 AppIndicator backend on Linux and BSD. This is enabled by
+-  default and also enables `muda-gtk3`.
+ - `ksni`: Uses the StatusNotifierItem D-Bus backend on Linux and BSD.
+ - `serde`: Enables de/serializing derives.
+ - `muda-common-controls-v6`: Forwards muda's `common-controls-v6` feature.
+-- `muda-gtk3`: Forwards muda's `gtk3` feature.
+ - `muda-gtk4`: Forwards muda's `gtk4` feature.
+ - `muda-libxdo`: Forwards muda's `libxdo` feature. This is enabled by default.
+ - `muda-serde`: Forwards muda's `serde` feature. The `serde` feature also enables it.
+ - `muda-snapshot`: Forwards muda's `snapshot` feature. The `ksni` feature also enables it.
+ 
+-When both `libappindicator` and `ksni` are enabled on Linux or BSD, tray-icon uses the `ksni`
+-backend and emits a Cargo warning.
++The Maekon E31 patch removes the `libappindicator` and `muda-gtk3` features. Without `ksni`,
++Linux and BSD use a disabled backend.
+ 
+ ## Dependencies (Linux/BSD)
+ 
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/lib.rs vendored/src/lib.rs
+--- upstream/src/lib.rs
++++ vendored/src/lib.rs
+@@ -6,38 +6,28 @@
+ 
+ //! tray-icon lets you create tray icons for desktop applications.
+ //!
++//! Maekon E31 patch note: this local patch keeps Windows and macOS tray support
++//! available for Tauri while removing the GTK3/libappindicator dependency path
++//! from the Maekon Linux graph. Do not enable a GTK tray backend for Linux until a
++//! GTK4/WebKitGTK 6 compatible replacement is selected.
++//!
+ //! # Platforms supported:
+ //!
+ //! - Windows
+ //! - macOS
+-//! - Linux and BSD (AppIndicator or KSNI)
++//! - Linux and BSD (disabled in the Maekon E31 patch; KSNI only when the `ksni` feature is enabled)
+ //!
+ //! # Platform-specific notes:
+ //!
+ //! - On Windows and the Linux/BSD AppIndicator backend, an event loop must be running on the thread. The
+ //!   KSNI backend runs its D-Bus service on a worker thread and does not require a GTK event loop.
+-//! - When both the `libappindicator` and `ksni` features are enabled on Linux or BSD, tray-icon
+-//!   uses the KSNI backend and emits a Cargo warning.
+ //! - On macOS, an event loop must be running on the main thread so you also need to create the tray icon on the main thread. You must make sure that the event loop is already running and not just created before creating a TrayIcon to prevent issues with fullscreen apps. In Winit for example the earliest you can create icons is on [`StartCause::Init`](https://docs.rs/winit/latest/winit/event/enum.StartCause.html#variant.Init).
+ //!
+-//! # Dependencies (Linux/BSD)
++//! # Linux/BSD support
+ //!
+-//! The default Linux backend uses GTK, `libxdo`, and `libappindicator` or
+-//! `libayatana-appindicator`. The `ksni` backend does not require these system libraries unless a
+-//!  GTK backend is also enabled.
++//! The Maekon E31 patch removes the upstream GTK3/libappindicator backend. Without the
++//! `ksni` feature, construction on Linux and BSD returns an unsupported-platform error.
+ //!
+-//! #### Arch Linux / Manjaro:
+-//!
+-//! ```sh
+-//! pacman -S gtk3 xdotool libappindicator-gtk3 #or libayatana-appindicator
+-//! ```
+-//!
+-//! #### Debian / Ubuntu:
+-//!
+-//! ```sh
+-//! sudo apt install libgtk-3-dev libxdo-dev libappindicator3-dev #or libayatana-appindicator3-dev
+-//! ```
+-//!
+ //! # Examples
+ //!
+ //! #### Create a tray icon without a menu.
+@@ -125,18 +115,6 @@
+ //! [winit]: https://docs.rs/winit
+ //! [tao]: https://docs.rs/tao
+ 
+-#[cfg(all(
+-    any(
+-        target_os = "linux",
+-        target_os = "dragonfly",
+-        target_os = "freebsd",
+-        target_os = "netbsd",
+-        target_os = "openbsd"
+-    ),
+-    not(any(feature = "libappindicator", feature = "ksni"))
+-))]
+-compile_error!("either the `libappindicator` or `ksni` feature must be enabled on Linux and BSD");
+-
+ use std::{
+     cell::RefCell,
+     path::{Path, PathBuf},
+@@ -579,22 +557,6 @@
+     #[cfg(target_os = "macos")]
+     pub fn ns_status_item(&self) -> Option<objc2::rc::Retained<objc2_app_kit::NSStatusItem>> {
+         self.tray.borrow().ns_status_item().cloned()
+-    }
+-
+-    /// Get the tray icon's underlying [AppIndicator](libappindicator::AppIndicator).
+-    /// **Linux/BSD AppIndicator backend only**.
+-    ///
+-    /// # Safety
+-    ///
+-    /// The returned pointer is valid as long as the `TrayIcon` is.
+-    #[cfg(all(
+-        unix,
+-        not(target_os = "macos"),
+-        feature = "libappindicator",
+-        not(feature = "ksni")
+-    ))]
+-    pub unsafe fn app_indicator(&self) -> *const libappindicator::AppIndicator {
+-        self.tray.borrow().app_indicator() as *const _
+     }
+ }
+ 
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/disabled.rs vendored/src/platform_impl/disabled.rs
+--- upstream/src/platform_impl/disabled.rs
++++ vendored/src/platform_impl/disabled.rs
+@@ -0,0 +1,59 @@
++// Copyright 2022-2022 Tauri Programme within The Commons Conservancy
++// SPDX-License-Identifier: Apache-2.0
++// SPDX-License-Identifier: MIT
++
++use std::{
++    io,
++    path::{Path, PathBuf},
++};
++
++use crate::{Icon, TrayIconAttributes, TrayIconId};
++
++pub(crate) type PlatformIcon = crate::icon::NoIcon;
++
++pub struct TrayIcon;
++
++fn disabled_error() -> crate::Error {
++    crate::Error::OsError(io::Error::new(
++        io::ErrorKind::Unsupported,
++        "Maekon E31 disables the GTK3/libappindicator tray backend on Linux and BSD targets",
++    ))
++}
++
++impl TrayIcon {
++    pub fn new(id: TrayIconId, attrs: TrayIconAttributes) -> crate::Result<Self> {
++        let _ = (id, attrs);
++        Err(disabled_error())
++    }
++
++    pub fn set_icon(&mut self, icon: Option<Icon>) -> crate::Result<()> {
++        let _ = icon;
++        Err(disabled_error())
++    }
++
++    pub fn set_menu(&mut self, menu: Option<Box<dyn crate::menu::ContextMenu>>) {
++        let _ = menu;
++    }
++
++    pub fn set_tooltip<S: AsRef<str>>(&mut self, tooltip: Option<S>) -> crate::Result<()> {
++        let _ = tooltip;
++        Err(disabled_error())
++    }
++
++    pub fn set_title<S: AsRef<str>>(&mut self, title: Option<S>) {
++        let _ = title;
++    }
++
++    pub fn set_visible(&mut self, visible: bool) -> crate::Result<()> {
++        let _ = visible;
++        Err(disabled_error())
++    }
++
++    pub fn set_temp_dir_path<P: AsRef<Path>>(&mut self, path: Option<P>) {
++        let _ = path.map(|p| PathBuf::from(p.as_ref()));
++    }
++
++    pub fn rect(&self) -> Option<crate::Rect> {
++        None
++    }
++}
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/gtk/icon.rs vendored/src/platform_impl/gtk/icon.rs
+--- upstream/src/platform_impl/gtk/icon.rs
++++ vendored/src/platform_impl/gtk/icon.rs
+@@ -1,38 +0,0 @@
+-// Copyright 2022-2022 Tauri Programme within The Commons Conservancy
+-// SPDX-License-Identifier: Apache-2.0
+-// SPDX-License-Identifier: MIT
+-
+-use std::{fs::File, io::BufWriter, path::Path};
+-
+-use crate::icon::BadIcon;
+-
+-#[derive(Debug, Clone)]
+-pub struct PlatformIcon {
+-    rgba: Vec<u8>,
+-    width: i32,
+-    height: i32,
+-}
+-
+-impl PlatformIcon {
+-    pub fn from_rgba(rgba: Vec<u8>, width: u32, height: u32) -> Result<Self, BadIcon> {
+-        Ok(Self {
+-            rgba,
+-            width: width as i32,
+-            height: height as i32,
+-        })
+-    }
+-
+-    pub fn write_to_png(&self, path: impl AsRef<Path>) -> crate::Result<()> {
+-        let png = File::create(path)?;
+-        let w = &mut BufWriter::new(png);
+-
+-        let mut encoder = png::Encoder::new(w, self.width as _, self.height as _);
+-        encoder.set_color(png::ColorType::Rgba);
+-        encoder.set_depth(png::BitDepth::Eight);
+-
+-        let mut writer = encoder.write_header()?;
+-        writer.write_image_data(&self.rgba)?;
+-
+-        Ok(())
+-    }
+-}
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/gtk/mod.rs vendored/src/platform_impl/gtk/mod.rs
+--- upstream/src/platform_impl/gtk/mod.rs
++++ vendored/src/platform_impl/gtk/mod.rs
+@@ -1,159 +0,0 @@
+-// Copyright 2022-2022 Tauri Programme within The Commons Conservancy
+-// SPDX-License-Identifier: Apache-2.0
+-// SPDX-License-Identifier: MIT
+-
+-mod icon;
+-use std::path::{Path, PathBuf};
+-
+-use crate::icon::Icon;
+-pub(crate) use icon::PlatformIcon;
+-
+-use crate::{TrayIconAttributes, TrayIconId};
+-use libappindicator::{AppIndicator, AppIndicatorStatus};
+-
+-pub struct TrayIcon {
+-    id: TrayIconId,
+-    indicator: AppIndicator,
+-    temp_dir_path: Option<PathBuf>,
+-    path: PathBuf,
+-    counter: u32,
+-    menu: Option<Box<dyn muda::ContextMenu>>,
+-}
+-
+-impl TrayIcon {
+-    pub fn new(id: TrayIconId, attrs: TrayIconAttributes) -> crate::Result<Self> {
+-        let mut indicator = AppIndicator::new(&format!("tray-icon tray app {}", id.as_ref()), "");
+-        indicator.set_status(AppIndicatorStatus::Active);
+-
+-        let (parent_path, icon_path) = temp_icon_path(attrs.temp_dir_path.as_ref(), &id, 0)?;
+-
+-        if let Some(icon) = attrs.icon {
+-            icon.inner.write_to_png(&icon_path)?;
+-        }
+-
+-        indicator.set_icon_theme_path(&parent_path.to_string_lossy());
+-        indicator.set_icon_full(&icon_path.to_string_lossy(), "icon");
+-
+-        if let Some(menu) = &attrs.menu {
+-            indicator.set_menu(&mut menu.gtk_context_menu());
+-        }
+-
+-        if let Some(title) = attrs.title {
+-            indicator.set_label(title.as_str(), "");
+-        }
+-
+-        Ok(Self {
+-            id,
+-            indicator,
+-            path: icon_path,
+-            temp_dir_path: attrs.temp_dir_path,
+-            counter: 0,
+-            menu: attrs.menu,
+-        })
+-    }
+-    pub fn set_icon(&mut self, icon: Option<Icon>) -> crate::Result<()> {
+-        let _ = std::fs::remove_file(&self.path);
+-
+-        self.counter += 1;
+-
+-        let (parent_path, icon_path) =
+-            temp_icon_path(self.temp_dir_path.as_ref(), &self.id, self.counter)?;
+-
+-        if let Some(icon) = icon {
+-            icon.inner.write_to_png(&icon_path)?;
+-        }
+-
+-        self.indicator
+-            .set_icon_theme_path(&parent_path.to_string_lossy());
+-        self.indicator
+-            .set_icon_full(&icon_path.to_string_lossy(), "tray icon");
+-        self.path = icon_path;
+-
+-        Ok(())
+-    }
+-
+-    pub fn set_menu(&mut self, menu: Option<Box<dyn crate::menu::ContextMenu>>) {
+-        if let Some(menu) = &menu {
+-            self.indicator.set_menu(&mut menu.gtk_context_menu());
+-        }
+-        self.menu = menu;
+-    }
+-
+-    pub fn set_tooltip<S: AsRef<str>>(&mut self, _tooltip: Option<S>) -> crate::Result<()> {
+-        Ok(())
+-    }
+-
+-    pub fn set_title<S: AsRef<str>>(&mut self, title: Option<S>) {
+-        self.indicator
+-            .set_label(title.as_ref().map(|t| t.as_ref()).unwrap_or(""), "");
+-    }
+-
+-    pub fn set_visible(&mut self, visible: bool) -> crate::Result<()> {
+-        if visible {
+-            self.indicator.set_status(AppIndicatorStatus::Active);
+-        } else {
+-            self.indicator.set_status(AppIndicatorStatus::Passive);
+-        }
+-
+-        Ok(())
+-    }
+-
+-    pub fn set_temp_dir_path<P: AsRef<Path>>(&mut self, path: Option<P>) {
+-        self.temp_dir_path = path.map(|p| p.as_ref().to_path_buf());
+-    }
+-
+-    pub fn rect(&self) -> Option<crate::Rect> {
+-        None
+-    }
+-
+-    pub fn app_indicator(&self) -> &AppIndicator {
+-        &self.indicator
+-    }
+-}
+-
+-impl Drop for TrayIcon {
+-    fn drop(&mut self) {
+-        self.indicator.set_status(AppIndicatorStatus::Passive);
+-        let _ = std::fs::remove_file(&self.path);
+-    }
+-}
+-
+-/// Generates an icon path in one of the following dirs:
+-/// 1. If `temp_icon_dir` is `Some` use that.
+-/// 2. `$XDG_RUNTIME_DIR/tray-icon`
+-/// 3. `/tmp/tray-icon`
+-fn temp_icon_path(
+-    temp_icon_dir: Option<&PathBuf>,
+-    id: &TrayIconId,
+-    counter: u32,
+-) -> std::io::Result<(PathBuf, PathBuf)> {
+-    let parent_path = match temp_icon_dir.as_ref() {
+-        Some(path) => path.to_path_buf(),
+-        None => dirs::runtime_dir()
+-            .unwrap_or_else(std::env::temp_dir)
+-            .join("tray-icon"),
+-    };
+-
+-    std::fs::create_dir_all(&parent_path)?;
+-    let icon_path = parent_path.join(format!("tray-icon-{}-{}.png", id.as_ref(), counter));
+-    Ok((parent_path, icon_path))
+-}
+-
+-#[test]
+-fn temp_icon_path_preference_order() {
+-    let runtime_dir = option_env!("XDG_RUNTIME_DIR");
+-    let override_dir = PathBuf::from("/tmp/tao-tests");
+-
+-    let (dir1, _file1) = temp_icon_path(Some(&override_dir), &"00".into(), 00).unwrap();
+-    let (dir2, _file1) = temp_icon_path(None, &"00".into(), 00).unwrap();
+-    std::env::remove_var("XDG_RUNTIME_DIR");
+-    let (dir3, _file2) = temp_icon_path(None, &"00".into(), 00).unwrap();
+-
+-    assert_eq!(dir1, override_dir);
+-    if let Some(runtime_dir) = runtime_dir {
+-        std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
+-        assert_eq!(dir2, PathBuf::from(format!("{}/tray-icon", runtime_dir)));
+-    }
+-
+-    assert_eq!(dir3, PathBuf::from("/tmp/tray-icon"));
+-}
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/mod.rs vendored/src/platform_impl/mod.rs
+--- upstream/src/platform_impl/mod.rs
++++ vendored/src/platform_impl/mod.rs
+@@ -13,10 +13,12 @@
+         target_os = "netbsd",
+         target_os = "openbsd"
+     ),
+-    feature = "libappindicator",
+     not(feature = "ksni")
+ ))]
+-#[path = "gtk/mod.rs"]
++// Maekon E31 patch note: the GTK3/libappindicator backend is removed from this crate.
++// Without `ksni`, Linux and BSD use a disabled backend whose constructor returns an
++// unsupported-platform error.
++#[path = "disabled.rs"]
+ mod platform;
+ #[cfg(all(
+     any(
+diff -ruN --exclude=target --exclude=.cargo_vcs_info.json --exclude=.cargo-ok --exclude=Cargo.toml.orig --exclude=Cargo.lock upstream/src/platform_impl/windows/mod.rs vendored/src/platform_impl/windows/mod.rs
+--- upstream/src/platform_impl/windows/mod.rs
++++ vendored/src/platform_impl/windows/mod.rs
+@@ -15,8 +15,8 @@
+         UI::{
+             Shell::{
+                 Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_GUID, NIF_ICON, NIF_MESSAGE,
+-                NIF_STATE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIS_HIDDEN, NOTIFYICONDATAW,
+-                NOTIFYICONIDENTIFIER,
++                NIF_SHOWTIP, NIF_STATE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
++                NIN_SELECT, NIS_HIDDEN, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER, NOTIFYICON_VERSION_4,
+             },
+             WindowsAndMessaging::{
+                 ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
+@@ -48,6 +48,7 @@
+ const WM_USER_LEAVE_TIMER_ID: u32 = 6007;
+ const WM_USER_SHOW_MENU_ON_LEFT_CLICK: u32 = 6008;
+ const WM_USER_SHOW_MENU_ON_RIGHT_CLICK: u32 = 6009;
++const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
+ /// When the taskbar is created, it registers a message with the "TaskbarCreated" string and then broadcasts this message to all top-level windows
+ /// When the application receives this message, it should assume that any taskbar icons it added have been removed and add them again.
+ static S_U_TASKBAR_RESTART: Lazy<u32> =
+@@ -388,19 +389,24 @@
+ 
+         WM_USER_TRAYICON
+             if matches!(
+-                lparam as u32,
++                lparam as u32 & 0xffff,
+                 WM_LBUTTONDOWN
+                     | WM_RBUTTONDOWN
+                     | WM_MBUTTONDOWN
+                     | WM_LBUTTONUP
+                     | WM_RBUTTONUP
+                     | WM_MBUTTONUP
++                    | NIN_SELECT
++                    | NIN_KEYSELECT
+                     | WM_LBUTTONDBLCLK
+                     | WM_RBUTTONDBLCLK
+                     | WM_MBUTTONDBLCLK
+                     | WM_MOUSEMOVE
+             ) =>
+         {
++            // NOTIFYICON_VERSION_4 packs the notification code into LOWORD
++            // and the icon id into HIWORD. Older versions used the full LPARAM.
++            let notification_message = lparam as u32 & 0xffff;
+             let mut cursor = POINT { x: 0, y: 0 };
+             if GetCursorPos(&mut cursor as _) == 0 {
+                 return 0;
+@@ -414,7 +420,7 @@
+                 None => return 0,
+             };
+ 
+-            let event = match lparam as u32 {
++            let event = match notification_message {
+                 WM_LBUTTONDOWN => TrayIconEvent::Click {
+                     id,
+                     rect,
+@@ -443,6 +449,13 @@
+                     button: MouseButton::Left,
+                     button_state: MouseButtonState::Up,
+                 },
++                NIN_SELECT | NIN_KEYSELECT => TrayIconEvent::Click {
++                    id,
++                    rect,
++                    position,
++                    button: MouseButton::Left,
++                    button_state: MouseButtonState::Up,
++                },
+                 WM_RBUTTONUP => TrayIconEvent::Click {
+                     id,
+                     rect,
+@@ -498,8 +511,12 @@
+ 
+             TrayIconEvent::send(event);
+ 
+-            if (userdata.menu_on_right_click && lparam as u32 == WM_RBUTTONUP)
+-                || (userdata.menu_on_left_click && lparam as u32 == WM_LBUTTONUP)
++            if (userdata.menu_on_right_click && notification_message == WM_RBUTTONUP)
++                || (userdata.menu_on_left_click
++                    && matches!(
++                        notification_message,
++                        WM_LBUTTONUP | NIN_SELECT | NIN_KEYSELECT
++                    ))
+             {
+                 if let Some(menu) = userdata.hpopupmenu {
+                     show_tray_menu(hwnd, menu, cursor.x, cursor.y);
+@@ -586,7 +603,10 @@
+     }
+ 
+     if let Some(tooltip) = tooltip {
+-        flags |= NIF_TIP;
++        // Windows 7+ suppresses the standard tooltip for version 4 icons unless
++        // NIF_SHOWTIP is present. The tooltip is also the notification area's
++        // accessible Name, so omitting this flag makes the icon anonymous to UIA.
++        flags |= NIF_TIP | NIF_SHOWTIP;
+         let tip = util::encode_wide(tooltip);
+         #[allow(clippy::manual_memcpy)]
+         for i in 0..tip.len().min(128) {
+@@ -616,7 +636,20 @@
+     };
+     apply_guid(&mut nid, guid);
+ 
+-    Shell_NotifyIconW(NIM_ADD, &mut nid as _) == TRUE
++    if Shell_NotifyIconW(NIM_ADD, &mut nid as _) != TRUE {
++        eprintln!("Error registering system tray icon with the Windows Shell");
++        return false;
++    }
++
++    // Opt in after every add (including Explorer restart re-registration).
++    // Version 4 is the documented Shell contract for accessible notification
++    // area interaction and changes callback packing handled by tray_proc below.
++    nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
++    if Shell_NotifyIconW(NIM_SETVERSION, &mut nid as _) != TRUE {
++        eprintln!("Error setting Windows system tray icon behavior version");
++        return false;
++    }
++    true
+ }
+ 
+ #[inline]

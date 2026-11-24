@@ -12,7 +12,7 @@
       "transform": "snapshot-copy",
       "consumers": ["pseudotop/maekon-client repository root", "GitHub repository landing surface"],
       "publicationBoundary": "Included in the public snapshot; claims describe an early Global Alpha prerelease, not a stable release or production readiness.",
-      "verificationCommand": "node web/apps/maekon-landing/scripts/verify-public-contracts.mjs --expected-version=v0.0.1-rc.9 --expected-source-sha=1b1cd7952bfffdc6f26ae713414112a74589ef74 --expected-release-notes-sha=bc92cccd1aed0c57892df9db6ef505d2ece6fcd5a46cf778c3be62b61154a8da"
+      "verificationCommand": "node web/apps/maekon-landing/scripts/verify-public-contracts.mjs --current-release-contract"
     },
     {
       "id": "status-snapshot",

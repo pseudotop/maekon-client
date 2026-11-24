@@ -6,6 +6,7 @@ const replayTitle = i18nRegex('replay.title')
 const hideOverlayLabel = i18nRegex('replay.hideOverlay')
 const showOverlayLabel = i18nRegex('replay.showOverlay')
 const runSuggestedActionLabel = i18nRegex('replay.runSuggestedAction')
+const supportDetailsLabel = i18nRegex('errors.supportDetails')
 
 function makeReplayTimeline() {
   const now = new Date()
@@ -131,6 +132,14 @@ test.describe('Replay Scene Overlay', () => {
     await page.goto('/replay')
     await page.locator('button[title="button"]').first().click()
     await page.getByRole('button', { name: runSuggestedActionLabel }).click()
-    await expect(page.getByText(/policy blocked for test/i)).toBeVisible()
+    // The screen shows a translated sentence and keeps the server's rejection in the
+    // collapsed support details (#13737), so open them before reading it (#13738).
+    const supportDetails = page.getByTestId('support-details').filter({ hasText: /policy blocked for test/i })
+    await expect(supportDetails).toBeVisible()
+    const rejection = supportDetails.getByTestId('support-details-text')
+    await expect(rejection).toBeHidden()
+    await supportDetails.getByText(supportDetailsLabel).click()
+    await expect(rejection).toBeVisible()
+    await expect(rejection).toContainText(/policy blocked for test/i)
   })
 })

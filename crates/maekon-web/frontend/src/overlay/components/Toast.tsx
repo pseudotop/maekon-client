@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { SupportDetails } from '../../components/SupportDetails'
 import { typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import type { ToastItem } from '../types'
@@ -15,12 +17,19 @@ const typeStyles: Record<ToastItem['type'], string> = {
 
 let addToastGlobal: ((toast: Omit<ToastItem, 'id'>) => void) | null = null
 
-export function showToast(message: string, type: ToastItem['type'] = 'info', duration?: number) {
-  addToastGlobal?.({ message, type, duration })
+export function showToast(
+  message: string,
+  type: ToastItem['type'] = 'info',
+  duration?: number,
+  detail?: string | null,
+) {
+  addToastGlobal?.({ message, type, duration, detail })
 }
 
 export function ToastContainer() {
+  const { t } = useTranslation()
   const [visible, setVisible] = useState<ToastItem[]>([])
+  const [pinned, setPinned] = useState<ReadonlySet<string>>(new Set())
   const pendingRef = useRef<ToastItem[]>([])
 
   const promoteFromQueue = useCallback(() => {
@@ -54,17 +63,27 @@ export function ToastContainer() {
     }
   }, [addToast])
 
-  // Dismiss the oldest visible toast after TOAST_DURATION, then pull from
-  // the queue if anything is waiting.
-  useEffect(() => {
-    if (visible.length === 0) return
-    const timer = setTimeout(() => {
-      setVisible((prev) => prev.slice(1))
-      // Use a microtask so the state update above settles first.
+  const dismiss = useCallback(
+    (id: string) => {
+      setVisible((prev) => prev.filter((toast) => toast.id !== id))
+      setPinned((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
       queueMicrotask(promoteFromQueue)
-    }, visible[0]?.duration ?? TOAST_DURATION)
+    },
+    [promoteFromQueue],
+  )
+
+  // Keep the existing oldest-first timer, while an opened diagnostic remains
+  // available until explicitly dismissed. Other visible toasts still expire.
+  useEffect(() => {
+    const oldest = visible.find((toast) => !pinned.has(toast.id))
+    if (!oldest) return
+    const timer = setTimeout(() => dismiss(oldest.id), oldest.duration ?? TOAST_DURATION)
     return () => clearTimeout(timer)
-  }, [visible, promoteFromQueue])
+  }, [visible, pinned, dismiss])
 
   return (
     <output className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col gap-2" aria-live="polite">
@@ -73,11 +92,20 @@ export function ToastContainer() {
           key={toast.id}
           className={cn(
             `rounded-lg px-4 py-2 text-xs ${typography.weight.medium} shadow-lg backdrop-blur-sm`,
-            'animate-[slideIn_200ms_ease-out]',
+            'pointer-events-auto animate-[slideIn_200ms_ease-out]',
             typeStyles[toast.type],
           )}
         >
-          {toast.message}
+          <p>{toast.message}</p>
+          <SupportDetails
+            detail={toast.detail}
+            onToggle={(open) => {
+              if (open) setPinned((prev) => new Set([...prev, toast.id]))
+            }}
+          />
+          <button type="button" aria-label={t('common.close')} onClick={() => dismiss(toast.id)}>
+            {t('common.close')}
+          </button>
         </div>
       ))}
     </output>

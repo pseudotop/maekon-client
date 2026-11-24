@@ -24,9 +24,9 @@ pub fn derive_peer_salt(device_id_a: &str, device_id_b: &str) -> [u8; 16] {
     };
     let combined = format!("{first}{second}");
     let hash = sha2::Sha256::digest(combined.as_bytes());
-    hash[..16]
-        .try_into()
-        .expect("SHA-256 output is at least 16 bytes")
+    // Built straight from the digest. A zero-filled buffer overwritten by
+    // `copy_from_slice` reads to CodeQL as a hard-coded salt (#8685).
+    std::array::from_fn(|i| hash[i])
 }
 
 /// Compute the HMAC-SHA256 response for a challenge nonce.
@@ -90,6 +90,14 @@ mod tests {
         let salt_ab = derive_peer_salt("device-a", "device-b");
         let salt_ba = derive_peer_salt("device-b", "device-a");
         assert_eq!(salt_ab, salt_ba);
+        // #13489: Preserve the existing salt bytes used by LAN peers.
+        assert_eq!(
+            salt_ab,
+            [
+                0x21, 0x92, 0x89, 0x4d, 0x78, 0x5d, 0xf9, 0x48, 0x18, 0x90, 0xd8, 0x06, 0xd0, 0x78,
+                0x3b, 0x8c,
+            ]
+        );
     }
 
     #[test]

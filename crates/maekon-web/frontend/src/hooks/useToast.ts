@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from 'react'
+import type { ErrorDisplay } from '../i18n/errorDisplay'
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning'
 
@@ -7,6 +8,10 @@ export interface Toast {
   type: ToastType
   message: string
   duration: number
+  /** Untranslated support text, rendered collapsed under the message (#13737). */
+  detail?: string | null
+  /** Opt-in live localization of an error; never persisted or logged. */
+  errorSource?: { readonly cause: unknown; readonly fallbackKey?: string }
 }
 
 interface ToastStore {
@@ -63,9 +68,27 @@ export function clearToasts() {
   notify()
 }
 
-export function addToast(type: ToastType, message: string, duration = 4000) {
+/**
+ * Keep a toast on screen until the user closes it. Opening a toast's support
+ * details calls this so the panel does not vanish while someone reads or copies
+ * it.
+ */
+export function pinToast(id: string) {
+  clearToastTimeout(id)
+}
+
+export function addToast(
+  type: ToastType,
+  message: string,
+  duration = 4000,
+  detail: string | null = null,
+  errorSource?: Toast['errorSource'],
+) {
   const id = `toast-${++nextId}`
-  store.toasts = [...store.toasts, { id, type, message, duration }]
+  store.toasts = [
+    ...store.toasts,
+    { id, type, message, duration, ...(detail ? { detail } : {}), ...(errorSource ? { errorSource } : {}) },
+  ]
   notify()
 
   if (duration > 0) {
@@ -76,6 +99,17 @@ export function addToast(type: ToastType, message: string, duration = 4000) {
   }
 
   return id
+}
+
+/**
+ * Error toast for a failure already resolved by `describeErrorForDisplay` /
+ * `useErrorDisplay`: the localized sentence, with any untranslated detail kept
+ * behind the toast's support-details panel. Failures may retain their
+ * source to retranslate in-place after a locale change, even after the owning
+ * screen unmounts. Existing surface-specific display/fallback calls stay fixed.
+ */
+export function addErrorToast(display: ErrorDisplay, duration = 5000, errorSource?: Toast['errorSource']) {
+  return addToast('error', display.text, duration, display.detail, errorSource)
 }
 
 export function useToast() {

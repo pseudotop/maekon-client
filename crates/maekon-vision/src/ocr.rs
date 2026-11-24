@@ -84,6 +84,15 @@ pub struct OcrExtractor {
 }
 
 impl OcrExtractor {
+    #[cfg(test)]
+    pub(crate) fn cached_image_dimensions(&self) -> Option<(u32, u32)> {
+        self.cached_leptess
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(leptess::LepTess::get_image_dimensions)
+    }
+
     pub fn new(tessdata_path: Option<PathBuf>) -> Self {
         Self::new_with_lang(tessdata_path, DEFAULT_TESSERACT_LANG)
     }
@@ -518,6 +527,8 @@ pub async fn extract_text_async(image: &image::DynamicImage) -> Result<String, V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{DynamicImage, RgbaImage};
+    use std::sync::Arc;
 
     #[test]
     fn empty_image_returns_error() {
@@ -686,5 +697,63 @@ mod tests {
         assert_eq!(region.text, "test");
         assert!(region.bbox.contains_point(30, 25));
         assert!(!region.bbox.contains_point(100, 100));
+    }
+    #[test]
+    fn request_engine_reuses_then_releases_native_input() {
+        let shared = Arc::new(crate::ocr::OcrExtractor::new_with_lang(None, "eng"));
+        let request = Arc::new(OcrExtractor::new_with_lang(
+            shared.tessdata_path().cloned(),
+            shared.lang(),
+        ));
+        assert!(!Arc::ptr_eq(&shared, &request));
+        assert_eq!(request.lang(), "eng");
+        assert_eq!(request.tessdata_path(), shared.tessdata_path());
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            64,
+            32,
+            image::Rgba([255, 255, 255, 255]),
+        ));
+        let start = std::time::Instant::now();
+        assert_eq!(request.extract(&img).unwrap(), "");
+        let cold = start.elapsed();
+        assert_eq!(request.cached_image_dimensions(), Some((64, 32)));
+        let start = std::time::Instant::now();
+        assert_eq!(request.extract(&img).unwrap(), "");
+        eprintln!(
+            "synthetic OCR cold={cold:?}, same-request reuse={:?}",
+            start.elapsed()
+        );
+        assert!(matches!(request.extract_regions(&img).unwrap_err(),
+        crate::error::VisionError::Ocr(message) if message.contains("Failed to extract word boxes")));
+        let weak = Arc::downgrade(&request);
+        drop(request);
+        assert!(
+            weak.upgrade().is_none(),
+            "request engine must have no surviving owner"
+        );
+        assert_eq!(shared.cached_image_dimensions(), None);
+    }
+
+    #[test]
+    fn guarded_ocr_preserves_setup_failure_and_releases_failed_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Arc::new(OcrExtractor::new_with_lang(
+            Some(dir.path().to_path_buf()),
+            "eng",
+        ));
+        let request = Arc::new(OcrExtractor::new_with_lang(
+            shared.tessdata_path().cloned(),
+            shared.lang(),
+        ));
+        assert_eq!(request.tessdata_path().unwrap(), dir.path());
+        assert_eq!(request.lang(), "eng");
+        assert!(
+            matches!(request.extract(&DynamicImage::new_rgba8(16, 8)).unwrap_err(),
+        crate::error::VisionError::Ocr(message) if message.contains("OCR initialize failure"))
+        );
+        assert_eq!(request.cached_image_dimensions(), None);
+        let weak = Arc::downgrade(&request);
+        drop(request);
+        assert!(weak.upgrade().is_none());
     }
 }

@@ -27,7 +27,7 @@ fn http_mode(mut llm_api: ExternalApiEndpoint) -> AiProviderConfig {
 fn record(dir: &tempfile::TempDir, fingerprint: &str) -> std::path::PathBuf {
     let path = dir.path().join("http_chat_invocation_evidence.json");
     let json = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "fingerprint": fingerprint,
         "verified_at": "2026-09-24T00:00:00Z",
     });
@@ -72,6 +72,7 @@ async fn evidence_names_the_key_the_factory_sends_on_the_configured_surface() {
         fingerprint,
         http_chat_fingerprint(
             OPENAI,
+            &target.url,
             MODEL,
             FingerprintCredential::Secret("sk-saved-in-settings")
         )
@@ -112,7 +113,11 @@ async fn surfaces_and_hosts_the_factory_refuses_have_no_credential() {
     let proxied = settings_llm_api(OPENAI, "https://gateway.example/v1".to_string());
     let proxied_manager = manager_with(configured(Some(proxied.clone())), store.clone());
     let target = HttpChatTarget::resolve(&http_mode(proxied)).expect("openai target");
-    assert!(factory_credential(&proxied_manager, &target).is_none());
+    assert_eq!(target.url, "https://gateway.example/v1");
+    assert!(factory_credential(&proxied_manager, &target).is_some());
+    assert!(
+        session_factory_credential(Some(&proxied_manager), OPENAI, &catalog_url(OPENAI)).is_none()
+    );
 
     // No session manager, no session.
     assert!(session_factory_credential(None, &target.surface_id, &target.url).is_none());
@@ -139,8 +144,50 @@ async fn a_no_auth_surface_is_fingerprinted_without_a_key() {
         target.fingerprint(&credential).await,
         Some(http_chat_fingerprint(
             OLLAMA,
+            &target.url,
             MODEL,
             FingerprintCredential::NoAuth
         ))
     );
+}
+
+#[tokio::test]
+async fn custom_host_evidence_matches_the_factory_and_is_invalidated_by_url_changes() {
+    let store = Arc::new(MemorySecrets::default());
+    let endpoint = settings_llm_api(OPENAI, "https://gateway.example/v1/responses".into());
+    save_key(&store, &endpoint, "same-custom-key").await;
+    let config = http_mode(endpoint);
+    let manager = manager_with(config.clone(), store.clone());
+    let target = HttpChatTarget::resolve(&config).expect("custom target");
+    let credential = factory_credential(&manager, &target).expect("custom credential");
+    let fingerprint = target
+        .fingerprint(&credential)
+        .await
+        .expect("custom fingerprint");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = record(&dir, &fingerprint);
+    assert_eq!(target.url, "https://gateway.example/v1/responses");
+    assert!(verified_by(&manager, &config, &path).await);
+    assert!(session_factory_credential(Some(&manager), OPENAI, &catalog_url(OPENAI)).is_none());
+    for url in [
+        "https://gateway.example/another/path",
+        "https://other.example/v1/responses",
+    ] {
+        let mut changed = config.clone();
+        changed
+            .llm_api
+            .as_mut()
+            .expect("configured endpoint")
+            .endpoint = url.into();
+        let changed_manager = manager_with(changed.clone(), store.clone());
+        let changed_target = HttpChatTarget::resolve(&changed).expect("changed target");
+        assert!(
+            factory_credential(&changed_manager, &changed_target).is_some(),
+            "same saved key is available to the new configuration"
+        );
+        assert!(
+            !verified_by(&changed_manager, &changed, &path).await,
+            "previous endpoint proof cannot verify the new endpoint"
+        );
+    }
 }

@@ -45,7 +45,7 @@ use crate::common::{
 /// Test 1: JWT auth mode — valid JWT → reaches placeholder service.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_full_handshake_jwt() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let (handle, port) = spawn_server(cfg).await;
 
@@ -55,8 +55,9 @@ async fn external_grpc_full_handshake_jwt() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     assert_reaches_service_with_bearer(channel, &token).await;
@@ -68,11 +69,11 @@ async fn external_grpc_full_handshake_jwt() {
 /// Test 2: mTLS auth mode — valid client cert → reaches placeholder service.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_full_handshake_mtls() {
-    let ca = test_ca_and_client_cert(24); // 24h lifetime — within 48h cap
+    let ca = test_ca_and_client_cert(24).expect("client certificate fixture"); // 24h lifetime — within 48h cap
     let (cfg, _) = make_mtls_config(&ca.ca_pem_path);
     let (handle, port) = spawn_server(cfg).await;
 
-    let cert_pem = server_cert_pem();
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let client_cert_pem = std::fs::read(&ca.client_cert_pem_path).expect("read client cert");
     let client_key_pem = std::fs::read(&ca.client_key_pem_path).expect("read client key");
     let identity = tonic::transport::Identity::from_pem(client_cert_pem, client_key_pem);
@@ -88,9 +89,9 @@ async fn external_grpc_full_handshake_mtls() {
 /// Test 3: JWT+mTLS mode — both valid → reaches service.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_jwt_plus_mtls_both_valid() {
-    let jwt_kp = test_jwt_keypair();
-    let ca = test_ca_and_client_cert(24);
-    let (cert_path, key_path) = test_cert_pair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
+    let ca = test_ca_and_client_cert(24).expect("client certificate fixture");
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
@@ -148,8 +149,9 @@ async fn external_grpc_jwt_plus_mtls_both_valid() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let client_cert_pem = std::fs::read(&ca.client_cert_pem_path).expect("read client cert");
     let client_key_pem = std::fs::read(&ca.client_key_pem_path).expect("read client key");
     let identity = tonic::transport::Identity::from_pem(client_cert_pem, client_key_pem);
@@ -165,9 +167,9 @@ async fn external_grpc_jwt_plus_mtls_both_valid() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_jwt_plus_mtls_mtls_only() {
     // JWT+mTLS mode requires BOTH. No JWT header → AuthLayer rejects.
-    let ca = test_ca_and_client_cert(24);
-    let jwt_kp = test_jwt_keypair();
-    let (cert_path, key_path) = test_cert_pair();
+    let ca = test_ca_and_client_cert(24).expect("client certificate fixture");
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
@@ -219,7 +221,7 @@ async fn external_grpc_jwt_plus_mtls_mtls_only() {
 
     let (handle, port) = spawn_server(cfg).await;
 
-    let cert_pem = server_cert_pem();
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let client_cert_pem = std::fs::read(&ca.client_cert_pem_path).expect("read client cert");
     let client_key_pem = std::fs::read(&ca.client_key_pem_path).expect("read client key");
     let identity = tonic::transport::Identity::from_pem(client_cert_pem, client_key_pem);
@@ -246,9 +248,9 @@ async fn external_grpc_jwt_plus_mtls_mtls_only() {
 /// Test 5: JWT+mTLS mode — cert valid but JWT expired → `Unauthenticated`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_jwt_plus_mtls_cert_valid_jwt_expired() {
-    let jwt_kp = test_jwt_keypair();
-    let ca = test_ca_and_client_cert(24);
-    let (cert_path, key_path) = test_cert_pair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
+    let ca = test_ca_and_client_cert(24).expect("client certificate fixture");
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
@@ -307,8 +309,9 @@ async fn external_grpc_jwt_plus_mtls_cert_valid_jwt_expired() {
         "test-issuer",
         "test-audience",
         -7200,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let client_cert_pem = std::fs::read(&ca.client_cert_pem_path).expect("read client cert");
     let client_key_pem = std::fs::read(&ca.client_key_pem_path).expect("read client key");
     let identity = tonic::transport::Identity::from_pem(client_cert_pem, client_key_pem);
@@ -349,12 +352,12 @@ async fn external_grpc_jwt_plus_mtls_cert_valid_jwt_expired() {
 /// would be dropped pre-TLS, causing a TLS error on the client side).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_ip_ban_e2e() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let ip_ban = cfg.ip_ban.clone();
     let (handle, port) = spawn_server(cfg).await;
 
-    let cert_pem = server_cert_pem();
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
 
     // Send 5 requests with an invalid JWT (wrong issuer) to trigger IP ban.
     // Use a single channel — 5 requests on the same HTTP/2 connection.
@@ -364,7 +367,8 @@ async fn external_grpc_ip_ban_e2e() {
         "wrong-issuer", // wrong issuer → JWT verify failure
         "test-audience",
         3600,
-    );
+    )
+    .expect("mint JWT fixture");
 
     let channel = make_tls_channel(port, &cert_pem, None).await;
     for _ in 0..5 {
@@ -402,7 +406,7 @@ async fn external_grpc_cert_hot_reload() {
     use rcgen::{CertificateParams, KeyPair};
     use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
 
     // Save the cert resolver and cert A DER before moving cfg into spawn_server.
@@ -411,14 +415,15 @@ async fn external_grpc_cert_hot_reload() {
     let (handle, port) = spawn_server(cfg).await;
 
     // Verify that connections with cert A succeed (auth passes → Unimplemented).
-    let cert_pem_a = server_cert_pem();
+    let cert_pem_a = server_cert_pem().expect("read server certificate fixture");
     let token = test_mint_jwt(
         &jwt_kp.enc_key,
         "user-1",
         "test-issuer",
         "test-audience",
         3600,
-    );
+    )
+    .expect("mint JWT fixture");
     {
         let channel = make_tls_channel(port, &cert_pem_a, None).await;
         assert_reaches_service_with_bearer(channel, &token).await;
@@ -474,11 +479,11 @@ async fn external_grpc_cert_hot_reload() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_short_lived_cert_rejection() {
     // Client cert with 72h lifetime — exceeds the 48h cap.
-    let ca = test_ca_and_client_cert(72);
+    let ca = test_ca_and_client_cert(72).expect("client certificate fixture");
     let (cfg, _) = make_mtls_config(&ca.ca_pem_path);
     let (handle, port) = spawn_server(cfg).await;
 
-    let cert_pem = server_cert_pem();
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let client_cert_pem = std::fs::read(&ca.client_cert_pem_path).expect("read client cert");
     let client_key_pem = std::fs::read(&ca.client_key_pem_path).expect("read client key");
     let identity = tonic::transport::Identity::from_pem(client_cert_pem, client_key_pem);
@@ -596,11 +601,11 @@ async fn loopback_server_unaffected_when_external_disabled() {
 /// before any gRPC frame is exchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_jwt_plus_mtls_jwt_only() {
-    let jwt_kp = test_jwt_keypair();
-    let ca = test_ca_and_client_cert(24);
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
+    let ca = test_ca_and_client_cert(24).expect("client certificate fixture");
 
     // Build a JWT+mTLS server (CA_A as trusted CA for client certs).
-    let (cert_path, key_path) = test_cert_pair();
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
@@ -655,8 +660,9 @@ async fn external_grpc_jwt_plus_mtls_jwt_only() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let server_cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let server_cert_pem = server_cert_pem().expect("read server certificate fixture");
     let ca_cert = tonic::transport::Certificate::from_pem(&server_cert_pem);
 
     // Build a TLS channel WITHOUT a client identity — no client cert presented.
@@ -714,14 +720,14 @@ async fn external_grpc_jwt_plus_mtls_jwt_only() {
 /// CA_B is not in the server's trust store.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_jwt_plus_mtls_cert_invalid_jwt_valid() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     // CA_A: trusted by server.
-    let ca_a = test_ca_and_client_cert(24);
+    let ca_a = test_ca_and_client_cert(24).expect("client certificate fixture");
     // CA_B: an independent CA — its client cert is NOT trusted by the server.
-    let ca_b = test_ca_and_client_cert(24);
+    let ca_b = test_ca_and_client_cert(24).expect("client certificate fixture");
 
     // Build a JWT+mTLS server that trusts CA_A only.
-    let (cert_path, key_path) = test_cert_pair();
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load cert");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
     let (event_tx, _) = tokio::sync::broadcast::channel(128);
@@ -776,8 +782,9 @@ async fn external_grpc_jwt_plus_mtls_cert_invalid_jwt_valid() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let server_cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let server_cert_pem = server_cert_pem().expect("read server certificate fixture");
     let ca_cert = tonic::transport::Certificate::from_pem(&server_cert_pem);
 
     // Client presents CA_B's client cert — not trusted by server (trusts CA_A).
@@ -845,7 +852,7 @@ async fn external_grpc_jwt_plus_mtls_cert_invalid_jwt_valid() {
 /// audit_layer → DashboardServiceImpl → StreamCounterGuard.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn external_grpc_concurrent_stream_cap_enforced() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (mut cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     // Override the cap to 4 for fast testing.
     cfg.config.max_concurrent_streams = 4;
@@ -857,8 +864,9 @@ async fn external_grpc_concurrent_stream_cap_enforced() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     // Hold 4 concurrent subscribe_events streams open. Each stream stays
@@ -943,7 +951,7 @@ fn external_grpc_port_collides_with_loopback() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_separate_service_impl_doesnt_leak_loopback_token() {
     install_rustls_crypto_provider();
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let svc = maekon_web::grpc::DashboardServiceImpl::from_external_spawn_config(&cfg);
     assert!(
@@ -966,7 +974,7 @@ async fn external_grpc_separate_service_impl_doesnt_leak_loopback_token() {
 /// e2e suite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn external_grpc_shutdown_drains_streams() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let shutdown_tx = cfg.shutdown_tx.clone();
     let (handle, _port) = spawn_server(cfg).await;
@@ -1006,7 +1014,7 @@ async fn external_grpc_shutdown_drains_streams() {
 /// structured responses, not `Unimplemented`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_grpc_real_handler_returns_business_data() {
-    let jwt_kp = test_jwt_keypair();
+    let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
     let (cfg, _) = make_jwt_config(&jwt_kp.pub_pem_path);
     let (handle, port) = spawn_server(cfg).await;
 
@@ -1016,8 +1024,9 @@ async fn external_grpc_real_handler_returns_business_data() {
         "test-issuer",
         "test-audience",
         3600,
-    );
-    let cert_pem = server_cert_pem();
+    )
+    .expect("mint JWT fixture");
+    let cert_pem = server_cert_pem().expect("read server certificate fixture");
     let channel = make_tls_channel(port, &cert_pem, None).await;
 
     let mut req = tonic::Request::new(GetSessionStatsRequest { limit: 10 });

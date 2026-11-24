@@ -642,44 +642,38 @@ impl ConversationSession for HttpApiSession {
                                         })?;
                                     }
                                 }
-                                OutboundMessage::Result { content, done, .. } => {
-                                    // #6197: the Result arm matches BOTH the
-                                    // intermediate usage-only chunk (done=false —
-                                    // Anthropic message_delta, OpenAI-Chat usage
-                                    // chunk) AND the terminal chunk (done=true —
-                                    // message_stop, [DONE], finish_reason). Only
-                                    // the terminal chunk must mutate history;
+                                OutboundMessage::Result { content, done: true, .. } => {
+                                    // #6197: only the terminal chunk (message_stop,
+                                    // [DONE], finish_reason) must mutate history;
                                     // saving on the usage-only chunk pushed a
                                     // SECOND identical assistant message per turn.
-                                    // The intermediate Result is still yielded
-                                    // below for live token display.
-                                    if *done {
-                                        // #6203: when a provider (Gemini) delivers
-                                        // the final text in the SAME chunk as
-                                        // usageMetadata/finishReason, that text
-                                        // arrives as Result{content,done:true} and
-                                        // was never seen by the Text arm. Fold it
-                                        // into `accumulated` before saving so the
-                                        // final text is preserved in history and
-                                        // available for suggestion extraction.
-                                        if !content.is_empty() {
-                                            accumulated.push_str(content);
-                                        }
-
-                                        // Emit accumulated tool calls before saving text history
-                                        for tc in tool_calls.drain(..) {
-                                            if tc.name.is_empty() { continue; }
-                                            let parsed_args = serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-                                            yield OutboundMessage::ToolUse {
-                                                tool: tc.name,
-                                                input: Some(parsed_args),
-                                                status: ToolUseStatus::Started,
-                                                result: None,
-                                            };
-                                        }
-
-                                        save_assistant_response(&history, &accumulated, max_turns).await;
+                                    // Intermediate Result chunks (done=false) fall
+                                    // through and are still yielded below.
+                                    // #6203: when a provider (Gemini) delivers
+                                    // the final text in the SAME chunk as
+                                    // usageMetadata/finishReason, that text
+                                    // arrives as Result{content,done:true} and
+                                    // was never seen by the Text arm. Fold it
+                                    // into `accumulated` before saving so the
+                                    // final text is preserved in history and
+                                    // available for suggestion extraction.
+                                    if !content.is_empty() {
+                                        accumulated.push_str(content);
                                     }
+
+                                    // Emit accumulated tool calls before saving text history
+                                    for tc in tool_calls.drain(..) {
+                                        if tc.name.is_empty() { continue; }
+                                        let parsed_args = serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+                                        yield OutboundMessage::ToolUse {
+                                            tool: tc.name,
+                                            input: Some(parsed_args),
+                                            status: ToolUseStatus::Started,
+                                            result: None,
+                                        };
+                                    }
+
+                                    save_assistant_response(&history, &accumulated, max_turns).await;
                                 }
                                 OutboundMessage::Thinking { .. } => {
                                     // Stream to frontend but don't accumulate in history

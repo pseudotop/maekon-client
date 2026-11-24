@@ -3,7 +3,7 @@
 //! Configuration alone cannot show that a provider accepts the saved key and
 //! model, so `chat.http_api` readiness stays unverified until a verification
 //! call succeeds. That call records a fingerprint of what its session used:
-//! the provider surface, the model, and a digest of the secret. Readiness
+//! the provider surface, the endpoint, the model, and a digest of the secret. Readiness
 //! trusts the record only while the current configuration and the secret the
 //! session factory would send produce the same fingerprint. The secret is
 //! never stored.
@@ -23,8 +23,9 @@ use maekon_core::provider_surface::provider_type_from_vendor_id;
 
 /// Kept next to `consent.json` in the app data directory.
 const EVIDENCE_FILE_NAME: &str = "http_chat_invocation_evidence.json";
-const EVIDENCE_SCHEMA_VERSION: u32 = 1;
-const FINGERPRINT_DOMAIN: &[u8] = b"http-chat-invocation/v1\0";
+// #12560: v1 did not bind the endpoint; it cannot verify a custom URL.
+const EVIDENCE_SCHEMA_VERSION: u32 = 2;
+const FINGERPRINT_DOMAIN: &[u8] = b"http-chat-invocation/v2\0";
 const FINGERPRINT_PREFIX: &str = "sha256:";
 const NO_AUTH_CREDENTIAL: &[u8] = b"no-auth";
 /// A readiness read must not wait on a slow secret backend.
@@ -112,16 +113,18 @@ pub(crate) enum FingerprintCredential<'a> {
     Secret(&'a str),
 }
 
-/// `sha256:<hex>` over the surface, the model, and the credential. Every part
+/// `sha256:<hex>` over the surface, endpoint, model, and credential. Every part
 /// is length-prefixed, so two different inputs never share an encoding.
 pub(crate) fn http_chat_fingerprint(
     surface_id: &str,
+    endpoint: &str,
     model: &str,
     credential: FingerprintCredential<'_>,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(FINGERPRINT_DOMAIN);
     update_part(&mut hasher, surface_id.as_bytes());
+    update_part(&mut hasher, endpoint.as_bytes());
     update_part(&mut hasher, model.as_bytes());
     match credential {
         FingerprintCredential::NoAuth => update_part(&mut hasher, NO_AUTH_CREDENTIAL),
@@ -151,14 +154,15 @@ pub(crate) struct HttpChatTarget {
     pub(crate) surface_id: String,
     /// The configured model, or the catalog default when none is set.
     pub(crate) model: String,
-    /// The catalog transport URL the session sends to.
+    /// The configured or catalog transport URL the session sends to.
     pub(crate) url: String,
 }
 
 impl HttpChatTarget {
     /// Resolves `llm_api` the way `create_http_api_session`
-    /// (`session_manager/factory.rs`) builds its session: the provider catalog
-    /// supplies the transport URL and the default model. `None` unless the
+    /// (`session_manager/http_api.rs`) builds its session: the provider catalog
+    /// supplies the default model and fallback URL; the same shared selector
+    /// applies a configured direct HTTP endpoint. `None` unless the
     /// access mode is an HTTP one and the factory could build the session.
     pub(crate) fn resolve(ai_provider: &AiProviderConfig) -> Option<Self> {
         let http_mode = matches!(
@@ -198,7 +202,8 @@ impl HttpChatTarget {
         Some(Self {
             surface_id: surface.surface_id.clone(),
             model,
-            url: transport.url.clone(),
+            url: CredentialSource::http_session_endpoint(Some(llm_api), surface_id, &transport.url)
+                .to_string(),
         })
     }
 
@@ -209,6 +214,7 @@ impl HttpChatTarget {
         if matches!(credential, CredentialSource::NoAuth) {
             return Some(http_chat_fingerprint(
                 &self.surface_id,
+                &self.url,
                 &self.model,
                 FingerprintCredential::NoAuth,
             ));
@@ -220,6 +226,7 @@ impl HttpChatTarget {
             .filter(|secret| !secret.trim().is_empty())?;
         Some(http_chat_fingerprint(
             &self.surface_id,
+            &self.url,
             &self.model,
             FingerprintCredential::Secret(&secret),
         ))

@@ -1,7 +1,7 @@
 //! Readable startup failures instead of `Abort trap: 6` (#10985).
 //!
 //! Tauri's run loop calls `panic!("Failed to setup app: {e}")` when the setup
-//! hook returns `Err` (`patches/tauri-2.11.2/src/app.rs:1417`), and that panic
+//! hook returns `Err` (`patches/tauri-2.12.4/src/app.rs:1444`), and that panic
 //! crosses a non-unwinding extern boundary, so the process aborts. A user who
 //! rolls back to an older build sees:
 //!

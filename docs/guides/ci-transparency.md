@@ -55,7 +55,7 @@ After the fast PR lane merges, a release build is compiled on all four targets t
 
 | Target | Runner |
 |--------|--------|
-| `x86_64-unknown-linux-gnu` | `ubuntu-latest` |
+| `x86_64-unknown-linux-gnu` | `ubuntu-24.04` |
 | `aarch64-apple-darwin` | `macos-latest` |
 | `x86_64-apple-darwin` | `macos-15-intel` |
 | `x86_64-pc-windows-msvc` | `windows-latest` |

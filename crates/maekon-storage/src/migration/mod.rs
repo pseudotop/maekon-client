@@ -68,6 +68,8 @@
 //!   successful upload marks a row instead of deleting its local evidence.
 //! - `v57_ai_summary_provenance.rs` — persists provider class and failure reason
 //!   for segment summaries and daily AI narratives (#11738).
+//! - `v58_event_upload_provenance.rs` — private nullable upload evidence on the
+//!   parent event row; public Event JSON remains unchanged (#13395).
 //! - `v53_vault_mirror_state.rs` — `vault_mirror_state` (per-file content
 //!   hash for the ADR-033 memory vault mirror's change detection; member of
 //!   the GDPR erase sweep).
@@ -121,11 +123,12 @@ mod v54_orphan_annotation_cleanup;
 mod v55_effective_mapping_cache;
 mod v56_wbs_xlsx_receipts;
 mod v57_ai_summary_provenance;
+mod v58_event_upload_provenance;
 
 use rusqlite::Connection;
 use tracing::{error, info, warn};
 
-pub const CURRENT_VERSION: u32 = 57;
+pub const CURRENT_VERSION: u32 = 58;
 
 /// Keep at most this many pre-migration backups for a given DB; older ones are
 /// pruned after each new backup so they cannot accumulate unbounded across the
@@ -473,6 +476,9 @@ pub fn run_migrations_to(conn: &Connection, target: u32) -> Result<(), rusqlite:
     }
     if target >= 57 && current < 57 {
         run_migration_step(conn, 57, v57_ai_summary_provenance::migrate_v57)?;
+    }
+    if target >= 58 && current < 58 {
+        run_migration_step(conn, 58, v58_event_upload_provenance::migrate_v58)?;
     }
 
     Ok(())

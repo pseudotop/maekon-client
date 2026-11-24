@@ -224,6 +224,29 @@ mod tests {
     }
 
     #[test]
+    fn persisted_clock_preserves_integer_milliseconds_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clock.db");
+        // 2026-11-01T05:30:00.123Z has a nonzero millisecond component.
+        let wall_ms = 1_793_511_000_123;
+        {
+            let conn = Connection::open(&path).unwrap();
+            setup(&conn);
+            seed_to_floor(&conn, wall_ms, 7).unwrap();
+        }
+        let reopened = Connection::open(path).unwrap();
+        let stored: u64 = reopened
+            .query_row(
+                "SELECT last_wall_ms FROM hlc_clock WHERE id = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, wall_ms);
+        assert_eq!(read_floor(&reopened).unwrap(), (wall_ms, 7));
+    }
+
+    #[test]
     fn next_is_strictly_monotonic_and_stamps_device_id() {
         let conn = Connection::open_in_memory().unwrap();
         setup(&conn);

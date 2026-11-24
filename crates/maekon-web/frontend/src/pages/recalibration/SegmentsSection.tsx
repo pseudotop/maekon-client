@@ -1,16 +1,19 @@
 import { RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Badge, Button, Card, EmptyState, Select, Skeleton } from '../../components/ui'
+import { defaultRegimeOptions } from '../../features/activityLabels'
 import { useTypedOutletContext } from '../../routes'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
+import { formatMinutes } from '../../utils/formatters'
 import type { RecalibrationOutletContext } from './RecalibrationLayout'
-import { formatTime, getActionLabel, REGIME_OPTIONS } from './RecalibrationLayout'
+import { formatTime, getActionLabel } from './RecalibrationLayout'
 
 export default function SegmentsSection() {
   const { t } = useTranslation()
   const { segments, segmentsLoading, overrideMap, createOverride, handleMarkAsPersonal, handleReassign } =
     useTypedOutletContext<RecalibrationOutletContext>('Recalibration')
+  const regimeOptions = defaultRegimeOptions(t)
 
   return (
     <Card padding="md">
@@ -28,10 +31,7 @@ export default function SegmentsSection() {
         <EmptyState
           icon={<RefreshCw className="h-8 w-8" />}
           title={t('recalibration.noSegments')}
-          description={t(
-            'recalibration.noSegmentsDescription',
-            'Try selecting a different date range to find activity segments.',
-          )}
+          description={t('recalibration.noSegmentsDescription')}
         />
       )}
 
@@ -56,7 +56,9 @@ export default function SegmentsSection() {
                     <td className={cn('py-2 pr-4 text-xs', colors.text.secondary)}>
                       {formatTime(seg.start_time)} - {formatTime(seg.end_time)}
                     </td>
-                    <td className={cn('py-2 pr-4 text-xs', colors.text.secondary)}>{seg.duration_mins}m</td>
+                    <td className={cn('py-2 pr-4 text-xs', colors.text.secondary)}>
+                      {formatMinutes(seg.duration_mins)}
+                    </td>
                     <td className="py-2 pr-4">
                       <div className="flex items-center gap-2">
                         <span
@@ -97,11 +99,13 @@ export default function SegmentsSection() {
                               <option value="" disabled>
                                 {t('recalibration.changeRegimeTo')}
                               </option>
-                              {REGIME_OPTIONS.filter((r) => r.id !== seg.regime_id).map((r) => (
-                                <option key={r.id} value={r.id}>
-                                  {r.label}
-                                </option>
-                              ))}
+                              {regimeOptions
+                                .filter((r) => r.id !== seg.regime_id)
+                                .map((r) => (
+                                  <option key={r.id} value={r.id}>
+                                    {r.label}
+                                  </option>
+                                ))}
                             </Select>
                           </>
                         )}

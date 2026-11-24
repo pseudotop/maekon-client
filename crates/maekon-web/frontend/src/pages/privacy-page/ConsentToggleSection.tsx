@@ -19,10 +19,11 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { CONSENT_QUERY_KEY, getConsent, setConsent, withdrawConsent } from '../../api/client'
 import type { ConsentPermissions, ConsentSnapshot, ConsentStatus } from '../../api/contracts'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Button, Card, CardTitle, Checkbox } from '../../components/ui'
 import { invalidateAiReadinessSnapshotCache } from '../../hooks/useAiReadinessSnapshot'
 import { addToast } from '../../hooks/useToast'
-import { describeIpcError } from '../../i18n/tauriIpcErrors'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { IS_LINUX } from '../../utils/platform'
@@ -131,7 +132,8 @@ interface ConsentToggleSectionProps {
 }
 
 export default function ConsentToggleSection({ onConsentChanged }: ConsentToggleSectionProps = {}) {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const queryClient = useQueryClient()
   const [showWithdrawModal, setShowWithdrawModal] = useState(false)
 
@@ -168,10 +170,9 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
     // modal; the modal intentionally stays open as the retry affordance (same
     // contract as the sibling PrivacyLayout delete-all path from #9492).
     onError: (error: Error) => {
-      addToast(
-        'error',
-        describeIpcError(error, (key) => t(key), i18n.language),
-      )
+      const display = describeError(error)
+      if (display.detail) addToast('error', display.text, 4000, display.detail)
+      else addToast('error', display.text)
     },
   })
 
@@ -269,9 +270,9 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
   // literal via errorMessageFromInvoke — route both mutations through the
   // shared IPC-error mapping like every other privacy surface (#9492 item 4).
   const lastError = setMutation.isError
-    ? describeIpcError(setMutation.error, (key) => t(key), i18n.language)
+    ? describeError(setMutation.error)
     : withdrawMutation.isError
-      ? describeIpcError(withdrawMutation.error, (key) => t(key), i18n.language)
+      ? describeError(withdrawMutation.error)
       : null
 
   return (
@@ -299,7 +300,8 @@ export default function ConsentToggleSection({ onConsentChanged }: ConsentToggle
       {/* IPC error display */}
       {lastError && (
         <Alert variant="error" className="mb-4" title={t('privacy.consent.actionFailed')}>
-          {lastError}
+          <p>{lastError.text}</p>
+          <SupportDetails detail={lastError.detail} />
         </Alert>
       )}
 

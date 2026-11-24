@@ -521,7 +521,10 @@ jobs:
 
       - name: TypeScript type check (early fail)
         working-directory: crates/maekon-web/frontend
-        run: npx tsc --noEmit
+        # tsconfig.json references the composite tsconfig.node.json
+        # (vite.config.ts and src/constants.ts). Plain --noEmit fails with
+        # TS6305 until that reference is built; build mode checks both.
+        run: npx tsc -b
 
       - name: Build frontend bundle
         working-directory: crates/maekon-web/frontend
@@ -563,7 +566,11 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: maekon-windows-x64
             asset_ext: zip
-          - os: ubuntu-latest
+          # Pinned: the shipped .deb takes its libc6 and t64 dependencies from
+          # the build host. ubuntu-latest now resolves to ubuntu-26.04, whose
+          # newer glibc would stop the release from installing on the
+          # documented Ubuntu 24.04 floor (docs/guides/autostart.md, #11246).
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact_name: maekon-linux-x64
             asset_ext: tar.gz
@@ -1463,7 +1470,8 @@ jobs:
       matrix:
         include:
           - name: linux
-            os: ubuntu-latest
+            # The supported floor the Linux release is built for (build-release).
+            os: ubuntu-24.04
             artifact_name: maekon-linux-x64-archive
             run_updater_tests: true
           - name: macos

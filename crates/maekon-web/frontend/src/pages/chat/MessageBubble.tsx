@@ -3,7 +3,9 @@ import React, { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Button, Card, CardContent } from '../../components/ui'
+import { supportDetailOf } from '../../i18n/errorDisplay'
 import { iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { CopyButton } from './CopyButton'
@@ -170,8 +172,9 @@ export function MessageBubble({
           <div className="flex items-start gap-2">
             <AlertTriangle className={cn(iconSize.base, 'mt-0.5 shrink-0 text-semantic-error')} />
             <div className="min-w-0 flex-1">
-              <p className={cn('text-semantic-error text-xs', typography.weight.medium)}>{msg.error.code}</p>
-              <p className="mt-0.5 text-content-secondary text-xs">{msg.error.message}</p>
+              {/* #13737: the provider code and diagnostic stay behind the support details. */}
+              <p className={cn('text-semantic-error text-xs', typography.weight.medium)}>{t('chat.response_failed')}</p>
+              <SupportDetails detail={supportDetailOf(msg.error)} className="mt-0.5" />
               {msg.error.retryable && (
                 <Button variant="ghost" size="sm" onClick={onRetry} className="mt-1 text-xs">
                   <RefreshCw className={iconSize.xs} /> {t('chat.retry')}

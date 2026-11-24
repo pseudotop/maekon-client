@@ -10,15 +10,15 @@ const meta = {
     docs: {
       description: {
         component: `
-After the v0.4.32 category restructure, the ActivityBar only exposes **five**
-buttons in the 48px rail:
+Since #13736 the ActivityBar exposes **three** buttons in the 48px rail:
 
-- 3 category icons (**Monitor** / **Data** / **Manage**) that navigate to the
-  first route in their group and open the SidePanel with the group tree.
+- 1 main group icon (**Menu**) that lands on the dashboard and opens the
+  SidePanel's main tree: six front destinations plus the More / Tools /
+  System bundles one level back.
 - 2 bottom direct icons (**Settings** / **Privacy**) — high-traffic entry
   points that would be annoying to hide behind an extra click.
 
-Clicking the already-active category toggles the SidePanel (VS Code-style)
+Clicking the already-active group icon toggles the SidePanel (VS Code-style)
 so users can reclaim screen width without reaching for \`Cmd/Ctrl+B\`.
 `.trim(),
       },
@@ -48,20 +48,20 @@ const routeDecorator = (route: string): Meta<typeof ActivityBar>['decorators'] =
 
 const noOp = () => {}
 
-/** Monitor group active (landing on /overview after clicking Monitor). */
-export const MonitorGroupActive: Story = {
+/** Main group active (landing on /overview after clicking Menu). */
+export const MainGroupActive: Story = {
   args: { onToggleSidebar: noOp, sidebarCollapsed: false },
   decorators: routeDecorator('/overview'),
 }
 
-/** Data group active — reached from /reports/activity. */
-export const DataGroupActive: Story = {
+/** A front destination (/reports/activity) keeps the main group icon active. */
+export const FrontDestinationActive: Story = {
   args: { onToggleSidebar: noOp, sidebarCollapsed: false },
   decorators: routeDecorator('/reports/activity'),
 }
 
-/** Manage group active — /audit/summary triggers the manage icon highlight. */
-export const ManageGroupActive: Story = {
+/** A route inside the Tools bundle (/audit/summary) keeps the main group icon active. */
+export const BundledRouteActive: Story = {
   args: { onToggleSidebar: noOp, sidebarCollapsed: false },
   decorators: routeDecorator('/audit/summary'),
 }
@@ -78,7 +78,7 @@ export const PrivacyActive: Story = {
   decorators: routeDecorator('/privacy/data'),
 }
 
-/** Nested route /automation/policies still highlights the Monitor group. */
+/** Nested route /automation/policies still highlights the main group. */
 export const NestedRouteHighlightsGroup: Story = {
   args: { onToggleSidebar: noOp, sidebarCollapsed: false },
   decorators: routeDecorator('/automation/policies'),

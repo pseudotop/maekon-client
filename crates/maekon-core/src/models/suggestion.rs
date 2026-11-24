@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -409,4 +410,174 @@ pub struct SuggestionHistoryEntry {
     pub context_app: String,
     pub context_window: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One complete generation opportunity, including opportunities with no candidates.
+/// Candidate IDs are local to this opportunity, not global across the population.
+/// This caller-supplied contract has no runtime collector or provider/model effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestionShadowOpportunity {
+    pub opportunity_id: String,
+    pub rubric_revision: String,
+    pub generated_candidate_ids: Vec<String>,
+    /// Observed queue admission, not UI exposure; `None` is unknown, `Some([])` is none.
+    pub baseline_admitted_candidate_ids: Option<Vec<String>>,
+    /// Independent labels for every generated ID; never inferred from admission or feedback.
+    pub independent_usefulness: Option<BTreeMap<String, bool>>,
+}
+
+/// Raw baseline counts, with no success/GO, accuracy, savings, or exposure verdict.
+/// Generated = admitted + not admitted + admission unknown = labelled + oracle unknown.
+/// Useful = useful admitted + useful not admitted + useful admission unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SuggestionShadowBaselineSummary {
+    pub rubric_revision: String,
+    pub opportunity_count: usize,
+    pub generated_count: usize,
+    pub admitted_count: usize,
+    pub not_admitted_count: usize,
+    pub admission_unknown_count: usize,
+    pub oracle_labelled_count: usize,
+    pub oracle_unknown_count: usize,
+    pub useful_count: usize,
+    pub useful_admitted_count: usize,
+    pub useful_not_admitted_count: usize,
+    pub useful_admission_unknown_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SuggestionShadowValidationError {
+    #[error("shadow population is empty")]
+    EmptyPopulation,
+    #[error("shadow opportunity ID is blank")]
+    EmptyOpportunityId,
+    #[error("shadow opportunity ID is repeated")]
+    DuplicateOpportunityId,
+    #[error("shadow rubric revision is blank")]
+    EmptyRubricRevision,
+    #[error("shadow rubric revisions differ")]
+    RubricRevisionMismatch,
+    #[error("generated candidate ID is blank")]
+    EmptyGeneratedCandidateId,
+    #[error("generated candidate ID is repeated within an opportunity")]
+    DuplicateGeneratedCandidateId,
+    #[error("admitted candidate ID is repeated within an opportunity")]
+    DuplicateAdmittedCandidateId,
+    #[error("admitted candidate ID was not generated in this opportunity")]
+    UnknownAdmittedCandidateId,
+    #[error("independent oracle does not label every generated candidate")]
+    IncompleteOracle,
+    #[error("independent oracle labels a candidate outside this opportunity")]
+    UnknownOracleCandidateId,
+}
+
+impl SuggestionShadowOpportunity {
+    /// Validate population identity and closed candidate bindings before aggregation.
+    /// Independence of the supplied oracle must be established by the caller.
+    pub fn validate_population(rows: &[Self]) -> Result<(), SuggestionShadowValidationError> {
+        use SuggestionShadowValidationError::*;
+        let first = rows.first().ok_or(EmptyPopulation)?;
+        let mut opportunities = HashSet::new();
+        for row in rows {
+            if row.opportunity_id.trim().is_empty() {
+                return Err(EmptyOpportunityId);
+            }
+            if !opportunities.insert(row.opportunity_id.as_str()) {
+                return Err(DuplicateOpportunityId);
+            }
+            if row.rubric_revision.trim().is_empty() {
+                return Err(EmptyRubricRevision);
+            }
+            if row.rubric_revision != first.rubric_revision {
+                return Err(RubricRevisionMismatch);
+            }
+            let mut generated = HashSet::new();
+            for id in &row.generated_candidate_ids {
+                if id.trim().is_empty() {
+                    return Err(EmptyGeneratedCandidateId);
+                }
+                if !generated.insert(id.as_str()) {
+                    return Err(DuplicateGeneratedCandidateId);
+                }
+            }
+            if let Some(ids) = &row.baseline_admitted_candidate_ids {
+                let mut admitted = HashSet::new();
+                for id in ids {
+                    if !admitted.insert(id.as_str()) {
+                        return Err(DuplicateAdmittedCandidateId);
+                    }
+                    if !generated.contains(id.as_str()) {
+                        return Err(UnknownAdmittedCandidateId);
+                    }
+                }
+            }
+            if let Some(labels) = &row.independent_usefulness {
+                if labels.keys().any(|id| !generated.contains(id.as_str())) {
+                    return Err(UnknownOracleCandidateId);
+                }
+                if labels.len() != generated.len() {
+                    return Err(IncompleteOracle);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod shadow_baseline_tests {
+    use super::*;
+
+    #[test]
+    fn shadow_baseline_rejects_invalid_bindings() {
+        use SuggestionShadowValidationError::*;
+        let valid = SuggestionShadowOpportunity {
+            opportunity_id: "one".into(),
+            rubric_revision: "r1".into(),
+            generated_candidate_ids: vec!["A".into()],
+            baseline_admitted_candidate_ids: Some(vec!["A".into()]),
+            independent_usefulness: Some(BTreeMap::from([("A".into(), true)])),
+        };
+        let validate = SuggestionShadowOpportunity::validate_population;
+        assert_eq!(validate(&[]), Err(EmptyPopulation));
+        assert_eq!(
+            validate(&[valid.clone(), valid.clone()]),
+            Err(DuplicateOpportunityId)
+        );
+        let mut other = valid.clone();
+        other.opportunity_id = "two".into();
+        other.rubric_revision = "r2".into();
+        assert_eq!(
+            validate(&[valid.clone(), other]),
+            Err(RubricRevisionMismatch)
+        );
+        type CorruptOpportunity = fn(&mut SuggestionShadowOpportunity);
+        let cases: [(SuggestionShadowValidationError, CorruptOpportunity); 8] = [
+            (EmptyOpportunityId, |r| r.opportunity_id = " ".into()),
+            (EmptyRubricRevision, |r| r.rubric_revision = " ".into()),
+            (EmptyGeneratedCandidateId, |r| {
+                r.generated_candidate_ids.push(" ".into())
+            }),
+            (DuplicateGeneratedCandidateId, |r| {
+                r.generated_candidate_ids.push("A".into())
+            }),
+            (DuplicateAdmittedCandidateId, |r| {
+                r.baseline_admitted_candidate_ids = Some(vec!["A".into(), "A".into()])
+            }),
+            (UnknownAdmittedCandidateId, |r| {
+                r.baseline_admitted_candidate_ids = Some(vec!["outside".into()])
+            }),
+            (IncompleteOracle, |r| {
+                r.independent_usefulness = Some(BTreeMap::new())
+            }),
+            (UnknownOracleCandidateId, |r| {
+                r.independent_usefulness = Some(BTreeMap::from([("outside".into(), true)]))
+            }),
+        ];
+        for (expected, corrupt) in cases {
+            let mut row = valid.clone();
+            corrupt(&mut row);
+            assert_eq!(validate(&[row]), Err(expected));
+        }
+    }
 }

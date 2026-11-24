@@ -123,11 +123,13 @@ export default function UpdatesLayout() {
           <Badge color="info">{__APP_VERSION__}</Badge>
         </div>
         <div className="flex items-center gap-2">
+          {/* #13740: the page's only "Check now". StatusSection renders UpdatePanel without its own. */}
           <Button
             type="button"
             variant="secondary"
             size="sm"
             isLoading={actionMutation.isPending}
+            disabled={isDownloading}
             onClick={() => actionMutation.mutate('CheckNow')}
           >
             <RefreshCw size={14} className="mr-1.5" />

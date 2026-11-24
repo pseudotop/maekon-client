@@ -4,12 +4,14 @@ import { fetchProviderSurfaces, fetchSettings } from '../../../api/client'
 import type { ProviderSurfaceCatalog, ProviderSurfaceSpec } from '../../../api/contracts'
 import { DEFAULT_PROVIDER_SURFACE_CATALOG } from '../../../api/defaultProviderSurfaceCatalog'
 import { providerSurfaceByIdFromList } from '../../../features/providerSurfaces'
-import { addToast } from '../../../hooks/useToast'
+import { addErrorToast } from '../../../hooks/useToast'
+import { type ErrorDisplay, useErrorDisplay } from '../../../i18n/errorDisplay'
 import type { SessionInfo } from '../types'
-import { errorMessage, filterHttpApiSurfaces, ipc } from '../utils'
+import { filterHttpApiSurfaces, ipc } from '../utils'
 
 export function useSessionSetup() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [providerCatalog, setProviderCatalog] = useState<ProviderSurfaceCatalog>(DEFAULT_PROVIDER_SURFACE_CATALOG)
   const [catalogLoaded, setCatalogLoaded] = useState(false)
   // #12559: the HTTP surface saved in Settings (`llm_api.surface_id`). #12541 sends the saved key
@@ -19,7 +21,7 @@ export function useSessionSetup() {
   const [httpSurfaceId, setHttpSurfaceId] = useState<string>('')
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [tokenUsage, setTokenUsage] = useState<{ total: number; budget: number | null }>({ total: 0, budget: null })
-  const [sessionLoadError, setSessionLoadError] = useState<string | null>(null)
+  const [sessionLoadError, setSessionLoadError] = useState<ErrorDisplay | null>(null)
 
   // Fetch provider catalog dynamically, fall back to static import
   useEffect(() => {
@@ -69,12 +71,12 @@ export function useSessionSetup() {
         setSessionLoadError(null)
       })
       .catch((e) => {
-        const message = errorMessage(e, t('chat.load_failed', 'Failed to load AI sessions.'))
+        const display = describeError(e, t('chat.load_failed', 'Failed to load AI sessions.'))
         console.warn('list_ai_sessions failed:', e)
-        setSessionLoadError(message)
-        addToast('error', message, 5000)
+        setSessionLoadError(display)
+        addErrorToast(display)
       })
-  }, [t])
+  }, [t, describeError])
 
   return {
     providerCatalog,

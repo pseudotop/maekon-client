@@ -1,4 +1,5 @@
 use maekon_core::models::intent::{AutomationIntent, ElementBounds, IntentResult, WorkflowPreset};
+use maekon_core::models::intent_execution::{IntentExecutionProvenance, OpaqueIntentId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
@@ -62,6 +63,13 @@ pub struct AuditEntryDto {
     pub details: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    /// Safe execution-local observation; absent for legacy audit entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
+    pub execution_provenance: Option<IntentExecutionProvenance>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +78,11 @@ pub struct AuditQuery {
     #[serde(default = "default_audit_limit")]
     pub limit: usize,
     pub status: Option<String>,
+    /// Exact lookup within the authenticated local profile, independent of list
+    /// pagination/status. No result means unknown, never permission to replay.
+    #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    pub submission_id: Option<OpaqueIntentId>,
 }
 
 fn default_audit_limit() -> usize {
@@ -149,6 +162,13 @@ pub struct ExecuteIntentHintRequest {
     pub command_id: Option<String>,
     pub session_id: String,
     pub intent_hint: String,
+    /// Random caller correlation saved before sending; not an idempotency token.
+    #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    pub submission_id: Option<OpaqueIntentId>,
+    #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    pub retry_of: Option<OpaqueIntentId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -167,6 +187,12 @@ pub struct ExecuteIntentHintResponse {
         schemars(schema_with = "crate::schema_support::opaque_object")
     )]
     pub result: IntentResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema_support::opaque_object")
+    )]
+    pub execution_provenance: Option<IntentExecutionProvenance>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

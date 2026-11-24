@@ -24,9 +24,9 @@
 //! a `follow-up` (`supply-chain/config.toml`), so a plugin's dependency graph is
 //! a real cost. It buys little here: `windows` 0.62 is already a workspace
 //! dependency and `ShellExecuteW` is already called by the vendored runtime
-//! (`patches/tauri-runtime-wry-2.11.2/src/dialog/windows.rs:64`), and `url` 2 is
+//! (`patches/tauri-runtime-wry-2.12.2/src/dialog/windows.rs:64`), and `url` 2 is
 //! already in `Cargo.lock` via `maekon-network`. Tauri itself is vendored
-//! (`patches/tauri-2.11.2`, `wry-0.55.1`), so an external plugin would also owe
+//! (`patches/tauri-2.12.4`, `wry-0.57.0`), so an external plugin would also owe
 //! compatibility against that patch set. Owning the command instead keeps the
 //! allowlist in Rust, where a caller cannot route around it, and lets failures
 //! come back as typed `IpcError` codes.

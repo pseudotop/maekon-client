@@ -1,10 +1,10 @@
 {
   "name": "maekon-dashboard",
-  "version": "0.0.1-rc.11",
+  "version": "0.0.1-rc.12",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5273 --strictPort",
-    "build": "tsc && vite build",
+    "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "biome check src/ e2e/privacy-safe-web-verification.spec.ts e2e/helpers/ playwright.privacy-safe.config.ts && bash scripts/lint-design-tokens.sh",
     "lint:tokens": "bash scripts/lint-design-tokens.sh",
@@ -63,10 +63,10 @@
     "@biomejs/biome": "^2.4.13",
     "@playwright/cli": "^0.1.9",
     "@playwright/test": "^1.59.1",
-    "@storybook/addon-a11y": "^10.3.5",
-    "@storybook/addon-docs": "^10.3.5",
-    "@storybook/addon-themes": "^10.3.5",
-    "@storybook/react-vite": "^10.3.5",
+    "@storybook/addon-a11y": "^10.6.2",
+    "@storybook/addon-docs": "^10.6.2",
+    "@storybook/addon-themes": "^10.6.2",
+    "@storybook/react-vite": "^10.6.2",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.2.0",
     "@testing-library/user-event": "^14.5.2",
@@ -88,11 +88,11 @@
     "autoprefixer": "^10.5.0",
     "jsdom": "^25.0.0",
     "postcss": "^8.5.25",
-    "storybook": "^10.3.5",
+    "storybook": "^10.6.2",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
-    "vite": "^6.4.3",
-    "vitest": "^4.1.11",
+    "vite": "^6.4.5",
+    "vitest": "^4.1.12",
     "webdriverio": "^9.30.0"
   }
 }

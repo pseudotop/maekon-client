@@ -34,7 +34,10 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [imports.zcash]
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
-[policy.muda]
+[policy.ppmd-rust]
+audit-as-crates-io = false
+
+[policy.rstar]
 audit-as-crates-io = false
 
 [policy.tao]
@@ -52,67 +55,14 @@ audit-as-crates-io = false
 [policy.tauri-runtime-wry]
 audit-as-crates-io = false
 
+[policy.tauri-utils]
+audit-as-crates-io = false
+
 [policy.tray-icon]
 audit-as-crates-io = false
 
 [policy.wry]
 audit-as-crates-io = false
 
-[[exemptions.cpal]]
-version = "0.18.2"
-criteria = "safe-to-deploy"
-notes = """
-reason: #11200 dependabot patch bump 0.18.1 -> 0.18.2. cpal has no audit chain in this
-  project (only this exemption), so cargo-vet offers no delta path — certifying it means
-  a full inspect of 28,256 lines, which was not done. This entry keeps the same
-  uncertified posture as the 0.18.1 exemption it replaces; it does not claim review.
-what-changed: upstream CHANGELOG for 0.18.2 is bug-fix only — xrun reporting added on
-  AAudio/CoreAudio/PipeWire/WASAPI, timestamps kept monotonic across device and graph
-  changes, ALSA sub-millisecond timeout no longer treated as a non-blocking poll, ALSA
-  builds fixed on FreeBSD/DragonFly/NetBSD. No API removal, no new process or network
-  surface. Measured diff: 36 files, +1923/-821, of which 15 added lines are `unsafe` in
-  the aaudio/alsa backends.
-why-take-it: no security driver — `cargo deny` is green on the current versions — but the
-  bump is posture-neutral (already exempted) and buys the ALSA timeout and timestamp
-  monotonicity fixes.
-review-by: 2026-11-01
-follow-up: Re-review the aaudio/alsa `unsafe` additions and the WASAPI windows-core 0.62
-  pin before promotion beyond routine public export. category:public-dependabot-major
-"""
-
-[[exemptions.jni-macros]]
-version = "0.22.4"
-criteria = "safe-to-deploy"
-notes = """
-reason: android-target-gate (unreachable on shipped targets; retained by owner decision #11510)
-review-by: 2027-08-27
-follow-up: #11510 owner decision (2026-08-27): legitimate residual — Android-only target gate. Not compiled into any shipped artifact: CI targets are x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64/x86_64-apple-darwin, and this dependency sits behind cfg(target_os = "android"). Re-review triggers: (1) the review date above; (2) immediately when an Android target enters the CI matrix — at that point this code compiles and the debt revives. Name-based --filter-graph exclusion was considered and rejected in #11510: it cannot distinguish absent-from-graph from chosen-not-to-look.
-"""
-
-[[exemptions.ndk]]
-version = "0.9.0"
-criteria = "safe-to-deploy"
-notes = """
-reason: android-target-gate (unreachable on shipped targets; retained by owner decision #11510)
-review-by: 2027-08-27
-follow-up: #11510 owner decision (2026-08-27): legitimate residual — Android-only target gate. Not compiled into any shipped artifact: CI targets are x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64/x86_64-apple-darwin, and this dependency sits behind cfg(target_os = "android"). Re-review triggers: (1) the review date above; (2) immediately when an Android target enters the CI matrix — at that point this code compiles and the debt revives. Name-based --filter-graph exclusion was considered and rejected in #11510: it cannot distinguish absent-from-graph from chosen-not-to-look.
-"""
-
-[[exemptions.ndk-sys]]
-version = "0.6.0+11769913"
-criteria = "safe-to-deploy"
-notes = """
-reason: android-target-gate (unreachable on shipped targets; retained by owner decision #11510)
-review-by: 2027-08-27
-follow-up: #11510 owner decision (2026-08-27): legitimate residual — Android-only target gate. Not compiled into any shipped artifact: CI targets are x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64/x86_64-apple-darwin, and this dependency sits behind cfg(target_os = "android"). Re-review triggers: (1) the review date above; (2) immediately when an Android target enters the CI matrix — at that point this code compiles and the debt revives. Name-based --filter-graph exclusion was considered and rejected in #11510: it cannot distinguish absent-from-graph from chosen-not-to-look.
-"""
-
-[[exemptions.sysinfo]]
-version = "0.39.6"
-criteria = "safe-to-deploy"
-notes = """
-reason: cycle22-grace-baseline carried forward across the 0.38.4 -> 0.39.6 bump (#11339)
-review-by: 2026-11-23
-follow-up: #3908 triage 2026-05-29 — not auditable/trustable in this triage pass (no-publisher crate, small/individual maintainer, or expert-concurrency unsafe); extended to 2026-11-01 per disposition #2. Re-review by 2026-11-01: targeted hand-audit or per-crate publisher-trust authorization. category:small-maintainer-or-other
-version-note: #11339 raised the workspace MSRV to 1.95 so this line could be taken. Same crate and publisher as the exempted 0.38.4; NOT hand-audited — this carries the prior grace forward rather than asserting new review, and inherits the same 2026-11-01 re-review obligation.
-"""
+[policy.zip]
+audit-as-crates-io = false

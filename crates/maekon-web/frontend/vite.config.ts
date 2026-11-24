@@ -6,6 +6,11 @@ import { DEFAULT_WEB_PORT } from './src/constants'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 
+// Share the existing modern WebView/dashboard baseline across development and
+// production. esbuild 0.28+ cannot lower the legacy default target's
+// destructuring workaround (#5909).
+const browserTarget = 'es2022'
+
 // Read workspace version from Cargo.toml (single source of truth), fallback to package.json
 function resolveVersion(): string {
   try {
@@ -24,6 +29,11 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(`v${resolveVersion()}`),
   },
   plugins: [react()],
+  optimizeDeps: {
+    esbuildOptions: {
+      target: browserTarget,
+    },
+  },
   server: {
     proxy: {
       '/api': {
@@ -33,12 +43,7 @@ export default defineConfig({
     },
   },
   build: {
-    // Modern baseline for the Tauri-embedded WebView + localhost dashboard (no
-    // legacy 2020-era browsers to support). Replaces Vite's default 'modules'
-    // target (which includes safari14), whose destructuring bug-workaround
-    // esbuild 0.28+ can no longer lower — keeping the default would break the
-    // build under the esbuild 0.28.1 security bump. oneshim#5909.
-    target: 'es2022',
+    target: browserTarget,
     outDir: 'dist',
     assetsDir: 'assets',
     assetsInlineLimit: 0,

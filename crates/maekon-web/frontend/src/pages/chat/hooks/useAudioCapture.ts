@@ -1,9 +1,10 @@
 import type React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { addToast } from '../../../hooks/useToast'
+import { addErrorToast, addToast } from '../../../hooks/useToast'
+import { type ErrorDisplay, useErrorDisplay } from '../../../i18n/errorDisplay'
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from '../../../utils/platform'
-import { errorMessage, ipc } from '../utils'
+import { ipc } from '../utils'
 
 /** The i18next translate function, as returned by `useTranslation()`. */
 type MicTranslate = ReturnType<typeof useTranslation>['t']
@@ -26,15 +27,22 @@ function micPermissionPath(t: MicTranslate): string {
  * granting microphone permission, the dominant cause of a failed capture on
  * macOS/Windows. The guidance is phrased conditionally ("If access was blocked…")
  * so it stays accurate when the real cause is a missing or busy device.
+ * #13737: the base is the localized sentence; the device's own error text is
+ * support detail.
  */
-function notifyMicError(t: MicTranslate, err: unknown): void {
-  const base = errorMessage(err, t('chat.mic_error', 'Microphone not available'))
+function notifyMicError(
+  t: MicTranslate,
+  describeError: (err: unknown, fallback?: string) => ErrorDisplay,
+  err: unknown,
+): void {
+  const base = describeError(err, t('chat.mic_error', 'Microphone not available'))
   const hint = t('chat.mic_permission_hint', 'If microphone access was blocked, enable it in:')
-  addToast('error', `${base} — ${hint} ${micPermissionPath(t)}`, 8000)
+  addToast('error', `${base.text} — ${hint} ${micPermissionPath(t)}`, 8000, base.detail)
 }
 
 export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<React.SetStateAction<string>>) {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [audioAvailable, setAudioAvailable] = useState(true)
   const [audioTooltip, setAudioTooltip] = useState('Hold to speak')
   const [micMode, setMicMode] = useState<'push_to_talk' | 'voice_activity'>('push_to_talk')
@@ -162,10 +170,10 @@ export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<Re
       } catch (err) {
         recordingRef.current = false
         setRecording(false)
-        notifyMicError(t, err)
+        notifyMicError(t, describeError, err)
       }
     },
-    [isReadOnly, transcribing, t, micMode],
+    [isReadOnly, transcribing, t, describeError, micMode],
   )
 
   const handleMicUp = useCallback(async () => {
@@ -180,11 +188,11 @@ export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<Re
         setInput((prev) => (prev ? `${prev} ` : '') + result.text)
       }
     } catch (e) {
-      addToast('error', errorMessage(e, t('chat.stt_error', 'Transcription failed')), 5000)
+      addErrorToast(describeError(e, t('chat.stt_error', 'Transcription failed')))
     } finally {
       setTranscribing(false)
     }
-  }, [t, micMode, setInput])
+  }, [t, describeError, micMode, setInput])
 
   // VAD mode: click to toggle listening
   const handleVadToggle = useCallback(async () => {
@@ -193,7 +201,7 @@ export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<Re
       try {
         await ipc('start_vad_listening')
       } catch (err) {
-        notifyMicError(t, err)
+        notifyMicError(t, describeError, err)
       }
     } else {
       try {
@@ -203,7 +211,7 @@ export function useAudioCapture(isReadOnly: boolean, setInput: React.Dispatch<Re
         // ignore
       }
     }
-  }, [isReadOnly, transcribing, vadState, t])
+  }, [isReadOnly, transcribing, vadState, t, describeError])
 
   return {
     audioAvailable,

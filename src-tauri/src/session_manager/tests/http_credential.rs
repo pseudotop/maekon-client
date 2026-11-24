@@ -1,6 +1,7 @@
 //! #12541: an HttpApi session sends the API key Settings saved, and only on
 //! the surface and host Settings saved it for. Every test goes through the real
-//! factory with an in-memory secret store, and none sends a request.
+//! factory with an in-memory secret store. #12560 send controls use only a
+//! synthetic loopback HTTP server; no external provider is called.
 
 use super::*;
 use crate::scheduler::shared_regime_state::SharedRegimeState;
@@ -325,8 +326,8 @@ async fn a_key_saved_for_one_provider_reaches_no_other_surface() {
         .expect("the configured surface still opens");
 }
 
-/// The session sends to the catalog URL, so a key saved for a custom endpoint
-/// on another host is never sent there.
+/// A custom endpoint opens its own session, while its key remains unavailable
+/// to the catalog host (#12541's negative control).
 #[tokio::test]
 async fn a_key_saved_for_a_custom_host_is_not_sent_to_the_catalog_host() {
     let store = Arc::new(MemorySecrets::default());
@@ -335,7 +336,109 @@ async fn a_key_saved_for_a_custom_host_is_not_sent_to_the_catalog_host() {
         "https://llm-proxy.example.com/v1/responses".to_string(),
     );
     save_key(&store, &llm_api, "proxy-key").await;
-    assert_not_configured(&manager_with(configured(Some(llm_api)), store), OPENAI).await;
+    let manager = manager_with(configured(Some(llm_api)), store);
+    manager
+        .create_session(http_session(OPENAI))
+        .await
+        .expect("custom endpoint session");
+    let error = manager
+        .http_session_credential(OPENAI, &catalog_url(OPENAI))
+        .unwrap_err();
+    assert_eq!(error.code(), "auth.failed");
+}
+
+#[tokio::test]
+async fn custom_endpoint_receives_the_saved_key_and_a_real_factory_turn() {
+    use futures::StreamExt;
+    use maekon_core::models::ai_session::OutboundMessage;
+
+    let mut server = mockito::Server::new_async().await;
+    let endpoint = format!("{}/proxy/v1/responses", server.url());
+    let request = server.mock("POST", "/proxy/v1/responses")
+        .match_header("authorization", "Bearer proxy-key")
+        .with_header("content-type", "text/event-stream")
+        .with_body(concat!(
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"custom reply\"}\n\n",
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"
+        ))
+        .expect(1).create_async().await;
+    let store = Arc::new(MemorySecrets::default());
+    let llm_api = settings_llm_api(OPENAI, endpoint);
+    save_key(&store, &llm_api, "proxy-key").await;
+    let manager = manager_with(configured(Some(llm_api)), store);
+    // Refuse another surface before opening the valid one.
+    assert_not_configured(&manager, GROQ).await;
+    let session = manager
+        .create_session(http_session(OPENAI))
+        .await
+        .expect("custom session");
+    let message = SessionMessage {
+        screen_derived: false,
+        role: MessageRole::User,
+        content: "synthetic turn".into(),
+        attachments: vec![],
+        tools: None,
+        context: None,
+        response_format: None,
+    };
+    let mut stream = session
+        .send_message(&message)
+        .await
+        .expect("local synthetic handshake");
+    let mut text = String::new();
+    let mut completed = false;
+    while let Some(event) = stream.next().await {
+        match event.expect("synthetic stream") {
+            OutboundMessage::Text { content, .. } => text.push_str(&content),
+            OutboundMessage::Result { done: true, .. } => completed = true,
+            _ => {}
+        }
+    }
+    assert_eq!(text, "custom reply");
+    assert!(completed);
+    request.assert_async().await;
+}
+
+#[tokio::test]
+async fn custom_endpoint_redirect_cannot_forward_the_key_to_another_host() {
+    let mut origin = mockito::Server::new_async().await;
+    let mut other = mockito::Server::new_async().await;
+    let forbidden = other
+        .mock("POST", mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let redirected = origin
+        .mock("POST", "/v1/responses")
+        .match_header("authorization", "Bearer proxy-key")
+        .with_status(307)
+        .with_header("location", &format!("{}/stolen", other.url()))
+        .expect(1)
+        .create_async()
+        .await;
+    let store = Arc::new(MemorySecrets::default());
+    let llm_api = settings_llm_api(OPENAI, format!("{}/v1/responses", origin.url()));
+    save_key(&store, &llm_api, "proxy-key").await;
+    let manager = manager_with(configured(Some(llm_api)), store);
+    let session = manager
+        .create_session(http_session(OPENAI))
+        .await
+        .expect("custom session");
+    let message = SessionMessage {
+        screen_derived: false,
+        role: MessageRole::User,
+        content: "synthetic turn".into(),
+        attachments: vec![],
+        tools: None,
+        context: None,
+        response_format: None,
+    };
+    let Err(error) = session.send_message(&message).await else {
+        panic!("redirect must fail");
+    };
+    assert_eq!(error.code(), "network.generic");
+    redirected.assert_async().await;
+    forbidden.assert_async().await;
 }
 
 /// An env-backed binding has no stored location; it resolves through the

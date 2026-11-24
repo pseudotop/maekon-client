@@ -1920,7 +1920,7 @@ fn crt_prv_ipc_035_command_module_enumeration_matches_contract_coverage() {
 fn crt_prv_ipc_031_tauri_origin_confusion_patch_guard() {
     let patch_path = repo_dir()
         .join("patches")
-        .join("tauri-2.11.2")
+        .join("tauri-2.12.4")
         .join("src")
         .join("webview")
         .join("mod.rs");

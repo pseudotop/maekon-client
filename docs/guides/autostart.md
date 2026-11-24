@@ -65,8 +65,10 @@ On Linux, Maekon first checks whether `systemctl --user` is available and prefer
 >
 > **This is not the supported-distribution floor.** The systemd requirement
 > answers whether autostart works, not whether the release installs. The shipped
-> `.deb` is built on `ubuntu-latest` and its own metadata requires
-> **Ubuntu 24.04 or newer** (#11246):
+> `.deb` is built on `ubuntu-24.04` and its own metadata requires
+> **Ubuntu 24.04 or newer** (#11246). The release workflow pins that image
+> because `ubuntu-latest` now resolves to Ubuntu 26.04, which would raise
+> this floor:
 >
 > ```
 > Depends: libasound2t64 (>= 1.1.0), libc6 (>= 2.39), ..., libglib2.0-0t64

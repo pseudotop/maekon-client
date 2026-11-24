@@ -103,26 +103,28 @@ impl JwtVerifier {
             .duration_since(UNIX_EPOCH)
             .map_err(|_| JwtVerifyError::SystemTimeBeforeEpoch)?
             .as_secs();
-        if data.claims.iat + MAX_IAT_AGE_SECS < now {
-            return Err(JwtVerifyError::IatTooOld {
-                iat_age_secs: now.saturating_sub(data.claims.iat),
-            });
-        }
-        // Custom check: reject iat in the future beyond clock-skew leeway.
-        // jsonwebtoken does not enforce forward-skew on iat; this closes the
-        // clock-skew attack window (attacker minting tokens with a future iat
-        // to extend the effective token lifetime silently).
-        if data.claims.iat > now + CLOCK_SKEW_LEEWAY_SECS {
-            return Err(JwtVerifyError::IatInFuture {
-                drift_secs: data.claims.iat.saturating_sub(now),
-            });
-        }
+        validate_iat(data.claims.iat, now)?;
         Ok(data.claims)
     }
 
     pub fn algorithm(&self) -> Algorithm {
         self.algorithm
     }
+}
+
+fn validate_iat(iat: u64, now: u64) -> Result<(), JwtVerifyError> {
+    // Subtract in each direction: adding a limit to untrusted iat can overflow.
+    let iat_age_secs = now.saturating_sub(iat);
+    if iat_age_secs > MAX_IAT_AGE_SECS {
+        return Err(JwtVerifyError::IatTooOld { iat_age_secs });
+    }
+    // jsonwebtoken does not enforce forward skew on iat. Keep the same leeway
+    // so a future timestamp cannot silently extend the effective token lifetime.
+    let drift_secs = iat.saturating_sub(now);
+    if drift_secs > CLOCK_SKEW_LEEWAY_SECS {
+        return Err(JwtVerifyError::IatInFuture { drift_secs });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -227,7 +229,8 @@ pub(crate) mod tests {
     #[test]
     fn verify_rejects_hs256_when_rs256_configured() {
         let (_, pub_pem) = rsa_keypair_pem();
-        let enc = EncodingKey::from_secret(b"secret");
+        let enc = EncodingKey::from_base64_secret(&STANDARD.encode(b"secret"))
+            .expect("decode the HMAC rejection fixture key");
         let claims = base_claims(now(), now() + 3600);
         let token = encode(&Header::new(Algorithm::HS256), &claims, &enc).unwrap();
         let verifier =
@@ -357,5 +360,69 @@ pub(crate) mod tests {
             "agent-1",
         );
         assert!(matches!(result, Err(JwtVerifyError::PubKeyParse(_))));
+    }
+
+    #[test]
+    fn iat_accepts_inclusive_age_and_skew_boundaries() {
+        let now = MAX_IAT_AGE_SECS * 2;
+        for (iat, at) in [
+            (now - MAX_IAT_AGE_SECS, now),
+            (now, now),
+            (now + CLOCK_SKEW_LEEWAY_SECS, now),
+            (0, 0),
+            (u64::MAX, u64::MAX),
+            (u64::MAX - MAX_IAT_AGE_SECS, u64::MAX),
+            (u64::MAX, u64::MAX - CLOCK_SKEW_LEEWAY_SECS),
+        ] {
+            validate_iat(iat, at).expect("inclusive iat boundary must be accepted");
+        }
+    }
+
+    #[test]
+    fn iat_rejects_age_beyond_limit_without_overflow() {
+        for (iat, now, expected_age) in [(0, MAX_IAT_AGE_SECS + 1, 86_401), (0, u64::MAX, u64::MAX)]
+        {
+            assert!(matches!(
+                validate_iat(iat, now),
+                Err(JwtVerifyError::IatTooOld { iat_age_secs }) if iat_age_secs == expected_age
+            ));
+        }
+    }
+
+    #[test]
+    fn iat_rejects_future_beyond_leeway_without_overflow() {
+        for (iat, now, expected_drift) in
+            [(CLOCK_SKEW_LEEWAY_SECS + 1, 0, 61), (u64::MAX, 0, u64::MAX)]
+        {
+            assert!(matches!(
+                validate_iat(iat, now),
+                Err(JwtVerifyError::IatInFuture { drift_secs }) if drift_secs == expected_drift
+            ));
+        }
+    }
+
+    #[test]
+    fn verify_rejects_signed_extreme_iat_claims() {
+        let (priv_pem, pub_pem) = rsa_keypair_pem();
+        let enc = EncodingKey::from_rsa_pem(&priv_pem).unwrap();
+        let verifier =
+            JwtVerifier::new(JwtAlgorithm::Rs256, &pub_pem, "central-auth", "agent-1").unwrap();
+        for iat in [0, u64::MAX] {
+            let token = encode(
+                &Header::new(Algorithm::RS256),
+                &base_claims(iat, now() + 3600),
+                &enc,
+            )
+            .unwrap();
+            match verifier.verify(&token).unwrap_err() {
+                JwtVerifyError::IatTooOld { iat_age_secs } if iat == 0 => {
+                    assert!(iat_age_secs > MAX_IAT_AGE_SECS);
+                }
+                JwtVerifyError::IatInFuture { drift_secs } if iat == u64::MAX => {
+                    assert!(drift_secs > CLOCK_SKEW_LEEWAY_SECS);
+                }
+                other => panic!("unexpected extreme iat rejection: {other:?}"),
+            }
+        }
     }
 }

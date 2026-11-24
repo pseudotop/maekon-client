@@ -29,149 +29,54 @@ private = { ignore = true }
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
-# "workspace" scope — guard our own (workspace) crates only; skip transitive
-# upstream Tauri/Wry advisories we cannot resolve directly.
-# E31 removed the previous webkit2gtk/glib 0.18 advisory exception path. Any future
-# unsound advisory must be triaged from current `cargo audit` / `cargo deny` output,
-# not from the retired RUSTSEC-2024-0429 suppression.
-# Review-by: 2026-12-31 — re-evaluate upstream resolution for all advisory policy.
-# Re-evaluated 2026-10-02 (#12778): `cargo deny check advisories` reports
-# "advisories ok". Without the two quick-xml ignores (RUSTSEC-2026-0194/0195) it
-# fails with 6 findings each, so both stay. The lockfile now carries quick-xml
-# 0.30.0, 0.38.4 and 0.39.4 (vulnerable) and 0.42.0 (fixed).
-# F-SC-C41-05: deny.toml 의 5개 Review-by 약속은 config.toml(cargo-vet) 의 분산(stagger)
-# 창(2026-10-01..2026-12-31)에 맞춰 5개 서로 다른 날짜로 분산했다(이전: 전부 2026-09-01 단일
-# cliff). 이 advisories 검토는 분산 스케줄의 첫 버킷(2026-10-01)에 배정한다.
-# 추적 격차 해소(#6443 F20): verify_exemption_expiry.py 가 이제 --deny-file 옵션으로
-# deny.toml 주석의 Review-by: 날짜를 스캔하며, .github/workflows/cargo-supply-chain.yml 이
-# `--deny-file clients/maekon-client/deny.toml` 를 전달한다. 따라서 이 5개 Review-by 날짜는
-# PR 게이트에서 실제로 검사된다 — 이전의 "config.toml 만 스캔 / 어떤 게이트도 검사하지 않음
-# / needs-design" 주석은 stale 였다.
-unmaintained = "workspace"
+# Every crate in the graph is checked: vulnerabilities (always), unmaintained
+# and unsound advisories, and yanked releases (#13705). This replaces the
+# former "workspace" scope, which skipped transitive crates. The former review
+# dates 2026-12-31 (advisory policy), 2027-01-16 (unsound policy) and
+# 2027-02-16 (informational advisories) are satisfied by activation, not
+# renewal.
+# Positive control: on the lock before #13631 (main 9f73d063) the "workspace"
+# scope passed, although that lock carried RUSTSEC-2026-0202 (cxx) and
+# RUSTSEC-2026-0221 (event-listener); the "all" scope reports both.
+# Measured on main 76e0c70634 with cargo-deny 0.19.7 and advisory-db 309392b1
+# (2026-11-06): only the four unmaintained advisories ignored below match, and
+# no unsound advisory does.
+# When a new advisory fails this check, update to a fixed release if one
+# exists. Otherwise add an exact `ignore` entry whose reason names the path and
+# the upstream change that removes it, instead of a date.
+# `unused-ignored-advisory = "deny"` fails the check once an entry stops
+# matching, so each entry goes as soon as upstream resolves it and cannot hide
+# a later reintroduction.
+# Vulnerability ignores are mirrored in .cargo/audit.toml. Unmaintained and
+# unsound ignores are not: cargo audit reports those as non-failing warnings.
+# What this check does not see (mutation test on main 9cbed721, 2026-11-09):
+# path crates from [patch.crates-io] are skipped for advisories; advisories
+# published only as GHSA are not read (block-buffer 0.12.0 passed with
+# GHSA-qwgh-2vcv-g2f7); and lock entries outside this graph, such as quinn and
+# quinn-proto on reqwest's inactive http3 path, are never checked (quinn-proto
+# 0.11.15 passed with RUSTSEC-2026-0338..0342). The OSV step in
+# cargo-supply-chain.yml (scripts/ci/check_cargo_lock_osv.py) checks every
+# Cargo.lock entry and sees all three; an advisory only that step can see is
+# accepted in osv-ignore.toml, not here.
+# Earlier rationale and re-evaluations (#5431, #12778, #13038, #13114, #13631)
+# are in this file's git history.
+# RUSTSEC-2026-0459 (#13722) is the only vulnerability ignored below. Updating
+# libsqlite3-sys to 0.39.0 or 0.39.1 would clear this check and the OSV step
+# without fixing Maekon's build: their bundled-sqlcipher still compiles SQLite
+# 3.53.4 (sqlcipher-src =419.0.6), while the advisory's version range treats
+# them as fixed. The sqlcipher-src entry in [bans] rejects that update. Take
+# the libsqlite3-sys release whose bundled SQLCipher is on SQLite >= 3.54.0
+# instead, and delete the ignore entry in the same change.
+unmaintained = "all"
+unsound = "all"
 yanked = "deny"
-# F-SC-C31-01: `unsound` is intentionally left at the cargo-deny default ("warn")
-# rather than "deny" or "workspace". Rationale:
-#
-# 1. DETECTION COVERAGE: "warn" surfaces ALL unsound advisories in the dep tree,
-#    including transitive dependencies we cannot directly patch. Raising to "deny"
-#    would block CI on advisories in Tauri/WebKit/wry that we do not control and
-#    cannot resolve without waiting for upstream releases.
-#
-# 2. TRIAGE PROCESS: Any new unsound advisory that appears in `cargo deny check`
-#    output MUST be triaged within one sprint:
-#    a. If the crate is a direct dependency and a patched version exists → upgrade.
-#    b. If transitive and unresolvable → open OOS-TBD issue with `actor:pseudotop`
-#       label and reference the RUSTSEC advisory ID.
-#    c. Document the triage decision in this file as an inline comment on the entry.
-#
-# 3. CYCLE 30 REFERENCE: PR #3886 removed the previous `unsound = "workspace"` line
-#    during a deny.toml cleanup pass. That removal was correct because "workspace"
-#    only guards first-party crates — it does NOT catch transitive upstream unsound
-#    advisories, which is the primary risk surface here.
-#    E31 removed the prior glib 0.18 / webkit2gtk path from the active lockfile.
-#    Governance for future transitive unsound advisories remains:
-#    unsound="warn" + sprint triage.
-#
-# 4. REVIEW SCHEDULE: Re-evaluate this policy on 2026-10-16 (F-SC-C41-05 분산 스케줄;
-#    이전 2026-09-01 단일 cliff 에서 분산). If the number of outstanding unsound
-#    advisories reaches zero, consider tightening to "workspace".
-#
-# Review-by: 2026-10-16 — re-evaluate any future entries for upstream
-# resolution status. Replace inline ignores with fixes when possible.
-# F-SC-C41-05: unsound 정책 검토 — 분산 스케줄(2026-10-01..2026-12-31) 두 번째 버킷.
-#
-# F-SC-C37-03: RUSTSEC-2026-0097 ignore entry removed. OOS #4114 was closed
-# (2026-05-28). Governance transferred to `unsound = "warn"` + cargo-audit
-# warning channel. The build-only exposure (phf_codegen 0.8 -> selectors -> rand 0.7.3)
-# is documented in supply-chain/config.toml exemption notes.
-#
-# F-SC-C38-02 / #5431: transitive informational advisory triage.
-#
-# Current `cargo audit` baseline after E31 and #5431:
-#   vulnerabilities: 0
-#   informational warnings: 8
-#
-# #5431 resolved two avoidable warning sources:
-#   - `number_prefix` removed by moving fastembed 5.13.2 -> 5.16.0, which moves
-#     hf-hub 0.4.3 -> 0.5.0 and indicatif 0.17.11 -> 0.18.4.
-#   - `rav1e` / AVIF encoder surface removed by making `image` features explicit
-#     and disabling fastembed image-model defaults; Maekon only needs PNG/JPEG
-#     image decoding plus PNG/WebP encoding.
-#
-# Remaining warnings are tracked by #5431 and are upstream-bound as of
-# 2026-06-08:
-#
-# (A) Tauri / tauri-utils 2.9.2 transitive (latest published tauri-utils is
-#     still 2.9.2):
-#   RUSTSEC-2025-0057  fxhash            selectors -> kuchikiki -> tauri-utils
-#   RUSTSEC-2025-0081  unic-char-property urlpattern -> tauri-utils
-#   RUSTSEC-2025-0075  unic-char-range    urlpattern -> tauri-utils
-#   RUSTSEC-2025-0080  unic-common        urlpattern -> tauri-utils
-#   RUSTSEC-2025-0100  unic-ucd-ident     urlpattern -> tauri-utils
-#   RUSTSEC-2025-0098  unic-ucd-version   urlpattern -> tauri-utils
-#   RUSTSEC-2026-0097  rand 0.7.3         phf_codegen/selectors build path
-#
-# (B) fastembed/tokenizers transitive:
-#   RUSTSEC-2024-0436  paste             tokenizers 0.22.2 -> fastembed 5.16.0
-#     tokenizers 0.23.1 exists, but fastembed 5.16.0 requires ^0.22.2, so forcing
-#     it would be a semver override rather than a normal lockfile update.
-#
-# (C) unsound (NOT unmaintained) — surfaced by cargo-audit on the 2nd-pass
-#     maekon-client audit (2026-06-25), governed by `unsound = "warn"` above; no
-#     first-party code change is reachable (we never call memmap2 directly):
-#   RUSTSEC-2026-0186  memmap2            RESOLVED 2026-07-11: bumped 0.9.10 ->
-#                                        0.9.11 (the fixed release) via
-#                                        `cargo update -p memmap2 --precise 0.9.11`.
-#     Was reachable only transitively through xcap 0.9.6 (libwayshot-xcap, Linux
-#     screen capture) + xkbcommon -> enigo 0.6 (Linux input); never called from
-#     first-party code. memmap2 0.9.11 closes the unsound aliasing advisory, so
-#     this warning should no longer surface in `cargo audit` / `cargo deny`. Entry
-#     retained for audit trail; remove once the informational-warning baseline in
-#     this file is re-counted.
-#     (rand 0.7.3 / RUSTSEC-2026-0097 is the build-time-only path already listed
-#     under (A) above.)
-#   RUSTSEC-2026-0202  cxx 1.0.194       usearch 2.25.3 -> maekon-analysis (vector
-#                                        HNSW index; only under --all-features).
-#     New unsound advisory (published 2026-07-05), triaged per F-SC-C31-01: the
-#     `let_cxx_string!` macro can read an uninitialized value on a C++ exception-
-#     safety violation. Not first-party reachable — Maekon does not use that macro
-#     directly; the cxx bridge is generated by usearch's C++ FFI. cxx is absent from
-#     the default resolved tree (`cargo tree -i cxx` finds it only with all-features),
-#     so build reachability is narrow. Governed by unsound = "warn" (non-failing) +
-#     the cargo-audit warning channel. No fixed cxx release yet; track usearch for a
-#     cxx bump. Not added to ignore[] (unsound is non-failing in both tools).
-#
-# RETIRED by E31: gtk-rs GTK3 binding advisories (RUSTSEC-2024-0411..0420) and
-# RUSTSEC-2024-0429 glib are no longer in the active lockfile after the
-# GTK4/WebKitGTK 6 migration. macOS/Windows builds never carried the old GTK3
-# Linux cluster.
-#
-# Review-by: 2026-11-16 — 상류 Tauri/urlpattern/tokenizers 해소 상태 재평가.
-# F-SC-C41-05: 분산 스케줄 네 번째 버킷.
-#
-# 정책 의도: ignore[] 는 비워 둔다. `unmaintained = "workspace"` 하에서 transitive
-#   advisory 는 surface 되지 않으므로 ignore 항목은 무효이며, 비워야 의도가 명확하다.
-#   신규 workspace(첫 party) crate 의 unmaintained 만 CI 를 차단한다.
+unused-ignored-advisory = "deny"
 ignore = [
-  # RUSTSEC-2026-0194 / -0195: quick-xml DoS-class advisories (quadratic run
-  # time on duplicate attributes; unbounded namespace-declaration allocation).
-  # These are the ONLY vulnerability-class (failing) advisories in the tree; all
-  # four in-tree quick-xml versions are transitive, platform-split, and upstream-
-  # bound (no direct dep, no semver-compatible update — the fix quick-xml >= 0.41.0
-  # is a breaking major for each upstream that pins a 0.x range):
-  #   quick-xml 0.38.4  plist 1.8.0 -> tauri 2.11.2   (macOS app-bundle plist)
-  #   quick-xml 0.37.5  tauri-winrt-notification       (Windows notifications)
-  #   quick-xml 0.30.0  xcb build-dependency           (Linux X11)
-  #   quick-xml 0.39.2  wayland-scanner (proc-macro)   (Linux Wayland build)
-  # Same class as the tracked tauri-transitive advisories above. Practical risk
-  # is low: these parse trusted OS/app metadata and build-time schemas, not
-  # attacker-controlled XML. Revisit — and prefer a real fix — when tauri/plist/
-  # tauri-winrt-notification/xcb/wayland ship quick-xml >= 0.41.
-  # F-SC-04: mirrored in .cargo/audit.toml [advisories].ignore so cargo-audit and
-  # cargo-deny accept the same IDs; keep both lists in sync in the same commit.
-  # Review-by: 2026-11-16 — re-evaluate upstream quick-xml >= 0.41 availability.
-  "RUSTSEC-2026-0194",
-  "RUSTSEC-2026-0195",
+  { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15, a build-time proc-macro, via tokenizers 0.22.2 from fastembed 5.17.3. Every stable tokenizers release (0.23.2 included) still depends on paste; only the 1.0.0 release candidates drop it." },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant 5.15.0 via zbus 5.19. zbus 6 absorbed it, but atspi 0.30, notify-rust 4.18, tauri-plugin-notification 2.8, tauri-plugin-single-instance 2.5 and xcap 0.9 have no zbus 6 release." },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names 4.3.4 via zbus 5.19; the same zbus 6 blocker as RUSTSEC-2026-0370." },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5.15.0 via zbus 5.19; the same zbus 6 blocker as RUSTSEC-2026-0370." },
+  { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.38.2 via rusqlite 0.40.2 (maekon-storage). bundled-sqlcipher-vendored-openssl compiles SQLCipher 4.14.0 on SQLite 3.51.3. libsqlite3-sys 0.39.0 and 0.39.1 do not fix this build: their bundled-sqlcipher uses sqlcipher-src =419.0.6 (SQLite 3.53.4). Remove with the libsqlite3-sys release that moves bundled-sqlcipher to sqlcipher-src 420.0.0 or later (SQLCipher 4.20.0 on SQLite 3.54.1, rusqlite/rusqlite#1932)." },
 ]
 
 [bans]
@@ -182,14 +87,38 @@ ignore = [
 # splits are triaged/reduced.
 multiple-versions = "warn"
 wildcards = "allow"
-# F-SC-C35-02 / OOS-TBD #4044: bans deny= list activation pending.
-# Candidates (not yet added — Tauri/WebKit transitive conflicts unresolved):
-#   - openssl  → prefer rustls; blocked by Tauri/WebKit transitive dep
-#   - md5/sha1 → cryptographic deprecation; safe to add once Tauri 2.x audit clears
-# When adding entries, use the format:
-#   deny = [{ name = "openssl", version = "*", wrappers = [] }]
-# Review-by: 2026-12-01  # F-SC-C41-05: 분산 스케줄 다섯 번째 버킷 (이전 2026-09-01 단일 cliff;
-# advisory/unsound 정책 검토와 동일 날짜였으나 분산을 위해 별도 버킷으로 이동)
+# F-SC-C35-02: deny list activated at its 2026-12-01 review (#13698).
+# Each entry bans the crate except as a direct dependency of its wrappers.
+# The wrappers are exactly the crate's direct dependents in the graph this file
+# checks (all features, all targets, dev included), measured with
+# `cargo tree -i` on main f99e05b079.
+# - md5 / md-5: not in the graph, so no wrapper.
+# - sha1: only where a protocol or format requires SHA-1. tungstenite computes
+#   the RFC 6455 Sec-WebSocket-Accept value; zip's default `aes-crypto` feature
+#   derives WinZip AES keys with PBKDF2-HMAC-SHA1.
+# - openssl / openssl-sys: native-tls links OpenSSL on Linux. The workspace
+#   picks native-tls for reqwest and tokio-tungstenite to avoid ring
+#   (Cargo.toml), and fastembed's ort/hf-hub download features use it too.
+#   libsqlite3-sys builds vendored OpenSSL libcrypto for SQLCipher
+#   (`bundled-sqlcipher-vendored-openssl`, #9884). The old candidate note
+#   ("prefer rustls", blocked by Tauri/WebKit) did not match these edges.
+# - sqlcipher-src: a version floor, not a wrapper ban (#13722). Releases before
+#   420.0.0 bundle SQLite older than 3.54.0 (RUSTSEC-2026-0459), but
+#   libsqlite3-sys 0.39.0 and 0.39.1 pull 419.0.6 while the advisory treats them
+#   as fixed. `name:<req>` is a version requirement. `name@<version>` takes one
+#   exact version, and `sqlcipher-src@<420.0.0` silently matched nothing
+#   (cargo-deny 0.19.7, measured on a lock with 419.0.6).
+# A new direct dependent fails `cargo deny check bans` with error[banned]; a
+# wrapper that stops being a parent shows up as warning[unused-wrapper].
+# The former 2026-12-01 review date is satisfied by activation, not renewal.
+deny = [
+  { crate = "md5", reason = "MD5 is broken; no crate in the graph needs it." },
+  { crate = "md-5", reason = "MD5 is broken; no crate in the graph needs it." },
+  { crate = "sha1", wrappers = ["tungstenite", "zip"], reason = "SHA-1 only where a protocol or file format requires it." },
+  { crate = "openssl", wrappers = ["native-tls"], reason = "OpenSSL only through native-tls." },
+  { crate = "openssl-sys", wrappers = ["libsqlite3-sys", "native-tls", "openssl"], reason = "OpenSSL only through native-tls and SQLCipher." },
+  { crate = "sqlcipher-src:<420.0.0", reason = "RUSTSEC-2026-0459: these releases bundle SQLite older than 3.54.0, which the advisory's libsqlite3-sys version range does not flag." },
+]
 
 [sources]
 unknown-registry = "deny"
