@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { fetchCoachingHistory, fetchGoalProgress, fetchHabitStreaks, updateRegimeGoals } from '../api/coaching'
-import { addToast } from './useToast'
+import { useErrorDisplay } from '../i18n/errorDisplay'
+import { addErrorToast, addToast } from './useToast'
 
 export function useCoachingHistory(limit = 50, offset = 0) {
   return useQuery({
@@ -28,6 +30,8 @@ export function useHabitStreaks(days = 7) {
 
 export function useUpdateGoals() {
   const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
 
   return useMutation({
     mutationFn: (goals: Record<string, number>) => updateRegimeGoals(goals),
@@ -38,10 +42,10 @@ export function useUpdateGoals() {
       // reflects the just-added/removed goal instead of a stale goal list,
       // keeping the two surfaces (Coaching goals section and Settings) consistent.
       queryClient.invalidateQueries({ queryKey: ['settings'] })
-      addToast('success', 'Goals updated')
+      addToast('success', t('coaching.goalsUpdated'))
     },
-    onError: (err: Error) => {
-      addToast('error', err.message)
+    onError: (err: unknown) => {
+      addErrorToast(describeError(err), undefined, { cause: err })
     },
   })
 }

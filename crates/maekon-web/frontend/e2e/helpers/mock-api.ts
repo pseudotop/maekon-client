@@ -184,6 +184,39 @@ const fallbackSummary = {
   events_logged: 128,
 }
 
+// #13735: the Dashboard overview reads the rule-based day digest for its
+// one-line summary and key numbers. Without this fallback the request reaches
+// the preview server's /api proxy, which points back at the preview port, and
+// any spec that opens /overview logs a 500 console error.
+const fallbackDailyDigest = {
+  date: '2026-02-23',
+  insight: null,
+  timeline: [
+    {
+      segment_id: 'seg-1',
+      start_time: '2026-02-23T09:00:00Z',
+      end_time: '2026-02-23T10:10:00Z',
+      duration_mins: 70,
+      regime_label: 'Deep Work',
+      regime_color: '#14b8a6',
+      dominant_app: 'VS Code',
+      content_summary: [],
+    },
+  ],
+  statistics: {
+    deep_work_hours: 1.5,
+    communication_hours: 0.5,
+    meeting_hours: 0,
+    context_switches: 6,
+    longest_focus_mins: 70,
+    longest_focus_content: '',
+    regime_distribution: {},
+  },
+  generated_at: '2026-02-23T11:00:00Z',
+  digest_provenance: 'heuristic',
+  ai_narrative: { failure_reason: 'not_generated' },
+}
+
 const fallbackReport = {
   title: 'Fallback Report',
   from_date: '2026-02-17',
@@ -378,6 +411,7 @@ export async function mockDefaultApiFallbacks(page: Page): Promise<void> {
   await mockStaticJson(page, '**/api/update/status**', fallbackUpdateStatus)
   await mockStaticJson(page, '**/api/storage/stats**', fallbackStorageStats)
   await mockStaticJson(page, '**/api/stats/summary**', fallbackSummary)
+  await mockStaticJson(page, '**/api/dashboard/day**', fallbackDailyDigest)
   await mockStaticJson(page, '**/api/metrics/hourly**', [
     { hour: '2026-02-23T09:00:00Z', cpu_avg: 18, cpu_max: 26, memory_avg: 42, memory_max: 48, sample_count: 6 },
     { hour: '2026-02-23T10:00:00Z', cpu_avg: 22, cpu_max: 31, memory_avg: 47, memory_max: 53, sample_count: 6 },

@@ -40,7 +40,7 @@ pub(crate) fn new_backup_archive(includes: BackupIncludes) -> BackupArchive {
     BackupArchive {
         metadata: BackupMetadata {
             version: "1.0".to_string(),
-            created_at: Utc::now().to_rfc3339(),
+            created_at: super::current_metadata_timestamp(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             includes,
         },

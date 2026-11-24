@@ -79,7 +79,13 @@
     "less": "Show less",
     "lightbox": "Image lightbox",
     "navigate": "Navigate",
-    "previous": "Previous"
+    "previous": "Previous",
+    "duration": {
+      "seconds": "{{count}}秒",
+      "minutes": "{{count}}分钟",
+      "hours": "{{count}}小时",
+      "hoursMinutes": "{{hours}}小时{{minutes}}分钟"
+    }
   },
   "support": {
     "pageTitle": "支持与诊断",
@@ -149,10 +155,10 @@
     "audit": "审计日志",
     "policies": "执行策略",
     "playbooks": "剧本库",
-    "groupMonitor": "监控",
-    "groupInsights": "洞察",
-    "groupManage": "管理",
-    "groupSystem": "系统",
+    "groupMain": "菜单",
+    "sectionMore": "更多",
+    "sectionTools": "工具",
+    "sectionSystem": "系统",
     "tasks": "任务",
     "contextHome": "上下文主页",
     "assignmentEmailDraft": "分配邮件草稿",
@@ -200,20 +206,68 @@
     "exportDigest": "导出",
     "exportMarkdown": "下载为 Markdown",
     "todaySummary": {
-      "title": "Today at a Glance",
-      "activeTime": "Active Time",
-      "topApp": "Top App",
-      "nudges": "Nudges",
-      "regime": "Regime"
+      "title": "今日摘要",
+      "titleForDate": "{{date}}摘要",
+      "headline": {
+        "focus": "在 {{app}} 中用时最长，最长一次专注持续了 {{longestFocus}}。",
+        "app": "在 {{app}} 中用时最长。",
+        "activity": "正在记录你的活动。记录足够后，摘要会显示在这里。"
+      }
+    },
+    "nextActions": {
+      "title": "接下来",
+      "openAll": "查看全部任务",
+      "openTasks": "打开任务",
+      "emptyTitle": "还没有接下来要做的事",
+      "emptyDescription": "按屏幕顶部跟踪面板中的“找到下一步”。Maekon 会根据你正在做的工作建议下一步，你确认的任务会显示在这里。",
+      "desktopOnly": "任务可在桌面应用中查看。",
+      "loadError": "无法加载任务。",
+      "suggested": "建议",
+      "more": "还有 {{count}} 项"
+    },
+    "keyNumbers": {
+      "title": "关键数据",
+      "deepWork": "深度工作",
+      "contextSwitches": "切换次数",
+      "pendingAnalysis": "分析完成后显示",
+      "unavailable": "无法加载"
+    },
+    "firstRun": {
+      "guideSummary": "用一句话总结你的一天，无需连接 AI。",
+      "guideNextActions": "建议的下一步和你确认的任务会显示在这里。",
+      "guideKeyNumbers": "工作时会累计活动时间、深度工作和切换次数。",
+      "action": {
+        "reviewConsent": "查看采集同意",
+        "resumeCapture": "打开采集控制",
+        "checkStatus": "检查应用状态"
+      }
+    },
+    "noActivityForDate": {
+      "title": "没有记录的活动",
+      "description": "{{date}}没有采集到任何活动。请在上方的日期选择器中选择其他日期。"
+    },
+    "summaryError": {
+      "title": "无法加载活动",
+      "description": "本地活动服务没有响应。请稍后重试。"
+    },
+    "systemResources": {
+      "description": "查看过去 24 小时的 CPU 和内存使用情况、占用最多的进程、应用使用时间以及今日的采集数量。",
+      "open": "打开系统指标"
     }
   },
   "updates": {
     "title": "更新",
     "loading": "正在加载更新状态...",
     "live": "实时",
-    "polling": "轮询",
+    "polling": "定期检查",
     "fresh": "最新",
-    "stale": "过期",
+    "stale": "延迟",
+    "connectionBadge": "连接：{{state}}",
+    "connectionHint": "此面板接收更新状态的方式。实时会在状态变化时立即接收；实时数据流不可用时，会按固定间隔重新检查。",
+    "freshnessBadge": "信号：{{state}}",
+    "freshnessHint": "显示最近是否收到了最新的更新状态。显示延迟时，当前看到的信息可能已过时。",
+    "phaseBadge": "阶段：{{state}}",
+    "phaseHint": "显示更新目前处于检查、下载、安装中的哪个阶段。",
     "idle": "待机",
     "checking": "检查中",
     "pendingApproval": "等待审批",
@@ -228,9 +282,9 @@
     "actionFailed": "无法完成更新操作。请重试。",
     "technicalDetails": "技术详情",
     "lastUpdateUnknown": "上次更新信号：未知",
-    "lastUpdateAge": "上次更新信号：{{seconds}}秒前",
+    "lastUpdateAge": "上次更新信号：{{age}}前",
     "staleActionBlocked": "由于状态已过期，审批操作暂时被阻止。请点击「立即检查」刷新状态。",
-    "streamIssue": "实时更新流出现临时问题，已切换为轮询模式。",
+    "streamIssue": "实时更新流出现临时问题，已切换为定期检查。",
     "reconnecting": "正在重新连接实时更新流（第 {{count}} 次尝试）...",
     "streamRecovered": "实时更新流连接已恢复。状态更新将继续，且不会重复操作或通知。",
     "currentVersion": "当前版本",
@@ -279,12 +333,12 @@
     "rolledBackAt": "Restored at {{timestamp}}",
     "releaseDate": "Released {{date}}",
     "releaseDateUnknown": "Release date unavailable",
-    "releasedAgoMinutes": "released {{count}} minute ago",
-    "releasedAgoMinutes_plural": "released {{count}} minutes ago",
-    "releasedAgoHours": "released {{count}} hour ago",
-    "releasedAgoHours_plural": "released {{count}} hours ago",
-    "releasedAgoDays": "released {{count}} day ago",
-    "releasedAgoDays_plural": "released {{count}} days ago",
+    "releasedAgoMinutes_one": "{{count}} 分钟前发布",
+    "releasedAgoMinutes_other": "{{count}} 分钟前发布",
+    "releasedAgoHours_one": "{{count}} 小时前发布",
+    "releasedAgoHours_other": "{{count}} 小时前发布",
+    "releasedAgoDays_one": "{{count}} 天前发布",
+    "releasedAgoDays_other": "{{count}} 天前发布",
     "readyToInstallMsg": "下载完成，可以安装。",
     "installNow": "立即安装"
   },
@@ -353,6 +407,7 @@
     "filterSummary": "Showing {{shown}} of {{total}} frames",
     "tagSuggestions": "Tag suggestions",
     "noActivity": "这一天没有记录的活动",
+    "entryExpandLabel": "{{regime}} {{duration}} - 点击展开",
     "segments": {
       "title": "屏幕上的内容",
       "axis": "活动区间",
@@ -366,16 +421,16 @@
     "tabs": {
       "integrations": "集成",
       "general": "常规",
-      "privacy": "遥测",
+      "privacy": "捕获保护",
       "monitoring": "监控",
       "aiAutomation": "AI与自动化",
       "dataStorage": "数据与存储",
-      "coaching": "教练",
+      "coaching": "教练设置",
       "focusAuto": "专注自动",
-      "audio": "Audio",
-      "sync": "Sync",
-      "advanced": "Advanced",
-      "trackingSchedule": "Tracking Schedule"
+      "audio": "音频",
+      "sync": "同步",
+      "advanced": "高级",
+      "trackingSchedule": "追踪计划"
     },
     "guidance": {
       "aiAutomation": {
@@ -542,7 +597,7 @@
       }
     },
     "groupCore": "基本",
-    "groupAdvanced": "高级",
+    "groupAdvanced": "更多设置",
     "dataCollection": "数据采集",
     "enableCapture": "启用截图捕获",
     "idleThreshold": "空闲检测阈值（分钟）",
@@ -556,6 +611,11 @@
     "highUsageNotification": "高使用率通知（%）",
     "saved": "设置已保存。",
     "saveFailed": "设置保存失败",
+    "updateActionFailed": "无法发送更新请求。",
+    "permissionRequestFailed": "无法完成权限请求。",
+    "permissionOpenSystemSettingsFailed": "无法打开系统设置。",
+    "notifTestFailed": "无法发送测试通知。",
+    "tagActionFailed": "无法保存标签更改。",
     "unsavedChanges": "有未保存的更改",
     "unsavedChangesHint": "离开此页面前请先保存当前设置。",
     "revertChanges": "撤销更改",
@@ -1095,7 +1155,8 @@
         "confirmNote": "撤回会将此主张从摘要和后续建议中隐藏。记录会保留（不会删除），因此更改仍可审计。",
         "confirmButton": "撤回主张",
         "success": "主张已撤回",
-        "alreadyRetracted": "该主张已被撤回"
+        "alreadyRetracted": "该主张已被撤回",
+        "failed": "无法撤回该主张。"
       }
     },
     "aiUsage": {
@@ -1515,6 +1576,7 @@
     "actionSuccess": "推荐操作已执行。",
     "actionSuccessWithPolicy": "推荐操作已执行（策略：{{policy}}）。",
     "actionFailed": "推荐操作执行失败。",
+    "timelineLoadFailed": "无法加载时间线。",
     "typeTextLabel": "输入文本",
     "typeTextPlaceholder": "输入要键入的文本",
     "allowSensitiveInput": "在当前隐私策略下允许敏感文本输入",
@@ -1670,7 +1732,95 @@
     "intentHintFailed": "命令失败",
     "intentHintPlannedIntent": "计划的意图",
     "intentHintViewHistory": "在执行历史中查看",
-    "intentHintErrorCheckHistory": "请求可能已执行 — 请检查执行历史记录。"
+    "intentHintErrorCheckHistory": "请求可能已执行 — 请检查执行历史记录。",
+    "intentProvenance": {
+      "title": "执行观测结果",
+      "unknown": "此响应没有匹配的执行观测结果。",
+      "scope": "最近的观测结果可能在应用重启后丢失。",
+      "observe": "检查此次执行",
+      "lookupUnknown": "没有唯一匹配的观测结果。这并不代表操作未执行。",
+      "lookupFound": "已观测到匹配的执行。没有发送新操作。",
+      "replayWarning": "再次运行会启动新操作，可能与之前的操作重复。",
+      "identityUnavailable": "无法创建安全的提交 ID，因此未发送任何请求。",
+      "resultUnavailable": "无法读取执行响应。",
+      "requested": "请求的处理方式",
+      "planned": "观测到的规划方式",
+      "actionLabel": "操作结果",
+      "observationLabel": "观测状态",
+      "configurationOnlyRule": "初始配置仅提供基于规则的处理方式。未观测到失败的模型尝试。",
+      "attempt": "第 {{number}} 次尝试",
+      "skillContext": "请求技能：{{requested}} · 转发上下文：{{forwarded}} · 上下文类型：{{context}}",
+      "steps": "观测到的步骤",
+      "yes": "是",
+      "no": "否",
+      "unknownValue": "未知",
+      "provider": {
+        "local_model": "设备端模型",
+        "remote_model": "远程模型",
+        "rule": "规则",
+        "unknown": "未知"
+      },
+      "planning": {
+        "llm": "模型规划",
+        "rule": "规则规划",
+        "unsupported": "不支持的请求",
+        "denied": "规划被拒绝",
+        "error": "规划失败",
+        "unknown": "未知"
+      },
+      "action": {
+        "not_started": "未开始",
+        "denied": "被拒绝",
+        "completed": "已完成",
+        "failed": "失败",
+        "unknown": "未知"
+      },
+      "observation": {
+        "complete": "完整观测",
+        "partial": "部分观测",
+        "legacy_unknown": "旧版响应，结果未知"
+      },
+      "attemptOutcome": {
+        "succeeded": "成功",
+        "denied": "被拒绝",
+        "timeout": "超时",
+        "invalid_output": "输出无效",
+        "unavailable": "不可用",
+        "error": "错误",
+        "unknown": "未知"
+      },
+      "reason": {
+        "denied": "执行许可检查拒绝了请求",
+        "timeout": "提供方响应超时",
+        "unavailable": "提供方不可用",
+        "invalid_output": "提供方输出无效",
+        "provider_error": "提供方错误",
+        "confidence_rejected": "规划置信度不足",
+        "unsupported_action": "不支持此操作",
+        "action_failed": "操作失败",
+        "observation_unavailable": "观测结果不完整或不可用",
+        "legacy_unknown": "旧版响应不含执行观测结果"
+      },
+      "skills": {
+        "used": "已使用技能",
+        "not_used": "未使用技能",
+        "unsupported": "此处理方式不支持技能",
+        "unknown": "未观测到技能使用情况"
+      },
+      "context": {
+        "none": "无",
+        "catalog": "目录",
+        "activated": "已激活的技能"
+      },
+      "stage": {
+        "started": "观测到请求",
+        "attempt_started": "提供方尝试开始",
+        "attempt_finished": "提供方尝试结束",
+        "planning_finished": "规划结束",
+        "action_started": "操作开始",
+        "action_finished": "操作结束"
+      }
+    }
   },
   "guiPicker": {
     "title": "指定并确认操作",
@@ -1806,6 +1956,7 @@
     "modelDiscoveryNoModels": "当前提供商配置未返回任何模型。",
     "modelDiscoveryMissingConfig": "请先配置远程端点、提供商和 API 密钥。",
     "modelDiscoveryMissingKey": "请输入完整的 API 密钥以发现可用模型。",
+    "modelDiscoveryFailed": "无法加载模型列表。",
     "sandboxProfilePermissive": "宽松",
     "sandboxProfileStandard": "标准",
     "sandboxProfileStrict": "严格",
@@ -1884,7 +2035,7 @@
       "result": {
         "verified": "连接已验证。现在可以使用 API 密钥聊天。",
         "notConfigured": "没有可验证的 API 密钥聊天提供商。请选择提供商并保存其 API 密钥，然后重试。",
-        "consentRequired": "请在隐私 → 同意中启用“AI 文本处理和外部提供商”，然后重试。",
+        "consentRequired": "请在隐私 → 数据管理中启用“AI 文本处理和外部提供商”，然后重试。",
         "restartRequired": "已保存的提供商更改将在 Maekon 重启后生效。请重启 Maekon，然后重新验证。",
         "budgetExhausted": "今日的 AI 令牌预算已用完。请在预算重置后重试。",
         "providerError": "提供商未能完成回复。请检查 API 密钥和模型，然后重试。",
@@ -1907,6 +2058,7 @@
     "interruptionList": "中断事件",
     "loadMoreRemaining_one": "更多（剩余 {{count}} 项）",
     "loadMoreRemaining_other": "更多（剩余 {{count}} 项）",
+    "metricsLoadFailed": "无法加载专注指标。",
     "active": "进行中",
     "completed": "已完成",
     "suggestions": {
@@ -2141,6 +2293,11 @@
     },
     "boundaryTitle": "出现了问题",
     "boundaryRetry": "重试",
+    "generic": "出现了问题。请重试。",
+    "tryAgainLater": "请稍后重试。",
+    "supportDetails": "供支持人员参考的详细信息",
+    "copySupportDetails": "复制详细信息",
+    "supportDetailsCopied": "已复制",
     "serverOffline": "服务器离线",
     "serverOfflineDesc": "无法连接到 Maekon 代理。请确认代理正在运行。",
     "retryConnection": "重试连接",
@@ -2172,13 +2329,13 @@
     "byTag": "按标签",
     "byImportance": "按重要度",
     "activityReport": "活动报告",
-    "focusReport": "专注度报告",
+    "focusReport": "生产力报告",
     "exportData": "导出数据",
     "currentScore": "当前评分",
     "weeklyTrend": "周趋势",
     "focusSessions": "专注会话",
     "interruptions": "中断记录",
-    "timeline": "时间线",
+    "playback": "播放",
     "eventLog": "事件日志",
     "policies": "运行时状态",
     "commands": "命令",
@@ -2194,7 +2351,7 @@
     "dataControls": "数据管理",
     "consent": "授权同意",
     "dangerZone": "危险区",
-    "dataExport": "数据导出",
+    "dataExport": "备份与导出",
     "recentSearches": "最近搜索",
     "browseTags": "浏览标签",
     "segments": "段",
@@ -2237,6 +2394,7 @@
   "aiReadiness": {
     "readyTitle": "AI 功能已就绪",
     "blockedTitle": "需要配置 AI",
+    "unknownReason": "此功能当前无法使用。",
     "capability": {
       "chatSubprocess": "AI 聊天 · 订阅 CLI",
       "chatHttpApi": "AI 聊天 · 提供商 API",
@@ -2253,6 +2411,7 @@
       "consent_required": "尚未授予所需的隐私同意。",
       "access_mode_mismatch": "所选 AI 访问模式与此提供商路径不匹配。",
       "endpoint_or_profile_required": "请选择提供商 endpoint 或 profile。",
+      "http_chat_settings_resave_required": "这些 AI 设置由旧版本保存。请在 AI 设置中重新选择提供商并保存。",
       "provider_not_detected": "未检测到所选提供商。",
       "provider_auth_required": "需要进行提供商身份验证。",
       "provider_auth_unverified": "尚未验证提供商身份验证。",
@@ -2433,6 +2592,7 @@
     "undo": "撤销",
     "noOverrides": "此范围内没有覆盖",
     "noSegments": "此日期范围内未找到段",
+    "noSegmentsDescription": "请尝试选择其他日期范围来查找活动片段。",
     "overridden": "已覆盖",
     "personalTime": "个人时间",
     "untilRemoved": "直到移除（不会自动过期）",
@@ -2440,6 +2600,31 @@
     "effectReassignRegime": "后续重新聚类会对该区段使用所选模式。",
     "effectPersonalTime": "后续分析将此范围视为个人时间。",
     "effectUnknown": "应用于后续重新校准。"
+  },
+  "regimeOptions": {
+    "deepWork": "深度工作",
+    "communication": "沟通",
+    "meeting": "会议",
+    "break": "休息",
+    "admin": "行政事务"
+  },
+  "workTypes": {
+    "ACTIVE_CODING": "编码",
+    "CODE_REVIEW": "代码审查",
+    "WRITING": "写作",
+    "READING": "阅读",
+    "DESIGNING": "设计",
+    "FORM_FILLING": "填写表单",
+    "BROWSING": "浏览网页",
+    "PASSIVE_MEETING": "旁听会议",
+    "ACTIVE_MEETING": "参与会议",
+    "NAVIGATION": "界面导航",
+    "TERMINAL_COMMANDS": "终端命令",
+    "LOG_READING": "查看日志",
+    "DOCUMENT_WRITING": "撰写文档",
+    "DOCUMENT_READING": "阅读文档",
+    "CHAT_COMPOSING": "撰写消息",
+    "UNKNOWN": "未知"
   },
   "coaching": {
     "title": "教练历史",
@@ -2531,19 +2716,20 @@
     "regimeLabelPlaceholder": "例如：深度编码"
   },
   "onboarding": {
-    "step3Search": "搜索你看过的一切",
-    "aiFeatures": {
-      "optInHint": "可选：准备分层记忆、嵌入、语义搜索和 AI 摘要设置。处理位置会按 AI 设置使用回环、订阅 CLI 或外部 API。仍需单独授予模式学习同意并重启。",
-      "enableButton": "准备 AI 功能",
-      "enabling": "正在启用…",
-      "prepared": "AI 配置已保存",
-      "preparedNote": "仅保存配置并不代表已就绪。请完成提供商和单独的模式学习同意要求，然后重启 Maekon。",
-      "error": "无法启用 AI 功能：{{error}}"
-    },
     "step1Title": "欢迎使用 Maekon",
-    "step1Desc": "Maekon 监控您的桌面活动，并提供智能建议以提高生产力。",
+    "step1Desc": "Maekon 会在这台电脑上记录你的工作，帮助你找回看过的内容，并回到之前在做的事情。",
+    "intro": {
+      "captureTitle": "工作时间线",
+      "captureDesc": "在这台设备上记录你使用的应用、窗口和屏幕上的文字。",
+      "resumeTitle": "回到之前的工作",
+      "resumeDesc": "可以回顾被打断前正在做的工作。连接 AI 后，Maekon 还会建议下一步。",
+      "searchTitle": "搜索看过的内容",
+      "searchDesc": "根据屏幕上出现过的文字，找回网页、文档或消息。",
+      "privacyNote": "在你同意之前不会记录任何内容。你可以随时在“隐私”页面关闭监控或删除记录。"
+    },
     "step2Title": "权限",
     "step2Desc": "Maekon 需要一些权限才能正常工作。",
+    "step2DescMac": "可靠捕获上下文需要辅助功能和屏幕录制权限。通知建议用于提醒和辅导，但不会阻止完成设置。",
     "step2DescWindows": "Windows 通常不需要单独授权，但 Maekon 仍依赖桌面访问、屏幕捕获和通知投递可用。",
     "step2DescLinux": "Linux 通常依赖会话服务而不是系统权限弹窗。请确认辅助功能、屏幕捕获和通知在当前桌面会话中可用。",
     "step2Accessibility": "辅助功能",
@@ -2553,19 +2739,6 @@
     "step2WindowsScreenCapture": "桌面捕获",
     "step2LinuxAccessibility": "AT-SPI 会话",
     "step2LinuxScreenCapture": "桌面捕获",
-    "step3Title": "功能",
-    "step3Desc": "以下是 Maekon 可以为您做的事情。",
-    "step3Capture": "实时上下文捕获",
-    "step3Analysis": "AI 驱动的分析",
-    "step3Suggestions": "智能建议",
-    "step4Title": "准备就绪",
-    "step4Desc": "一切就绪，现在开始使用 Maekon 吧。",
-    "step4Tip": "提示：随时按 {{shortcut}} 打开命令面板，快速跳转到任意页面。",
-    "next": "下一步",
-    "back": "返回",
-    "skip": "跳过",
-    "complete": "开始使用",
-    "step2DescMac": "可靠捕获上下文需要辅助功能和屏幕录制权限。通知建议用于提醒和辅导，但不会阻止完成设置。",
     "step2AccessibilityAction": "允许辅助功能访问",
     "step2ScreenCaptureAction": "允许屏幕录制",
     "step2PermissionEnabled": "已启用",
@@ -2580,54 +2753,93 @@
     "step2PermissionCheckFailed": "无法读取当前桌面权限状态。",
     "step2SystemSettingsOpenFailed": "无法打开 macOS 系统设置。",
     "step2NotificationRequestFailed": "无法请求通知权限。",
+    "consent": {
+      "title": "开启活动监控",
+      "description": "只有在你同意后，Maekon 才会记录你在这台电脑上的工作。记录只保存在这台设备上，你可以随时在“隐私”页面关闭监控或撤回同意。",
+      "collectedTitle": "开启监控后，Maekon 会收集：",
+      "grantAndContinue": "同意并继续",
+      "granting": "正在保存…",
+      "continueWithout": "不开启监控，继续",
+      "declineNote": "如果不开启监控就继续，Maekon 不会收集任何内容；在你到“隐私”页面开启“{{label}}”之前，时间线、搜索和建议都会是空的。",
+      "granted": "活动监控已开启",
+      "grantedNote": "Maekon 现在会在这台设备上进行记录。你可以随时在“隐私”页面关闭监控或撤回同意。",
+      "osNote": "此同意与上一步中操作系统的屏幕录制权限相互独立，Maekon 需要两者才能捕获你的屏幕。",
+      "error": "无法保存同意，请重试。"
+    },
+    "ai": {
+      "title": "连接 AI",
+      "description": "可选。先选择 AI 可以使用的内容，再连接提供商。也可以稍后在设置中完成。",
+      "consentTitle": "AI 可以使用的内容",
+      "consentHint": "每一项在勾选后立即保存，未勾选的项保持关闭。",
+      "consent": {
+        "fullTextDesc": "将你在 AI 聊天中输入的文字，以及请求所需的最少屏幕上下文，在遮盖个人信息后发送给你选择的提供商。不会发送原始截图、密码等凭据或已排除应用的内容。连接提供商需要此项。",
+        "ocrDesc": "在这台设备上识别屏幕截图中的文字，用于搜索和下一步建议。除非你另行设置外部 OCR 提供商，否则不会离开这台设备。如果你已同意监控，此项已开启。",
+        "patternLearningDesc": "在这台设备上学习你反复出现的工作模式，用于摘要、下一步建议和辅导。辅导提醒在你于“设置 → 教练设置”中开启之前保持关闭。"
+      },
+      "consentError": "无法保存此项，请重试。",
+      "providerTitle": "连接提供商",
+      "providerHint": "选择提供商并输入其 API 密钥。保存后，用于摘要和建议的分析功能也会一并开启，且只使用你在上方勾选的内容。",
+      "providerNeedsConsent": "要连接提供商，请先开启上方的“{{label}}”。",
+      "providerUnsupported": "无法在此设置该提供商。请选择其他提供商，或稍后在“设置 → AI与自动化”中设置。",
+      "checking": "正在检查 AI 连接…",
+      "loadFailed": "无法加载 AI 设置",
+      "loadFailedDesc": "请先不使用 AI 继续，稍后在“设置 → AI与自动化”中连接提供商。",
+      "saving": "正在保存提供商…",
+      "saveFailed": "无法保存提供商",
+      "restartTitle": "重新启动 Maekon 以完成连接",
+      "restartDesc": "提供商已保存，重新启动后生效。退出 Maekon 并再次打开后，设置会从这一步继续，你可以在这里检查密钥。",
+      "savedProvider": "已保存的提供商：{{name}}",
+      "quitButton": "退出 Maekon",
+      "quitFailed": "无法退出 Maekon。请从菜单栏或系统托盘退出，然后重新打开。",
+      "restartLater": "稍后重新启动",
+      "changeProvider": "选择其他提供商",
+      "blockedTitle": "暂时无法使用 AI",
+      "unreachable": "已保存的提供商暂时无法使用。请检查密钥和网络，或选择其他提供商。",
+      "unavailable": "目前无法在 Maekon 中使用 AI。请先不使用 AI 继续，稍后再到“设置 → AI与自动化”中查看。",
+      "connectedTitle": "AI 已连接",
+      "connectedDesc": "现在可以使用 AI 聊天了。",
+      "features": {
+        "suggestions": "下一步建议",
+        "segmentSummary": "工作时段摘要",
+        "dailySummary": "每日总结"
+      },
+      "featureStatus": {
+        "on": "已开启",
+        "needsConsent": "需要同意“{{items}}”",
+        "afterRestart": "重新启动后开启",
+        "inSettings": "在“设置 → AI与自动化”中开启"
+      },
+      "withoutButton": "不使用 AI，继续",
+      "withoutNote": "不使用 AI 时，时间线和搜索仍可使用；摘要、下一步建议和聊天要在“设置 → AI与自动化”中连接提供商后才会开启。"
+    },
+    "step4Title": "准备就绪",
+    "ready": {
+      "desc": "设置完成。你工作时，Maekon 会在后台记录。",
+      "ai": {
+        "connected": "AI 已连接。现在就可以聊天，摘要和建议只会使用你同意的内容。",
+        "restartPending": "重新启动 Maekon 后 AI 才会开启。再次打开后，请到“设置 → AI与自动化”中检查密钥。",
+        "off": "AI 未连接。在“设置 → AI与自动化”中连接提供商后，摘要、建议和聊天才会开启。"
+      },
+      "recoveryNeedsAi": "此功能需要先连接 AI。"
+    },
+    "readyCollectionOffTitle": "将在未开启监控的情况下开始",
+    "readyCollectionOffDesc": "你选择了不开启监控，因此 Maekon 不会收集任何内容，时间线、搜索和建议都将是空的。你可以现在开启，也可以稍后在“隐私”页面开启。",
+    "readyGrantNow": "立即开启监控",
+    "step4RecoveryCardHint": "想接着之前的工作继续时，请在屏幕顶部的小型跟踪面板中点击“找到下一步”。Maekon 会读取当前屏幕，并建议下一步。",
+    "step4SuggestionsShortcut": "下一步建议会显示在建议面板中，随时按 {{shortcut}} 即可打开。",
+    "step4Tip": "提示：随时按 {{shortcut}} 打开命令面板，快速跳转到任意页面。",
+    "next": "下一步",
+    "back": "返回",
+    "skip": "跳过",
+    "complete": "开始使用",
+    "stepIndicatorLabel": "步骤指示器",
     "autostart": {
       "title": "Start Maekon automatically?",
       "body": "Maekon works best when running in the background. Want it to launch when you sign in to your computer?",
       "enable_button": "Enable",
       "not_now_button": "Not now",
       "dismiss_button": "Don't ask again"
-    },
-    "consent": {
-      "title": "开始监控",
-      "description": "授予 Maekon 同意以收集设备上的上下文，从而为你提供帮助。所有数据都保留在你的电脑上，你可以随时在隐私设置中撤回同意。",
-      "collectedTitle": "开始监控后，Maekon 将收集：",
-      "grantButton": "开始监控（授予同意）",
-      "granting": "正在授予…",
-      "granted": "已授予监控同意",
-      "grantedNote": "Maekon 将开始收集设备上的上下文。你可以随时在隐私设置中管理或撤回同意。",
-      "osNote": "授予同意与上方的操作系统屏幕录制权限是相互独立的——Maekon 需要两者才能捕获你的屏幕。",
-      "error": "无法授予同意：{{error}}"
-    },
-    "coaching": {
-      "title": "主动教练",
-      "description": "Maekon 可以分析你的活动模式，通过叠加层提示和桌面通知来帮助你保持专注。所有处理仅在设备本地进行。",
-      "enablesList": {
-        "item1": "上下文感知的叠加层提示（仅本地）",
-        "item2": "专注和目标达成的桌面通知",
-        "item3": "活动模式学习（第 4 级同意）",
-        "item4": "可配置的免打扰时段和配置文件"
-      },
-      "enableButton": "启用教练",
-      "enabling": "正在启用…",
-      "enabled": "教练已启用",
-      "activeNote": "更改立即生效 — 无需重启。",
-      "monitoringMissingWarning": "尚未授予监控同意。请在上一步中授予同意以使教练功能正常工作。",
-      "error": "无法启用教练：{{error}}"
-    },
-    "audio": {
-      "title": "音频默认关闭",
-      "description": "在设置期间暂缓麦克风采集。稍后可在设置中查看音频和语音转文字选项。",
-      "statusTitle": "音频已暂缓",
-      "statusDescription": "麦克风采集和语音转文字保持禁用。不会访问任何音频设备、模型或提供商。",
-      "localNote": "在你明确启用音频并安装模型之前，本地语音转文字将保持关闭。",
-      "egressNote": "在设置中选择提供商并配置凭据之前，云端语音转文字将保持关闭。"
-    },
-    "stepIndicatorLabel": "步骤指示器",
-    "step4RecoveryCardHint": "想接着之前的工作继续时，请在屏幕顶部的小型跟踪面板中点击“找到下一步”。Maekon 会读取当前屏幕，并以 recovery card 的形式提出下一步建议。需要先在设置中配置 AI 提供方。",
-    "step4SuggestionsShortcut": "恢复卡片会显示在建议面板中 — 随时按 {{shortcut}} 打开。",
-    "readyCollectionOffTitle": "将在未开启采集的情况下启动",
-    "readyCollectionOffDesc": "你跳过了同意，因此 Maekon 未采集任何内容。时间线和建议将保持为空。可以现在开启，或稍后在 设置 > 隐私 中开启。",
-    "readyGrantNow": "立即开启采集"
+    }
   },
   "chat": {
     "title": "AI 会话",
@@ -2669,7 +2881,14 @@
     "load_failed": "加载 AI 会话失败。",
     "refresh_failed": "刷新 AI 会话失败。",
     "send_failed": "发送消息失败。",
-    "full_text_consent_required": "请在隐私 → 同意中启用“AI 文本处理和外部提供商”，然后重试。",
+    "rename_failed": "重命名会话失败。",
+    "suggestions_failed": "获取建议失败。",
+    "suggestions_added_one": "已从此对话添加 {{count}} 条建议",
+    "suggestions_added_other": "已从此对话添加 {{count}} 条建议",
+    "suggestions_generated_one": "已生成 {{count}} 条建议",
+    "suggestions_generated_other": "已生成 {{count}} 条建议",
+    "response_failed": "AI 未能完成此回复。",
+    "full_text_consent_required": "请在隐私 → 数据管理中启用“AI 文本处理和外部提供商”，然后重试。",
     "retry_failed": "重试会话失败。",
     "delete_failed": "删除会话失败。",
     "copy_failed": "复制内容失败。",
@@ -2992,6 +3211,8 @@
     "forgetPeerCancel": "取消",
     "forgetPeerSuccess": "已断开与 {{peerName}} 的连接。",
     "forgetPeerError": "无法断开节点连接。请重试。",
+    "syncFailed": "同步未能完成。",
+    "setupFailed": "无法开启同步。",
     "uploadRecoveryTitle": "上传恢复检查",
     "uploadRecoveryDescription": "使用仅限本地的合成数据验证：上传中断后，在重试成功确认前不会写入已发送标记。",
     "uploadRecoveryInterrupted": "上传已中断。{{count}} 个项目仍保留在本地且未发送。",
@@ -3104,10 +3325,15 @@
     "communication": "沟通",
     "meetings": "会议",
     "contextSwitches": "上下文切换",
-    "regimeDistribution": "活动类型分布"
+    "regimeDistribution": "活动类型分布",
+    "longestFocus": "最长专注：{{duration}}",
+    "share": "占比"
   },
   "statusBar": {
-    "lastCaptureTimestamp": "最近一次捕获时间"
+    "lastCaptureTimestamp": "最近一次捕获时间",
+    "captureActive": "正在捕获",
+    "captureWaiting": "等待捕获",
+    "noCaptureYet": "尚无捕获"
   },
   "processList": {
     "pid": "PID:",
@@ -3293,7 +3519,7 @@
     "pinPlaceholder": "输入您的 PIN",
     "unlock": "解锁",
     "noMethodTitle": "没有可用的重新验证方式",
-    "noMethodBody": "请在隐私设置中设置 PIN 以查看捕获历史记录，或关闭重新验证要求。",
+    "noMethodBody": "请在“设置 → 捕获保护”中设置 PIN 以查看捕获历史记录，或关闭重新验证要求。",
     "goToSettings": "打开设置",
     "cancel": "取消",
     "errors": {
@@ -3328,7 +3554,11 @@
   },
   "durableTasks": {
     "loading": "正在加载任务…",
-    "loadError": "无法加载任务：{{error}}",
+    "loadError": "无法加载任务。请重试。",
+    "actionConflict": "此项目已更改。请查看刷新后的列表，然后重试。",
+    "actionConsentRequired": "此操作需要您的同意。请在设置中检查权限，然后重试。",
+    "actionSourceUnavailable": "来源不可用。请重新连接后再试。",
+    "actionFailed": "无法更改任务。请检查当前状态，然后重试。",
     "suggestedHeading": "建议的任务",
     "noSuggestions": "没有可查看的任务建议。",
     "noTitle": "(无标题)",
@@ -3537,6 +3767,14 @@
       "localReceipt": {
         "title": "无法保存本地回执",
         "body": "本地文件可能已存在，但由于持久回执保存失败，因此不声明成功。请检查所选输出、修复本地存储后重试。代码：{{code}}"
+      },
+      "unverified": {
+        "title": "尚未确认草稿创建状态",
+        "body": "无法确认此分配的文件和持久回执是否已创建。文件可能已存在。重试前请检查所选输出文件；服务器上传状态也尚未确认。"
+      },
+      "uploadUnverified": {
+        "title": "尚未确认服务器上传状态",
+        "body": "已确认此分配的本地文件和持久回执，详情如下。尚未确认服务器登记状态。重试前请检查登记状态。"
       },
       "cancelled": { "title": "未创建文件", "body": "已取消原生选择器，未创建输出或回执。" },
       "rejected": { "title": "服务器门禁拒绝了草稿", "body": "未写入工作簿。原因：{{reason}}" },

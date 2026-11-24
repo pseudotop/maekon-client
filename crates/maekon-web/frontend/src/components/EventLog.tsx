@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { TimelineItem } from '../api/client'
 import { iconSize, motion, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
-import { formatTime } from '../utils/formatters'
+import { formatDuration, formatTime } from '../utils/formatters'
 
 interface EventLogProps {
   items: TimelineItem[]
@@ -18,7 +18,6 @@ interface EventLogItemProps {
   activeRef: Ref<HTMLButtonElement> | undefined
   captureLabel: string
   idleLabel: string
-  minLabel: string
   onItemClick: (time: Date) => void
 }
 
@@ -39,13 +38,12 @@ function getEventIcon(item: TimelineItem) {
   return <Monitor className={cn(iconSize.base, 'text-semantic-warning')} />
 }
 
-function getEventLabel(item: TimelineItem, captureLabel: string, idleLabel: string, minLabel: string) {
+function getEventLabel(item: TimelineItem, captureLabel: string, idleLabel: string) {
   if (item.type === 'Frame') {
     return captureLabel
   }
   if (item.type === 'IdlePeriod') {
-    const mins = Math.round(item.duration_secs / 60)
-    return `${idleLabel} (${mins}${minLabel})`
+    return `${idleLabel} (${formatDuration(item.duration_secs)})`
   }
   return item.event_type
 }
@@ -69,7 +67,6 @@ const EventLogItem = memo(function EventLogItem({
   activeRef,
   captureLabel,
   idleLabel,
-  minLabel,
   onItemClick,
 }: EventLogItemProps) {
   const itemTime = getItemTime(item)
@@ -106,7 +103,7 @@ const EventLogItem = memo(function EventLogItem({
                     : 'bg-semantic-info/10 text-semantic-info',
               )}
             >
-              {getEventLabel(item, captureLabel, idleLabel, minLabel)}
+              {getEventLabel(item, captureLabel, idleLabel)}
             </span>
           </div>
 
@@ -172,7 +169,6 @@ export default memo(function EventLog({ items, currentTime, onItemClick }: Event
 
   const captureLabel = t('replay.capture', 'Capture')
   const idleLabel = t('replay.idle', 'Idle')
-  const minLabel = t('dashboard.minutes', 'min')
 
   const activeIndex = useMemo(() => {
     if (items.length === 0) return -1
@@ -262,7 +258,6 @@ export default memo(function EventLog({ items, currentTime, onItemClick }: Event
                   activeRef={isActive ? activeItemRef : undefined}
                   captureLabel={captureLabel}
                   idleLabel={idleLabel}
-                  minLabel={minLabel}
                   onItemClick={handleItemClick}
                 />
               )

@@ -49,6 +49,11 @@ fn openai_llm_uses_spec_default_model() {
     .expect("provider should initialize");
     assert_eq!(provider.model, "gpt-5.4");
     assert_eq!(
+        provider.intent_provider_class(),
+        maekon_core::models::intent_execution::IntentProviderClass::RemoteModel
+    );
+    assert_eq!(provider.intent_forwards_skill_context(), Some(true));
+    assert_eq!(
         provider.llm_request_shape().expect("shape should resolve"),
         ProviderRequestShape::OpenAiResponses
     );

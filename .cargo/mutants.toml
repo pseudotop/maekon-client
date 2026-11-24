@@ -23,8 +23,27 @@
 # Ok(Default::default())`). Their host-independent logic lives in
 # `native_ocr/webp_decode.rs`, which stays measured; the weekly per-OS
 # first-party lint is the only Windows/macOS compile check for the rest.
+#
+# The X11 DAMAGE listener (#13655) is a different gap of the same kind: it
+# compiles on Linux, but its tests need an X server, and the mutants runners
+# have none, so each of its mutants would "survive" untested. Its Xvfb tests
+# (`dirty_region/x11_tests.rs`) skip without Xvfb; the logic it relies on
+# stays measured in `dirty_region/{mod,mask,pending}.rs`.
+#
+# The DXGI Desktop Duplication listener (#13655) is the native_ocr kind of
+# gap: `dirty_region/windows.rs` compiles only for Windows. Its arithmetic and
+# window-event filter live in the measured `dirty_region/windows_rules.rs`, its
+# hand-over in `dirty_region/pending.rs`.
+#
+# The ScreenCaptureKit listener (#13655) is the same kind:
+# `dirty_region/macos.rs` compiles only for macOS, and only with maekon-vision's
+# `macos-screencapturekit` feature. Its frame and window-list rules live in the
+# measured `dirty_region/macos_rules.rs`, its hand-over in `pending.rs`.
 exclude_globs = [
     "crates/**/src/bin/*.rs",
     "crates/maekon-vision/src/native_ocr/windows.rs",
     "crates/maekon-vision/src/native_ocr/macos.rs",
+    "crates/maekon-vision/src/dirty_region/x11.rs",
+    "crates/maekon-vision/src/dirty_region/windows.rs",
+    "crates/maekon-vision/src/dirty_region/macos.rs",
 ]

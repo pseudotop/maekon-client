@@ -1,70 +1,107 @@
 /**
- * Today at a Glance — summary widget for the Dashboard.
- * Shows active time, top app, coaching nudge count, and current regime.
+ * Today's one-line summary — the first block of the Dashboard overview (#13735).
+ *
+ * Renders a headline resolved by `resolveTodayHeadline` and always says where
+ * it came from: the AI daily narrative (with its provider class) or the
+ * heuristic digest that works without any AI connection.
  */
 
-import { useQuery } from '@tanstack/react-query'
-import { Activity, Brain, Clock, Target } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { fetchCoachingStatsToday } from '../api/client'
-import { colors, iconSize, typography } from '../styles/tokens'
+import type { TodayHeadline } from '../pages/dashboard/todayDigest'
+import { colors, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
 import { formatDuration } from '../utils/formatters'
-import { Card, CardTitle } from './ui'
+import { parseLocalCalendarDate } from '../utils/localDate'
+import { Card, CardTitle, Skeleton } from './ui'
 
 export interface TodaySummaryProps {
-  totalActiveSecs: number
-  topApps: Array<{ name: string }>
+  headline: TodayHeadline
+  /** Local calendar date (`YYYY-MM-DD`) when the summary is not for today. */
+  pastDate?: string | null
+  /** True while the digest that can refine the headline is still loading. */
+  loading?: boolean
 }
 
-export default function TodaySummary({ totalActiveSecs, topApps }: TodaySummaryProps) {
+function HeadlineText({ headline }: { headline: Exclude<TodayHeadline, { kind: 'none' }> }) {
   const { t } = useTranslation()
+  if (headline.kind === 'ai') return <>{headline.text}</>
 
-  const { data: coachingStats } = useQuery({
-    queryKey: ['coachingStatsToday'],
-    queryFn: fetchCoachingStatsToday,
-    refetchInterval: 60_000,
-  })
+  switch (headline.variant) {
+    case 'focus':
+      return (
+        <>
+          {t('dashboard.todaySummary.headline.focus', {
+            app: headline.topApp,
+            longestFocus: formatDuration(headline.longestFocusSecs, true),
+          })}
+        </>
+      )
+    case 'app':
+      return <>{t('dashboard.todaySummary.headline.app', { app: headline.topApp })}</>
+    default:
+      return <>{t('dashboard.todaySummary.headline.activity')}</>
+  }
+}
 
-  const topAppName = topApps.length > 0 ? topApps[0].name : '-'
+function ProvenanceBadge({ headline }: { headline: Exclude<TodayHeadline, { kind: 'none' }> }) {
+  const { t, i18n } = useTranslation()
+  if (headline.kind === 'ai') {
+    return (
+      <span className="flex flex-wrap items-center gap-2">
+        <span
+          data-testid="today-summary-provenance"
+          data-provenance="ai"
+          className="rounded-full bg-brand-signal/10 px-2 py-1 text-brand-text text-xs"
+        >
+          {t('summaryProvenance.aiDailyNarrative')} · {t(`summaryProvenance.provider.${headline.providerClass}`)}
+        </span>
+        {headline.generatedAt && (
+          <time className="text-content-tertiary text-xs" dateTime={headline.generatedAt}>
+            {new Date(headline.generatedAt).toLocaleString(i18n.resolvedLanguage)}
+          </time>
+        )}
+      </span>
+    )
+  }
+  return (
+    <span
+      data-testid="today-summary-provenance"
+      data-provenance="heuristic"
+      className="rounded-full bg-surface-muted px-2 py-1 text-content-secondary text-xs"
+    >
+      {t('summaryProvenance.digest.heuristic')}
+    </span>
+  )
+}
 
-  const items = [
-    {
-      icon: <Clock className={iconSize.md} />,
-      label: t('dashboard.todaySummary.activeTime'),
-      value: formatDuration(totalActiveSecs, true),
-    },
-    {
-      icon: <Activity className={iconSize.md} />,
-      label: t('dashboard.todaySummary.topApp'),
-      value: topAppName,
-    },
-    {
-      icon: <Brain className={iconSize.md} />,
-      label: t('dashboard.todaySummary.nudges'),
-      value: String(coachingStats?.nudges_count ?? 0),
-    },
-    {
-      icon: <Target className={iconSize.md} />,
-      label: t('dashboard.todaySummary.regime'),
-      value: coachingStats?.current_regime ?? '-',
-    },
-  ]
+export default function TodaySummary({ headline, pastDate, loading = false }: TodaySummaryProps) {
+  const { t, i18n } = useTranslation()
+
+  if (headline.kind === 'none' && !loading) return null
+
+  const parsedPastDate = pastDate ? parseLocalCalendarDate(pastDate) : null
+  const title = parsedPastDate
+    ? t('dashboard.todaySummary.titleForDate', {
+        date: parsedPastDate.toLocaleDateString(i18n.resolvedLanguage, { month: 'long', day: 'numeric' }),
+      })
+    : t('dashboard.todaySummary.title')
 
   return (
-    <Card variant="default" padding="md" data-testid="today-summary">
-      <CardTitle className="mb-3">{t('dashboard.todaySummary.title')}</CardTitle>
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        {items.map((item) => (
-          <div key={item.label} className="flex items-center space-x-3">
-            <div className={cn('shrink-0 rounded-lg bg-brand-signal/10 p-2 text-brand-text')}>{item.icon}</div>
-            <div className="min-w-0">
-              <div className={cn(typography.stat.normal, colors.text.primary, 'truncate')}>{item.value}</div>
-              <div className={cn(typography.caption, colors.text.secondary)}>{item.label}</div>
-            </div>
-          </div>
-        ))}
+    <Card variant="default" padding="md" data-testid="today-summary" aria-busy={loading || undefined}>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <CardTitle>{title}</CardTitle>
+        {!loading && headline.kind !== 'none' && <ProvenanceBadge headline={headline} />}
       </div>
+      {loading || headline.kind === 'none' ? (
+        <Skeleton className="h-6 w-3/4" />
+      ) : (
+        <p
+          data-testid="today-summary-headline"
+          className={cn(typography.h4, colors.text.primary, 'whitespace-pre-line leading-relaxed')}
+        >
+          <HeadlineText headline={headline} />
+        </p>
+      )}
     </Card>
   )
 }

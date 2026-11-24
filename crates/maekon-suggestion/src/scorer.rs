@@ -1,8 +1,13 @@
 use chrono::{DateTime, Utc};
 use maekon_core::models::suggestion::{
-    FeedbackTallyRecord, FeedbackType, SuggestionSource, SuggestionType,
+    FeedbackTallyRecord, FeedbackType, SuggestionShadowBaselineSummary,
+    SuggestionShadowOpportunity, SuggestionShadowValidationError, SuggestionSource, SuggestionType,
 };
-use std::collections::HashMap;
+use maekon_core::models::suggestion_shadow_capture::{
+    SuggestionShadowBatchError, SuggestionShadowCaptureBinding, SuggestionShadowCaptureReceipt,
+    SuggestionShadowCaptureSummary,
+};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 const MIN_SAMPLES: u32 = 5;
 const HIGH_REJECTION_THRESHOLD: f64 = 0.7;
@@ -190,9 +195,104 @@ impl Default for FeedbackScorer {
     }
 }
 
+/// Summarize complete caller-supplied opportunities without changing scoring or admission.
+/// No runtime collector, provider/model effect, UI exposure, or GO evidence is supplied.
+/// Unknown observations remain separate from observed rejection and explicit false labels.
+pub fn summarize_shadow_baseline(
+    opportunities: &[SuggestionShadowOpportunity],
+) -> Result<SuggestionShadowBaselineSummary, SuggestionShadowValidationError> {
+    SuggestionShadowOpportunity::validate_population(opportunities)?;
+    let mut summary = SuggestionShadowBaselineSummary {
+        rubric_revision: opportunities[0].rubric_revision.clone(),
+        opportunity_count: opportunities.len(),
+        ..Default::default()
+    };
+    for row in opportunities {
+        let generated = row.generated_candidate_ids.len();
+        summary.generated_count += generated;
+        let admitted = row
+            .baseline_admitted_candidate_ids
+            .as_ref()
+            .map(|ids| ids.iter().collect::<HashSet<_>>());
+        match &admitted {
+            Some(ids) => {
+                summary.admitted_count += ids.len();
+                summary.not_admitted_count += generated - ids.len();
+            }
+            None => summary.admission_unknown_count += generated,
+        }
+        let Some(labels) = &row.independent_usefulness else {
+            summary.oracle_unknown_count += generated;
+            continue;
+        };
+        summary.oracle_labelled_count += generated;
+        for (id, useful) in labels {
+            if *useful {
+                summary.useful_count += 1;
+                match &admitted {
+                    Some(ids) if ids.contains(id) => summary.useful_admitted_count += 1,
+                    Some(_) => summary.useful_not_admitted_count += 1,
+                    None => summary.useful_admission_unknown_count += 1,
+                }
+            }
+        }
+    }
+    Ok(summary)
+}
+
+/// Summarize every declared receipt after current-binding and population validation.
+/// Subtotals cover observed original generation only; missing observations stay unknown.
+/// Caller-supplied data does not prove actual population, oracle or billing authority,
+/// consent, additional Jev costs, savings, exposure, adoption, or an experiment verdict.
+pub fn summarize_shadow_capture(
+    receipts: &[SuggestionShadowCaptureReceipt],
+    expected: &BTreeMap<String, SuggestionShadowCaptureBinding>,
+) -> Result<SuggestionShadowCaptureSummary, SuggestionShadowBatchError> {
+    let population = SuggestionShadowCaptureReceipt::validated_population(receipts, expected)?;
+    let mut summary = SuggestionShadowCaptureSummary {
+        protocol_revision: receipts[0].binding().protocol_revision.clone(),
+        baseline: summarize_shadow_baseline(&population)?,
+        ..Default::default()
+    };
+    for receipt in receipts {
+        let generation = receipt.generation();
+        let usage = generation.usage.as_ref();
+        summary.elapsed_ms.add_observation(generation.elapsed_ms)?;
+        summary
+            .input_tokens
+            .add_observation(usage.map(|u| u.input_tokens))?;
+        summary
+            .output_tokens
+            .add_observation(usage.map(|u| u.output_tokens))?;
+        match &generation.paid_cost {
+            Some(cost) => {
+                let subtotal = summary
+                    .paid_cost
+                    .subtotals_minor
+                    .entry(cost.currency.clone())
+                    .or_default();
+                *subtotal = subtotal
+                    .checked_add(cost.amount_minor)
+                    .ok_or(SuggestionShadowBatchError::ObservationOverflow)?;
+                summary.paid_cost.observed_opportunities += 1;
+            }
+            None => summary.paid_cost.unknown_opportunities += 1,
+        }
+    }
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maekon_core::models::candidate_decision::DecisionUsage;
+    use maekon_core::models::suggestion_shadow_capture::{
+        SuggestionShadowAdmissionObservation, SuggestionShadowCaptureBinding as Binding,
+        SuggestionShadowCaptureError, SuggestionShadowCaptureReceipt as Receipt,
+        SuggestionShadowGenerationObservation as Generation, SuggestionShadowObservedCost,
+        SuggestionShadowObservedCostSummary as CostSummary, SuggestionShadowObservedTotal,
+        SuggestionShadowRejectionReason,
+    };
 
     #[test]
     fn insufficient_data_returns_zero() {
@@ -447,5 +547,352 @@ mod tests {
             (score2 - HEAVY_PENALTY).abs() < f64::EPSILON,
             "a fresh tally must retain its learned penalty, got {score2}"
         );
+    }
+
+    fn shadow_opportunity() -> SuggestionShadowOpportunity {
+        SuggestionShadowOpportunity {
+            opportunity_id: "one".into(),
+            rubric_revision: "r1".into(),
+            generated_candidate_ids: vec!["A".into(), "B".into(), "C".into()],
+            baseline_admitted_candidate_ids: Some(vec!["A".into()]),
+            independent_usefulness: Some(BTreeMap::from([
+                ("A".into(), true),
+                ("B".into(), true),
+                ("C".into(), false),
+            ])),
+        }
+    }
+
+    fn shadow_summary() -> SuggestionShadowBaselineSummary {
+        SuggestionShadowBaselineSummary {
+            rubric_revision: "r1".into(),
+            opportunity_count: 1,
+            generated_count: 3,
+            admitted_count: 1,
+            not_admitted_count: 2,
+            oracle_labelled_count: 3,
+            useful_count: 2,
+            useful_admitted_count: 1,
+            useful_not_admitted_count: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn shadow_baseline_preserves_complete_opportunities() {
+        let mut empty = shadow_opportunity();
+        empty.opportunity_id = "empty".into();
+        empty.generated_candidate_ids.clear();
+        empty.baseline_admitted_candidate_ids = Some(vec![]);
+        empty.independent_usefulness = Some(BTreeMap::new());
+        assert_eq!(
+            summarize_shadow_baseline(&[shadow_opportunity(), empty]),
+            Ok(SuggestionShadowBaselineSummary {
+                opportunity_count: 2,
+                ..shadow_summary()
+            })
+        );
+        let mut second = shadow_opportunity();
+        second.opportunity_id = "two".into();
+        assert_eq!(
+            summarize_shadow_baseline(&[shadow_opportunity(), second])
+                .unwrap()
+                .generated_count,
+            6
+        );
+    }
+
+    #[test]
+    fn shadow_baseline_all_rejected_keeps_useful_misses() {
+        let mut row = shadow_opportunity();
+        row.baseline_admitted_candidate_ids = Some(vec![]);
+        assert_eq!(
+            summarize_shadow_baseline(&[row]),
+            Ok(SuggestionShadowBaselineSummary {
+                admitted_count: 0,
+                not_admitted_count: 3,
+                useful_admitted_count: 0,
+                useful_not_admitted_count: 2,
+                ..shadow_summary()
+            })
+        );
+    }
+
+    #[test]
+    fn shadow_baseline_unknown_is_not_negative() {
+        let mut row = shadow_opportunity();
+        row.independent_usefulness = None;
+        assert_eq!(
+            summarize_shadow_baseline(&[row]),
+            Ok(SuggestionShadowBaselineSummary {
+                oracle_labelled_count: 0,
+                oracle_unknown_count: 3,
+                useful_count: 0,
+                useful_admitted_count: 0,
+                useful_not_admitted_count: 0,
+                ..shadow_summary()
+            })
+        );
+        let mut row = shadow_opportunity();
+        row.baseline_admitted_candidate_ids = None;
+        assert_eq!(
+            summarize_shadow_baseline(&[row]),
+            Ok(SuggestionShadowBaselineSummary {
+                admitted_count: 0,
+                not_admitted_count: 0,
+                admission_unknown_count: 3,
+                useful_admitted_count: 0,
+                useful_not_admitted_count: 0,
+                useful_admission_unknown_count: 2,
+                ..shadow_summary()
+            })
+        );
+    }
+
+    fn generation(
+        elapsed_ms: Option<u64>,
+        usage: Option<(u64, u64)>,
+        cost: Option<(u64, &str)>,
+    ) -> Generation {
+        Generation {
+            source: SuggestionSource::RuleBased,
+            elapsed_ms,
+            usage: usage.map(|(input_tokens, output_tokens)| DecisionUsage {
+                input_tokens,
+                output_tokens,
+            }),
+            paid_cost: cost.map(|(amount_minor, currency)| SuggestionShadowObservedCost {
+                amount_minor,
+                currency: currency.into(),
+                receipt_revision: "bill1".into(),
+            }),
+        }
+    }
+
+    fn observed(subtotal: u64, known: usize, unknown: usize) -> SuggestionShadowObservedTotal {
+        SuggestionShadowObservedTotal {
+            subtotal,
+            observed_opportunities: known,
+            unknown_opportunities: unknown,
+        }
+    }
+
+    fn observed_costs(values: &[(&str, u64)], known: usize, unknown: usize) -> CostSummary {
+        CostSummary {
+            subtotals_minor: values
+                .iter()
+                .map(|(currency, value)| ((*currency).into(), *value))
+                .collect(),
+            observed_opportunities: known,
+            unknown_opportunities: unknown,
+        }
+    }
+
+    fn shadow_capture(opportunity: SuggestionShadowOpportunity, generation: Generation) -> Receipt {
+        use SuggestionShadowAdmissionObservation::{Admitted, NotAdmitted};
+        let reasons = opportunity
+            .baseline_admitted_candidate_ids
+            .as_ref()
+            .map(|admitted| {
+                opportunity
+                    .generated_candidate_ids
+                    .iter()
+                    .map(|id| {
+                        let reason = if admitted.contains(id) {
+                            Admitted
+                        } else {
+                            NotAdmitted(SuggestionShadowRejectionReason::ReasonNotObserved)
+                        };
+                        (id.clone(), reason)
+                    })
+                    .collect()
+            });
+        let binding = Binding {
+            protocol_revision: "p1".into(),
+            source_id: "source".into(),
+            source_revision: "g1".into(),
+            withdrawal_epoch: "w1".into(),
+            rubric_revision: opportunity.rubric_revision.clone(),
+        };
+        SuggestionShadowCaptureReceipt::new(opportunity, binding, generation, reasons).unwrap()
+    }
+
+    fn capture(id: &str, generation: Generation) -> Receipt {
+        let mut opportunity = shadow_opportunity();
+        opportunity.opportunity_id = id.into();
+        shadow_capture(opportunity, generation)
+    }
+
+    fn capture_bindings(rows: &[Receipt]) -> BTreeMap<String, Binding> {
+        rows.iter()
+            .map(|row| {
+                (
+                    row.opportunity().opportunity_id.clone(),
+                    row.binding().clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn capture_summary_preserves_complete_population_and_useful_all_hide_misses() {
+        let one = capture(
+            "one",
+            generation(Some(10), Some((7, 3)), Some((125, "USD"))),
+        );
+        let mut unknown = shadow_opportunity();
+        unknown.opportunity_id = "two".into();
+        unknown.generated_candidate_ids = vec!["A".into(), "B".into()];
+        unknown.baseline_admitted_candidate_ids = None;
+        unknown.independent_usefulness = None;
+        let mut empty = shadow_opportunity();
+        empty.opportunity_id = "empty".into();
+        empty.generated_candidate_ids.clear();
+        empty.baseline_admitted_candidate_ids = Some(vec![]);
+        empty.independent_usefulness = Some(BTreeMap::new());
+        let rows = vec![
+            one,
+            shadow_capture(unknown, generation(None, None, None)),
+            shadow_capture(empty, generation(Some(0), Some((0, 0)), Some((0, "USD")))),
+        ];
+        let original = rows.clone();
+        let expected = SuggestionShadowCaptureSummary {
+            protocol_revision: "p1".into(),
+            baseline: SuggestionShadowBaselineSummary {
+                opportunity_count: 3,
+                generated_count: 5,
+                admission_unknown_count: 2,
+                oracle_unknown_count: 2,
+                ..shadow_summary()
+            },
+            elapsed_ms: observed(10, 2, 1),
+            input_tokens: observed(7, 2, 1),
+            output_tokens: observed(3, 2, 1),
+            paid_cost: observed_costs(&[("USD", 125)], 2, 1),
+        };
+        assert_eq!(
+            summarize_shadow_capture(&rows, &capture_bindings(&rows)),
+            Ok(expected.clone())
+        );
+        assert_eq!(rows, original);
+        let mut hidden = rows[0].opportunity().clone();
+        hidden.baseline_admitted_candidate_ids = Some(vec![]);
+        let hidden = vec![
+            shadow_capture(hidden, rows[0].generation().clone()),
+            rows[1].clone(),
+            rows[2].clone(),
+        ];
+        let hidden_summary = summarize_shadow_capture(&hidden, &capture_bindings(&hidden)).unwrap();
+        assert_eq!(
+            hidden_summary.baseline,
+            SuggestionShadowBaselineSummary {
+                admitted_count: 0,
+                not_admitted_count: 3,
+                useful_admitted_count: 0,
+                useful_not_admitted_count: 2,
+                ..expected.baseline
+            }
+        );
+    }
+
+    #[test]
+    fn capture_summary_coverage_is_independent_for_elapsed_usage_and_cost() {
+        let mut rows = Vec::new();
+        for (id, elapsed_ms, usage) in [
+            ("one", Some(0), Some((0, 0))),
+            ("two", Some(10), None),
+            ("three", None, None),
+        ] {
+            rows.push(capture(id, generation(elapsed_ms, usage, None)));
+        }
+        let summary = summarize_shadow_capture(&rows, &capture_bindings(&rows)).unwrap();
+        assert_eq!(summary.elapsed_ms, observed(10, 2, 1));
+        assert_eq!(summary.input_tokens, observed(0, 1, 2));
+        assert_eq!(summary.output_tokens, observed(0, 1, 2));
+        assert_eq!(summary.paid_cost, observed_costs(&[], 0, 3));
+    }
+
+    #[test]
+    fn capture_summary_rejects_late_staleness_and_manifest_mismatch_before_overflow() {
+        use SuggestionShadowBatchError::{InvalidCapture, InvalidPopulation, PopulationMismatch};
+        use SuggestionShadowValidationError::EmptyPopulation;
+        assert_eq!(
+            summarize_shadow_capture(&[], &BTreeMap::new()),
+            Err(InvalidPopulation(EmptyPopulation))
+        );
+        let rows = vec![
+            capture("one", generation(Some(u64::MAX), None, None)),
+            capture("two", generation(Some(1), None, None)),
+        ];
+        let original = rows.clone();
+        let mut bindings = capture_bindings(&rows);
+        bindings.get_mut("two").unwrap().source_revision = "changed".into();
+        assert_eq!(
+            summarize_shadow_capture(&rows, &bindings),
+            Err(InvalidCapture(SuggestionShadowCaptureError::SourceChanged))
+        );
+        bindings = capture_bindings(&rows);
+        bindings.insert("outside".into(), rows[0].binding().clone());
+        assert_eq!(
+            summarize_shadow_capture(&rows, &bindings),
+            Err(PopulationMismatch)
+        );
+        assert_eq!(rows, original);
+    }
+
+    #[test]
+    fn capture_summary_accepts_max_and_max_plus_zero_but_rejects_each_overflow() {
+        type Observe = fn(&mut Generation, u64);
+        let axes: [Observe; 4] = [
+            |g, value| *g = generation(Some(value), None, None),
+            |g, value| *g = generation(None, Some((value, 0)), None),
+            |g, value| *g = generation(None, Some((0, value)), None),
+            |g, value| *g = generation(None, None, Some((value, "USD"))),
+        ];
+        for (axis, observe) in axes.into_iter().enumerate() {
+            let mut observation = generation(None, None, None);
+            observe(&mut observation, u64::MAX);
+            let max = capture("one", observation);
+            for extra in [None, Some(0), Some(1)] {
+                let mut rows = vec![max.clone()];
+                if let Some(value) = extra {
+                    let mut observation = generation(None, None, None);
+                    observe(&mut observation, value);
+                    rows.push(capture("two", observation));
+                }
+                let original = rows.clone();
+                let result = summarize_shadow_capture(&rows, &capture_bindings(&rows));
+                if extra == Some(1) {
+                    assert_eq!(result, Err(SuggestionShadowBatchError::ObservationOverflow));
+                } else {
+                    let summary = result.unwrap();
+                    if axis == 3 {
+                        assert_eq!(
+                            summary.paid_cost,
+                            observed_costs(&[("USD", u64::MAX)], rows.len(), 0)
+                        );
+                    } else {
+                        let totals = [
+                            summary.elapsed_ms,
+                            summary.input_tokens,
+                            summary.output_tokens,
+                        ];
+                        assert_eq!(totals[axis], observed(u64::MAX, rows.len(), 0));
+                    }
+                }
+                assert_eq!(rows, original);
+            }
+        }
+        for euros in [0, 1, u64::MAX] {
+            let rows = vec![
+                capture("one", generation(None, None, Some((u64::MAX, "USD")))),
+                capture("two", generation(None, None, Some((euros, "EUR")))),
+            ];
+            let summary = summarize_shadow_capture(&rows, &capture_bindings(&rows)).unwrap();
+            assert_eq!(
+                summary.paid_cost,
+                observed_costs(&[("USD", u64::MAX), ("EUR", euros)], 2, 0)
+            );
+        }
     }
 }

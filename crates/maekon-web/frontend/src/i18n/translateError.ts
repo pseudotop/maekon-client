@@ -74,6 +74,16 @@ export function translateError(err: unknown, locale: WireErrorLocale = 'en'): st
 }
 
 /**
+ * The catalog template for a wire code in `locale`, falling back to English,
+ * or `undefined` for a code outside the catalog. The `{message}` slot is left
+ * unfilled so a caller can show the sentence and the per-call detail apart
+ * (`errorDisplay.ts`, #13737).
+ */
+export function wireTemplate(code: string, locale: WireErrorLocale = 'en'): string | undefined {
+  return (resources[locale] ?? resources.en)[code] ?? resources.en[code]
+}
+
+/**
  * Returns true when the wire code has a translation in the specified locale.
  * Useful for conditional UI (e.g., show a generic "Learn more" link only
  * for codes with translation coverage).

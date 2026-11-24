@@ -25,8 +25,8 @@ import {
 } from '../../api/client'
 import { Alert, Button, Card, CardTitle, Spinner } from '../../components/ui'
 import { invalidateAiReadinessSnapshotCache } from '../../hooks/useAiReadinessSnapshot'
-import { addToast } from '../../hooks/useToast'
-import { describeIpcError } from '../../i18n/tauriIpcErrors'
+import { addErrorToast, addToast } from '../../hooks/useToast'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, elevation, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 import { buildDeleteRangeRequest } from './deleteRangeRequest'
@@ -196,7 +196,8 @@ export interface PrivacyContext {
 }
 
 export default function PrivacyLayout() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const DATA_TYPE_LABELS: Record<DataType, string> = {
     events: t('privacy.dataTypes.events'),
     frames: t('privacy.dataTypes.frames'),
@@ -259,7 +260,7 @@ export default function PrivacyLayout() {
       setSelectedDataTypes([])
     },
     onError: (error: Error) => {
-      addToast('error', error.message)
+      addErrorToast(describeError(error, t('privacy.deleteFailed')))
     },
   })
 
@@ -290,13 +291,11 @@ export default function PrivacyLayout() {
     // `storage.unavailable` IpcError when GDPR Art. 17 frame erasure cannot be
     // verified (`commands/consent.rs::erase_all_local_data`). `error.message`
     // put that Rust English literal straight into the toast; route it through
-    // the shared out-of-registry mapping instead. Non-IpcError rejections still
-    // resolve to their own `message`, so nothing else changes.
+    // the shared out-of-registry mapping instead. #13737: any other rejection
+    // now shows the delete-failure sentence with its raw text kept as support
+    // detail, rather than its own English `message`.
     onError: (error: Error) => {
-      addToast(
-        'error',
-        describeIpcError(error, (key) => t(key), i18n.language),
-      )
+      addErrorToast(describeError(error, t('privacy.deleteFailed')))
     },
   })
 
@@ -308,7 +307,7 @@ export default function PrivacyLayout() {
       addToast('success', t('backup.downloadComplete'))
     },
     onError: (error: Error) => {
-      addToast('error', `${t('backup.downloadFailed')}: ${error.message}`)
+      addErrorToast(describeError(error, t('backup.downloadFailed')))
     },
   })
 
@@ -326,7 +325,7 @@ export default function PrivacyLayout() {
       queryClient.invalidateQueries()
     },
     onError: (error: Error) => {
-      addToast('error', `${t('backup.restoreFailed')}: ${error.message}`)
+      addErrorToast(describeError(error, t('backup.restoreFailed')))
     },
   })
 
@@ -354,7 +353,7 @@ export default function PrivacyLayout() {
       setCaptureStatusUnavailable(false)
     } catch (error) {
       setCaptureStatusUnavailable(true)
-      addToast('error', error instanceof Error ? error.message : t('privacy.capturePauseUnavailable'))
+      addErrorToast(describeError(error, t('privacy.capturePauseUnavailable')))
     } finally {
       setCaptureStatusBusy(false)
     }

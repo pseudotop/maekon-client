@@ -13,8 +13,10 @@
  * and multi-word phrases must be translated, never allowlisted.
  *
  * Note: these keys are cross-locale invariants — the same terms stay in their
- * canonical form in ko/zh-CN/es as well — so a future per-locale guard can
- * reuse this list as the shared invariant baseline.
+ * canonical form in ko/zh-CN/es as well — so a per-locale guard reuses this
+ * list as the shared invariant baseline. The Korean guard
+ * (`__tests__/ko-localization-completeness.test.ts`, #13738) adds the few
+ * Korean-only entries in `KO_IDENTICAL_INVARIANTS` below.
  */
 
 export interface InvariantEntry {
@@ -104,3 +106,22 @@ export const IDENTICAL_INVARIANTS: readonly InvariantEntry[] = [
 
 /** Set of allowlisted keys for O(1) membership checks in the guard test. */
 export const INVARIANT_KEYS: ReadonlySet<string> = new Set(IDENTICAL_INVARIANTS.map((entry) => entry.key))
+
+/**
+ * #13738 — keys whose Korean value stays identical to English on top of the
+ * shared baseline. Same rule as above: proper nouns and strings with nothing
+ * to translate only.
+ */
+export const KO_IDENTICAL_INVARIANTS: readonly InvariantEntry[] = [
+  {
+    key: 'settingsAutomation.sceneIntelligenceTitle',
+    rationale:
+      'Feature name "Scene Intelligence" — the Korean screens name this feature and its "Scene" settings in English; renaming it belongs to a terminology change of its own.',
+  },
+  {
+    key: 'suggestions.localAnalysis.provenance',
+    rationale: 'Interpolation-only: "{{source}} · {{producer}} · {{time}}" carries no translatable words.',
+  },
+] as const
+
+export const KO_INVARIANT_KEYS: ReadonlySet<string> = new Set(KO_IDENTICAL_INVARIANTS.map((entry) => entry.key))

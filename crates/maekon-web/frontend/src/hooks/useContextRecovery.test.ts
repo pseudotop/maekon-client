@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import i18n from '../i18n'
 import { type RecoveryResult, useContextRecovery } from './useContextRecovery'
 
 /**
@@ -76,7 +77,7 @@ describe('useContextRecovery', () => {
     })
 
     expect(result.current.phase).toBe('error')
-    expect(result.current.error).toContain('provider offline')
+    expect(result.current.error).toEqual({ text: i18n.t('recovery.outcome.errorDetail'), detail: 'provider offline' })
   })
 
   it('the in-flight guard blocks a concurrent second turn', async () => {

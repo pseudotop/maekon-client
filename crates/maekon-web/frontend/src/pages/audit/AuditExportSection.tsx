@@ -15,7 +15,9 @@ import { Download } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { downloadBlob, fetchAuditExport } from '../../api/client'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Button, Spinner } from '../../components/ui'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import { colors, iconSize, typography } from '../../styles/tokens'
 import { cn } from '../../utils/cn'
 
@@ -30,8 +32,9 @@ const AUDIT_EXPORT_LIMIT = 1000
 
 export default function AuditExportSection() {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [exporting, setExporting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorDisplay | null>(null)
 
   const handleExport = async () => {
     setExporting(true)
@@ -41,7 +44,7 @@ export default function AuditExportSection() {
       const blob = new Blob([JSON.stringify(entries, null, 2)], { type: 'application/json' })
       downloadBlob(blob, buildAuditExportFilename(new Date().toISOString()))
     } catch (e) {
-      setError(e instanceof Error ? e.message : t('auditLog.exportFailed', 'Export failed'))
+      setError(describeError(e, t('errors.tryAgainLater')))
     } finally {
       setExporting(false)
     }
@@ -75,7 +78,8 @@ export default function AuditExportSection() {
 
       {error && (
         <Alert variant="error" title={t('auditLog.exportFailed', 'Export failed')}>
-          {error}
+          {error.text}
+          <SupportDetails detail={error.detail} />
         </Alert>
       )}
     </div>

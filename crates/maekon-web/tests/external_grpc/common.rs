@@ -115,7 +115,7 @@ pub(crate) fn next_test_port() -> u16 {
 pub(crate) fn make_jwt_config(
     jwt_pub_key_path: &std::path::Path,
 ) -> (ExternalGrpcSpawnConfig, SocketAddr) {
-    let (cert_path, key_path) = test_cert_pair();
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load certified key");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
@@ -170,7 +170,7 @@ pub(crate) fn make_jwt_config(
 pub(crate) fn make_mtls_config(
     ca_pem_path: &std::path::Path,
 ) -> (ExternalGrpcSpawnConfig, SocketAddr) {
-    let (cert_path, key_path) = test_cert_pair();
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load certified key");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
@@ -377,7 +377,7 @@ pub(crate) async fn send_bad_bearer(channel: Channel, token: &str) -> tonic::Sta
 pub(crate) fn test_cfg_with_external_enabled(
     jwt_pub_key_path: &std::path::Path,
 ) -> maekon_core::config::AppConfig {
-    let (cert_path, key_path) = test_cert_pair();
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let mut cfg = maekon_core::config::AppConfig::default_config();
     cfg.web.grpc_streaming_enabled = true;
     cfg.external_grpc = ExternalGrpcConfig {
@@ -409,7 +409,7 @@ pub(crate) fn make_jwt_spawn_config_for_reload(
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> ExternalGrpcSpawnConfig {
-    let (cert_path, key_path) = test_cert_pair();
+    let (cert_path, key_path) = test_cert_pair().expect("server certificate fixture");
     let certified_key = load_certified_key(&cert_path, &key_path).expect("load certified key");
     let cert_resolver = Arc::new(HotReloadCertResolver::new(certified_key));
 
@@ -485,11 +485,10 @@ pub(crate) struct LiveReloadHarness {
     /// The bound port returned by the spawn helper.
     pub(crate) port: u16,
     /// Shutdown sender — clone of the one wired into the spawn config.
-    /// Tests that need graceful-exit verification (vs `shutdown()`'s abort
-    /// semantics) call `shutdown_tx.send_replace(true)` and then await the
+    /// Tests that inspect the handles directly call `shutdown_tx.send_replace(true)` and then await the
     /// `reload_handle` directly via destructuring.
     pub(crate) shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
-    pub(crate) server_handle: tokio::task::JoinHandle<()>,
+    pub(crate) server_handle: maekon_web::grpc::external::test_support::ServerHandle,
     pub(crate) reload_handle: tokio::task::JoinHandle<()>,
     /// Tempfile holding the on-disk config; drop closes it.
     pub(crate) _tmp: tempfile::NamedTempFile,
@@ -500,13 +499,18 @@ impl LiveReloadHarness {
         LiveReloadHarnessBuilder::default()
     }
 
-    /// Abort the server + reload task and await them. Idempotent enough for
-    /// test teardown — always safe to call once at the end of a test.
+    /// Signal graceful shutdown and verify both task outcomes.
     pub(crate) async fn shutdown(self) {
-        self.server_handle.abort();
-        self.reload_handle.abort();
-        let _ = self.server_handle.await;
-        let _ = self.reload_handle.await;
+        self.shutdown_tx.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(5), self.server_handle)
+            .await
+            .expect("server shutdown deadline")
+            .expect("server task must not panic")
+            .expect("server shutdown must succeed");
+        tokio::time::timeout(Duration::from_secs(5), self.reload_handle)
+            .await
+            .expect("reload shutdown deadline")
+            .expect("reload task must not panic");
     }
 
     /// Poll `live.snapshot().streaming_enabled` until it equals `expected`,
@@ -588,7 +592,7 @@ impl LiveReloadHarnessBuilder {
     }
 
     pub(crate) async fn build(self) -> LiveReloadHarness {
-        let jwt_kp = test_jwt_keypair();
+        let jwt_kp = test_jwt_keypair().expect("JWT key fixture");
         let pub_key_path = jwt_kp.pub_pem_path.clone();
 
         let tmp = tempfile::NamedTempFile::new().expect("tempfile create");
@@ -607,7 +611,8 @@ impl LiveReloadHarnessBuilder {
             })
             .expect("seed initial config");
 
-        let port = next_test_port();
+        // Bind once to an OS-assigned port; no probe-bind race.
+        let port = 0;
         let load_policy = self.initial_load_policy.unwrap_or_else(|| {
             Arc::new(LoadPolicy::new(
                 maekon_core::config::LoadThresholds::default(),
@@ -630,7 +635,9 @@ impl LiveReloadHarnessBuilder {
             shutdown_rx,
         );
         let (server_handle, reload_handle, port) =
-            spawn_server_with_config_manager(cfg, cfg_mgr.clone()).await;
+            spawn_server_with_config_manager(cfg, cfg_mgr.clone())
+                .await
+                .expect("start real external server");
 
         LiveReloadHarness {
             cfg_mgr,

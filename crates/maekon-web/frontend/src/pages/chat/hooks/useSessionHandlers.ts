@@ -2,11 +2,12 @@ import type React from 'react'
 import { useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { downloadBlob } from '../../../api/client'
-import { addToast } from '../../../hooks/useToast'
+import { addErrorToast, addToast } from '../../../hooks/useToast'
+import { type ErrorDisplay, useErrorDisplay } from '../../../i18n/errorDisplay'
 import { MAX_CACHED_SESSIONS } from '../constants'
-import { chatCreateErrorMessage } from '../providerErrorGuidance'
+import { chatCreateErrorDisplay } from '../providerErrorGuidance'
 import type { ChatMessage, MessageRecord, SessionConfig, SessionInfo, Transport } from '../types'
-import { errorMessage, ipc, recordToChat } from '../utils'
+import { ipc, recordToChat } from '../utils'
 
 interface UseSessionHandlersParams {
   activeId: string | null
@@ -15,7 +16,7 @@ interface UseSessionHandlersParams {
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
   sessions: SessionInfo[]
   setSessions: React.Dispatch<React.SetStateAction<SessionInfo[]>>
-  setSessionLoadError: React.Dispatch<React.SetStateAction<string | null>>
+  setSessionLoadError: React.Dispatch<React.SetStateAction<ErrorDisplay | null>>
   transport: Transport | null
   selectedHttpSurface: { surface_id: string; display_name: string } | null
   resolvedModel: string | undefined
@@ -38,6 +39,7 @@ export function useSessionHandlers({
   isHistorical,
 }: UseSessionHandlersParams) {
   const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const messagesCache = useRef<Map<string, ChatMessage[]>>(new Map())
 
   const refresh = useCallback(() => {
@@ -47,12 +49,12 @@ export function useSessionHandlers({
         setSessionLoadError(null)
       })
       .catch((e) => {
-        const message = errorMessage(e, t('chat.refresh_failed', 'Failed to refresh AI sessions.'))
+        const display = describeError(e, t('chat.refresh_failed', 'Failed to refresh AI sessions.'))
         console.warn('list_ai_sessions failed:', e)
-        setSessionLoadError(message)
-        addToast('error', message, 5000)
+        setSessionLoadError(display)
+        addErrorToast(display)
       })
-  }, [t, setSessions, setSessionLoadError])
+  }, [t, describeError, setSessions, setSessionLoadError])
 
   const handleSelectSession = useCallback(
     async (id: string) => {
@@ -84,12 +86,11 @@ export function useSessionHandlers({
   )
 
   const handleCreate = useCallback(
-    async (setCreating: (v: boolean) => void, setCreateError: (v: string | null) => void) => {
+    async (setCreating: (v: boolean) => void, setCreateError: (v: ErrorDisplay | null) => void) => {
       setCreating(true)
       setCreateError(null)
       if (!transport) {
-        const message = t('chat.no_ready_provider')
-        setCreateError(message)
+        setCreateError({ text: t('chat.no_ready_provider'), detail: null })
         setCreating(false)
         return
       }
@@ -110,7 +111,7 @@ export function useSessionHandlers({
         setSessionLoadError(null)
       } catch (e) {
         console.warn('create_ai_session failed:', e)
-        const message = chatCreateErrorMessage(e, {
+        const display = chatCreateErrorDisplay(e, describeError, {
           providerName: selectedHttpSurface?.display_name,
           providerNotConfiguredMessage: (provider) =>
             t('chat.provider_not_configured', {
@@ -133,8 +134,8 @@ export function useSessionHandlers({
             'The selected Ollama model is not installed. Install or select an available model, then try again.',
           ),
         })
-        setCreateError(message)
-        addToast('error', message, 6000)
+        setCreateError(display)
+        addErrorToast(display, 6000)
       }
       setCreating(false)
     },
@@ -144,6 +145,7 @@ export function useSessionHandlers({
       resolvedModel,
       systemPrompt,
       t,
+      describeError,
       setSessions,
       setActiveId,
       setMessages,
@@ -168,10 +170,10 @@ export function useSessionHandlers({
         }
       } catch (e) {
         console.warn('kill_ai_session failed:', e)
-        addToast('error', errorMessage(e, t('chat.delete_failed', 'Failed to delete the session.')), 5000)
+        addErrorToast(describeError(e, t('chat.delete_failed', 'Failed to delete the session.')))
       }
     },
-    [activeId, sessions, t, isHistorical, setSessions, setActiveId, setMessages],
+    [activeId, sessions, t, describeError, isHistorical, setSessions, setActiveId, setMessages],
   )
 
   const handleExport = useCallback(
@@ -239,9 +241,9 @@ export function useSessionHandlers({
       setSessions((p) => p.map((s) => (s.session_id === info.session_id ? info : s)))
     } catch (e) {
       console.warn('retry_ai_session failed:', e)
-      addToast('error', errorMessage(e, t('chat.retry_failed', 'Failed to retry the session.')), 5000)
+      addErrorToast(describeError(e, t('chat.retry_failed', 'Failed to retry the session.')))
     }
-  }, [activeId, t, setSessions])
+  }, [activeId, t, describeError, setSessions])
 
   return {
     refresh,

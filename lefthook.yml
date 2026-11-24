@@ -162,7 +162,9 @@ pre-commit:
           echo "frontend-typecheck: skipped (node_modules not installed)"
           exit 0
         fi
-        cd "$FRONTEND_DIR" && npx tsc --noEmit
+        # Build mode checks the composite tsconfig.node.json reference too;
+        # plain --noEmit fails with TS6305 until that reference is built.
+        cd "$FRONTEND_DIR" && npx tsc -b
     wire-error-i18n-coverage:
       # ADR-019 Follow-up #3 guard: fail fast if a wire code is added to
       # the Rust snapshot without accompanying en+ko translation entries.

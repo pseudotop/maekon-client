@@ -59,6 +59,7 @@ import type {
   IntegrationInboxRefreshResponse,
   IntegrationInboxResponse,
   IntegrationStatus,
+  IntentExecutionProvenance,
   Interruption,
   ListOverridesQuery,
   LocalSuggestion,
@@ -109,6 +110,7 @@ import type {
   WorkflowPreset,
   WorkSession,
 } from './contracts'
+import { decodeExactIntentLookup, decodeIntentProvenance, isOpaqueIntentId } from './intentExecution'
 import { normalizeAppSettingsForUi } from './settings-normalization'
 import { handleStandaloneRequest, isStandaloneModeEnabled } from './standalone'
 
@@ -122,12 +124,14 @@ const MAX_RETRIES = 2
 export class ApiClientError extends Error {
   readonly code: string
   readonly status: number
+  readonly executionProvenance: IntentExecutionProvenance | null
 
-  constructor(code: string, message: string, status: number) {
+  constructor(code: string, message: string, status: number, provenance: IntentExecutionProvenance | null = null) {
     super(message)
     this.name = 'ApiClientError'
     this.code = code
     this.status = status
+    this.executionProvenance = provenance
   }
 }
 
@@ -1075,7 +1079,8 @@ export async function executeIntentHint(payload: ExecuteIntentHintRequest): Prom
         const err = await standaloneResponse.json().catch(() => ({ error: 'Intent execution failed (demo)' }))
         throw new Error(err.error || 'Intent execution failed (demo)')
       }
-      return standaloneResponse.json()
+      const body: ExecuteIntentHintResponse = await standaloneResponse.json()
+      return { ...body, execution_provenance: decodeIntentProvenance(body.execution_provenance, payload.submission_id) }
     }
   }
 
@@ -1095,11 +1100,43 @@ export async function executeIntentHint(payload: ExecuteIntentHintRequest): Prom
       signal: controller.signal,
     })
     if (!res.ok) {
-      throw await apiErrorFromResponse(res)
+      const body = (await res
+        .clone()
+        .json()
+        .catch(() => null)) as { execution_provenance?: unknown } | null
+      const error = await apiErrorFromResponse(res)
+      throw new ApiClientError(
+        error.code,
+        error.message,
+        error.status,
+        decodeIntentProvenance(body?.execution_provenance, payload.submission_id),
+      )
     }
-    return res.json()
+    const body: ExecuteIntentHintResponse = await res.json()
+    return { ...body, execution_provenance: decodeIntentProvenance(body.execution_provenance, payload.submission_id) }
   } finally {
     clearTimeout(timeoutId)
+  }
+}
+
+// #12061: Observe one retained submission, without replay, retry or demo fallback.
+export async function fetchIntentExecution(submissionId: string): Promise<IntentExecutionProvenance | null> {
+  if (!isOpaqueIntentId(submissionId) || isStandaloneModeEnabled()) return null
+  const query = new URLSearchParams({ submission_id: submissionId })
+  const url = await resolveApiUrl(`${BASE_URL}/automation/audit?${query}`)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+  try {
+    const response = await fetch(url, {
+      ...(await withResolvedLocalAuthHeaders({ method: 'GET', cache: 'no-store' })),
+      signal: controller.signal,
+    })
+    if (!response.ok) return null
+    return decodeExactIntentLookup(await response.json(), submissionId)
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
   }
 }
 

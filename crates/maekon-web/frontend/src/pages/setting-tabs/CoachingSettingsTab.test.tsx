@@ -78,8 +78,8 @@ describe('CoachingSettingsTab — master toggle (#5707)', () => {
 
     renderWithProviders(<CoachingSettingsTab />)
 
-    // The first checkbox in the tab is the master toggle.
-    const masterToggle = screen.getAllByRole('checkbox')[0]
+    // The first switch in the tab is the master toggle.
+    const masterToggle = screen.getAllByRole('switch')[0]
     expect(masterToggle).not.toBeChecked()
   })
 
@@ -98,7 +98,7 @@ describe('CoachingSettingsTab — master toggle (#5707)', () => {
 
     renderWithProviders(<CoachingSettingsTab />)
 
-    const masterToggle = screen.getAllByRole('checkbox')[0]
+    const masterToggle = screen.getAllByRole('switch')[0]
     fireEvent.click(masterToggle)
 
     // handleCoachingChange calls form.setFormData — the spy must have fired.

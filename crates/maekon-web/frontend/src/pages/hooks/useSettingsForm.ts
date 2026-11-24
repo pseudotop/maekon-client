@@ -44,8 +44,8 @@ import {
   surfaceUnknownModelPolicy,
 } from '../../features/providerSurfaces'
 import { invalidateAiReadinessSnapshotCache } from '../../hooks/useAiReadinessSnapshot'
-import { useToast } from '../../hooks/useToast'
-import { translateError, type WireErrorLocale } from '../../i18n/translateError'
+import { addErrorToast, useToast } from '../../hooks/useToast'
+import { type ErrorDisplay, useErrorDisplay } from '../../i18n/errorDisplay'
 import {
   cloneAiProviderProfileConfig,
   isLlmModelCompatibilityUnknown,
@@ -73,6 +73,8 @@ export interface SettingsFormResult {
 
   // Mutations
   saveMutation: { isPending: boolean }
+  /** Saves through the same mutation as the Save button; onboarding (#13734) awaits the result. */
+  saveSettings: (next: AppSettings) => Promise<AppSettings>
   updateActionMutation: { isPending: boolean; mutate: (action: UpdateAction) => void }
   requestNotificationPermissionMutation: { isPending: boolean; mutate: () => void }
   requestScreenCapturePermissionMutation: { isPending: boolean; mutate: () => void }
@@ -142,7 +144,7 @@ export interface SettingsFormResult {
 
 export interface ExportRecoveryState {
   dataType: ExportDataType
-  detail: string
+  display: ErrorDisplay
   storageFailure: boolean
 }
 
@@ -151,7 +153,8 @@ export interface ExportRecoveryState {
 // ---------------------------------------------------------------------------
 
 export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const queryClient = useQueryClient()
   const { show: showToast } = useToast()
 
@@ -424,7 +427,7 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
       showToast('success', t('settings.savedFull'), 5000)
     },
     onError: (error: Error) => {
-      showToast('error', error.message, 5000)
+      addErrorToast(describeError(error, t('settings.saveFailed')))
     },
   })
 
@@ -435,7 +438,7 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
       showToast('success', t('settings.updateActionSuccess'), 3000)
     },
     onError: (error: Error) => {
-      showToast('error', error.message, 5000)
+      addErrorToast(describeError(error, t('settings.updateActionFailed')))
     },
   })
 
@@ -461,7 +464,7 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
       }
     },
     onError: (error: Error) => {
-      showToast('error', error.message, 5000)
+      addErrorToast(describeError(error, t('settings.permissionRequestFailed')))
     },
   })
 
@@ -490,7 +493,7 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
       }
     },
     onError: (error: Error) => {
-      showToast('error', error.message, 5000)
+      addErrorToast(describeError(error, t('settings.permissionRequestFailed')))
     },
   })
 
@@ -504,7 +507,7 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
       showToast('success', t('settings.notifTestSuccess'), 3000)
     },
     onError: (error: Error) => {
-      showToast('error', error.message, 5000)
+      addErrorToast(describeError(error, t('settings.notifTestFailed')))
     },
   })
 
@@ -524,7 +527,7 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
       )
     },
     onError: (error: Error) => {
-      showToast('error', error.message, 5000)
+      addErrorToast(describeError(error, t('settings.permissionOpenSystemSettingsFailed')))
     },
     onSettled: () => {
       setPendingDesktopPermissionKind(null)
@@ -1006,11 +1009,11 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
       })
       handleModelDiscoveryResult(which, current.model, requestSignature, result)
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const display = describeError(error, t('settingsAutomation.modelDiscoveryFailed'))
       setModelCatalog((currentCatalog) => ({ ...currentCatalog, [which]: [] }))
       setModelCatalogDetails((currentDetails) => ({ ...currentDetails, [which]: [] }))
-      setModelCatalogNotice((currentNotice) => ({ ...currentNotice, [which]: message }))
-      showToast('error', message, 5000)
+      setModelCatalogNotice((currentNotice) => ({ ...currentNotice, [which]: display.text }))
+      addErrorToast(display)
     } finally {
       setModelCatalogLoading(null)
     }
@@ -1029,14 +1032,13 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
   }
 
   const showExportError = (dataType: ExportDataType, error: unknown) => {
-    const locale = (i18n.resolvedLanguage ?? i18n.language ?? 'en') as WireErrorLocale
-    const detail = translateError(error, locale)
+    const display = describeError(error)
     setExportRecovery({
       dataType,
-      detail,
+      display,
       storageFailure: isApiErrorCode(error, 'storage.failed'),
     })
-    showToast('error', `${t('settings.exportFailed')}: ${detail}`, 5000)
+    addErrorToast({ ...display, text: `${t('settings.exportFailed')}: ${display.text}` }, 5000)
   }
 
   const handleExport = async (dataType: ExportDataType, allowReauth = true) => {
@@ -1083,6 +1085,7 @@ export function useSettingsForm(data: SettingsDataResult): SettingsFormResult {
     saveDisabled,
 
     saveMutation: { isPending: saveMutation.isPending },
+    saveSettings: saveMutation.mutateAsync,
     updateActionMutation: { isPending: updateActionMutation.isPending, mutate: updateActionMutation.mutate },
     requestNotificationPermissionMutation: {
       isPending: requestNotificationPermissionMutation.isPending,

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use maekon_core::error::CoreError;
+use maekon_core::models::intent_execution::IntentProviderClass;
 use maekon_core::ports::llm_provider::{InterpretedAction, LlmProvider, ScreenContext};
 
 pub struct LocalLlmProvider;
@@ -19,6 +20,14 @@ impl Default for LocalLlmProvider {
 
 #[async_trait]
 impl LlmProvider for LocalLlmProvider {
+    fn intent_provider_class(&self) -> IntentProviderClass {
+        IntentProviderClass::Rule
+    }
+
+    fn intent_forwards_skill_context(&self) -> Option<bool> {
+        Some(false)
+    }
+
     async fn interpret_intent(
         &self,
         screen_context: &ScreenContext,
@@ -242,5 +251,7 @@ mod tests {
         let provider = LocalLlmProvider::new();
         assert_eq!(provider.provider_name(), "local-rule-based");
         assert!(!provider.is_external());
+        assert_eq!(provider.intent_provider_class(), IntentProviderClass::Rule);
+        assert_eq!(provider.intent_forwards_skill_context(), Some(false));
     }
 }

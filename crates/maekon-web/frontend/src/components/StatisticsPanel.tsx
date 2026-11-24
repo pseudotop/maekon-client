@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { chart, chartPalette, colors, iconSize, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
+import { formatHours, formatMinutes } from '../utils/formatters'
 import { Card, CardTitle } from './ui'
 
 interface DailyStatistics {
@@ -38,7 +39,7 @@ function DeltaArrow({ delta, invertPositive = false }: { delta: number; invertPo
 
   return (
     <span className={isGood ? 'text-semantic-success' : 'text-semantic-error'}>
-      {isPositive ? '\u2191' : '\u2193'} {Math.abs(delta).toFixed(1)}h
+      {isPositive ? '\u2191' : '\u2193'} {formatHours(Math.abs(delta))}
     </span>
   )
 }
@@ -75,19 +76,21 @@ export default function StatisticsPanel({ statistics }: StatisticsPanelProps) {
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Card padding="md">
           <p className={cn(typography.body, colors.text.secondary)}>{t('statisticsPanel.deepWork')}</p>
-          <p className={cn(typography.stat.large, colors.text.primary)}>{statistics.deep_work_hours.toFixed(1)}h</p>
+          <p className={cn(typography.stat.large, colors.text.primary)}>{formatHours(statistics.deep_work_hours)}</p>
           {statistics.comparison && <DeltaArrow delta={statistics.comparison.deep_work_delta} />}
         </Card>
 
         <Card padding="md">
           <p className={cn(typography.body, colors.text.secondary)}>{t('statisticsPanel.communication')}</p>
-          <p className={cn(typography.stat.large, colors.text.primary)}>{statistics.communication_hours.toFixed(1)}h</p>
+          <p className={cn(typography.stat.large, colors.text.primary)}>
+            {formatHours(statistics.communication_hours)}
+          </p>
           {statistics.comparison && <DeltaArrow delta={statistics.comparison.communication_delta} invertPositive />}
         </Card>
 
         <Card padding="md">
           <p className={cn(typography.body, colors.text.secondary)}>{t('statisticsPanel.meetings')}</p>
-          <p className={cn(typography.stat.large, colors.text.primary)}>{statistics.meeting_hours.toFixed(1)}h</p>
+          <p className={cn(typography.stat.large, colors.text.primary)}>{formatHours(statistics.meeting_hours)}</p>
         </Card>
 
         <Card padding="md">
@@ -108,7 +111,7 @@ export default function StatisticsPanel({ statistics }: StatisticsPanelProps) {
                 <YAxis type="category" dataKey="label" width={120} tick={chart.axis.tick} />
                 <Tooltip
                   contentStyle={chart.tooltipStyle}
-                  formatter={(value: number) => [`${Math.round(value)}%`, 'Share']}
+                  formatter={(value: number) => [`${Math.round(value)}%`, t('statisticsPanel.share')]}
                 />
                 <Bar dataKey="percentage" radius={[0, 4, 4, 0]}>
                   {regimeData.map((entry) => (
@@ -141,7 +144,7 @@ export default function StatisticsPanel({ statistics }: StatisticsPanelProps) {
             </div>
             <div>
               <p className={cn(typography.label, colors.text.primary)}>
-                Longest Focus: {statistics.longest_focus_mins} min
+                {t('statisticsPanel.longestFocus', { duration: formatMinutes(statistics.longest_focus_mins) })}
               </p>
               <p className={cn(typography.body, colors.text.secondary)}>{statistics.longest_focus_content}</p>
             </div>

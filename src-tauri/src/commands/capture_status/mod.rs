@@ -21,6 +21,7 @@ use types::{
 
 use std::sync::atomic::Ordering;
 use tauri::{command, AppHandle, Emitter, Runtime, State};
+use tauri_plugin_global_shortcut::ShortcutState;
 use tracing::debug;
 
 use crate::ipc_error::IpcError;
@@ -149,13 +150,44 @@ pub async fn get_capture_status(
     Ok(capture_status_response(&state, paused, indicator_visible))
 }
 
+/// Actual route decisions live with the shared transition, not in UI adapters.
+#[derive(Clone, Copy)]
+pub(crate) enum CapturePauseRequest {
+    Ipc,
+    Shortcut(ShortcutState),
+    Tray,
+}
+
+pub(crate) fn apply_capture_pause_request(
+    state: &AppState,
+    request: CapturePauseRequest,
+) -> Result<Option<bool>, IpcError> {
+    match request {
+        CapturePauseRequest::Shortcut(phase) if phase != ShortcutState::Pressed => Ok(None),
+        CapturePauseRequest::Tray
+            if !crate::magic_overlay::effective_capture_permitted(state, false) =>
+        {
+            Ok(None)
+        }
+        _ => state
+            .capture_pause_state
+            .toggle()
+            .map(Some)
+            .map_err(IpcError::from),
+    }
+}
+
 #[command]
 pub async fn toggle_capture_pause(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<CaptureStatusResponse, IpcError> {
-    let was_paused = state.capture_paused.fetch_xor(true, Ordering::Relaxed);
-    let new_paused = !was_paused;
+    let new_paused =
+        apply_capture_pause_request(&state, CapturePauseRequest::Ipc)?.ok_or_else(|| {
+            IpcError::from(maekon_core::ports::vision::capture_denied(
+                "IPC pause transition unavailable",
+            ))
+        })?;
     let indicator_visible = state.indicator_visible.load(Ordering::Relaxed);
 
     let payload = capture_status_response(&state, new_paused, indicator_visible);
@@ -287,7 +319,7 @@ pub async fn get_panel_position(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         position::{
             is_position_valid, parse_position, resolve_point_monitor_index,
@@ -295,6 +327,190 @@ mod tests {
         },
         types::CaptureStatusResponse,
     };
+
+    use super::{apply_capture_pause_request, CapturePauseRequest};
+    use crate::runtime_state::{AppState, CaptureContext, ConnectionStatus};
+    use maekon_core::consent::{ConsentManager, ConsentPermissions};
+    use maekon_core::ports::vision::CapturePauseState;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tauri_plugin_global_shortcut::ShortcutState;
+
+    pub(crate) struct PauseFixture {
+        pub(crate) state: AppState,
+        _runtime: tokio::runtime::Runtime,
+        _dir: tempfile::TempDir,
+    }
+
+    impl PauseFixture {
+        pub(crate) fn new(granted: bool) -> Self {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Arc::new(
+                maekon_storage::sqlite::SqliteStorage::open(&dir.path().join("pause.db"), 1, None)
+                    .unwrap(),
+            );
+            let consent = Arc::new(ConsentManager::new(dir.path().join("consent.json")));
+            if granted {
+                consent
+                    .grant_consent(
+                        ConsentPermissions {
+                            screen_capture: true,
+                            ..Default::default()
+                        },
+                        30,
+                    )
+                    .unwrap();
+            }
+            let paused = Arc::new(AtomicBool::new(false));
+            let pause = Arc::new(CapturePauseState::new(paused.clone()));
+            let (update_action_tx, _) = tokio::sync::mpsc::unbounded_channel();
+            let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+            let state = AppState {
+                runtime_handle: runtime.handle().clone(),
+                background_runtime: crate::bootstrap_runtime::spawn_background_runtime().unwrap(),
+                config: maekon_core::config::AppConfig::default_config(),
+                storage,
+                update_control: None,
+                update_action_tx,
+                shutdown_tx,
+                recluster_requested: Arc::new(AtomicBool::new(false)),
+                magic_overlay: None,
+                coaching_engine: None,
+                capture_paused: paused,
+                capture_pause_state: pause,
+                indicator_visible: Arc::new(AtomicBool::new(true)),
+                connection: ConnectionStatus {
+                    server_connected: Arc::new(AtomicBool::new(false)),
+                    llm_connected: Arc::new(AtomicBool::new(false)),
+                    cli_connected: Arc::new(AtomicBool::new(false)),
+                },
+                focus_mode: Arc::new(crate::focus_mode::FocusModeState::new()),
+                focus_analyzer: None,
+                capture: CaptureContext {
+                    frame_processor: None,
+                    frame_storage: None,
+                    activity_monitor: None,
+                    accessibility_extractor: None,
+                    consent_manager: Some(consent),
+                    work_classifier: None,
+                },
+                analysis_health: None,
+                regime_storage: None,
+                regime_manager_snapshot: None,
+            };
+            Self {
+                state,
+                _runtime: runtime,
+                _dir: dir,
+            }
+        }
+
+        pub(crate) fn scheduler(&self) -> crate::scheduler::Scheduler {
+            let process = Arc::new(maekon_monitor::process::ProcessTracker::new());
+            crate::scheduler::Scheduler::new(
+                crate::scheduler::SchedulerConfig::default(),
+                Arc::new(maekon_monitor::system::SysInfoMonitor::new()),
+                Arc::new(maekon_monitor::activity::ActivityTracker::new(
+                    process.clone(),
+                )),
+                process,
+                Arc::new(maekon_vision::trigger::SmartCaptureTrigger::new(100)),
+                Arc::new(maekon_vision::processor::EdgeFrameProcessor::new(
+                    1, 1, None,
+                )),
+                self.state.storage.clone(),
+                self.state.storage.clone(),
+                None,
+                None,
+            )
+            .with_capture_paused(
+                self.state.capture_paused.clone(),
+                self.state.capture_pause_state.clone(),
+            )
+        }
+    }
+
+    #[test]
+    fn pause_routes_preserve_pressed_filter_and_real_tray_availability() {
+        let fixture = PauseFixture::new(true);
+        let state = &fixture.state;
+        let origin = state.capture_pause_state.snapshot().unwrap();
+        assert_eq!(
+            apply_capture_pause_request(
+                state,
+                CapturePauseRequest::Shortcut(ShortcutState::Released)
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(state.capture_pause_state.snapshot().unwrap(), origin);
+        for request in [
+            CapturePauseRequest::Ipc,
+            CapturePauseRequest::Shortcut(ShortcutState::Pressed),
+            CapturePauseRequest::Tray,
+        ] {
+            let before = state.capture_pause_state.snapshot().unwrap();
+            assert_eq!(
+                apply_capture_pause_request(state, request).unwrap(),
+                Some(true)
+            );
+            assert!(state.capture_paused.load(Ordering::Acquire));
+            assert_eq!(
+                apply_capture_pause_request(state, request).unwrap(),
+                Some(false)
+            );
+            assert!(!state.capture_paused.load(Ordering::Acquire));
+            assert_ne!(state.capture_pause_state.snapshot().unwrap(), before);
+        }
+        let mut blocked = PauseFixture::new(false);
+        let before = blocked.state.capture_pause_state.snapshot().unwrap();
+        assert_eq!(
+            apply_capture_pause_request(&blocked.state, CapturePauseRequest::Tray).unwrap(),
+            None
+        );
+        assert_eq!(
+            blocked.state.capture_pause_state.snapshot().unwrap(),
+            before
+        );
+        assert!(!blocked.state.capture_paused.load(Ordering::Acquire));
+        blocked
+            .state
+            .capture
+            .consent_manager
+            .as_ref()
+            .unwrap()
+            .grant_consent(
+                ConsentPermissions {
+                    screen_capture: true,
+                    ..Default::default()
+                },
+                30,
+            )
+            .unwrap();
+        blocked.state.config.vision.capture_enabled = false;
+        assert_eq!(
+            apply_capture_pause_request(&blocked.state, CapturePauseRequest::Tray).unwrap(),
+            None
+        );
+        assert_eq!(
+            blocked.state.capture_pause_state.snapshot().unwrap(),
+            before
+        );
+        // IPC/shortcut retain their existing ability to change pause while capture is disabled.
+        assert_eq!(
+            apply_capture_pause_request(&blocked.state, CapturePauseRequest::Ipc).unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            apply_capture_pause_request(
+                &blocked.state,
+                CapturePauseRequest::Shortcut(ShortcutState::Pressed)
+            )
+            .unwrap(),
+            Some(false)
+        );
+    }
 
     #[test]
     fn capture_status_response_serializes_effective_gate_fields() {

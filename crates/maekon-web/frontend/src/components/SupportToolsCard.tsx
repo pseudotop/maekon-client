@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { type DiagnosticsBundleResponse, fetchSupportDiagnostics } from '../api/client'
-import { addToast } from '../hooks/useToast'
-import { translateError, type WireErrorLocale } from '../i18n/translateError'
+import { addErrorToast, addToast } from '../hooks/useToast'
+import { type ErrorDisplay, useErrorDisplay } from '../i18n/errorDisplay'
 import { IS_TAURI } from '../utils/platform'
 import BugReportWizard from './BugReportWizard'
+import { SupportDetails } from './SupportDetails'
 import {
   Alert,
   Button,
   Card,
   CardTitle,
-  Checkbox,
   Dialog,
   DialogBody,
   DialogContent,
   DialogFooter,
   DialogTitle,
+  Switch,
 } from './ui'
 
 // #8079: SupportToolsCard was previously a private component inside
@@ -56,14 +57,15 @@ async function invokeDesktop<T>(cmd: string, args?: Record<string, unknown>): Pr
 }
 
 export function SupportToolsCard() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [open, setOpen] = useState(false)
   const [wizardOpen, setWizardOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [diagnostics, setDiagnostics] = useState<DiagnosticsBundleResponse | null>(null)
   const [runtimeLogs, setRuntimeLogs] = useState<RuntimeLogSnapshot | null>(null)
-  const [supportError, setSupportError] = useState<string | null>(null)
-  const [logsError, setLogsError] = useState<string | null>(null)
+  const [supportError, setSupportError] = useState<ErrorDisplay | null>(null)
+  const [logsError, setLogsError] = useState<ErrorDisplay | null>(null)
   const [developerDetails, setDeveloperDetails] = useState(readDeveloperDetailsPreference)
 
   const loadSupportData = useCallback(
@@ -77,15 +79,7 @@ export function SupportToolsCard() {
           fetchSupportDiagnostics(),
           includeLogs && IS_TAURI
             ? invokeDesktop<RuntimeLogSnapshot>('get_runtime_log_snapshot', { lineLimit: 200 }).catch((error) => {
-                // ADR-019 Follow-up #3: route IpcError through translateError so
-                // typed wire codes (internal.generic, storage.failed, etc.)
-                // surface as localized user-facing messages rather than raw
-                // Display strings. Falls through to the existing i18n key for
-                // non-IpcError shapes (HTTP/network layer errors before the
-                // command runs).
-                const locale = (i18n.language?.startsWith('ko') ? 'ko' : 'en') as WireErrorLocale
-                const message = translateError(error, locale) || t('settings.supportLogsLoadFailed')
-                setLogsError(message)
+                setLogsError(describeError(error, t('settings.supportLogsLoadFailed')))
                 return null
               })
             : Promise.resolve(null),
@@ -96,13 +90,12 @@ export function SupportToolsCard() {
           setRuntimeLogs(nextLogs)
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : t('settings.supportLoadFailed')
-        setSupportError(message)
+        setSupportError(describeError(error, t('settings.supportLoadFailed')))
       } finally {
         setLoading(false)
       }
     },
-    [developerDetails, t, i18n],
+    [developerDetails, t, describeError],
   )
 
   useEffect(() => {
@@ -133,10 +126,9 @@ export function SupportToolsCard() {
       await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2))
       addToast('success', t('settings.supportDiagnosticsCopied'), 4000)
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('settings.supportCopyFailed')
-      addToast('error', message, 5000)
+      addErrorToast(describeError(error, t('settings.supportCopyFailed')))
     }
-  }, [diagnostics, t])
+  }, [diagnostics, t, describeError])
 
   const handleCopyLogs = useCallback(async () => {
     try {
@@ -151,10 +143,9 @@ export function SupportToolsCard() {
       await navigator.clipboard.writeText(snapshot.recent_text)
       addToast('success', t('settings.supportLogsCopied'), 4000)
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('settings.supportCopyFailed')
-      addToast('error', message, 5000)
+      addErrorToast(describeError(error, t('settings.supportCopyFailed')))
     }
-  }, [runtimeLogs, t])
+  }, [runtimeLogs, t, describeError])
 
   const handleOpenAlphaFeedback = useCallback(() => {
     const opened = window.open(ALPHA_FEEDBACK_URL, '_blank', 'noopener,noreferrer')
@@ -209,7 +200,7 @@ export function SupportToolsCard() {
             </div>
 
             <label className="flex cursor-pointer items-center gap-3">
-              <Checkbox checked={developerDetails} onChange={(e) => handleDeveloperToggle(e.target.checked)} />
+              <Switch checked={developerDetails} onCheckedChange={handleDeveloperToggle} />
               <div>
                 <span className="text-content-strong text-sm">{t('settings.supportDeveloperDetails')}</span>
                 <p className="text-content-secondary text-xs">{t('settings.supportDeveloperDetailsDesc')}</p>
@@ -218,7 +209,8 @@ export function SupportToolsCard() {
 
             {supportError && (
               <Alert variant="error" title={t('settings.supportLoadFailedTitle')}>
-                <p>{supportError}</p>
+                <p>{supportError.text}</p>
+                <SupportDetails detail={supportError.detail} />
               </Alert>
             )}
 
@@ -321,7 +313,8 @@ export function SupportToolsCard() {
 
                 {logsError && (
                   <Alert variant="warning" title={t('settings.supportLogsUnavailable')}>
-                    <p>{logsError}</p>
+                    <p>{logsError.text}</p>
+                    <SupportDetails detail={logsError.detail} />
                   </Alert>
                 )}
 

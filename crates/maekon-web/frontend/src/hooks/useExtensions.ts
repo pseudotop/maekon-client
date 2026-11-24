@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { type ErrorDisplay, useErrorDisplay } from '../i18n/errorDisplay'
 
 /**
  * Extension registry hook (ADR-029, #8586).
@@ -81,7 +82,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 export interface UseExtensions {
   extensions: ExtensionView[]
   loading: boolean
-  error: string | null
+  error: ErrorDisplay | null
   refresh: () => Promise<void>
   install: (installId: string, revision: number) => Promise<ExtensionOutcome>
   setEnablement: (installId: string, enabled: boolean, revision: number) => Promise<ExtensionOutcome>
@@ -90,19 +91,25 @@ export interface UseExtensions {
 }
 
 export function useExtensions(): UseExtensions {
+  const describeError = useErrorDisplay()
   const [extensions, setExtensions] = useState<ExtensionView[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [failure, setFailure] = useState<{ cause: unknown } | null>(null)
+  const requestRef = useRef(0)
 
   const refresh = useCallback(async () => {
+    const request = ++requestRef.current
     setLoading(true)
     try {
-      setExtensions(await invoke<ExtensionView[]>('list_extensions'))
-      setError(null)
+      const next = await invoke<ExtensionView[]>('list_extensions')
+      if (request !== requestRef.current) return
+      setExtensions(next)
+      setFailure(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (request !== requestRef.current) return
+      setFailure({ cause: err })
     } finally {
-      setLoading(false)
+      if (request === requestRef.current) setLoading(false)
     }
   }, [])
 
@@ -160,5 +167,6 @@ export function useExtensions(): UseExtensions {
     [refresh],
   )
 
+  const error = failure ? describeError(failure.cause) : null
   return { extensions, loading, error, refresh, install, setEnablement, rollback, uninstall }
 }

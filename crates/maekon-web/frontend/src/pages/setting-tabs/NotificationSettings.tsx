@@ -3,7 +3,7 @@
  */
 import { useTranslation } from 'react-i18next'
 import type { NotificationSettings as NotificationSettingsType } from '../../api/client'
-import { Button, Card, CardTitle, Checkbox, GuidancePanel, Input } from '../../components/ui'
+import { Button, Card, CardTitle, GuidancePanel, Input, Switch } from '../../components/ui'
 import { colors, form, typography } from '../../styles/tokens'
 
 interface NotificationSettingsProps {
@@ -51,7 +51,7 @@ export default function NotificationSettings({
             <span className={`${colors.text.secondary} ${typography.weight.medium}`}>{t('settings.notifEnabled')}</span>
             <p className={colors.text.tertiary}>{t('settings.notifEnabledDesc')}</p>
           </div>
-          <Checkbox checked={notification.enabled} onChange={(e) => onChange('enabled', e.target.checked)} />
+          <Switch checked={notification.enabled} onCheckedChange={(next) => onChange('enabled', next)} />
         </label>
 
         <div className={`mb-6 flex items-center justify-between gap-4 border-b pb-4 ${form.sectionDivider}`}>
@@ -77,9 +77,9 @@ export default function NotificationSettings({
           {/* idle notification */}
           <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
             <label className="flex cursor-pointer items-center">
-              <Checkbox
+              <Switch
                 checked={notification.idle_notification}
-                onChange={(e) => onChange('idle_notification', e.target.checked)}
+                onCheckedChange={(next) => onChange('idle_notification', next)}
                 className="mr-3"
               />
               <div>
@@ -106,9 +106,9 @@ export default function NotificationSettings({
           {/* UI note */}
           <div className={`grid grid-cols-1 items-start gap-4 border-t pt-4 md:grid-cols-2 ${form.sectionDivider}`}>
             <label className="flex cursor-pointer items-center">
-              <Checkbox
+              <Switch
                 checked={notification.long_session_notification}
-                onChange={(e) => onChange('long_session_notification', e.target.checked)}
+                onCheckedChange={(next) => onChange('long_session_notification', next)}
                 className="mr-3"
               />
               <div>
@@ -135,9 +135,9 @@ export default function NotificationSettings({
           {/* UI note */}
           <div className={`grid grid-cols-1 items-start gap-4 border-t pt-4 md:grid-cols-2 ${form.sectionDivider}`}>
             <label className="flex cursor-pointer items-center">
-              <Checkbox
+              <Switch
                 checked={notification.high_usage_notification}
-                onChange={(e) => onChange('high_usage_notification', e.target.checked)}
+                onCheckedChange={(next) => onChange('high_usage_notification', next)}
                 className="mr-3"
               />
               <div>

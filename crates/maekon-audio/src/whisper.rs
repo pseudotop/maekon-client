@@ -18,9 +18,15 @@ use maekon_core::models::audio::{AudioBuffer, TranscriptionResult};
 use maekon_core::ports::pii_sanitizer::PiiSanitizer;
 use maekon_core::ports::stt_provider::SttProvider;
 
+enum WhisperContextHandle {
+    Loaded(Arc<Mutex<WhisperContext>>),
+    #[cfg(all(test, feature = "whisper"))]
+    Unloaded,
+}
+
 pub struct WhisperSttProvider {
-    /// Arc-wrapped so it can be cloned into spawn_blocking closures safely.
-    ctx: Arc<Mutex<WhisperContext>>,
+    /// Loaded contexts stay Arc-wrapped for spawn_blocking closures.
+    ctx: WhisperContextHandle,
     language: SttLanguage,
     transcribing: AtomicBool,
     /// D5 iter-4: injected PII sanitizer (`maekon-vision::VisionPiiSanitizer`
@@ -55,7 +61,7 @@ impl WhisperSttProvider {
         })?;
 
         Ok(Self {
-            ctx: Arc::new(Mutex::new(ctx)),
+            ctx: WhisperContextHandle::Loaded(Arc::new(Mutex::new(ctx))),
             language,
             transcribing: AtomicBool::new(false),
             pii_sanitizer: None,
@@ -110,7 +116,16 @@ impl SttProvider for WhisperSttProvider {
         let duration_secs = audio.duration_secs;
 
         // Clone the Arc so the closure is 'static — no unsafe required.
-        let ctx = self.ctx.clone();
+        #[cfg(not(test))]
+        let WhisperContextHandle::Loaded(ctx) = &self.ctx;
+        #[cfg(all(test, feature = "whisper"))]
+        let ctx = match &self.ctx {
+            WhisperContextHandle::Loaded(ctx) => ctx,
+            WhisperContextHandle::Unloaded => {
+                panic!("model-free rejection must precede context access")
+            }
+        };
+        let ctx = Arc::clone(ctx);
         // D5 iter-4: capture sanitizer for post-transcribe sanitization.
         let sanitizer = self.pii_sanitizer.clone();
         let pii_level = self.pii_level;
@@ -180,6 +195,11 @@ impl SttProvider for WhisperSttProvider {
             let detected_lang =
                 whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(|s| s.to_string());
 
+            // Keep serialization through inference and state destruction even if
+            // the async caller is cancelled while this blocking task continues.
+            drop(state);
+            drop(ctx_guard);
+
             let processing_secs = start.elapsed().as_secs_f32();
             debug!(
                 text_len = text.len(),
@@ -220,6 +240,26 @@ mod tests {
             assert!(flag.load(Ordering::SeqCst));
         }
         assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn busy_transcribe_is_rejected_before_model_context_access() {
+        let provider = WhisperSttProvider {
+            ctx: WhisperContextHandle::Unloaded,
+            language: SttLanguage::Auto,
+            transcribing: AtomicBool::new(true),
+            pii_sanitizer: None,
+            pii_level: PiiFilterLevel::Standard,
+        };
+        let error = SttProvider::transcribe(&provider, AudioBuffer::new(vec![0.125f32]))
+            .await
+            .expect_err("busy transcription must be rejected before model access");
+        let CoreError::SpeechToText { code, message } = error else {
+            panic!("busy transcription must return a SpeechToText error");
+        };
+        assert_eq!(code, maekon_core::error_codes::AudioCode::SttFailed);
+        assert_eq!(message, "transcription already in progress");
+        assert!(provider.transcribing.load(Ordering::SeqCst));
     }
 
     #[test]

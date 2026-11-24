@@ -7,6 +7,334 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-rc.12] - 2026-11-24
+
+### Upgrading from rc.11
+
+- To update from rc.11, choose "Check now" on the Updates page; rc.11 uses
+  the Pre-release (RC) update channel by default. On macOS, use the DMG or
+  PKG instead (see below). Updates roll out in stages, so rc.11 may show no
+  update when rc.12 is first published; the signed installers are also on the
+  release page. Before the first launch with an existing profile, quit Maekon
+  and keep a separate copy of your data. On Linux, include the hidden
+  `.db_key` file.
+- The local database moves to schema version 58. Before upgrading it, Maekon
+  copies the old database to `maekon.backup.v57.<timestamp>` next to it. rc.11
+  and earlier refuse to open the upgraded database, so going back needs that
+  copy or a separate data directory. On Linux, go back no further than rc.11
+  (see Known issues).
+- If you use Chat over a provider API key, verify the connection again in
+  Settings → AI & Automation → "Verify connection". The check now also covers
+  the address Chat sends your key to, so checks made with rc.11 no longer
+  count, and Chat over an API key stays unverified until a new check gets a
+  reply. The check sends a fixed message, and the reply counts toward the
+  daily token budget.
+- Chat over an API key now uses the Endpoint URL saved with that provider's
+  API settings (see Changed). If you saved one, for example while trying a
+  proxy, make sure it is an address you trust before you verify the
+  connection, because Chat sends your API key there.
+- If an AI notice says "These AI settings were saved by an older version",
+  select your provider again in Settings → AI & Automation and save. Provider
+  API settings saved without a provider choice, by an older build or a
+  hand-edited configuration, are not used for Chat until you do.
+- If you chose Simplified Chinese in an earlier release, Maekon may have
+  replaced that choice with your system language. Choose Simplified Chinese
+  again in Settings. If your system language is Traditional Chinese or plain
+  "zh" and you used rc.7 to rc.11, Maekon may now open in Simplified Chinese;
+  choose another language in Settings if you prefer.
+- Linux: if you installed rc.11 from the `.deb`, install the rc.12 `.deb`.
+  An update from inside the app replaces only the app's executable, so it
+  does not add the automation sandbox worker that the rc.11 `.deb` left out
+  (see Fixed).
+- macOS: as with rc.11, install this release from the DMG or PKG. The in-app
+  updater replaces only the executable inside the app, which has not been
+  verified to keep the app's code signature intact.
+
+### Added
+
+- Automation: the Natural Language Command bar shows what Maekon observed for
+  each command under "Observed execution": the route you asked for, how the
+  command was planned (by a model or by rules), each provider attempt and how
+  it ended, the steps that ran, and whether the action completed. "Check this
+  execution" looks the command up again without sending the action a second
+  time. When no single matching record is found, that does not mean the action
+  did not run, and running the command again starts a new action that may
+  repeat the earlier one. Recent observations may be gone after Maekon
+  restarts.
+- Automation: on Linux and Windows, screen analysis now also finds areas in
+  the screen image itself, such as icons and controls without text. Through
+  rc.11 these platforms found areas only from recognized text. Recognized
+  text is now linked to the area that contains it. Finding an area does not
+  by itself let automation click it. This has been checked with test windows
+  on Linux, not yet in installed builds.
+
+### Changed
+
+- First-run setup now has five steps instead of seven: Welcome, Permissions,
+  activity monitoring, Connect AI, and Ready. In Connect AI you choose what AI
+  may use, pick a provider, save its API key, and check the key without
+  leaving setup. Next stays off until the check passes, and the step says why
+  a check failed. When the provider needs a restart, "Quit Maekon" closes the
+  app and setup opens at the same step next time so you can check the key;
+  "Restart later" moves on and leaves the check for Settings → AI &
+  Automation. Saving a provider here also turns on the analysis that
+  summaries and suggestions use. "Continue without AI" saves no AI settings,
+  and "Continue without monitoring" starts Maekon without collecting
+  anything. Coaching alerts stay off until you turn them on in Settings →
+  Coaching Preferences.
+- The Dashboard now opens on today's one-line summary, up to three next tasks,
+  and four key numbers: active time, deep work, context switches, and idle
+  time. The summary works without an AI provider and always shows whether it
+  came from the rule-based digest or an AI narrative. On a day with no
+  activity, the Dashboard shows how to get started (today) or that nothing
+  was recorded (an earlier day) instead.
+- CPU, memory, processes, and capture counts moved off the Dashboard to their
+  own System Metrics page, which Support also links to. Existing links to the
+  monitoring view still open it.
+- The side panel now lists six main destinations (Dashboard, Timeline, Search,
+  Focus, Reports, Chat) and three groups, More, Tools, and System, which stay
+  collapsed unless the screen you are on is in one of them. The rail keeps
+  only the menu, Settings, and Privacy, and Support moves into the System
+  group next to System Metrics. Names that appeared twice now differ:
+  Replay's timeline tab is Playback, the focus report is the Productivity
+  Report, Data Export in Privacy is Backup & Export, and in Settings the
+  Telemetry tab is Capture Protection and the Coaching tab is Coaching
+  Preferences. Several icons now match what they open. In windows 900 px wide
+  or less the side panel starts collapsed. Every previous address still opens
+  the same screen.
+- On/off options in Settings, such as launch at login, notifications, the
+  tracking schedule, audio, screen capture, and Focus Auto, are now switches
+  instead of checkboxes. Screen readers announce each one as on or off, and
+  Space or Enter turns it on or off. Lists where you pick several items, such
+  as weekdays, stay checkboxes.
+- Date and time fields in Settings and the date range picker now have the same
+  height, border, and focus outline as other fields, and their pickers use
+  dark colors in the dark theme.
+- When something fails, Maekon now shows a short, readable message instead
+  of the raw error text or an internal code. The original text is kept under
+  "Details for support", which starts collapsed and has a "Copy details"
+  button, and an error notification stays open while its details are shown. A
+  Chat reply that fails says that the AI could not finish it, and Retry stays.
+- AI readiness notices no longer show internal reason codes; they are kept
+  under "Details for support". Features that are blocked for the same reason
+  and need the same step are listed on one line.
+- Durations now use one format on every screen: seconds under a minute,
+  minutes under an hour, and hours and minutes above that, such as "6h 7m",
+  with units in your language. The status bar shows the local time of the last
+  capture, or "No capture yet", and shows CPU and memory once the first reading
+  arrives instead of "--".
+- The Updates page has a single "Check now" button, in its header, which stays
+  off while an update downloads or installs. Its status labels say what they
+  describe (Connection, Signal, and Stage), explain their values when you hover
+  over them, and read "Periodic check", "Recent", and "Delayed" instead of
+  "Polling", "Fresh", and "Stale".
+- Default activity types on the Day and Recalibration screens, work type
+  names in the Week view and the Day timeline, and Chat's suggestion counts
+  now appear in your language instead of in English or as internal names.
+- The Korean interface translates text that still appeared in English, uses
+  one Korean term each for providers, activity types, and segments instead of
+  several, and names settings in its directions as they appear on screen.
+- Chat over a provider API key now sends its requests to the Endpoint URL
+  saved with that provider's API settings in Settings → AI & Automation, so it
+  works through a proxy or gateway, and your API key goes only to that
+  address. Without a saved Endpoint URL, Chat uses the provider's standard
+  address as before. Changing the Endpoint URL, like changing the key, model,
+  or provider, means verifying the connection again.
+- When provider API settings were saved without a provider choice, the AI
+  notices in Settings and Chat now say how to fix it: "These AI settings were
+  saved by an older version. Select your provider again in AI Settings and
+  save."
+- The desktop framework moves to Tauri 2.12.4, with wry 0.57.0 and tao 0.37.1,
+  and keeps the GTK4 and WebKitGTK 6 port on Linux. On Wayland the window now
+  uses GTK's own title bar, which shows the current window title. These Linux
+  changes have not yet been checked on a physical desktop.
+- Automation: while a step waits for text to appear on screen, local OCR reads
+  each screen image once and reuses that result until the image changes,
+  instead of reading the same image again every half second. External OCR
+  providers are still called on every check, so consent and privacy checks
+  apply to each call.
+
+### Fixed
+
+- Capture schedules now use the time zone you selected for both screen and
+  microphone capture, including overnight windows and daylight-saving changes.
+  In rc.11, capture followed your computer's time zone. If you selected a
+  different zone, review the allowed hours after upgrading. "Local" uses the
+  system time zone.
+- If a saved work-context record contains an unreadable timestamp, Maekon
+  now reports a storage error when reading that record or listing it for
+  processing. Earlier versions could show the time of the read or leave
+  the date blank.
+- The WBS XLSX draft page now tells you separately whether it could confirm
+  the file was generated and whether its receipt was uploaded. If only the
+  local file is confirmed, the page keeps its details visible.
+- Tasks, "Find my next step", coaching, and recalibration show a translated
+  message when a request fails. You can open the support details for the
+  original error. If a task has changed or needs consent, the action reports
+  that result so you can refresh the list or review permissions.
+- Cancelling an analysis releases its slot so a later request can run.
+- A normal operating-system quit signal now uses the same shutdown path as
+  Quit in the app.
+- GUI automation results no longer report that the screen changed after an
+  action without looking at the screen. Through rc.11 the post-action check
+  copied the action's own result, so every successful action reported
+  `screen_changed: true`. Until screen sampling is connected in the app, that
+  check (`verification`) is `null`; the configured wait after each action
+  still applies.
+- Automation: if the screen changes while an external OCR provider is reading
+  it, Maekon discards that provider's answer instead of using its positions.
+- Requests to an installed Codex, Claude, or Gemini CLI for OCR, suggestions,
+  and summaries, and Codex and Gemini Chat messages, now have size limits: a
+  prompt over 1 MiB is refused, and the CLI is stopped when it writes more than
+  4 MiB of output or 256 KiB of error output. When such a request times out or
+  is cancelled, Maekon now stops the CLI process it started and waits up to one
+  second for it to exit. Processes that the CLI starts on its own may keep
+  running.
+- Linux: the notice that `apt-get purge` prints now names the database key
+  file, `~/.local/share/maekon/.db_key`, and warns that deleting the profile
+  can make kept encrypted database copies unreadable. It no longer suggests
+  `secret-tool`, which manages a different store and did not touch that key.
+  Package remove and purge still keep your settings, database, and keys.
+- Linux: the `.deb` now installs the automation sandbox worker,
+  `/usr/bin/maekon-sandbox-worker`, next to the app. The rc.11 `.deb` left it
+  out, so with the OS sandbox on, automation actions could not start. The
+  Linux terminal installer and the Windows and macOS builds already included
+  the worker.
+- Messages that ask you to turn on "AI text processing and external providers"
+  now send you to Privacy → Data Controls, where that consent is, instead of
+  Privacy → Consent.
+- The Updates page now says "released 5 minutes ago" instead of "released 5
+  minute ago". It also shows the age of the last status signal, such as "2m
+  ago", instead of a count of seconds, and the time of a rollback as a local
+  date and time instead of the raw timestamp.
+- The notice shown when capture history needs a PIN now sends you to
+  Settings → Capture Protection, where the PIN is set up, instead of to
+  Privacy settings.
+- Choosing Simplified Chinese, or using it as the system language, now shows
+  the app in Chinese. Since rc.7 it showed English.
+- When Maekon picks your language from the system, such as Korean from
+  ko-KR, the language selector in Settings now shows that language instead of
+  English.
+- In Japanese, Simplified Chinese, and Spanish, Maekon's error messages now
+  appear in that language. Through rc.11 they appeared in English.
+
+### Security
+
+- Privacy Mode applies to screen and microphone capture. Pausing capture
+  invalidates held images, including recent thumbnails and processing results
+  that arrive after capture resumes.
+- Events queued for upload to a signed-in ONESHIM server are now checked
+  against your current privacy settings at the first upload, on every retry,
+  at shutdown, and when the queue is recovered after a restart. Events from
+  apps or window titles you have excluded since are not uploaded, and window
+  titles are filtered again under the current external data policy. Through
+  rc.11, excluded apps and title rules were applied once, when an event was
+  queued, with the privacy settings from when Maekon started.
+- WBS XLSX draft: reading the spreadsheet template you choose is now bounded.
+  Maekon refuses a template over 10 MiB from its file size before reading it
+  and never reads past that limit, so a device or pipe chosen as a template
+  cannot keep the read going. Inside the template it counts the bytes actually
+  decompressed (at most 32 MiB per part and 100 MiB in total) instead of the
+  sizes the file declares, and it refuses a template with more sheets than a
+  valid workbook can hold. A crafted template could previously make Maekon
+  decompress far more data than these limits or spend a long time on one file.
+- ZIP handling, used for update archives and XLSX files, moves to zip 9.0.5,
+  which fixes RUSTSEC-2026-0367, RUSTSEC-2026-0368, and RUSTSEC-2026-0369 in
+  zip 8.6.0. Maekon's copy also bounds the extra work that malformed archive
+  metadata can cause, and the updater rejects an archive entry whose name
+  cannot be read.
+- TLS: rustls-webpki moves to 0.103.16 and the bundled root certificate sets
+  (webpki-roots and webpki-root-certs) to 1.0.10, which fix RUSTSEC-2026-0381
+  and RUSTSEC-2026-0383 and no longer include retired or distrusted
+  certificate authorities. rustls is at 0.23.46.
+- Other Rust dependencies built into the app move to fixed releases: tokio
+  1.54.1 (RUSTSEC-2026-0386), ctutils 0.4.4 (RUSTSEC-2026-0385), block-buffer
+  0.12.1 (GHSA-qwgh-2vcv-g2f7), event-listener 5.4.2 (RUSTSEC-2026-0221), and
+  quick-xml 0.41 or later for every crate that uses it (RUSTSEC-2026-0194,
+  RUSTSEC-2026-0195). async-executor moves to 1.14.1 because 1.14.0, which
+  could use freed memory when an executor was dropped, was withdrawn.
+- rustix moves to 1.1.6, which fixes RUSTSEC-2026-0486: in 1.1.4, reading an
+  extended file attribute into an empty buffer was not memory-safe. xattr
+  moves to 1.7.0 so that it keeps working with the new rustix. Maekon does
+  not reach the affected functions.
+- The spatial index that matches clicks to on-screen text no longer uses
+  heapless 0.8.0, which is affected by RUSTSEC-2026-0574 to RUSTSEC-2026-0582.
+  Maekon keeps rstar 0.13 as a reviewed local copy without that dependency,
+  so a click selects the same text as in rc.11.
+- Date and time handling moves off chrono 0.4.45 and chrono-tz 0.10.4, which
+  are no longer maintained (RUSTSEC-2026-0543, RUSTSEC-2026-0555), to
+  sad-chrono 0.4.48 and jiff-tzdb 0.1.4. Stored timestamps keep their format,
+  and time zone names and offsets are unchanged.
+- url moves to 2.5.9 and form_urlencoded to 1.2.3, which fix
+  RUSTSEC-2026-0592.
+- cookie moves to 0.18.3, which fixes RUSTSEC-2026-0594. Maekon does not
+  build the private cookie code that the advisory affects.
+- cxx 1.0.195 (RUSTSEC-2026-0202), quinn-proto 0.11.19 (RUSTSEC-2026-0338 to
+  RUSTSEC-2026-0342), and quinn-udp 0.5.16 (RUSTSEC-2026-0538) are updated in
+  the lockfile as well. Release builds do not compile these crates.
+- Frontend build and test tools move to fixed releases, including Vite,
+  Vitest, Storybook, undici, glob, minimatch, brace-expansion, source-map-js,
+  and fast-xml-parser. These tools build and test the interface and do not
+  run in the installed app.
+- Supply-chain checks now compare every package in the Rust lockfile,
+  including locally patched crates, with the OSV database, which also covers
+  advisories published only on GitHub, and fail on any advisory that is not
+  explicitly accepted. cargo-deny now reports unmaintained and unsound
+  advisories for every crate, not only Maekon's own.
+
+### Known issues
+
+- Revoking and restoring screen-recording permission in the operating system
+  during an active capture still needs verification with the installed app.
+  Coverage for excluded background windows and display changes also depends
+  on the native observer for each operating system.
+- The encrypted local database is built with SQLCipher 4.14.0 on SQLite
+  3.51.3, which is affected by RUSTSEC-2026-0459: SQLite before 3.54.0 can
+  return uninitialized memory when it opens a database together with a `-wal`
+  file of a different page size. This needs such a file next to the database
+  in Maekon's data directory. No SQLCipher release on SQLite 3.54 or later is
+  available to this build yet; Maekon will move to one when its database
+  library ships it.
+- Automation and its OS sandbox are both off by default. When the sandbox is
+  on, built-in automation runs with the strictest profile the OS can enforce
+  rather than the profile selected in Settings, and on Windows its actions can
+  still run inside the app's own process when no memory or CPU limits are set.
+- Linux has no system tray and no local OCR. On Wayland the tracking panel, the
+  overlay, and "Find my next step" are unavailable, and active-window
+  detection, global shortcuts, and automation input work only with X11 or
+  XWayland apps.
+- Linux: provider keys saved in Settings are kept in the kernel keyring, which
+  the kernel clears on reboot. The local database key is not affected; it is
+  kept in the `.db_key` file.
+- Linux: rc.8 to rc.10 delete the `.db_key` file when they start, even on a
+  profile that rc.11 or later has upgraded and that they then refuse to open,
+  and keep the database key only in the kernel keyring, which a reboot clears.
+  If you started one of them on such a profile, start rc.11 or later before you
+  reboot, so that it writes `.db_key` again. After a reboot without that file,
+  the database and its backup copies, which use the same key, can no longer be
+  opened.
+- Windows: the installers and executables are not Authenticode-signed yet, so
+  SmartScreen may warn when you run them.
+- "Find my next step" opens its own session only over an API-key or local
+  provider. If a provider CLI is the only one set up, open a Chat first; the
+  panel says so instead of reporting the assistant as offline.
+- Chat through a provider API is not available in the "Direct OAuth
+  (experimental)" access mode, and Chat reports an access-mode mismatch. Use
+  "Direct endpoints" with an API key, or "Installed provider CLI".
+- A local model name typed as a Chat override must match Ollama's list
+  exactly, including its tag, such as `llama3.2:latest`; an untagged name is
+  reported as not installed.
+- AI suggestions from screen text and AI summaries have been tested with
+  stand-in providers and test data, not yet end to end with a real provider in
+  an installed build.
+- Traditional Chinese is not available. On a new install with a Traditional
+  Chinese system language, Maekon uses the next supported language in your
+  system's list, or English.
+- Provider CLIs are updated by their vendors, not by Maekon. After updating
+  one or changing PATH, restart Maekon if Settings shows "Restart required"
+  for it. To report a CLI problem, open Support & Diagnostics, press Refresh,
+  and attach the copied diagnostics rather than raw CLI output.
+
 ## [0.0.1-rc.11] - 2026-09-27
 
 ### Upgrading from rc.10

@@ -154,18 +154,18 @@ test.describe('Sub-pathname routing redirects survive empty data', () => {
 })
 
 test.describe('Shell sidebar-hidden grid toggle', () => {
-  // After the category restructure, SidePanel always shows the active group's
-  // full tree — even for previously-childless routes like /day and /chat.
-  // The `sidebar-hidden` class now only applies when the user manually
-  // collapses via Cmd/Ctrl+B (or clicks the active group icon).
-  test('/day shows the monitor group tree (no longer sidebar-hidden)', async ({ page }) => {
+  // SidePanel always shows the main tree for main-group routes — even for
+  // childless routes like /day and /chat.  The `sidebar-hidden` class only
+  // applies when the user collapses via Cmd/Ctrl+B (or clicks the active
+  // group icon), or when the window is 900px wide or narrower (#13736).
+  test('/day shows the main tree (no longer sidebar-hidden)', async ({ page }) => {
     await page.goto('/day')
     await page.waitForURL('**/day')
 
     const shell = page.locator('.app-shell')
     await expect(shell).not.toHaveClass(/sidebar-hidden/)
 
-    // Sidebar should render the monitor group tree with Day selected.
+    // Sidebar should render the main tree with Day revealed in its bundle and selected.
     const tree = page.locator('[role="tree"]')
     await expect(tree).toBeVisible()
     const selected = tree.getByRole('treeitem', { selected: true })
@@ -178,7 +178,7 @@ test.describe('Shell sidebar-hidden grid toggle', () => {
     await expect(page.locator('.app-shell')).not.toHaveClass(/sidebar-hidden/)
   })
 
-  test('/chat shows the data group tree (no longer sidebar-hidden)', async ({ page }) => {
+  test('/chat shows the main tree (no longer sidebar-hidden)', async ({ page }) => {
     await page.goto('/chat')
     await page.waitForURL('**/chat')
     await expect(page.locator('.app-shell')).not.toHaveClass(/sidebar-hidden/)
@@ -197,7 +197,7 @@ test.describe('Shell sidebar-hidden grid toggle', () => {
     await page.waitForURL('**/day')
     await expect(page.locator('.app-shell')).not.toHaveClass(/sidebar-hidden/)
 
-    await page.getByTestId('nav-group-monitor').click()
+    await page.getByTestId('nav-group-main').click()
     await expect(page.locator('.app-shell')).toHaveClass(/sidebar-hidden/)
   })
 })

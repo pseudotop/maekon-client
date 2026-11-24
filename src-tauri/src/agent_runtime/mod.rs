@@ -17,6 +17,7 @@ use maekon_core::ports::coaching_storage::CoachingStoragePort;
 use maekon_core::ports::consent_manager::ConsentManagerPort;
 use maekon_core::ports::focus_storage::FocusStorage;
 use maekon_core::ports::storage::StorageService;
+use maekon_core::ports::vision::CapturePauseState;
 #[cfg(feature = "analysis")]
 use maekon_network::oauth::refresh_coordinator::TokenRefreshCoordinator;
 use maekon_web::RealtimeEvent;
@@ -91,7 +92,7 @@ pub(crate) struct AgentRuntimeBundle {
     coaching_storage: Option<Arc<dyn CoachingStoragePort>>,
     magic_overlay: Option<crate::magic_overlay::MagicOverlayHandle>,
     overlay_driver: Option<Arc<dyn maekon_core::ports::overlay_driver::OverlayDriver>>,
-    capture_paused: Option<Arc<std::sync::atomic::AtomicBool>>,
+    capture_paused: Option<(Arc<std::sync::atomic::AtomicBool>, Arc<CapturePauseState>)>,
     detection_active: Option<Arc<std::sync::atomic::AtomicBool>>,
     scene_finder_slot: Option<SceneFinderSlot>,
     server_health_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -525,8 +526,8 @@ impl AgentRuntimeBundle {
         if let Some(driver) = self.overlay_driver {
             scheduler = scheduler.with_overlay_driver(driver);
         }
-        if let Some(capture_paused) = self.capture_paused {
-            scheduler = scheduler.with_capture_paused(capture_paused);
+        if let Some((capture_paused, capture_pause_state)) = self.capture_paused {
+            scheduler = scheduler.with_capture_paused(capture_paused, capture_pause_state);
         }
         if let Some(detection_active) = self.detection_active {
             scheduler = scheduler.with_detection_active(detection_active);
@@ -958,8 +959,12 @@ impl AgentRuntimeBundle {
         self
     }
 
-    pub(crate) fn with_capture_paused(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
-        self.capture_paused = Some(flag);
+    pub(crate) fn with_capture_paused(
+        mut self,
+        flag: Arc<std::sync::atomic::AtomicBool>,
+        pause: Arc<CapturePauseState>,
+    ) -> Self {
+        self.capture_paused = Some((flag, pause));
         self
     }
 

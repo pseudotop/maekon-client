@@ -375,7 +375,9 @@ curl -s -X POST http://localhost:10090/api/automation/gui/sessions/a1b2c3d4-e5f6
     },
     "verification": {
       "screen_changed": true,
-      "changed_regions": 1
+      "changed_regions": 1,
+      "text_found": null,
+      "settled": true
     },
     "retry_count": 0,
     "elapsed_ms": 145,

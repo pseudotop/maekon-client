@@ -724,14 +724,18 @@ fn handle_tray_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> bo
     match classify_tray_menu_action(id) {
         TrayMenuAction::ToggleCapture => {
             if let Some(state) = app.try_state::<crate::runtime_state::AppState>() {
-                if !crate::magic_overlay::effective_capture_permitted(&state, false) {
-                    debug!("tray: toggle-capture ignored because capture is unavailable");
-                    return true;
-                }
-                let was_paused = state
-                    .capture_paused
-                    .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-                let new_paused = !was_paused;
+                use crate::commands::capture_status::{
+                    apply_capture_pause_request, CapturePauseRequest,
+                };
+                let new_paused =
+                    match apply_capture_pause_request(&state, CapturePauseRequest::Tray) {
+                        Ok(Some(paused)) => paused,
+                        Ok(None) => return true,
+                        Err(error) => {
+                            debug!("tray pause transition failed: {error}");
+                            return true;
+                        }
+                    };
                 let indicator_visible = state
                     .indicator_visible
                     .load(std::sync::atomic::Ordering::Relaxed);

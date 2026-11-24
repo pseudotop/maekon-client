@@ -116,13 +116,19 @@ test.describe('Responsive', () => {
     const shellBox = await page.locator('.app-shell').boundingBox()
     expect(shellBox?.width).toBeLessThanOrEqual((page.viewportSize()?.width ?? 430) + 1)
 
-    // The monitor group is already active on / so the SidePanel tree is
-    // rendered.  Drill into "All Frames" (unique label) to navigate into
-    // /timeline/all — this exercises the ActivityBar + SidePanel pair on a
-    // narrow viewport without needing to toggle the already-active group.
+    // #13736: at 900px and below the SidePanel starts collapsed so the page
+    // keeps its width.  The already-active main group icon opens it again;
+    // then the tree drills into Timeline → /timeline/all — this exercises
+    // the ActivityBar + SidePanel pair on a narrow viewport.
     const tree = page.locator('[role="tree"]')
+    await expect(tree).toHaveCount(0)
+    await expect(page.locator('.app-shell')).toHaveClass(/sidebar-hidden/)
+    await page.getByTestId('nav-group-main').click()
     await expect(tree).toBeVisible()
-    await tree.getByRole('treeitem', { name: /all frames/i }).click()
+    await tree
+      .getByRole('treeitem', { name: i18nRegex('nav.timeline') })
+      .first()
+      .click()
 
     await expect(page).toHaveURL(/\/timeline\/all/)
     await expect(page.getByRole('heading', { name: timelineHeadingName })).toBeVisible()

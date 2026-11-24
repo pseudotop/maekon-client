@@ -13,7 +13,7 @@ use maekon_core::ports::oauth::OAuthPort;
 use maekon_core::ports::session_storage::SessionStoragePort;
 use maekon_core::ports::stt_provider::SttProvider;
 use maekon_core::ports::transcript_storage::TranscriptStoragePort;
-use maekon_core::ports::vision::FrameProcessor;
+use maekon_core::ports::vision::{CapturePauseState, FrameProcessor};
 use maekon_core::ports::work_classifier::WorkTypeClassifier;
 use maekon_storage::sqlite::SqliteStorage;
 use maekon_web::update_control::{UpdateAction, UpdateControl};
@@ -630,6 +630,7 @@ pub struct AppState {
     pub coaching_engine: Option<Arc<dyn CoachingPort>>,
     /// Whether capture/monitoring is paused (toggled via tray or IPC).
     pub capture_paused: Arc<AtomicBool>,
+    pub capture_pause_state: Arc<CapturePauseState>,
     /// Whether the tracking indicator border is visible.
     pub indicator_visible: Arc<AtomicBool>,
     /// Connection status flags for server, LLM, and CLI.
@@ -1033,6 +1034,7 @@ mod tests {
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
 
         let web_port = Arc::new(AtomicU16::new(0));
+        let capture_paused = Arc::new(AtomicBool::new(false));
         let registration = ManagedStateBuilder::new(
             AppState {
                 runtime_handle: handle,
@@ -1046,7 +1048,8 @@ mod tests {
                 recluster_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 magic_overlay: None,
                 coaching_engine: None,
-                capture_paused: Arc::new(AtomicBool::new(false)),
+                capture_pause_state: Arc::new(CapturePauseState::new(capture_paused.clone())),
+                capture_paused,
                 indicator_visible: Arc::new(AtomicBool::new(true)),
                 connection: ConnectionStatus {
                     server_connected: Arc::new(AtomicBool::new(false)),

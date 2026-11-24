@@ -72,9 +72,9 @@ export default function StatusSection() {
 
   return (
     <>
-      {/* Live status panel */}
+      {/* Live status panel. #13740: "Check now" lives in the UpdatesLayout header on this page. */}
       <div id="section-status">
-        <UpdatePanel />
+        <UpdatePanel hideCheckNow />
       </div>
 
       <AboutCard />

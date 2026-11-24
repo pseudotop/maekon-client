@@ -4,6 +4,21 @@ import { layout } from '../styles/tokens'
 const STORAGE_KEY_WIDTH = 'maekon-sidebar-width'
 const STORAGE_KEY_COLLAPSED = 'maekon-sidebar-collapsed'
 
+/**
+ * #13736: at or below this window width the side panel starts collapsed so the
+ * main content keeps its room (the window's minimum width is 800px). The user
+ * can still open it; that choice lasts until the window crosses the line again.
+ */
+export const NARROW_SHELL_QUERY = '(max-width: 900px)'
+
+function matchesNarrowShell(): boolean {
+  try {
+    return window.matchMedia?.(NARROW_SHELL_QUERY).matches ?? false
+  } catch {
+    return false
+  }
+}
+
 function loadPersistedWidth(): number {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_WIDTH)
@@ -27,21 +42,42 @@ function loadPersistedCollapsed(): boolean {
 export function useShellLayout() {
   // Lazy initializers — called only once on mount
   const [sidebarWidth, setSidebarWidth] = useState(loadPersistedWidth)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(loadPersistedCollapsed)
+  // The user's own wide-window choice. Only this one is persisted, so a
+  // narrow window never overwrites it.
+  const [preferCollapsed, setPreferCollapsed] = useState(loadPersistedCollapsed)
+  const [isNarrow, setIsNarrow] = useState(matchesNarrowShell)
+  // Whether the user opened the panel while the window is narrow.
+  const [narrowOpen, setNarrowOpen] = useState(false)
   const [isResizing, setIsResizing] = useState(false)
   const startXRef = useRef(0)
   const startWidthRef = useRef(0)
+
+  const sidebarCollapsed = isNarrow ? !narrowOpen : preferCollapsed
+
+  useEffect(() => {
+    const query = window.matchMedia?.(NARROW_SHELL_QUERY)
+    if (!query) return
+    const onChange = (event: MediaQueryListEvent) => {
+      setIsNarrow(event.matches)
+      // Entering the narrow range collapses again, even if the panel had
+      // been opened the last time the window was this narrow.
+      if (event.matches) setNarrowOpen(false)
+    }
+    setIsNarrow(query.matches)
+    query.addEventListener?.('change', onChange)
+    return () => query.removeEventListener?.('change', onChange)
+  }, [])
 
   // Persist to localStorage — skip during active mouse resize to avoid hundreds of writes
   useEffect(() => {
     if (isResizing) return
     try {
       localStorage.setItem(STORAGE_KEY_WIDTH, String(sidebarWidth))
-      localStorage.setItem(STORAGE_KEY_COLLAPSED, String(sidebarCollapsed))
+      localStorage.setItem(STORAGE_KEY_COLLAPSED, String(preferCollapsed))
     } catch {
       /* ignore */
     }
-  }, [sidebarWidth, sidebarCollapsed, isResizing])
+  }, [sidebarWidth, preferCollapsed, isResizing])
 
   // NOTE: --sidebar-width is set by AppShell, not here.
   // AppShell combines sidebarCollapsed with the active route's sub-nav
@@ -49,8 +85,9 @@ export function useShellLayout() {
   // column to 0 instead of leaving a phantom 260px cell behind.
 
   const toggleSidebar = useCallback(() => {
-    setSidebarCollapsed((prev) => !prev)
-  }, [])
+    if (isNarrow) setNarrowOpen((prev) => !prev)
+    else setPreferCollapsed((prev) => !prev)
+  }, [isNarrow])
 
   // Stable ref — does not depend on sidebarWidth (reads startWidthRef at drag time)
   const onResizeStart = useCallback((e: React.MouseEvent) => {

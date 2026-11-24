@@ -122,7 +122,7 @@ impl SyntheticAudioCapture {
         let mut samples = self.samples.lock();
         samples.fill(0.0);
         samples.clear();
-        samples.extend(std::iter::repeat(0.125_f32).take(16_000));
+        samples.extend(std::iter::repeat_n(0.125_f32, 16_000));
         self.buffer_zeroized.store(false, Ordering::SeqCst);
     }
 

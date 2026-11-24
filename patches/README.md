@@ -1,8 +1,8 @@
-# Vendored Tauri-stack fork: delta manifest + refresh process
+# Vendored dependency forks: delta manifests and refresh process
 
-`Cargo.toml` `[patch.crates-io]` overrides 8 active crates with local vendored
-source under this directory so the Linux build can use GTK4/WebKitGTK 6 instead
-of the upstream GTK3/`webkit2gtk` line. The retired
+`Cargo.toml` `[patch.crates-io]` overrides the active crates in the manifest below
+with local vendored source under this directory so the Linux build can use
+GTK4/WebKitGTK 6 instead of the upstream GTK3/`webkit2gtk` line. The retired
 `tauri-plugin-webdriver-0.2.1` predecessor remains here as historical
 provenance but is not wired into the dependency graph. This document is the
 delta manifest:
@@ -71,15 +71,20 @@ refresh cycle.
 
 | Crate dir | Upstream version | Delta (files / lines) | Vendor commit | Modification commits | Why |
 | --- | --- | --- | --- | --- | --- |
-| `tao-0.35.2` | `tao` 0.35.2 | 10 files / ~5378 lines | `a94c1f3d84` | `b2155a581f`, `6c070616cc`, `a37c2a4b92`, `a69dcad3bd`, `ff5104aa9c`, `7e681d6ac2`, `43b9458ea4`, #12652 | Primary hard blocker. Owns the normal Linux window/event loop; must move off `gtk 0.18`/`gdk*-sys 0.18` (`v3_24` features) to `gtk4`/`v4_6` before anything downstream can compile against GTK4. Largest and highest-risk delta: `Cargo.toml` Linux target deps, `platform_impl/linux/{window,event_loop,monitor,util}.rs`, `platform_impl/linux/wayland/header.rs`, `platform/unix.rs` public extension surface, `device.rs`, `keyboard.rs`, `portal.rs`. **#12652**: the motion/click controller closures in `platform_impl/linux/event_loop.rs` capture *weak* window refs. A strong clone owned by the window's own controller is a reference cycle that GTK4 `gtk_window_destroy()` (unlike GTK3 `gtk_widget_destroy()`) never breaks, so `destroy` never fired, `WindowEvent::Destroyed` was never sent and Tauri kept a dead window under its label. |
-| `wry-0.55.1` | `wry` 0.55.1 | 8 files / ~718 lines | `a94c1f3d84` | `b2155a581f`, `1f91b427b7`, `6f4d27dd2c`, #12580, #12652 | WebKitGTK webview integration. `src/webkitgtk/*` migrated from `webkit2gtk::WebView` to `webkit6::WebView`; both `GtkBox` attach paths set `vexpand`/`hexpand` on the webview to restore the GTK3 port's expand-and-fill box packing, without which the Linux webview is 0 px tall (#12580); `src/webkitgtk/drag_drop.rs` disables the GTK3 drag-drop signal handler pending a `DropTarget`-based port (only 1 line carries an explicit `E31` comment marker in this crate). **#12652**: the synthetic back/forward mouse gesture closures in `src/webkitgtk/synthetic_mouse_events.rs` capture a *weak* webview ref — the gesture is owned by that webview, and a strong capture is a self-cycle GTK4 destroy never breaks, so every destroyed window leaked its webview. |
-| `tauri-runtime-wry-2.11.2` | `tauri-runtime-wry` 2.11.2 | 5 files / ~184 lines | `a94c1f3d84` | `6c070616cc`, `9cf4a7ec0a`, `9e5afba10f`, #12652 | Bridges Tao + Wry into the Tauri runtime. `Cargo.toml` gtk4/webkit6 deps, `src/lib.rs` `gtk::glib::IsA` -> `gtk::prelude::IsA`, `src/monitor/linux.rs` `workarea()` -> `geometry()` fallback (GTK4 removed monitor workarea), `src/undecorated_resizing.rs` full GTK3 `connect_button_press_event`/`WindowEdge` rewrite to GTK4 `GestureClick`/`SurfaceEdge`, `src/webview.rs` `webkit2gtk::WebView` -> `webkit6::WebView` type alias. **Correction**: issue #7722's originating review cited this crate's delta as "4 lines"; the actual pristine-vs-vendored diff measured for this manifest is ~178 lines across 5 files. Still comparatively small next to `tao`/`muda`/`tray-icon`, but not 4 lines — use the measured `UPSTREAM-DELTA.patch` as the source of truth. **#12652**: the GTK4 undecorated-resize gesture in `src/undecorated_resizing.rs` captures a *weak* webview ref for the same self-cycle reason as the Wry gesture. |
-| `tauri-2.11.2` | `tauri` 2.11.2 | 11 files / ~115 lines | `a94c1f3d84` | `b2155a581f`, `6c070616cc`, `9cf4a7ec0a`, `81d0a00a97` | Root feature aggregation. `Cargo.toml` `wry` feature list `webkit2gtk` -> `webkit6`, gtk4 deps, `muda` feature list drops `"gtk"` (Linux menu-to-GTK bridging removed — see `menu/menu.rs`, `menu/submenu.rs`, `manager/menu.rs`, `window/mod.rs`, all gated to `#[cfg(any(target_os = "macos", target_os = "windows"))]` on the GTK-menu-attachment call sites, i.e. Linux native menu attachment is now a documented no-op pending a GTK4 replacement). Doc-comment link updates (`webkit2gtk` -> `webkit6` URLs) and a `mobile/ios-api/Sources/Tauri/Logger.swift` whitespace-only reformat are also present (unrelated to E31; likely an editor/format pass caught in the same vendor commit). |
-| `muda-0.19.1` | `muda` 0.19.1 | 11 files / ~2053 lines | `a94c1f3d84` | `7ef51aa433`, `81d0a00a97` | Menu backend for Tauri/tray-icon. `src/platform_impl/gtk/*` (the GTK3 menu implementation) is gutted and replaced by a new `src/platform_impl/fallback/mod.rs` (+265 lines) that returns an in-process no-op/fallback menu on Linux — this is the "no-gtk linux muda fallback" referenced in commit `7ef51aa433`, not a GTK4 port. Large removed-line count (~1802 of the ~2053 total) reflects deleting the GTK3 implementation rather than porting it. |
-| `tray-icon-0.23.1` | `tray-icon` 0.23.1 | 7 files / ~1202 lines | `b2155a581f` (vendor + first modification are the **same commit** — see "Known issues") | `833d4e02d3` | Tray icon backend for Tauri. Same pattern as `muda`: `src/platform_impl/gtk/*` GTK3/`libappindicator` backend is disabled via a new `src/platform_impl/disabled.rs` that returns an unsupported-platform error on Linux/BSD, keeping Windows/macOS tray support intact. This crate carries the most explicit self-documentation of any vendored crate: its own `README.md` and `src/lib.rs` have 5 inline "Maekon E31 patch note" comments explaining the Linux/BSD disablement — read those directly for the fullest first-party rationale. |
-| `tauri-runtime-2.11.2` | `tauri-runtime` 2.11.2 | 3 files / ~18 lines | `a94c1f3d84` | `6c070616cc`, `9cf4a7ec0a` | Smallest real delta. `Cargo.toml` gtk4/webkit6 deps, `src/webview.rs` and `src/window.rs` `webkit2gtk::WebView`/`gtk::glib::IsA` type/trait-path updates to match the GTK4-clean Wry/Tao types flowing through this crate's trait definitions. |
-| `tauri-plugin-wdio-webdriver-1.2.0` | `tauri-plugin-wdio-webdriver` 1.2.0 | 3 files / 54 lines | `e97dc47c47` | `1655c4e8f3`, `d9855cc989`, `1037939bc5`, `0c79148599`, `fcff775229` | Active WebDriver cell. #11074 found that the registry crate still selected GTK3/`webkit2gtk` beside the patched Tauri runtime's GTK4/`webkit6` `WebView`. The local delta preserves the complete current 1.2.0 implementation, including its newer script-execution locking, while aligning the Linux manifest, WebKit prelude and JavaScriptCore crate paths, GDK4 texture snapshot encoding, and print operation with `cairo-rs` 0.21 / `glib` 0.22 / `gtk4` 0.11 / `javascriptcore6` 0.6 / `webkit6` 0.6. It also replaces two package-workspace-relative README links with immutable upstream links so the standalone public export remains link-clean, and normalizes three upstream rustdoc trailing spaces while preserving that whitespace-only delta verbatim. |
-| `tauri-plugin-webdriver-0.2.1` | `tauri-plugin-webdriver` 0.2.1 | 3 files / ~23 lines | `a94c1f3d84` (vendor + modification are the **same commit** — see "Known issues") | none | Historical predecessor, no longer referenced by `[patch.crates-io]` after #11074. It is retained only to preserve the earlier #4230/#7722 delta and must not be substituted for the active WDIO 1.2.0 package: doing so would discard later upstream behavior. |
+| `tao-0.37.1` | `tao` 0.37.1 | 9 files / 1840 lines | #13020 | #13020 (refresh); carried from 0.35.2: `b2155a581f`, `6c070616cc`, `a37c2a4b92`, `a69dcad3bd`, `ff5104aa9c`, `7e681d6ac2`, `43b9458ea4`, #12652 | Primary hard blocker. Owns the normal Linux window/event loop; must move off `gtk 0.18`/`gdk*-sys 0.18` (`v3_24` features) to `gtk4`/`v4_6` before anything downstream can compile against GTK4. Delta: `Cargo.toml` Linux target deps, `platform_impl/linux/{window,event_loop,monitor,util,device,keyboard,portal}.rs`, and the `platform/unix.rs` public extension surface. **#12652**: the motion/click controller closures in `platform_impl/linux/event_loop.rs` capture *weak* window refs. A strong clone owned by the window's own controller is a reference cycle that GTK4 `gtk_window_destroy()` (unlike GTK3 `gtk_widget_destroy()`) never breaks, so `destroy` never fired, `WindowEvent::Destroyed` was never sent and Tauri kept a dead window under its label. **#13020**: the vendored files are kept in upstream's format (`rustfmt --edition 2021 --config tab_spaces=2` reproduces upstream tao exactly); the 0.35.2 delta (~5378 lines) was mostly a 4-space reformat. Ported from 0.36–0.37: `RwLock` for `Window`'s fullscreen, size-constraint and theme state, std `LazyLock` (upstream dropped `once_cell`), JIS key mappings as `gdk::Key` constants, and removal of the Wayland `WlHeader` module (upstream #1218; GTK4's default client-side titlebar follows the window title). Not ported because they are GTK3-only: timestamp de-duplication of mouse signals with `Propagation::Proceed`, the configure-event maximize deferral, and the empty `EventBox` titlebar on undecorated Wayland windows — the GTK4 port uses event controllers, and GTK4 always draws client-side decorations on Wayland. |
+| `wry-0.57.0` | `wry` 0.57.0 | 8 files / 727 lines | #13020 | #13020 (refresh); carried from 0.55.1: `b2155a581f`, `1f91b427b7`, `6f4d27dd2c`, #12580, #12652 | WebKitGTK webview integration. `src/webkitgtk/*` migrated from `webkit2gtk::WebView` to `webkit6::WebView`; both `GtkBox` attach paths set `vexpand`/`hexpand` on the webview to restore the GTK3 port's expand-and-fill box packing, without which the Linux webview is 0 px tall (#12580); `src/webkitgtk/drag_drop.rs` disables the GTK3 drag-drop signal handler pending a `DropTarget`-based port. **#12652**: the synthetic back/forward mouse gesture closures in `src/webkitgtk/synthetic_mouse_events.rs` capture a *weak* webview ref. **#13020**: 0.57's new Linux code is moved to webkit6 — the permission-request handler uses webkit6's request types and `PermissionRequestExt`; display-capture detection calls `webkit6::functions::user_media_permission_is_for_display_device` (upstream gated it behind a `v2_42` feature wry does not define, so it always took the fallback; the patched stack requires WebKitGTK 2.50); the IPC handler reads the JSC value webkit6 passes directly; and the added `glib::{Cast, IsA}` import is dropped because glib 0.22 exports them only from the prelude. |
+| `tauri-runtime-wry-2.12.2` | `tauri-runtime-wry` 2.12.2 | 5 files / 202 lines | #13020 | #13020 (refresh); carried from 2.11.2: `6c070616cc`, `9cf4a7ec0a`, `9e5afba10f`, #12652 | Bridges Tao + Wry into the Tauri runtime. `Cargo.toml` gtk4/webkit6 deps, `src/lib.rs` `gtk::glib::IsA` -> `gtk::prelude::IsA`, `src/monitor/linux.rs` `workarea()` -> `geometry()` fallback (GTK4 removed monitor workarea), `src/webview.rs` `webkit6::WebView` type alias, and the GTK4 `GestureClick`/`SurfaceEdge` module of `src/undecorated_resizing.rs`, whose gesture captures a *weak* webview ref (#12652). **#13020**: that module is spliced onto upstream 2.12.2, whose Windows half moved to edition-2024 `unsafe` blocks. Upstream 2.12's GTK3 resize-inset hover cursor and its `Propagation::Stop` on a resize press are not ported: GTK4 controller propagation and claim semantics differ and need interactive Linux validation, so the 2.11 GTK4 behavior is kept. |
+| `tauri-2.12.4` | `tauri` 2.12.4 | 11 files / 131 lines | #13020 | #13020 (refresh); carried from 2.11.2: `b2155a581f`, `6c070616cc`, `9cf4a7ec0a`, `81d0a00a97` | Root feature aggregation. `Cargo.toml` `wry` feature list `webkit2gtk` -> `webkit6` and gtk4 deps. `muda` is requested with `["serde"]` only: upstream asks for `gtk3`, and with neither `gtk3` nor `gtk4` muda 0.20 compiles its own no-op backend, so Linux menu-to-GTK attachment stays a documented no-op (`menu/menu.rs`, `menu/submenu.rs`, `manager/menu.rs`, `window/mod.rs` gate the attachment call sites to macOS/Windows). **#13020**: `tray-icon` is requested with `["serde"]` only, because upstream's `libappindicator` feature re-enables GTK3 through `muda-gtk3`. Doc-comment links (`webkit6`) and a whitespace-only `mobile/ios-api/Sources/Tauri/Logger.swift` reformat are unchanged from the 2.11.2 delta. |
+| `tray-icon-0.25.1` | `tray-icon` 0.25.1 | 8 files / 404 lines | #13020 | #13020 (refresh); carried from 0.23.1: `833d4e02d3`, #9939 | Tray icon backend for Tauri. 0.25 splits Linux into a GTK3 AppIndicator backend (`libappindicator`, on by default, also enables `muda-gtk3`) and a pure-Rust D-Bus backend (`ksni`), and refuses to compile with neither. The patch removes the `libappindicator`/`muda-gtk3` features, their `dirs`/`libappindicator`/`gtk` dependencies and the GTK backend source, so GTK3 cannot be switched back on. Without `ksni`, Linux/BSD use `src/platform_impl/disabled.rs`, whose constructor returns an unsupported-platform error, so Linux tray behavior is unchanged; Windows/macOS support is intact. The crate docs and `README.md` carry "Maekon E31 patch note" comments. **#9939** (stable Windows tray UIA identity: `NIF_SHOWTIP`, `NIM_SETVERSION`/`NOTIFYICON_VERSION_4`, `NIN_SELECT`/`NIN_KEYSELECT`, LOWORD notification decoding, registration diagnostics) changed the vendored 0.23.1 Windows backend without regenerating its delta; #13020 carries it onto 0.25.1's GUID/`NIS_HIDDEN` visibility code and records it here. |
+| `tauri-runtime-2.12.2` | `tauri-runtime` 2.12.2 | 3 files / 18 lines | #13020 | #13020 (refresh); carried from 2.11.2: `6c070616cc`, `9cf4a7ec0a` | Smallest real delta. `Cargo.toml` gtk4/webkit6 deps, `src/webview.rs` and `src/window.rs` `webkit2gtk::WebView`/`gtk::glib::IsA` type/trait-path updates to match the GTK4-clean Wry/Tao types flowing through this crate's trait definitions. |
+| `tauri-plugin-wdio-webdriver-1.5.0` | `tauri-plugin-wdio-webdriver` 1.5.0 | 4 files / 67 lines | #13020 | #13020 (refresh); carried from 1.2.0: `1655c4e8f3`, `d9855cc989`, `1037939bc5`, `0c79148599`, `fcff775229` | Active WebDriver cell. #11074 found that the registry crate still selected GTK3/`webkit2gtk` beside the patched Tauri runtime's GTK4/`webkit6` `WebView`. Upstream 1.2.0 -> 1.5.0 did not change `src/platform/linux.rs`, so the port carries over unchanged: the Linux manifest, WebKit prelude and JavaScriptCore crate paths, GDK4 texture snapshot encoding and print operation aligned with `cairo-rs` 0.21 / `glib` 0.22 / `gtk4` 0.11 / `javascriptcore6` 0.6 / `webkit6` 0.6, two immutable upstream README links for the link-clean public export, and three rustdoc trailing spaces normalized verbatim. The package-local `permissions/autogenerated/reference.md` (written into the crate by the plugin build script) is kept so a build does not dirty the tree; it was missing from the 1.2.0 delta. `tauri-plugin-wdio` is 1.5.0 too. |
+| `tauri-plugin-webdriver-0.2.1` | `tauri-plugin-webdriver` 0.2.1 | 3 files / ~23 lines | `a94c1f3d84` (vendor + modification are the **same commit** — see "Known issues") | none | Historical predecessor, no longer referenced by `[patch.crates-io]` after #11074. It is retained only to preserve the earlier #4230/#7722 delta and must not be substituted for the active WDIO package: doing so would discard later upstream behavior. |
+
+**Retired in #13020:** `muda-0.19.1`. Its delta replaced the GTK3 menu backend with an in-process no-op
+fallback on Linux. muda 0.20 ships the same thing upstream: with neither `gtk3` nor `gtk4` enabled it
+compiles a `noop` backend. muda now resolves from crates.io and the patched `tauri` requests it with
+`["serde"]` only. If a future `tauri` or `tray-icon` refresh re-enables `muda/gtk3`, the GTK3 line
+reappears in `Cargo.lock` and the audit's GLib row blocks it.
 
 ## Exclusions
 
@@ -103,45 +108,45 @@ the wrong flag set — re-check the command above.
 
 ## Known issues
 
-### Historical `tauri-plugin-webdriver` MSRV exceeds workspace MSRV
+### Vendored MSRV vs. workspace MSRV
 
-The retired `patches/tauri-plugin-webdriver-0.2.1/Cargo.toml` declares
-`rust-version = "1.90"`. The workspace MSRV (`clients/maekon-client/Cargo.toml`
-`[workspace.package] rust-version`) is `1.88.0`. The active
-`tauri-plugin-wdio-webdriver-1.2.0` replacement declares Rust 1.77 and the
-retired crate is absent from the resolved graph, so this no longer violates
-the shipping workspace's MSRV. Every other active vendored crate
-declares a `rust-version` at or below the workspace floor (`tao` 1.74,
-`muda`/`tray-icon` 1.73, `wry` 1.77, `tauri`/`tauri-runtime`/
-`tauri-runtime-wry` 1.77.2).
+The workspace declares `rust-version = "1.95.0"` (`clients/maekon-client/Cargo.toml`
+`[workspace.package]`). After #13020 every active vendored crate declares a lower or equal floor
+(`tao`/`wry` 1.85, `tauri`/`tauri-runtime`/`tauri-runtime-wry`/`tray-icon` 1.90,
+`tauri-plugin-wdio-webdriver` 1.77). The retired `tauri-plugin-webdriver-0.2.1` declares 1.90, which
+used to exceed the old 1.88.0 workspace floor; it no longer does and stays absent from the resolved
+graph. Do not edit that provenance-only manifest.
 
-This historical outlier is flagged rather than fixed in place because lowering
-`rust-version` in `patches/tauri-plugin-webdriver-0.2.1/Cargo.toml` is a
-source change to provenance-only vendored code. Future cleanup may remove the
-retired directory as an explicit history-preserving change; it must not lower
-the manifest value and accidentally present the old crate as supported.
-
-### Two crates have no clean pristine-vendor commit boundary
+### Commit boundaries and delta drift
 
 For `tray-icon-0.23.1` and `tauri-plugin-webdriver-0.2.1`, the initial
 vendor (unpacking the pristine crates.io source into `patches/`) and the
 first source modification landed in the same commit (`b2155a581f` and
 `a94c1f3d84` respectively). For the other 6 original crates, the vendor commit
 (`a94c1f3d84`) is a clean, unmodified copy of the pristine crate, and every
-GTK4 source change is a separate later `fix:` commit. The active WDIO 1.2.0
-replacement also has a clean `e97dc47c47` -> `1655c4e8f3`/`d9855cc989`/
+GTK4 source change is a separate later `fix:` commit. The WDIO 1.2.0 package
+(replaced by 1.5.0 in #13020) also had a clean `e97dc47c47` -> `1655c4e8f3`/`d9855cc989`/
 `1037939bc5`/`0c79148599`/`fcff775229` boundary. This means git
 history alone cannot reconstruct a pristine baseline for those 2 crates —
 which is exactly the gap `UPSTREAM-DELTA.patch` now closes going forward:
 regardless of commit granularity, the pristine baseline is always one
 `curl`+`tar` away, not an archaeology exercise.
 
+The #13020 refresh vendored each active crate in a pristine commit separate from its port commit,
+but squash merges collapse PR history on `main`, so `UPSTREAM-DELTA.patch` stays the durable record.
+It also found two deltas that had drifted from their trees: #9939 changed the vendored `tray-icon`
+Windows backend and the WDIO package gained its generated permission reference without either delta
+being regenerated. Regenerate a crate's delta in the same change as any edit to that crate, not only
+during a refresh.
+
 ## Refresh procedure
 
 Follow this whenever a CVE/security fix, or a routine version bump, needs
-to land in one of these 8 crates. Do this per-crate, not as a batch — each
+to land in one of these crates. Do this per-crate, not as a batch — each
 crate's modifications are independent and a batch refresh makes review and
-rollback harder.
+rollback harder. When upstream versions are coupled (tauri 2.12 requires
+tauri-runtime/-wry 2.12, which require tao 0.37 and wry 0.57, plus muda 0.20 and
+tray-icon 0.25), refresh them in one PR but keep one port commit per crate (#13020).
 
 1. **Download pristine.** Fetch the new version's tarball directly from the
    immutable crates.io CDN (do not use the registry API JSON endpoint, which
@@ -167,6 +172,11 @@ rollback harder.
    #   git apply --3way -p1 --directory=patches/<name>-<new-version> \
    #     patches/<old-name>-<old-version>/UPSTREAM-DELTA.patch
    ```
+
+   Before merging, check that the vendored files still use upstream's formatting; a reformat turns the
+   whole file into one conflict. Upstream `tao` is reproduced exactly by
+   `rustfmt --edition 2021 --config tab_spaces=2`; `tray-icon` uses rustfmt defaults. Format the vendored
+   side to match upstream first, then merge (#13020 cut the `tao` delta from ~5378 to 1840 lines this way).
 
    Resolve any conflicts by hand, consulting the "why" column above for the
    intent of each hunk (most hunks are GTK3->GTK4/WebKitGTK6 API renames —
@@ -213,6 +223,9 @@ rollback harder.
    ```bash
    bash scripts/audit-e31-experimental-patches.sh
    ```
+
+   The crate-specific rows find the current `patches/<crate>-<version>/` directory themselves and block
+   when their target is missing (#13020: they used to name the old version and pass with 0 matches).
 
    This must report `Promotion blockers: 0` — it fails closed on any
    reintroduced `webkit2gtk`, GTK3 container/window/event API, GTK3 Tao
@@ -275,6 +288,14 @@ rollback harder.
    refresh's commit message or PR description so the next refresh has an
    accurate baseline instead of re-deriving it from scratch.
 
+   Measured after #13020 (`cargo tree --target x86_64-pc-windows-msvc -i ...`): `windows` still has 2
+   versions, but the vendored family (`tao`, `wry`, `tauri`, `tauri-runtime`, `tauri-runtime-wry`) moved
+   to `0.62.2` with `cpal`, `maekon-vision`, `sysinfo`, `xcap`, `webview2-com` and
+   `tauri-winrt-notification`; `0.61.3` is left only for `enigo` 0.6.1. `windows-sys` still has 5
+   versions: `0.52.0` (`self-replace`), `0.59.0` (`global-hotkey`), `0.60.2` (`keyring`, `rfd`),
+   `0.61.2` (most crates, including `muda`/`tray-icon`) and `0.45.0` (no direct Windows-target
+   dependent). None of the remaining splits are inside this fork.
+
 ## Weekly audit lane
 
 `scripts/audit-e31-experimental-patches.sh` is cheap (ripgrep pattern
@@ -320,10 +341,10 @@ empirically-verified mechanism writeup). Because it is expensive, it stays
 weekly rather than per-PR, matching this workflow's existing cadence and the
 repository's Actions-cost policy.
 
-## Exit criteria — when to drop this fork
+## GTK4 exit criteria — when to drop the Tauri-stack fork
 
 Drop the vendored patches and go back to plain upstream crates.io
-dependencies for all 8 crates once upstream `tauri-apps/tao`,
+dependencies for every patched crate once upstream `tauri-apps/tao`,
 `tauri-apps/wry`, `tauri-apps/tauri` (which pulls in `tauri-runtime` and
 `tauri-runtime-wry`), `tauri-apps/muda`, and `tauri-apps/tray-icon` ship
 native GTK4/WebKitGTK 6 support on their default/stable release line (not
@@ -335,7 +356,7 @@ just an opt-in feature flag still defaulting to GTK3). At that point:
    "Exclusions"), that crate no longer needs a local patch — remove its
    `[patch.crates-io]` entry and delete `patches/<name>-<version>/`
    entirely instead of re-vendoring it.
-3. Once all 8 entries are removed, `bash scripts/audit-e31-experimental-patches.sh`
+3. Once every entry is removed, `bash scripts/audit-e31-experimental-patches.sh`
    should report "No experimental patch root present" and can itself be
    retired (or kept as a permanent regression guard against a future GTK3
    dependency creeping back in).
@@ -348,3 +369,31 @@ GTK4/WebKitGTK 6 migration`) for the real Linux runner compile evidence
 (`gtk4 4.6.9`, `webkitgtk-6.0 2.50.4`, `exit_code=0`) that promoted this
 fork from experimental spike to the production `[patch.crates-io]` wiring
 it has today.
+
+
+## Archive security forks (#13038)
+
+These two corrections are independent of the GTK4 migration above. Their
+removal criteria are in their own provenance documents, not the GTK4 criteria.
+Both immutable crate archives were checksum-verified and committed pristine in
+`f57cfe282c`; the local security changes are separate in the #13038 change.
+
+| Crate | Local correction | Provenance and removal criteria |
+| --- | --- | --- |
+| `zip` 9.0.5 | Preserve the upstream EOCD complexity fixes while bounding fallback allocation and reads; repair empty AES reads, abort/comment finalization, and use the equivalent libc platform permission call. | [ZIP source review and validation](zip-9.0.5/MAEKON-PATCH.md) |
+| `ppmd-rust` 1.5.1 | Require the inner IO type's independent Send or Sync bound on all six codecs. Retain upstream heap and minimum-memory fixes. | [PPMd soundness fix and trait regressions](ppmd-rust-1.5.1/MAEKON-PATCH.md) |
+
+Each directory contains the exact `UPSTREAM-DELTA.patch`; those deltas exclude
+this local `MAEKON-PATCH.md` and the delta file itself in addition to the
+packaging exclusions above. The workspace keeps ZIP's default codecs and adds
+`unreserved` to preserve untouched XLSX UID/GID extra fields during raw copy.
+`audit-as-crates-io = false` identifies these reviewed local forks; it does not
+certify the defective published versions. Advisory checks, existing publisher
+trust windows and all transitive audit requirements remain in force.
+
+## OCR and time dependency overrides
+
+| Crate | Local change | Source and removal criteria |
+| --- | --- | --- |
+| rstar 0.13.0 | Use the allocation-backed priority queue in the 0.13.0 nearest-neighbor implementation to preserve rc.11 OCR selections without heapless 0.8. | [rstar patch](rstar-0.13.0/MAEKON-PATCH.md) |
+| tauri-utils 2.10.2 | Select the serde_with macros used by Tauri configuration without resolving the original chrono package. | [tauri-utils patch](tauri-utils-2.10.2/MAEKON-PATCH.md) |

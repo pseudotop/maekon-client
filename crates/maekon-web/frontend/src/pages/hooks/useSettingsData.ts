@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useDeferredValue } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   type AppSettings,
   type DesktopPermissionSnapshot,
@@ -33,6 +34,7 @@ import {
   surfaceKnownModel,
   surfaceSupportsModelSelection,
 } from '../../features/providerSurfaces'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { backendAllowsSecretEditing, supportsProjectionFor } from '../settings-utils'
 
 // ---------------------------------------------------------------------------
@@ -90,6 +92,8 @@ export interface SettingsDataResult {
 // ---------------------------------------------------------------------------
 
 export function useSettingsData(formData: AppSettings | null): SettingsDataResult {
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   // Runtime detection rather than the module-level IS_TAURI const.
   // IS_TAURI is evaluated once at module load; in some DMG/packaged webview
   // builds the first evaluation can miss `__TAURI_INTERNALS__` before the
@@ -388,7 +392,10 @@ export function useSettingsData(formData: AppSettings | null): SettingsDataResul
     updateStatus,
     featureCapabilities,
     desktopPermissionStatus,
-    desktopPermissionStatusError: desktopPermissionStatusError?.message ?? null,
+    // #13737: a localized line; the alert around it already names the failure.
+    desktopPermissionStatusError: desktopPermissionStatusError
+      ? describeError(desktopPermissionStatusError, t('errors.tryAgainLater')).text
+      : null,
     desktopPermissionStatusLoading,
     desktopPermissionStatusRefreshing: desktopPermissionStatusFetching && !desktopPermissionStatusLoading,
     secretBackendCapabilities,

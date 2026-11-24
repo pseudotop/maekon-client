@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { executeSceneAction } from '../../api/client'
 import type { UiScene } from '../../api/contracts'
+import { SupportDetails } from '../../components/SupportDetails'
 import { Alert, Checkbox, Spinner } from '../../components/ui'
 import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
 import { useFrameImage } from '../../hooks/useFrameImage'
+import { useErrorDisplay } from '../../i18n/errorDisplay'
 import { iconSize, motion, typography } from '../../styles/tokens'
 import type { FrameItem, ProjectedSceneElement, SceneOverlayProps } from './types'
 
@@ -21,9 +23,12 @@ export function useSceneState(props: SceneOverlayProps) {
   const [selectedSceneElementId, setSelectedSceneElementId] = useState<string | null>(null)
   const [sceneTypeText, setSceneTypeText] = useState('')
   const [allowSensitiveInput, setAllowSensitiveInput] = useState(false)
+  const describeError = useErrorDisplay()
   const [sceneActionFeedback, setSceneActionFeedback] = useState<{
     success: boolean
     message: string
+    /** Untranslated failure text, shown collapsed for support (#13737). */
+    detail?: string | null
   } | null>(null)
   const sceneViewportRef = useRef<HTMLDivElement | null>(null)
   const sceneObserverRef = useRef<ResizeObserver | null>(null)
@@ -144,15 +149,17 @@ export function useSceneState(props: SceneOverlayProps) {
               policy: response.applied_privacy_policy,
             }) +
             (response.scene_action_override_active ? ` ${t('replay.overrideActiveSuffix', '(override active)')}` : '')
-          : response.result.error || t('replay.actionFailed', 'Suggested action failed.'),
+          : t('replay.actionFailed', 'Suggested action failed.'),
+        // #13737: the executor's own error string is English diagnostics.
+        detail: ok ? null : response.result.error,
       })
     },
     onError: (mutationError) => {
-      const message =
-        mutationError instanceof Error ? mutationError.message : t('replay.actionFailed', 'Suggested action failed.')
+      const display = describeError(mutationError, t('replay.actionFailed', 'Suggested action failed.'))
       setSceneActionFeedback({
         success: false,
-        message,
+        message: display.text,
+        detail: display.detail,
       })
     },
   })
@@ -504,6 +511,7 @@ export function SceneAssistantPanel({
                 }`}
               >
                 {sceneActionFeedback.message}
+                <SupportDetails detail={sceneActionFeedback.detail} />
               </div>
             )}
           </>

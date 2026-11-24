@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 type LocaleTree = Record<string, unknown>
+export type ShippedLocale = 'en' | 'ko' | 'ja' | 'zh-CN' | 'es'
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url))
 const localesDir = path.resolve(currentDir, '../../src/i18n/locales')
@@ -12,7 +13,7 @@ const enLocale = loadLocale('en')
 // Only include locales with complete key coverage for shell/sidebar/shortcuts
 const locales = [koLocale, enLocale]
 
-function loadLocale(code: 'ko' | 'en'): LocaleTree {
+function loadLocale(code: ShippedLocale): LocaleTree {
   const localePath = path.join(localesDir, `${code}.json`)
   return JSON.parse(fs.readFileSync(localePath, 'utf-8')) as LocaleTree
 }
@@ -55,4 +56,16 @@ export function i18nRegex(keys: string | string[], extraLiterals: string[] = [])
   }
 
   return new RegExp(combined.map(escapeRegex).join('|'), 'i')
+}
+
+// #13749: one locale's exact text for a key, for asserting which locale is on
+// screen. `i18nRegex` cannot tell: it accepts the ko and the en text alike.
+export function i18nTextIn(code: ShippedLocale, key: string): string {
+  const text = getByDottedPath(loadLocale(code), key)
+
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error(`No ${code} i18n text found for key: ${key}`)
+  }
+
+  return text
 }

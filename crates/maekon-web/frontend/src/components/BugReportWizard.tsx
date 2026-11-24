@@ -8,10 +8,11 @@ import {
   sanitizeBugReportBundleForDisplay,
 } from '../api/bug-report'
 import type { BugReportBundle } from '../api/contracts'
-import { addToast } from '../hooks/useToast'
-import { translateError, type WireErrorLocale } from '../i18n/translateError'
+import { addErrorToast, addToast } from '../hooks/useToast'
+import { type ErrorDisplay, useErrorDisplay } from '../i18n/errorDisplay'
 import { motion, typography } from '../styles/tokens'
 import { IS_TAURI } from '../utils/platform'
+import { SupportDetails } from './SupportDetails'
 import { Alert, Button, Card, CardTitle, Dialog, DialogBody, DialogContent, DialogFooter, DialogTitle } from './ui'
 
 async function invokeDesktop<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -27,14 +28,15 @@ interface BugReportWizardProps {
 type WizardStep = 'generate' | 'review' | 'share'
 
 export default function BugReportWizard({ open, onClose }: BugReportWizardProps) {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
 
   const [step, setStep] = useState<WizardStep>('generate')
   const [piiLevel, setPiiLevel] = useState<string>('standard')
   const [includeLogs, setIncludeLogs] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [bundle, setBundle] = useState<BugReportBundle | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorDisplay | null>(null)
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({})
   const [exporting, setExporting] = useState(false)
 
@@ -55,12 +57,11 @@ export default function BugReportWizard({ open, onClose }: BugReportWizardProps)
       setBundle(sanitizeBugReportBundleForDisplay(result))
       setStep('review')
     } catch (err) {
-      const message = err instanceof Error ? err.message : t('settings.bugReportGenerateFailed')
-      setError(message)
+      setError(describeError(err, t('settings.bugReportGenerateFailed')))
     } finally {
       setGenerating(false)
     }
-  }, [includeLogs, piiLevel, t])
+  }, [includeLogs, piiLevel, t, describeError])
 
   const toggleSection = useCallback((key: string) => {
     setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }))
@@ -118,17 +119,11 @@ export default function BugReportWizard({ open, onClose }: BugReportWizardProps)
       }
       // null means user cancelled the save dialog — no toast needed
     } catch (error) {
-      // ADR-019 Follow-up #3: use translateError so typed IpcError codes
-      // (validation.invalid_arguments, internal.generic, internal.io) get
-      // localized specific messages instead of a generic "export failed" toast.
-      const locale = (i18n.language?.startsWith('ko') ? 'ko' : 'en') as WireErrorLocale
-      const detail = translateError(error, locale)
-      const message = detail ? `${t('settings.bugReportExportFailed')}: ${detail}` : t('settings.bugReportExportFailed')
-      addToast('error', message, 5000)
+      addErrorToast(describeError(error, t('settings.bugReportExportFailed')))
     } finally {
       setExporting(false)
     }
-  }, [bundle, t, i18n])
+  }, [bundle, t, describeError])
 
   const handleEmailSupport = useCallback(() => {
     if (!bundle) return
@@ -253,7 +248,7 @@ interface GenerateStepProps {
   includeLogs: boolean
   onIncludeLogsChange: (value: boolean) => void
   generating: boolean
-  error: string | null
+  error: ErrorDisplay | null
   onGenerate: () => void
   t: (key: string) => string
 }
@@ -319,7 +314,8 @@ function GenerateStep({
 
       {error && (
         <Alert variant="error" title={t('settings.bugReportGenerateFailedTitle')}>
-          <p>{error}</p>
+          <p>{error.text}</p>
+          <SupportDetails detail={error.detail} />
         </Alert>
       )}
 

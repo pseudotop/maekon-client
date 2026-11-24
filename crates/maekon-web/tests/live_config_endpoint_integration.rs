@@ -268,10 +268,12 @@ async fn live_config_endpoint_503_when_external_disabled() {
         code: _,
         error: _,
         status: _,
+        execution_provenance: _,
     } = ErrorResponse {
         code: String::new(),
         error: String::new(),
         status: 503,
+        execution_provenance: None,
     };
 
     let body: ErrorResponseDe = serde_json::from_slice(&body_bytes).expect(

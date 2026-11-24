@@ -4,7 +4,8 @@
 //! Implemented by `SmartCaptureTrigger` and `EdgeFrameProcessor` in `maekon-vision`.
 
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::error::CoreError;
 use crate::models::context::{WindowBounds, WindowInfo};
@@ -94,16 +95,87 @@ pub trait CaptureAuthority: Send + Sync {
     /// Bind the observed native foreground identity before work is queued.
     /// An absent expectation still requires a successful live observation.
     fn authorize(&self, expected: Option<&WindowInfo>) -> Result<CapturePermit, CoreError>;
+
+    /// Transition the shared pause flag and invalidate every earlier permit.
+    /// A separate post-toggle notification cannot detect an unobserved ABA.
+    fn toggle_pause(&self) -> Result<bool, CoreError> {
+        Err(capture_denied("capture pause authority unavailable"))
+    }
+}
+
+/// The capture authority owns both the real pause transition and its epoch.
+/// Existing UI/audio readers can keep observing the same boolean, but writers
+/// must use this controller. Poisoning or epoch exhaustion closes the gate.
+pub struct CapturePauseState {
+    paused: Arc<AtomicBool>,
+    generation: Mutex<u64>,
+}
+
+impl CapturePauseState {
+    pub fn new(paused: Arc<AtomicBool>) -> Self {
+        Self {
+            paused,
+            generation: Mutex::new(0),
+        }
+    }
+
+    pub fn snapshot(&self) -> Result<u64, CoreError> {
+        let generation = self
+            .generation
+            .lock()
+            .map_err(|_| capture_denied("pause state poisoned"))?;
+        if self.paused.load(Ordering::Acquire) || *generation == u64::MAX {
+            return Err(capture_denied("capture paused"));
+        }
+        Ok(*generation)
+    }
+
+    pub fn check(&self, origin: u64) -> Result<(), CoreError> {
+        if self.snapshot()? != origin {
+            return Err(capture_denied("capture pause epoch changed"));
+        }
+        Ok(())
+    }
+
+    pub fn toggle(&self) -> Result<bool, CoreError> {
+        let mut generation = self
+            .generation
+            .lock()
+            .map_err(|_| capture_denied("pause state poisoned"))?;
+        let Some(next) = generation.checked_add(1).filter(|next| *next < u64::MAX) else {
+            *generation = u64::MAX;
+            self.paused.store(true, Ordering::Release);
+            drop(generation);
+            return Err(capture_denied("capture pause epoch exhausted"));
+        };
+        *generation = next;
+        let paused = !self.paused.load(Ordering::Acquire);
+        self.paused.store(paused, Ordering::Release);
+        // Publish the flag inside the generation lock: readers must never
+        // observe the next epoch paired with the previous pause value.
+        drop(generation);
+        Ok(paused)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureObservationError {
     Unsupported,
+    PermissionDenied,
     ForegroundUnavailable,
     EnumerationFailed,
     OwnerUnavailable,
     TitleUnavailable,
     GeometryUnavailable,
+}
+
+/// One exact xcap display identity and its platform-native desktop geometry.
+/// macOS uses points on both sides of policy intersection; Windows uses
+/// physical pixels. Image backing dimensions are not policy coordinates.
+#[derive(Debug, Clone)]
+pub struct CaptureDisplay {
+    pub id: u32,
+    pub bounds: WindowBounds,
 }
 
 /// Window/display bounds in one platform coordinate space. The native adapter
@@ -127,6 +199,13 @@ pub struct CaptureScene {
 }
 
 pub trait CaptureObserver: Send + Sync {
+    /// Check native capture permission without enumerating the current scene.
+    /// Retaining an earlier frame must not require its window to stay active.
+    /// Unsupported adapters cannot mint or retain authorized captures.
+    fn check_permission(&self) -> Result<(), CaptureObservationError> {
+        Err(CaptureObservationError::Unsupported)
+    }
+
     fn observe(&self, display_id: Option<u32>) -> Result<CaptureScene, CaptureObservationError>;
 }
 
@@ -206,6 +285,103 @@ mod capture_contract_tests {
     use crate::error_codes::PermissionCode;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    #[test]
+    fn legacy_capture_observer_cannot_grant_native_permission() {
+        struct LegacyObserver;
+        impl CaptureObserver for LegacyObserver {
+            fn observe(&self, _: Option<u32>) -> Result<CaptureScene, CaptureObservationError> {
+                panic!("permission checking must not enumerate a scene")
+            }
+        }
+
+        let observer: &dyn CaptureObserver = &LegacyObserver;
+        assert!(matches!(
+            observer.check_permission(),
+            Err(CaptureObservationError::Unsupported)
+        ));
+    }
+
+    struct PauseGuard {
+        pause: Arc<CapturePauseState>,
+        origin: u64,
+    }
+
+    impl CaptureGuard for PauseGuard {
+        fn check(&self, _: CaptureAccess) -> Result<(), CoreError> {
+            self.pause.check(self.origin)
+        }
+    }
+
+    #[test]
+    fn pause_aba_invalidates_all_access_without_an_intervening_check() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let pause = Arc::new(CapturePauseState::new(flag.clone()));
+        let permit = CapturePermit::new(Arc::new(PauseGuard {
+            pause: pause.clone(),
+            origin: pause.snapshot().unwrap(),
+        }));
+        assert!(pause.toggle().unwrap());
+        assert!(!pause.toggle().unwrap());
+        assert!(!flag.load(Ordering::Acquire));
+        for access in [
+            CaptureAccess::Retain,
+            CaptureAccess::Acquire { display_id: 37 },
+            CaptureAccess::CurrentScene,
+            CaptureAccess::Ocr,
+            CaptureAccess::FullText,
+        ] {
+            assert_denied(permit.check(access));
+        }
+        let fresh = pause.snapshot().unwrap();
+        assert_eq!(fresh, 2);
+        pause.check(fresh).unwrap();
+    }
+
+    #[test]
+    fn pause_transition_on_another_thread_invalidates_origin() {
+        let pause = Arc::new(CapturePauseState::new(Arc::new(AtomicBool::new(false))));
+        let origin = pause.snapshot().unwrap();
+        let writer = pause.clone();
+        std::thread::spawn(move || {
+            assert!(writer.toggle().unwrap());
+            assert_denied(writer.snapshot());
+            assert!(!writer.toggle().unwrap());
+        })
+        .join()
+        .unwrap();
+        assert_denied(pause.check(origin));
+        pause.check(pause.snapshot().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn pause_epoch_exhaustion_stays_closed_instead_of_wrapping() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let pause = CapturePauseState::new(flag.clone());
+        *pause.generation.lock().unwrap() = u64::MAX - 1;
+        assert_denied(pause.toggle());
+        assert_denied(pause.toggle());
+        assert_denied(pause.snapshot());
+        assert!(flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn poisoned_pause_state_never_authorizes_or_toggles() {
+        let pause = Arc::new(CapturePauseState::new(Arc::new(AtomicBool::new(false))));
+        let writer = pause.clone();
+        let panic = std::thread::spawn(move || {
+            let _guard = writer.generation.lock().unwrap();
+            panic!("synthetic poisoned pause owner");
+        })
+        .join()
+        .unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"synthetic poisoned pause owner")
+        );
+        assert_denied(pause.snapshot());
+        assert_denied(pause.toggle());
+    }
+
     fn assert_denied<T>(result: Result<T, CoreError>) {
         match result {
             Err(CoreError::PermissionDenied { code, .. }) => {
@@ -214,6 +390,17 @@ mod capture_contract_tests {
             Err(error) => panic!("expected privacy denial, got {error}"),
             Ok(_) => panic!("an unauthorized capture contract returned success"),
         }
+    }
+
+    #[test]
+    fn authority_without_pause_support_refuses_to_report_a_transition() {
+        struct NoPauseAuthority;
+        impl CaptureAuthority for NoPauseAuthority {
+            fn authorize(&self, _: Option<&WindowInfo>) -> Result<CapturePermit, CoreError> {
+                Err(capture_denied("synthetic authority has no grant"))
+            }
+        }
+        assert_denied(NoPauseAuthority.toggle_pause());
     }
 
     struct OriginGuard {

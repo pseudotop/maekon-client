@@ -27,7 +27,13 @@
     "less": "Show less",
     "lightbox": "Image lightbox",
     "navigate": "Navigate",
-    "previous": "Previous"
+    "previous": "Previous",
+    "duration": {
+      "seconds": "{{count}}s",
+      "minutes": "{{count}}m",
+      "hours": "{{count}}h",
+      "hoursMinutes": "{{hours}}h {{minutes}}m"
+    }
   },
   "support": {
     "pageTitle": "Support & Diagnostics",
@@ -97,10 +103,10 @@
     "audit": "Audit Log",
     "policies": "Execution Policies",
     "playbooks": "Playbooks",
-    "groupMonitor": "Monitor",
-    "groupInsights": "Insights",
-    "groupManage": "Manage",
-    "groupSystem": "System",
+    "groupMain": "Menu",
+    "sectionMore": "More",
+    "sectionTools": "Tools",
+    "sectionSystem": "System",
     "tasks": "Tasks",
     "contextHome": "Context home",
     "assignmentEmailDraft": "Assignment email draft",
@@ -148,20 +154,68 @@
     "exportDigest": "Export",
     "exportMarkdown": "Download as Markdown",
     "todaySummary": {
-      "title": "Today at a Glance",
-      "activeTime": "Active Time",
-      "topApp": "Top App",
-      "nudges": "Nudges",
-      "regime": "Regime"
+      "title": "Today's Summary",
+      "titleForDate": "Summary for {{date}}",
+      "headline": {
+        "focus": "You spent the most time in {{app}}. Your longest focus stretch was {{longestFocus}}.",
+        "app": "You spent the most time in {{app}}.",
+        "activity": "Recording your activity. A summary appears here once there is enough to describe."
+      }
+    },
+    "nextActions": {
+      "title": "Next Up",
+      "openAll": "See All Tasks",
+      "openTasks": "Open Tasks",
+      "emptyTitle": "Nothing lined up yet",
+      "emptyDescription": "Press “Find my next step” in the tracking panel at the top of your screen. Maekon suggests a next step from what you were working on, and the tasks you confirm show up here.",
+      "desktopOnly": "Tasks are available in the desktop app.",
+      "loadError": "Couldn't load your tasks.",
+      "suggested": "Suggested",
+      "more": "+{{count}} more"
+    },
+    "keyNumbers": {
+      "title": "Key Numbers",
+      "deepWork": "Deep Work",
+      "contextSwitches": "Context Switches",
+      "pendingAnalysis": "Appears after analysis",
+      "unavailable": "Couldn't load"
+    },
+    "firstRun": {
+      "guideSummary": "One line about your day. It works without an AI connection.",
+      "guideNextActions": "Suggested next steps and the tasks you confirm show up here.",
+      "guideKeyNumbers": "Active time, deep work, and context switches add up as you work.",
+      "action": {
+        "reviewConsent": "Review Capture Consent",
+        "resumeCapture": "Open Capture Controls",
+        "checkStatus": "Check App Status"
+      }
+    },
+    "noActivityForDate": {
+      "title": "No Activity Recorded",
+      "description": "Nothing was captured on {{date}}. Pick another day in the date picker above."
+    },
+    "summaryError": {
+      "title": "Couldn't Load Activity",
+      "description": "The local activity service did not respond. Try again in a moment."
+    },
+    "systemResources": {
+      "description": "CPU and memory use over the last 24 hours, the busiest processes, app usage, and today's capture counts.",
+      "open": "Open System Metrics"
     }
   },
   "updates": {
     "title": "Updates",
     "loading": "Loading update status...",
     "live": "Live",
-    "polling": "Polling",
-    "fresh": "Fresh",
-    "stale": "Stale",
+    "polling": "Periodic check",
+    "fresh": "Recent",
+    "stale": "Delayed",
+    "connectionBadge": "Connection: {{state}}",
+    "connectionHint": "How this panel receives update status. Live gets changes as they happen; Periodic check asks again at a regular interval while the live stream is unavailable.",
+    "freshnessBadge": "Signal: {{state}}",
+    "freshnessHint": "Whether the latest update status arrived recently. Delayed means what you see may be out of date.",
+    "phaseBadge": "Stage: {{state}}",
+    "phaseHint": "Where the updater is between checking, downloading, and installing.",
     "idle": "Idle",
     "checking": "Checking",
     "pendingApproval": "Pending approval",
@@ -176,9 +230,9 @@
     "actionFailed": "The update action could not be completed. Try again.",
     "technicalDetails": "Technical details",
     "lastUpdateUnknown": "Last update signal: unknown",
-    "lastUpdateAge": "Last update signal: {{seconds}}s ago",
+    "lastUpdateAge": "Last update signal: {{age}} ago",
     "staleActionBlocked": "Update approval is temporarily blocked because status is stale. Click Check now to refresh.",
-    "streamIssue": "Live update stream has temporary issues. Falling back to polling.",
+    "streamIssue": "Live update stream has temporary issues. Falling back to periodic checks.",
     "reconnecting": "Reconnecting to live update stream (attempt {{count}})...",
     "streamRecovered": "The live update stream connection was restored. Status updates continue without repeating actions or notifications.",
     "currentVersion": "Current",
@@ -227,12 +281,12 @@
     "rolledBackAt": "Restored at {{timestamp}}",
     "releaseDate": "Released {{date}}",
     "releaseDateUnknown": "Release date unavailable",
-    "releasedAgoMinutes": "released {{count}} minute ago",
-    "releasedAgoMinutes_plural": "released {{count}} minutes ago",
-    "releasedAgoHours": "released {{count}} hour ago",
-    "releasedAgoHours_plural": "released {{count}} hours ago",
-    "releasedAgoDays": "released {{count}} day ago",
-    "releasedAgoDays_plural": "released {{count}} days ago",
+    "releasedAgoMinutes_one": "released {{count}} minute ago",
+    "releasedAgoMinutes_other": "released {{count}} minutes ago",
+    "releasedAgoHours_one": "released {{count}} hour ago",
+    "releasedAgoHours_other": "released {{count}} hours ago",
+    "releasedAgoDays_one": "released {{count}} day ago",
+    "releasedAgoDays_other": "released {{count}} days ago",
     "readyToInstallMsg": "Download complete. Ready to install.",
     "installNow": "Install Now"
   },
@@ -301,6 +355,7 @@
     "filterSummary": "Showing {{shown}} of {{total}} frames",
     "tagSuggestions": "Tag suggestions",
     "noActivity": "No activity recorded for this day",
+    "entryExpandLabel": "{{regime}} {{duration}} - click to expand",
     "segments": {
       "title": "What was on screen",
       "axis": "Activity segments",
@@ -314,11 +369,11 @@
     "tabs": {
       "integrations": "Integrations",
       "general": "General",
-      "privacy": "Telemetry",
+      "privacy": "Capture Protection",
       "monitoring": "Monitoring",
       "aiAutomation": "AI & Automation",
       "dataStorage": "Data & Storage",
-      "coaching": "Coaching",
+      "coaching": "Coaching Preferences",
       "audio": "Audio",
       "sync": "Sync",
       "focusAuto": "Focus Auto",
@@ -326,7 +381,7 @@
       "trackingSchedule": "Tracking Schedule"
     },
     "groupCore": "Core",
-    "groupAdvanced": "Advanced",
+    "groupAdvanced": "More Settings",
     "guidance": {
       "monitoring": {
         "title": "Monitoring guide",
@@ -504,6 +559,11 @@
     "highUsageNotification": "High Usage Notification (%)",
     "saved": "Settings saved.",
     "saveFailed": "Failed to save settings",
+    "updateActionFailed": "The update action could not be requested.",
+    "permissionRequestFailed": "The permission request could not be completed.",
+    "permissionOpenSystemSettingsFailed": "System Settings could not be opened.",
+    "notifTestFailed": "The test notification could not be sent.",
+    "tagActionFailed": "The tag change could not be saved.",
     "unsavedChanges": "Unsaved changes",
     "unsavedChangesHint": "Save the current settings before leaving this page.",
     "revertChanges": "Revert",
@@ -1043,7 +1103,8 @@
         "confirmNote": "Retracting hides this claim from your digests and future suggestions. The record is preserved (not deleted), so the change stays auditable.",
         "confirmButton": "Retract claim",
         "success": "Claim retracted",
-        "alreadyRetracted": "Claim was already retracted"
+        "alreadyRetracted": "Claim was already retracted",
+        "failed": "The claim could not be retracted."
       }
     },
     "aiUsage": {
@@ -1463,6 +1524,7 @@
     "actionSuccess": "Suggested action executed.",
     "actionSuccessWithPolicy": "Suggested action executed (policy: {{policy}}).",
     "actionFailed": "Suggested action failed.",
+    "timelineLoadFailed": "Failed to load the timeline.",
     "typeTextLabel": "Input Text",
     "typeTextPlaceholder": "Enter text to type",
     "allowSensitiveInput": "Allow sensitive text input under current privacy policy",
@@ -1618,7 +1680,95 @@
     "intentHintFailed": "Command failed",
     "intentHintPlannedIntent": "Planned intent",
     "intentHintViewHistory": "View in execution history",
-    "intentHintErrorCheckHistory": "The request may still have executed — check execution history."
+    "intentHintErrorCheckHistory": "The request may still have executed — check execution history.",
+    "intentProvenance": {
+      "title": "Observed execution",
+      "unknown": "No matching execution observation is available for this response.",
+      "scope": "Recent observations may disappear after a restart.",
+      "observe": "Check this execution",
+      "lookupUnknown": "No unique matching observation is available. This does not prove the action did not run.",
+      "lookupFound": "Matching execution observed. No action was sent.",
+      "replayWarning": "Running again starts a new action and may duplicate the earlier one.",
+      "identityUnavailable": "A secure submission ID could not be created. Nothing was sent.",
+      "resultUnavailable": "Could not read the execution response.",
+      "requested": "Requested route",
+      "planned": "Observed planning",
+      "actionLabel": "Action outcome",
+      "observationLabel": "Observation",
+      "configurationOnlyRule": "Only the rule-based route was available at setup. No failed model attempt was observed.",
+      "attempt": "Attempt {{number}}",
+      "skillContext": "Skills requested: {{requested}} · Context forwarded: {{forwarded}} · Context: {{context}}",
+      "steps": "Observed steps",
+      "yes": "Yes",
+      "no": "No",
+      "unknownValue": "Unknown",
+      "provider": {
+        "local_model": "On-device model",
+        "remote_model": "Remote model",
+        "rule": "Rules",
+        "unknown": "Unknown"
+      },
+      "planning": {
+        "llm": "Model-based plan",
+        "rule": "Rule-based plan",
+        "unsupported": "Unsupported request",
+        "denied": "Planning denied",
+        "error": "Planning failed",
+        "unknown": "Unknown"
+      },
+      "action": {
+        "not_started": "Not started",
+        "denied": "Denied",
+        "completed": "Completed",
+        "failed": "Failed",
+        "unknown": "Unknown"
+      },
+      "observation": {
+        "complete": "Complete observation",
+        "partial": "Partial observation",
+        "legacy_unknown": "Legacy response; unknown"
+      },
+      "attemptOutcome": {
+        "succeeded": "Succeeded",
+        "denied": "Denied",
+        "timeout": "Timed out",
+        "invalid_output": "Invalid output",
+        "unavailable": "Unavailable",
+        "error": "Error",
+        "unknown": "Unknown"
+      },
+      "reason": {
+        "denied": "Denied by an execution gate",
+        "timeout": "Provider timed out",
+        "unavailable": "Provider unavailable",
+        "invalid_output": "Provider output was invalid",
+        "provider_error": "Provider error",
+        "confidence_rejected": "Planning confidence was insufficient",
+        "unsupported_action": "Action is unsupported",
+        "action_failed": "Action failed",
+        "observation_unavailable": "Observation is incomplete or unavailable",
+        "legacy_unknown": "No execution observation in this legacy response"
+      },
+      "skills": {
+        "used": "Skills were used",
+        "not_used": "Skills were not used",
+        "unsupported": "This route does not support skills",
+        "unknown": "Skill use was not observed"
+      },
+      "context": {
+        "none": "None",
+        "catalog": "Catalog",
+        "activated": "Activated skills"
+      },
+      "stage": {
+        "started": "Request observed",
+        "attempt_started": "Provider attempt started",
+        "attempt_finished": "Provider attempt ended",
+        "planning_finished": "Planning ended",
+        "action_started": "Action started",
+        "action_finished": "Action ended"
+      }
+    }
   },
   "guiPicker": {
     "title": "Point-and-Confirm Actions",
@@ -1822,6 +1972,7 @@
     "modelDiscoveryNoModels": "No models were returned for this provider configuration.",
     "modelDiscoveryMissingConfig": "Configure remote endpoint, provider, and API key first.",
     "modelDiscoveryMissingKey": "Enter full API key to discover models.",
+    "modelDiscoveryFailed": "The model list could not be loaded.",
     "modelDiscoveryUnsupportedSurface": "Model discovery is not available for the selected provider surface.",
     "chatVerification": {
       "title": "Verify the API chat connection",
@@ -1832,7 +1983,7 @@
       "result": {
         "verified": "Connection verified. Chat over an API key is ready.",
         "notConfigured": "No API-key chat provider is ready to verify. Choose a provider and save its API key, then try again.",
-        "consentRequired": "Turn on AI text processing and external providers in Privacy → Consent, then try again.",
+        "consentRequired": "Turn on AI text processing and external providers in Privacy → Data Controls, then try again.",
         "restartRequired": "Your saved provider change applies after Maekon restarts. Restart Maekon, then verify again.",
         "budgetExhausted": "Today's AI token budget is used up. Try again after it resets.",
         "providerError": "The provider did not complete a reply. Check the API key and model, then try again.",
@@ -1872,6 +2023,7 @@
   "aiReadiness": {
     "readyTitle": "AI features are ready",
     "blockedTitle": "AI setup required",
+    "unknownReason": "This feature can't be used right now.",
     "capability": {
       "chatSubprocess": "AI Chat · subscription CLI",
       "chatHttpApi": "AI Chat · provider API",
@@ -1888,6 +2040,7 @@
       "consent_required": "The required privacy consent has not been granted.",
       "access_mode_mismatch": "The selected AI access mode does not match this provider path.",
       "endpoint_or_profile_required": "Select a provider endpoint or profile.",
+      "http_chat_settings_resave_required": "These AI settings were saved by an older version. Select your provider again in AI Settings and save.",
       "provider_not_detected": "The selected provider was not detected.",
       "provider_auth_required": "Provider authentication is required.",
       "provider_auth_unverified": "Provider authentication has not been verified.",
@@ -2067,6 +2220,7 @@
     "interruptionList": "Interruption Events",
     "loadMoreRemaining_one": "More ({{count}} remaining)",
     "loadMoreRemaining_other": "More ({{count}} remaining)",
+    "metricsLoadFailed": "Failed to load focus metrics.",
     "active": "Active",
     "completed": "Completed",
     "suggestions": {
@@ -2301,6 +2455,11 @@
     },
     "boundaryTitle": "Something went wrong",
     "boundaryRetry": "Try Again",
+    "generic": "Something went wrong. Try again.",
+    "tryAgainLater": "Try again in a moment.",
+    "supportDetails": "Details for support",
+    "copySupportDetails": "Copy details",
+    "supportDetailsCopied": "Copied",
     "serverOffline": "Server is offline",
     "serverOfflineDesc": "Could not connect to the Maekon agent. Make sure the agent is running.",
     "retryConnection": "Retry Connection",
@@ -2332,6 +2491,7 @@
     "undo": "Undo",
     "noOverrides": "No overrides in this range",
     "noSegments": "No segments found for this date range",
+    "noSegmentsDescription": "Try selecting a different date range to find activity segments.",
     "overridden": "Overridden",
     "personalTime": "Personal time",
     "untilRemoved": "Until removed (no automatic expiry)",
@@ -2339,6 +2499,31 @@
     "effectReassignRegime": "Future reclustering uses the selected regime for this segment.",
     "effectPersonalTime": "This range is treated as personal time in downstream analysis.",
     "effectUnknown": "Applied to downstream recalibration."
+  },
+  "regimeOptions": {
+    "deepWork": "Deep Work",
+    "communication": "Communication",
+    "meeting": "Meeting",
+    "break": "Break",
+    "admin": "Admin"
+  },
+  "workTypes": {
+    "ACTIVE_CODING": "Active Coding",
+    "CODE_REVIEW": "Code Review",
+    "WRITING": "Writing",
+    "READING": "Reading",
+    "DESIGNING": "Designing",
+    "FORM_FILLING": "Form Filling",
+    "BROWSING": "Browsing",
+    "PASSIVE_MEETING": "Passive Meeting",
+    "ACTIVE_MEETING": "Active Meeting",
+    "NAVIGATION": "Navigation",
+    "TERMINAL_COMMANDS": "Terminal Commands",
+    "LOG_READING": "Log Reading",
+    "DOCUMENT_WRITING": "Document Writing",
+    "DOCUMENT_READING": "Document Reading",
+    "CHAT_COMPOSING": "Chat Composing",
+    "UNKNOWN": "Unknown"
   },
   "sidebar": {
     "claimsBrowser": "Memory claims",
@@ -2355,13 +2540,13 @@
     "byTag": "By Tag",
     "byImportance": "By Importance",
     "activityReport": "Activity Report",
-    "focusReport": "Focus Report",
+    "focusReport": "Productivity Report",
     "exportData": "Export Data",
     "currentScore": "Current Score",
     "weeklyTrend": "Weekly Trend",
     "focusSessions": "Focus Sessions",
     "interruptions": "Interruptions",
-    "timeline": "Timeline",
+    "playback": "Playback",
     "eventLog": "Event Log",
     "policies": "Runtime Status",
     "commands": "Commands",
@@ -2377,7 +2562,7 @@
     "dataControls": "Data Controls",
     "consent": "Consent",
     "dangerZone": "Danger Zone",
-    "dataExport": "Data Export",
+    "dataExport": "Backup & Export",
     "recentSearches": "Recent Searches",
     "browseTags": "Browse Tags",
     "segments": "Segments",
@@ -2479,17 +2664,17 @@
     "regimeLabelPlaceholder": "e.g. Deep Coding"
   },
   "onboarding": {
-    "step3Search": "Search everything you've seen",
-    "aiFeatures": {
-      "optInHint": "Optional: prepare tiered memory, embedding, semantic search, and AI summaries. Provider processing may be loopback, subscription CLI, or external API according to your AI settings. Separate Pattern Learning consent and a restart are still required.",
-      "enableButton": "Prepare AI features",
-      "enabling": "Enabling…",
-      "prepared": "AI configuration saved",
-      "preparedNote": "Configuration alone is not readiness. Complete the provider and separate Pattern Learning consent requirements below, then restart Maekon.",
-      "error": "Could not enable AI features: {{error}}"
-    },
     "step1Title": "Welcome to Maekon",
-    "step1Desc": "Maekon monitors your desktop activity and provides intelligent suggestions to boost productivity.",
+    "step1Desc": "Maekon keeps a private record of your work on this computer, so you can find what you saw and get back to what you were doing.",
+    "intro": {
+      "captureTitle": "A timeline of your work",
+      "captureDesc": "Records the apps, windows, and on-screen text you work with, on this device.",
+      "resumeTitle": "Get back to what you were doing",
+      "resumeDesc": "Look back at what you were working on before an interruption. With AI connected, Maekon also suggests your next step.",
+      "searchTitle": "Search what you've seen",
+      "searchDesc": "Find a page, document, or message by the words that were on your screen.",
+      "privacyNote": "Nothing is recorded until you agree. You can turn monitoring off or delete records anytime in Privacy."
+    },
     "step2Title": "Permissions",
     "step2Desc": "Maekon needs some permissions to work effectively.",
     "step2DescMac": "Accessibility and Screen Recording are required to capture context reliably. Notifications are recommended for reminders and coaching, but they do not block setup.",
@@ -2516,66 +2701,93 @@
     "step2PermissionCheckFailed": "Could not read the current desktop permission state.",
     "step2SystemSettingsOpenFailed": "Could not open macOS System Settings.",
     "step2NotificationRequestFailed": "Could not request notification permission.",
-    "step3Title": "Features",
-    "step3Desc": "Here's what Maekon can do for you.",
-    "step3Capture": "Real-time context capture",
-    "step3Analysis": "AI-powered analysis",
-    "step3Suggestions": "Smart suggestions",
+    "consent": {
+      "title": "Turn on activity monitoring",
+      "description": "Maekon records your work on this computer only after you agree. Records stay on this device, and you can turn monitoring off or withdraw consent anytime in Privacy.",
+      "collectedTitle": "With monitoring on, Maekon collects:",
+      "grantAndContinue": "Agree and continue",
+      "granting": "Saving…",
+      "continueWithout": "Continue without monitoring",
+      "declineNote": "If you continue without monitoring, Maekon collects nothing, and your timeline, search, and suggestions stay empty until you turn on “{{label}}” in Privacy.",
+      "granted": "Activity monitoring is on",
+      "grantedNote": "Maekon now records on this device. You can turn it off or withdraw consent anytime in Privacy.",
+      "osNote": "This consent is separate from the operating system's screen recording permission on the previous step. Maekon needs both to capture your screen.",
+      "error": "Could not save consent. Try again."
+    },
+    "ai": {
+      "title": "Connect AI",
+      "description": "Optional. Choose what AI may use, then connect a provider. You can also do this later in Settings.",
+      "consentTitle": "What AI may use",
+      "consentHint": "Each item is saved as soon as you check it. Anything left unchecked stays off.",
+      "consent": {
+        "fullTextDesc": "Sends the text you type in AI chat, plus the minimum on-screen context a request needs, to the provider you choose, with personal details masked. Raw screenshots, credentials such as passwords, and excluded apps are never sent. Needed to connect a provider.",
+        "ocrDesc": "Reads the text in screen captures on this device so you can search it and Maekon can suggest next steps. It stays on this device unless you set up an external OCR provider. Already on if you agreed to monitoring.",
+        "patternLearningDesc": "Learns your recurring work patterns on this device for summaries, next-step suggestions, and coaching. Coaching alerts stay off until you turn them on in Settings → Coaching Preferences."
+      },
+      "consentError": "Could not save this choice. Try again.",
+      "providerTitle": "Connect a provider",
+      "providerHint": "Pick a provider and enter its API key. Saving also turns on the analysis that summaries and suggestions use; it uses only the items you checked above.",
+      "providerNeedsConsent": "To connect a provider, turn on “{{label}}” above.",
+      "providerUnsupported": "This provider can't be set up here. Choose another one, or set it up later in Settings → AI & Automation.",
+      "checking": "Checking the AI connection…",
+      "loadFailed": "Couldn't load the AI settings",
+      "loadFailedDesc": "Continue without AI and connect a provider later in Settings → AI & Automation.",
+      "saving": "Saving the provider…",
+      "saveFailed": "Couldn't save the provider",
+      "restartTitle": "Restart Maekon to finish connecting",
+      "restartDesc": "The provider is saved and takes effect after a restart. Quit Maekon and open it again; setup picks up at this step so you can check the key.",
+      "savedProvider": "Saved provider: {{name}}",
+      "quitButton": "Quit Maekon",
+      "quitFailed": "Maekon couldn't quit. Quit it from the menu bar or system tray, then open it again.",
+      "restartLater": "Restart later",
+      "changeProvider": "Choose a different provider",
+      "blockedTitle": "AI can't be used yet",
+      "unreachable": "The saved provider isn't working yet. Check the key and your network, or choose a different provider.",
+      "unavailable": "AI isn't available in Maekon right now. Continue without AI and check again later in Settings → AI & Automation.",
+      "connectedTitle": "AI is connected",
+      "connectedDesc": "AI chat works now.",
+      "features": {
+        "suggestions": "Next-step suggestions",
+        "segmentSummary": "Work session summaries",
+        "dailySummary": "Daily summary"
+      },
+      "featureStatus": {
+        "on": "On",
+        "needsConsent": "Needs “{{items}}”",
+        "afterRestart": "On after a restart",
+        "inSettings": "Turn on in Settings → AI & Automation"
+      },
+      "withoutButton": "Continue without AI",
+      "withoutNote": "Without AI, the timeline and search still work; summaries, next-step suggestions, and chat stay off until you connect a provider in Settings → AI & Automation."
+    },
     "step4Title": "Ready to Go",
-    "step4Desc": "You're all set. Start using Maekon now.",
+    "ready": {
+      "desc": "Setup is done. Maekon records in the background while you work.",
+      "ai": {
+        "connected": "AI is connected. Chat works now, and summaries and suggestions use only the items you agreed to.",
+        "restartPending": "AI turns on after you restart Maekon. When you open it again, check the key in Settings → AI & Automation.",
+        "off": "AI isn't connected. Connect a provider in Settings → AI & Automation to turn on summaries, suggestions, and chat."
+      },
+      "recoveryNeedsAi": "This needs AI to be connected."
+    },
+    "readyCollectionOffTitle": "Starting with monitoring off",
+    "readyCollectionOffDesc": "You continued without monitoring, so Maekon is not collecting anything and your timeline, search, and suggestions will stay empty. Turn it on now, or later in Privacy.",
+    "readyGrantNow": "Turn on monitoring now",
+    "step4RecoveryCardHint": "To get back to what you were doing, press “Find my next step” in the small tracking panel at the top of your screen. Maekon reads what is on screen and suggests your next step.",
+    "step4SuggestionsShortcut": "Next-step suggestions appear in the suggestions panel. Open it anytime with {{shortcut}}.",
     "step4Tip": "Tip: Press {{shortcut}} anytime to open the Command Palette and jump to any page.",
     "next": "Next",
     "back": "Back",
     "skip": "Skip",
     "complete": "Get Started",
+    "stepIndicatorLabel": "Step indicator",
     "autostart": {
       "title": "Start Maekon automatically?",
       "body": "Maekon works best when running in the background. Want it to launch when you sign in to your computer?",
       "enable_button": "Enable",
       "not_now_button": "Not now",
       "dismiss_button": "Don't ask again"
-    },
-    "consent": {
-      "title": "Start monitoring",
-      "description": "Grant Maekon consent to collect on-device context so it can assist you. Everything stays on your computer, and you can withdraw consent anytime in Privacy settings.",
-      "collectedTitle": "When you start monitoring, Maekon collects:",
-      "grantButton": "Start monitoring (grant consent)",
-      "granting": "Granting…",
-      "granted": "Monitoring consent granted",
-      "grantedNote": "Maekon will start collecting on-device context. Manage or withdraw consent anytime in Privacy settings.",
-      "osNote": "Granting consent is separate from the OS screen-recording permission above — Maekon needs both to capture your screen.",
-      "error": "Could not grant consent: {{error}}"
-    },
-    "coaching": {
-      "title": "Proactive Coaching",
-      "description": "Maekon can watch your activity patterns and send nudges — overlay tips and desktop notifications — to help you stay on track. Everything is processed on-device only.",
-      "enablesList": {
-        "item1": "Context-aware overlay nudges (local-only)",
-        "item2": "Desktop notifications for focus and goals",
-        "item3": "Activity-pattern learning (Tier-4 consent)",
-        "item4": "Configurable quiet hours and profiles"
-      },
-      "enableButton": "Enable coaching",
-      "enabling": "Enabling…",
-      "enabled": "Coaching enabled",
-      "activeNote": "Changes take effect immediately — no restart needed.",
-      "monitoringMissingWarning": "Monitoring consent is not yet granted. Grant it in the previous step for coaching to work.",
-      "error": "Could not enable coaching: {{error}}"
-    },
-    "audio": {
-      "title": "Audio is off by default",
-      "description": "Defer microphone capture during setup. You can review audio and speech-to-text options later in Settings.",
-      "statusTitle": "Audio deferred",
-      "statusDescription": "Microphone capture and speech-to-text remain disabled. No audio device, model, or provider is contacted.",
-      "localNote": "Local speech-to-text stays off until you explicitly enable audio and install a model.",
-      "egressNote": "Cloud speech-to-text stays off until you choose a provider and configure credentials in Settings."
-    },
-    "stepIndicatorLabel": "Step indicator",
-    "step4RecoveryCardHint": "When you want to pick up where you left off, press “Find my next step” in the small tracking panel at the top of your screen. Maekon reads what is on screen and proposes your next step as a recovery card. This needs an AI provider set up in Settings.",
-    "step4SuggestionsShortcut": "Recovery cards appear in the suggestions panel — open it anytime with {{shortcut}}.",
-    "readyCollectionOffTitle": "Starting with collection off",
-    "readyCollectionOffDesc": "You skipped consent, so Maekon is not collecting anything. Your timeline and suggestions will stay empty. Turn it on now, or later in Settings > Privacy.",
-    "readyGrantNow": "Turn on collection now"
+    }
   },
   "chat": {
     "title": "AI Sessions",
@@ -2594,7 +2806,14 @@
     "load_failed": "Failed to load AI sessions.",
     "refresh_failed": "Failed to refresh AI sessions.",
     "send_failed": "Failed to send the message.",
-    "full_text_consent_required": "Enable AI text processing and external providers in Privacy → Consent, then try again.",
+    "rename_failed": "Failed to rename the session.",
+    "suggestions_failed": "Failed to get suggestions.",
+    "suggestions_added_one": "{{count}} suggestion added from this conversation",
+    "suggestions_added_other": "{{count}} suggestions added from this conversation",
+    "suggestions_generated_one": "{{count}} suggestion generated",
+    "suggestions_generated_other": "{{count}} suggestions generated",
+    "response_failed": "The AI could not finish this reply.",
+    "full_text_consent_required": "Enable AI text processing and external providers in Privacy → Data Controls, then try again.",
     "retry_failed": "Failed to retry the session.",
     "delete_failed": "Failed to delete the session.",
     "input_placeholder": "Type a message...",
@@ -2940,6 +3159,8 @@
     "forgetPeerCancel": "Cancel",
     "forgetPeerSuccess": "{{peerName}} was disconnected.",
     "forgetPeerError": "The peer could not be disconnected. Try again.",
+    "syncFailed": "The sync did not finish.",
+    "setupFailed": "Sync could not be turned on.",
     "uploadRecoveryTitle": "Upload recovery check",
     "uploadRecoveryDescription": "Synthetic, local-only verification that interrupted uploads remain unsent until a confirmed retry succeeds.",
     "uploadRecoveryInterrupted": "Upload interrupted. {{count}} synthetic items remain local and unsent.",
@@ -3052,10 +3273,15 @@
     "communication": "Communication",
     "meetings": "Meetings",
     "contextSwitches": "Context Switches",
-    "regimeDistribution": "Regime Distribution"
+    "regimeDistribution": "Regime Distribution",
+    "longestFocus": "Longest Focus: {{duration}}",
+    "share": "Share"
   },
   "statusBar": {
-    "lastCaptureTimestamp": "Last capture timestamp"
+    "lastCaptureTimestamp": "Last capture timestamp",
+    "captureActive": "Capture active",
+    "captureWaiting": "Waiting for capture",
+    "noCaptureYet": "No capture yet"
   },
   "processList": {
     "pid": "PID:",
@@ -3241,7 +3467,7 @@
     "pinPlaceholder": "Enter your PIN",
     "unlock": "Unlock",
     "noMethodTitle": "No re-authentication method",
-    "noMethodBody": "Set up a PIN in Privacy settings to view capture history, or turn off the re-authentication requirement.",
+    "noMethodBody": "Set up a PIN in Settings → Capture Protection to view capture history, or turn off the re-authentication requirement.",
     "goToSettings": "Open settings",
     "cancel": "Cancel",
     "errors": {
@@ -3276,7 +3502,11 @@
   },
   "durableTasks": {
     "loading": "Loading tasks…",
-    "loadError": "Could not load tasks: {{error}}",
+    "loadError": "Could not load tasks. Try again.",
+    "actionConflict": "This item changed. Review the refreshed list and try again.",
+    "actionConsentRequired": "This action needs your consent. Review permissions in Settings, then try again.",
+    "actionSourceUnavailable": "The source is unavailable. Reconnect it, then try again.",
+    "actionFailed": "The task could not be changed. Review the current state and try again.",
     "suggestedHeading": "Suggested tasks",
     "noSuggestions": "No task suggestions to review.",
     "noTitle": "(no title)",
@@ -3499,6 +3729,14 @@
       "localReceipt": {
         "title": "Local receipt could not be saved",
         "body": "A local file may exist, but no success is claimed because its durable receipt failed. Check the selected output, repair local storage, and retry. Code: {{code}}"
+      },
+      "unverified": {
+        "title": "Creation status is not verified",
+        "body": "The result does not confirm a file and durable receipt for this assignment. A file may exist. Check the selected output before trying again; server upload is also unverified."
+      },
+      "uploadUnverified": {
+        "title": "Server upload is not verified",
+        "body": "The result confirms a local file and durable receipt for this assignment, shown below. Server registration has not been verified. Check its status before trying again."
       },
       "cancelled": {
         "title": "No file created",

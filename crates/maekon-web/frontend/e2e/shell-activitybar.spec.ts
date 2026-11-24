@@ -1,3 +1,4 @@
+import { i18nRegex } from './helpers/i18n'
 import { expect, test } from './helpers/test'
 
 test.describe('ActivityBar Actions', () => {
@@ -5,16 +6,12 @@ test.describe('ActivityBar Actions', () => {
     await page.goto('/')
   })
 
-  // After the category restructure the ActivityBar only exposes 3 group icons
-  // (monitor/data/manage) for the main area and 2 direct icons (settings/
-  // privacy) at the bottom.  Clicking a group icon navigates to that group's
-  // default path; from there sub-routes are reached through the SidePanel
-  // tree, not from the ActivityBar.
-  const GROUP_BUTTONS = [
-    { id: 'nav-group-monitor', expectedUrl: /\/overview$/ },
-    { id: 'nav-group-insights', expectedUrl: /\/reports\/activity$/ },
-    { id: 'nav-group-manage', expectedUrl: /\/automation\/policies$/ },
-  ]
+  // #13736: the ActivityBar exposes one main group icon for the main tree and
+  // 2 direct icons (settings/privacy) at the bottom.  Clicking the group icon
+  // navigates to the dashboard; every other route is reached through the
+  // SidePanel tree (six front destinations plus the More / Tools / System
+  // bundles), not from the ActivityBar.
+  const GROUP_BUTTONS = [{ id: 'nav-group-main', expectedUrl: /\/overview$/ }]
 
   const BOTTOM_BUTTONS = [
     { id: 'nav-settings', expectedUrl: /\/settings\/general$/ },
@@ -31,7 +28,7 @@ test.describe('ActivityBar Actions', () => {
   }
 
   test('P011: only one button has aria-current="page"', async ({ page }) => {
-    await page.getByTestId('nav-group-monitor').click()
+    await page.getByTestId('nav-group-main').click()
     const activeButtons = page.locator('nav button[aria-current="page"]')
     await expect(activeButtons).toHaveCount(1)
   })
@@ -44,56 +41,60 @@ test.describe('ActivityBar Actions', () => {
     await expect(tooltip).toHaveText(/.+/)
   })
 
-  test('P013: manage group highlights when on a manage route', async ({ page }) => {
-    // Navigate to /automation/policies — this should activate the manage
-    // group icon (automation moved from monitor to manage group).
+  test('P013: main group highlights on a route inside a bundle', async ({ page }) => {
+    // /automation/policies sits in the Tools bundle one level back, and the
+    // main group icon is still the active one.
     await page.goto('/automation/policies')
     const active = page.locator('nav button[aria-current="page"]')
     await expect(active).toHaveCount(1)
-    await expect(active).toHaveAttribute('data-testid', 'nav-group-manage')
+    await expect(active).toHaveAttribute('data-testid', 'nav-group-main')
   })
 
-  test('P014: activity bar exposes exactly six nav buttons', async ({ page }) => {
-    // 3 group icons + 3 bottom direct icons (settings, privacy, support —
-    // #8079 added the childless Support leaf) = 6 total.  Guards against
+  test('P014: activity bar exposes exactly three nav buttons', async ({ page }) => {
+    // 1 group icon + 2 bottom direct icons (settings, privacy) = 3 total.
+    // Support moved into the System bundle (#13736).  Guards against
     // accidental re-introduction of per-route icons in the 48px rail.
     const nav = page.locator('nav[aria-label]')
     const buttons = nav.locator('button[data-testid]')
-    await expect(buttons).toHaveCount(6)
+    await expect(buttons).toHaveCount(3)
   })
 
   test('P015: clicking the active group toggles the SidePanel', async ({ page }) => {
     await page.goto('/overview')
-    // Sidepanel visible initially (on /overview which is in monitor group).
+    // Sidepanel visible initially (on /overview which is in the main group).
     const sidePanel = page.locator('[role="tree"]')
     await expect(sidePanel).toBeVisible()
 
-    // Click the already-active monitor icon → sidepanel should collapse.
-    await page.getByTestId('nav-group-monitor').click()
+    // Click the already-active group icon → sidepanel should collapse.
+    await page.getByTestId('nav-group-main').click()
     await expect(sidePanel).toHaveCount(0)
 
     // Click again → sidepanel re-opens.
-    await page.getByTestId('nav-group-monitor').click()
+    await page.getByTestId('nav-group-main').click()
     await expect(sidePanel).toBeVisible()
   })
 
-  test('P016: SidePanel shows the full group tree with nested children', async ({ page }) => {
+  test('P016: SidePanel opens the bundle that holds the current page', async ({ page }) => {
     await page.goto('/automation/policies')
     const tree = page.locator('[role="tree"]')
     await expect(tree).toBeVisible()
 
-    // Top-level treeitems correspond to each manage route.  Auto-expand
-    // means the nested /automation children are also reachable — but their
-    // labels come from i18n (sidebar.policies → "Runtime Status",
-    // sidebar.executionHistory → "Execution History"), NOT from the route
-    // path segments.
-    await expect(tree.getByRole('treeitem', { name: /automation/i })).toBeVisible()
-    await expect(tree.getByRole('treeitem', { name: /audit/i })).toBeVisible()
-    await expect(tree.getByRole('treeitem', { name: /runtime status/i })).toBeVisible()
+    // The Tools bundle opens to reveal Automation and its tabs; the other
+    // bundles stay folded.  Tab labels come from i18n (sidebar.policies →
+    // "Runtime Status"), NOT from the route path segments.
+    await expect(tree.getByRole('treeitem', { name: i18nRegex('nav.sectionTools') })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    await expect(tree.getByRole('treeitem', { name: i18nRegex('nav.sectionMore') })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    await expect(tree.getByRole('treeitem', { name: i18nRegex('nav.automation') }).first()).toBeVisible()
+    await expect(tree.getByRole('treeitem', { name: i18nRegex('nav.audit') })).toBeVisible()
 
-    // The current route's selected leaf is "Runtime Status" (the i18n label
-    // for the automation.policies tab, not "Policies").
+    // The current route's selected leaf is "Runtime Status".
     const selected = tree.getByRole('treeitem', { selected: true })
-    await expect(selected).toHaveText(/runtime status/i)
+    await expect(selected).toHaveText(i18nRegex('sidebar.policies'))
   })
 })

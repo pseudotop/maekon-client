@@ -31,7 +31,7 @@ import {
 } from '../ai-automation-utils'
 import OAuthConnectionPanel from '../OAuthConnectionPanel'
 import { isProviderOAuthAccessMode } from '../oauth-panel-support'
-import ProviderWizard, { type ProviderDef } from '../ProviderWizard'
+import ProviderWizard, { applyProviderWizardSelection, type ProviderDef } from '../ProviderWizard'
 import ToggleRow from '../ToggleRow'
 import ChatHttpVerification from './ChatHttpVerification'
 import LlmEndpointConfig from './LlmEndpointConfig'
@@ -373,13 +373,7 @@ export default function AiAutomationTab() {
     surface?.execution_kind === 'subprocess_cli'
 
   const handleProviderWizardSelect = (provider: ProviderDef, apiKey: string) => {
-    settingsForm.handleAiProviderChange('access_mode', 'ProviderApiKey')
-    settingsForm.handleAiProviderChange('llm_provider', provider.tier === 'local' ? 'Local' : 'Remote')
-    settingsForm.handleProviderSurfaceChange('llm_api', provider.surfaceId)
-    if (apiKey) {
-      settingsForm.handleExternalApiChange('llm_api', 'api_key_masked', apiKey)
-    }
-    settingsForm.handleExternalApiChange('llm_api', 'model', provider.defaultModel)
+    applyProviderWizardSelection(settingsForm, provider, apiKey)
   }
 
   return (

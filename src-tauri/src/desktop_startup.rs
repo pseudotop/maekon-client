@@ -68,11 +68,17 @@ impl DesktopStartupCoordinator {
 mod tests {
     #[test]
     fn desktop_startup_contains_window_show_call() {
-        let startup_src = include_str!("desktop_startup.rs");
+        // Inspect production code only: the expected call below must not satisfy
+        // its own guard after the actual startup call is removed (#12544).
+        let (startup_src, _) = include_str!("desktop_startup.rs")
+            .split_once("\n#[cfg(test)]\n")
+            .expect("desktop startup test module boundary must exist");
 
         assert!(
-            startup_src.contains("show_restore_and_focus_main_window"),
-            "desktop startup must use the shared restore and focus path"
+            startup_src.lines().any(|line| {
+                line.trim() == "crate::window_state::show_restore_and_focus_main_window(&window);"
+            }),
+            "desktop startup must invoke the shared restore and focus path"
         );
     }
 }

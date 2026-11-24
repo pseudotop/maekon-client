@@ -21,6 +21,23 @@ ml-detect = ["dep:ort"]
 # feature is a no-op on macOS/Windows builds (no extra deps compiled in).
 linux-atspi = ["atspi", "atspi-common", "futures"]
 native-vision = []
+# macos-screencapturekit builds the ScreenCaptureKit change listener
+# (`dirty_region/macos.rs`, #13655). ScreenCaptureKit exists from macOS 12.3,
+# and objc2-screen-capture-kit links it unconditionally, so a binary built with
+# this feature does not launch on older macOS. The app declares macOS 10.15
+# (`src-tauri/tauri.conf.json` `minimumSystemVersion`), so the feature stays
+# off by default. Target-scoped like linux-atspi: a no-op off macOS.
+macos-screencapturekit = [
+    "dep:objc2-screen-capture-kit",
+    "dep:objc2-core-graphics",
+    "dep:objc2-core-media",
+    "dep:block2",
+    "dep:dispatch2",
+    "objc2-foundation/NSError",
+    "objc2-foundation/NSGeometry",
+    "objc2-foundation/NSValue",
+    "objc2-foundation/objc2-core-foundation",
+]
 
 [dependencies]
 maekon-core = { workspace = true }
@@ -50,15 +67,33 @@ core-foundation-sys = { workspace = true }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true, features = ["NSArray", "NSData", "NSDictionary", "NSString"] }
 objc2-core-foundation = { workspace = true }
+objc2-screen-capture-kit = { workspace = true, optional = true, features = ["std", "SCShareableContent", "SCStream", "block2", "dispatch2", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+objc2-core-graphics = { workspace = true, optional = true, features = ["std", "CGDirectDisplay", "CGError", "CGGeometry", "CGWindow"] }
+objc2-core-media = { workspace = true, optional = true, features = ["std", "CMSampleBuffer", "CMTime"] }
+block2 = { workspace = true, optional = true }
+dispatch2 = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true }
-windows = { workspace = true }
+# #13655: DXGI Desktop Duplication change listener (`dirty_region/windows.rs`).
+# Features only; the lock file does not change.
+windows = { workspace = true, features = [
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 atspi = { workspace = true, optional = true }
 atspi-common = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+# #13655: X11 DAMAGE change listener (pure-Rust RustConnection, no libxcb).
+# `damage` adds the DAMAGE and XFIXES protocol modules of the crate already
+# used by maekon-monitor; it brings no new crate.
+x11rb = { workspace = true, features = ["damage"] }
 
 [dev-dependencies]
 criterion = { workspace = true }

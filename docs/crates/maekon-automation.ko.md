@@ -170,7 +170,9 @@ AuditLevel::Full     → SandboxProfile::Strict
   - 신뢰도 검증 + 재시도 로직 (`IntentConfig`)
 - `IntentExecutor` — 변환된 액션 순차 실행 + 결과 검증
   - `execute_intent(intent, config)` → `IntentResult`
-  - 실행 후 텍스트 확인 (`verify_after_action`)
+  - 실행 후 화면 확인 (`verify_after_action`): `ScreenChangeProbe`를 붙이면(`with_screen_probe`)
+    실행 전 표본과 실행 뒤 화면이 멈출 때까지의 표본을 비교 (`screen_settle.rs`). 없으면 고정
+    `verify_delay_ms` 대기 뒤 `verification` 없음
   - 재시도 (`max_retries`, `retry_interval_ms`)
 
 ### `presets.rs` — 내장 워크플로우 프리셋

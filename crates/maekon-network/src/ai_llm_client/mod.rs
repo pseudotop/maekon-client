@@ -389,6 +389,14 @@ impl RemoteLlmProvider {
 }
 #[async_trait]
 impl LlmProvider for RemoteLlmProvider {
+    fn intent_provider_class(&self) -> maekon_core::models::intent_execution::IntentProviderClass {
+        maekon_core::models::intent_execution::IntentProviderClass::RemoteModel
+    }
+
+    fn intent_forwards_skill_context(&self) -> Option<bool> {
+        Some(true)
+    }
+
     async fn interpret_intent(
         &self,
         screen_context: &ScreenContext,

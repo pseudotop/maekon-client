@@ -1,0 +1,360 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -268,9 +268,8 @@
+ [dev-dependencies.walkdir]
+ version = "2.5"
+ 
+-[target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies.nix]
+-version = "^0.31.3"
+-features = ["fs"]
++[target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies.libc]
++version = "0.2.190"
+ default-features = false
+ 
+ [target."cfg(not(miri))".dev-dependencies.count_instructions]
+--- a/src/aes.rs
++++ b/src/aes.rs
+@@ -257,6 +257,9 @@
+     /// underlying reader. If the error occurs while verifying the HMAC, the reader might become
+     /// practically unusable, since its position after the error is not known.
+     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
++        if buf.is_empty() {
++            return Ok(0);
++        }
+         if self.data_remaining == 0 {
+             if !self.finalized {
+                 // handle case where payload is empty
+--- a/src/format/find_central_directory.rs
++++ b/src/format/find_central_directory.rs
+@@ -7,12 +7,33 @@
+ use crate::format::magic::Magic;
+ use crate::read::ArchiveOffset;
+ use crate::read::magic_finder::{Backwards, Forward, MagicFinder};
+-use crate::result::{ZipResult, invalid};
++use crate::result::{ZipError, ZipResult, invalid};
+ 
+ use core::mem;
+-use std::io::{Read, Seek, SeekFrom};
++use std::io::{self, Read, Seek, SeekFrom};
+ 
+ const MAGIC_LENGTH: usize = mem::size_of::<Magic>();
++
++// Keep offset detection bounded independently of attacker-controlled payload bytes.
++// At most 512 KiB of offsets is retained per signature kind. Ordinary ZIP archives
++// use their declared central-directory position and never allocate this cache.
++const MAX_CACHED_MAGIC_POSITIONS: usize = 65_536;
++
++// Count actual candidate reads, including an extensible data sector, rather than
++// trusting the locator distance. Across malformed ZIP64 candidates this bounds
++// re-parsing to O(file_len); the first valid candidate is never larger than the file.
++struct CandidateReader<'a, R: ?Sized> {
++    reader: &'a mut R,
++    bytes_read: &'a mut u64,
++}
++
++impl<R: Read + ?Sized> Read for CandidateReader<'_, R> {
++    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
++        let read = self.reader.read(buf)?;
++        *self.bytes_read = self.bytes_read.saturating_add(read as u64);
++        Ok(read)
++    }
++}
+ 
+ /// Tracks forward-scanned ranges of the file for a particular magic signature, caching
+ /// found positions so that repeated overlapping searches run in O(log n) instead of O(n).
+@@ -53,6 +74,11 @@
+         let mut finder =
+             MagicFinder::<Forward<'_>>::new(&self.magic_bytes, self.scanned_up_to, up_to);
+         while let Some(pos) = finder.next(reader)? {
++            if self.positions.len() == MAX_CACHED_MAGIC_POSITIONS {
++                return Err(ZipError::UnsupportedArchive(
++                    "Archive offset detection exceeds the signature cache limit",
++                ));
++            }
+             self.positions.push(pos);
+         }
+         self.scanned_up_to = up_to;
+@@ -60,13 +86,21 @@
+     }
+ 
+     /// Find the first occurrence of the magic at or after `start` and before `end`.
+-    /// Ensures scanning covers `[0, end)` before answering.
++    /// Checks `start` directly, otherwise scans and caches `[0, end)` before answering.
+     pub(crate) fn first_in_range<R: Read + Seek + ?Sized>(
+         &mut self,
+         reader: &mut R,
+         start: u64,
+         end: u64,
+     ) -> ZipResult<Option<u64>> {
++        if end.saturating_sub(start) >= MAGIC_LENGTH as u64 {
++            reader.seek(SeekFrom::Start(start))?;
++            let mut magic = [0u8; MAGIC_LENGTH];
++            reader.read_exact(&mut magic)?;
++            if magic == self.magic_bytes {
++                return Ok(Some(start));
++            }
++        }
+         self.ensure_scanned_up_to(reader, end)?;
+         // Binary search for the first position >= start
+         let idx = self.positions.partition_point(|&p| p < start);
+@@ -89,8 +123,12 @@
+     eocd_finder: &mut MagicFinder<Backwards<'static>>,
+     cdfh_cache: &mut MagicPositionCache,
+     eocd64_cache: &mut MagicPositionCache,
++    candidate_bytes_read: &mut u64,
+ ) -> ZipResult<CentralDirectoryEndInfo> {
+     const EOCD_FIXED_SIZE: u64 = 22;
++    // A candidate is completed before checking the budget again, so total reads
++    // may exceed this by at most one candidate (at most file_len bytes).
++    let candidate_read_limit = file_len.saturating_mul(4).saturating_add(1024);
+     const CDFH_SIG_BYTES: [u8; mem::size_of::<Magic>()] =
+         Magic::CENTRAL_DIRECTORY_HEADER_SIGNATURE.to_le_bytes();
+ 
+@@ -226,7 +264,7 @@
+ 
+         // This was hidden inside a function to collect errors in a single place.
+         // Once try blocks are stabilized, this can go away.
+-        fn try_read_eocd64<R: Read + Seek + ?Sized>(
++        fn try_read_eocd64<R: Read + ?Sized>(
+             reader: &mut R,
+             disk_with_central_directory: u32,
+             expected_length: u64,
+@@ -266,7 +304,16 @@
+                     None
+                 }
+             }
+-            _ => None,
++            ArchiveOffset::Detect => {
++                if search_end.saturating_sub(search_start) >= MAGIC_LENGTH as u64 {
++                    reader.seek(SeekFrom::Start(search_start))?;
++                    let mut magic = [0u8; MAGIC_LENGTH];
++                    reader.read_exact(&mut magic)?;
++                    (magic == eocd64_cache.magic_bytes).then_some(search_start)
++                } else {
++                    None
++                }
++            }
+         };
+ 
+         // Collect candidate EOCD64 positions
+@@ -279,12 +326,23 @@
+             eocd64_offset: u64,
+             disk_with_central_directory: u32,
+             locator64_offset: u64,
++            candidate_bytes_read: &mut u64,
++            candidate_read_limit: u64,
+         ) -> ZipResult<Option<(DataAndPosition<Zip64CentralDirectoryEnd>, u64)>> {
++            if *candidate_bytes_read >= candidate_read_limit {
++                return Err(ZipError::UnsupportedArchive(
++                    "Archive offset detection exceeds the ZIP64 candidate read limit",
++                ));
++            }
+             let archive_offset = eocd64_offset - eocd_offset;
+             reader.seek(SeekFrom::Start(eocd64_offset))?;
+ 
++            let mut candidate_reader = CandidateReader {
++                reader,
++                bytes_read: candidate_bytes_read,
++            };
+             match try_read_eocd64(
+-                reader,
++                &mut candidate_reader,
+                 disk_with_central_directory,
+                 locator64_offset.saturating_sub(eocd64_offset),
+             ) {
+@@ -315,6 +373,8 @@
+                 guess_pos,
+                 locator64.disk_with_central_directory,
+                 locator64_offset,
++                candidate_bytes_read,
++                candidate_read_limit,
+             )? {
+                 return Ok(CentralDirectoryEndInfo {
+                     eocd: (eocd, guess_pos).into(),
+@@ -344,6 +404,8 @@
+                     eocd64_offset,
+                     locator64.disk_with_central_directory,
+                     locator64_offset,
++                    candidate_bytes_read,
++                    candidate_read_limit,
+                 ) {
+                     Ok(Some((eocd64, archive_offset))) => {
+                         return Ok(CentralDirectoryEndInfo {
+@@ -357,6 +419,9 @@
+                             Some(invalid!("Invalid EOCD64: inconsistent number of files"));
+                     }
+                     Err(e) => {
++                        if *candidate_bytes_read >= candidate_read_limit {
++                            return Err(e);
++                        }
+                         local_error = Some(e);
+                     }
+                 }
+--- a/src/read/extract.rs
++++ b/src/read/extract.rs
+@@ -252,15 +252,32 @@
+         {
+             // These are the only platforms where permission bits on symlinks themselves are meaningful.
+ 
+-            use nix::fcntl::AT_FDCWD;
+-            use nix::sys::stat::{FchmodatFlags, Mode, fchmodat};
+-            use std::os::unix::fs::PermissionsExt;
+-
+-            // `mode_t` is `u16` on macOS, FreeBSD and DragonFly, but `u32` on NetBSD and OpenBSD.
+-            let mode = Mode::from_bits_truncate(mode.mode() as nix::libc::mode_t);
+-
+-            // Use fchmodat with the flag telling it NOT to follow the symlink
+-            fchmodat(AT_FDCWD, path, mode, FchmodatFlags::NoFollowSymlink)?;
++            use std::ffi::CString;
++            use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
++
++            let path = CString::new(path.as_os_str().as_bytes())
++                .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
++            // Match nix::Mode::from_bits_truncate, including each target's mode_t width.
++            let valid_bits = (libc::S_IRWXU
++                | libc::S_IRWXG
++                | libc::S_IRWXO
++                | libc::S_ISUID
++                | libc::S_ISGID
++                | libc::S_ISVTX) as libc::mode_t;
++            let mode = mode.mode() as libc::mode_t & valid_bits;
++            // SAFETY: path owns a NUL-terminated string valid for the whole call.
++            // AT_FDCWD requires no borrowed descriptor, and no pointers are retained.
++            let result = unsafe {
++                libc::fchmodat(
++                    libc::AT_FDCWD,
++                    path.as_ptr(),
++                    mode,
++                    libc::AT_SYMLINK_NOFOLLOW,
++                )
++            };
++            if result == -1 {
++                return Err(std::io::Error::last_os_error());
++            }
+         }
+     } else {
+         fs::set_permissions(path, mode)?;
+--- a/src/read/zip_archive.rs
++++ b/src/read/zip_archive.rs
+@@ -165,6 +165,14 @@
+ 
+ use crate::result::invalid;
+ 
++// The first candidate may contain any number of genuine entries. Once it fails,
++// bound the accumulated header work across alternate EOCD candidates: otherwise
++// distinct directory offsets can cache overlapping suffixes quadratically.
++const MAX_FALLBACK_CENTRAL_HEADERS: usize = 8_192;
++const CENTRAL_DIRECTORY_CACHE_LIMIT: ZipError = ZipError::UnsupportedArchive(
++    "Archive offset detection exceeds the central-directory cache limit",
++);
++
+ #[derive(Debug)]
+ struct CentralDirectoryChain {
+     entries: Vec<(u64, ZipCentralEntryBlock)>,
+@@ -180,6 +188,8 @@
+         let file_len = reader.seek(SeekFrom::End(0))?;
+         let mut last_err = None;
+         let mut cd_chains = std::collections::HashMap::<u64, CentralDirectoryChain>::new();
++        let mut central_headers_read = 0usize;
++        let mut eocd64_candidate_bytes_read = 0u64;
+ 
+         const EOCD_SIG_BYTES: [u8; mem::size_of::<Magic>()] =
+             Magic::CENTRAL_DIRECTORY_END_SIGNATURE.to_le_bytes();
+@@ -205,6 +215,7 @@
+                 &mut eocd_finder,
+                 &mut cdfh_cache,
+                 &mut eocd64_cache,
++                &mut eocd64_candidate_bytes_read,
+             ) {
+                 Ok(cde) => cde,
+                 Err(e) => {
+@@ -214,9 +225,16 @@
+             };
+ 
+             // Turn EOCD into internal representation.
+-            match CentralDirectoryInfo::try_from(&cde)
+-                .and_then(|info| Self::read_central_header(&info, config, reader, &mut cd_chains))
+-            {
++            match CentralDirectoryInfo::try_from(&cde).and_then(|info| {
++                Self::read_central_header(
++                    &info,
++                    config,
++                    reader,
++                    &mut cd_chains,
++                    &mut central_headers_read,
++                    last_err.is_some(),
++                )
++            }) {
+                 Ok(shared) => {
+                     let zip64_extensible_data_sector = if let Some(eocd64) = cde.eocd64 {
+                         eocd64.data.zip64_extensible_data_sector
+@@ -228,6 +246,9 @@
+                     );
+                 }
+                 Err(e) => {
++                    if central_headers_read >= MAX_FALLBACK_CENTRAL_HEADERS {
++                        return Err(CENTRAL_DIRECTORY_CACHE_LIMIT);
++                    }
+                     last_err = Some(e);
+                 }
+             }
+@@ -241,6 +262,8 @@
+         config: Config,
+         reader: &mut R,
+         cd_chains: &mut std::collections::HashMap<u64, CentralDirectoryChain>,
++        central_headers_read: &mut usize,
++        is_fallback: bool,
+     ) -> Result<SharedBuilder, ZipError> {
+         // If the parsed number of files is greater than the offset then
+         // something fishy is going on and we shouldn't trust number_of_files.
+@@ -275,6 +298,9 @@
+ 
+             reader.seek(SeekFrom::Start(chain.next_offset))?;
+             while chain.entries.len() < dir_info.number_of_files {
++                if is_fallback && *central_headers_read >= MAX_FALLBACK_CENTRAL_HEADERS {
++                    return Err(CENTRAL_DIRECTORY_CACHE_LIMIT);
++                }
+                 let central_header_start = reader.stream_position()?;
+                 // Parse central header
+                 let block = match ZipCentralEntryBlock::parse(reader) {
+@@ -291,6 +317,7 @@
+                         + i64::from(block.file_comment_length),
+                 ))?;
+ 
++                *central_headers_read = central_headers_read.saturating_add(1);
+                 chain.entries.push((central_header_start, block));
+             }
+         }
+@@ -1204,6 +1231,7 @@
+             &mut eocd_finder,
+             &mut cdfh_cache,
+             &mut eocd64_cache,
++            &mut 0,
+         );
+ 
+         // This should succeed because even though there's a fake locator, it should fall back to Zip32
+--- a/src/write.rs
++++ b/src/write.rs
+@@ -1429,10 +1429,10 @@
+     fn finalize(&mut self) -> ZipResult<u64> {
+         self.finish_file()?;
+ 
+-        let (central_start, is_zip64) = self.write_central_and_footer()?;
++        let (mut central_start, is_zip64) = self.write_central_and_footer()?;
+         let writer = self.inner.try_inner_mut()?;
+         let footer_end = writer.stream_position()?;
+-        let archive_end = writer.seek(SeekFrom::End(-(self.comment.len() as i64)))?;
++        let archive_end = writer.seek(SeekFrom::End(0))?;
+         if footer_end < archive_end {
+             // Data from an aborted file is past the end of the footer.
+ 
+@@ -1464,7 +1464,8 @@
+             // Rewrite the footer at the actual end.
+             let central_and_footer_size = footer_end - central_start;
+             writer.seek(SeekFrom::End(-(central_and_footer_size as i64)))?;
+-            let (_, new_is_zip64) = self.write_central_and_footer()?;
++            let (new_central_start, new_is_zip64) = self.write_central_and_footer()?;
++            central_start = new_central_start;
+             if new_is_zip64 && new_is_zip64 != is_zip64 {
+                 let new_size = (size_of::<Magic>() + Zip64CentralDirectoryEnd::MIN_FULL_SIZE)
+                     as u64

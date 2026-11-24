@@ -3,13 +3,30 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { fetchUpdateStatus, postUpdateAction, type UpdateAction, type UpdateStatus } from '../api/client'
 import { useUpdateStream } from '../hooks/useUpdateStream'
+import { useErrorDisplay } from '../i18n/errorDisplay'
 import { motion, typography } from '../styles/tokens'
 import { cn } from '../utils/cn'
+import { formatDateTime, formatDuration, largestElapsedUnit } from '../utils/formatters'
+import { SupportDetails } from './SupportDetails'
 import { Badge, Button, Card, CardTitle, Spinner } from './ui'
 
 type UpdatePanelProps = {
   compact?: boolean
+  /**
+   * #13740: the Updates page header already offers "Check now", so the panel
+   * leaves its own button out there. The dashboard card keeps it.
+   */
+  hideCheckNow?: boolean
 }
+
+const RELEASED_AGO_KEYS = {
+  minutes: 'updates.releasedAgoMinutes',
+  hours: 'updates.releasedAgoHours',
+  days: 'updates.releasedAgoDays',
+} as const
+
+/** Releases older than this show an absolute date; "N weeks ago" reads worse than the date itself. */
+const RELATIVE_RELEASE_DATE_MAX_DAYS = 7
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -17,18 +34,13 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function technicalErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message
-  return String(error)
-}
-
 /**
  * Phase 4 D11: format a release `published_at` ISO-8601 timestamp as a
  * short human-readable string. Returns `null` when input is null or
  * unparseable so callers can render a fallback.
  *
- * - Less than 24h old: relative ("3 hours ago" / "5 minutes ago" / "12 days ago")
- * - Older: absolute ISO YYYY-MM-DD
+ * - Less than 7 days old: relative ("5 minutes ago" / "3 hours ago" / "2 days ago")
+ * - Older, or in the future (clock skew): absolute ISO YYYY-MM-DD
  */
 function formatReleaseDate(
   iso: string | null | undefined,
@@ -40,29 +52,16 @@ function formatReleaseDate(
   if (!Number.isFinite(ts)) return null
 
   const diffMs = nowMs - ts
-  if (diffMs < 0) {
-    // Future timestamp (clock skew); fall back to ISO date.
-    return iso.slice(0, 10)
-  }
+  if (diffMs < 0) return iso.slice(0, 10)
 
-  const minutes = Math.floor(diffMs / 60_000)
-  if (minutes < 60) {
-    return t('updates.releasedAgoMinutes', { count: Math.max(minutes, 1) })
-  }
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) {
-    return t('updates.releasedAgoHours', { count: hours })
-  }
-  const days = Math.floor(hours / 24)
-  if (days < 7) {
-    return t('updates.releasedAgoDays', { count: days })
-  }
-  // >= 7 days: absolute ISO date (YYYY-MM-DD) is cleaner than "N weeks ago".
-  return iso.slice(0, 10)
+  const elapsed = largestElapsedUnit(diffMs)
+  if (elapsed.unit === 'days' && elapsed.count >= RELATIVE_RELEASE_DATE_MAX_DAYS) return iso.slice(0, 10)
+  return t(RELEASED_AGO_KEYS[elapsed.unit], { count: elapsed.count })
 }
 
-export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
-  const { t } = useTranslation()
+export default function UpdatePanel({ compact = false, hideCheckNow = false }: UpdatePanelProps) {
+  const { t, i18n } = useTranslation()
+  const describeError = useErrorDisplay()
   const queryClient = useQueryClient()
   const stream = useUpdateStream()
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -112,8 +111,9 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
   const hasApprovalAction = status?.phase === 'PendingApproval' || status?.phase === 'ReadyToInstall'
   const isDownloading = status?.phase === 'Downloading'
   const rawStatusMessage = status?.message?.trim() || null
-  const visibleStatusMessage =
-    status?.phase === 'Error' ? t('updates.statusCheckFailed') : (rawStatusMessage ?? t('updates.statusUnavailable'))
+  const statusError = status?.phase === 'Error' ? describeError(rawStatusMessage, t('updates.statusCheckFailed')) : null
+  const visibleStatusMessage = statusError?.text ?? rawStatusMessage ?? t('updates.statusUnavailable')
+  const actionError = actionMutation.isError ? describeError(actionMutation.error, t('updates.actionFailed')) : null
 
   const phaseLabel = useMemo(() => {
     const phase = status?.phase
@@ -142,16 +142,20 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
 
   return (
     <Card variant="default" padding="lg">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <CardTitle>{t('updates.title')}</CardTitle>
-        <div className="flex items-center space-x-2">
-          <Badge color="default" size="sm">
-            {stream.status === 'connected' ? t('updates.live') : t('updates.polling')}
+        {/* #13740: each pill names what it describes; the tooltip explains the values. */}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Badge color="default" size="sm" title={t('updates.connectionHint')}>
+            {t('updates.connectionBadge', {
+              state: stream.status === 'connected' ? t('updates.live') : t('updates.polling'),
+            })}
           </Badge>
-          <Badge color="default" size="sm">
-            {freshness.stale ? t('updates.stale') : t('updates.fresh')}
+          <Badge color="default" size="sm" title={t('updates.freshnessHint')}>
+            {t('updates.freshnessBadge', { state: freshness.stale ? t('updates.stale') : t('updates.fresh') })}
           </Badge>
           <Badge
+            title={t('updates.phaseHint')}
             color={
               status?.phase === 'Error' || status?.phase === 'RolledBack'
                 ? 'error'
@@ -165,24 +169,19 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
             }
             size="sm"
           >
-            {phaseLabel}
+            {t('updates.phaseBadge', { state: phaseLabel })}
           </Badge>
         </div>
       </div>
 
       <p className={cn('text-content-strong', typography.body)}>{visibleStatusMessage}</p>
 
-      {status?.phase === 'Error' && rawStatusMessage && (
-        <details className={cn('mt-2 text-content-secondary', typography.caption)} data-testid="update-status-details">
-          <summary className="cursor-pointer select-none">{t('updates.technicalDetails')}</summary>
-          <code className="mt-1 block break-words rounded bg-surface-secondary p-2">{rawStatusMessage}</code>
-        </details>
-      )}
+      <SupportDetails detail={statusError?.detail} />
 
       <p className={cn('mt-2 text-content-secondary', typography.caption)}>
         {freshness.ageSec === null
           ? t('updates.lastUpdateUnknown')
-          : t('updates.lastUpdateAge', { seconds: freshness.ageSec })}
+          : t('updates.lastUpdateAge', { age: formatDuration(freshness.ageSec) })}
       </p>
 
       {hasApprovalAction && freshness.severelyStale && (
@@ -228,7 +227,11 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
           </div>
           <div className={cn(typography.caption)}>{t('updates.rolledBackReasonRepeatedStartupFailure')}</div>
           <div className={cn(typography.caption, 'text-content-tertiary')}>
-            {t('updates.rolledBackAt', { timestamp: status.rollback.rolled_back_at })}
+            {t('updates.rolledBackAt', {
+              timestamp: Number.isFinite(Date.parse(status.rollback.rolled_back_at))
+                ? formatDateTime(status.rollback.rolled_back_at, i18n.language)
+                : status.rollback.rolled_back_at,
+            })}
           </div>
         </div>
       )}
@@ -302,16 +305,18 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
       )}
 
       <div className="mt-4 flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          isLoading={actionMutation.isPending}
-          disabled={isDownloading}
-          onClick={() => actionMutation.mutate('CheckNow')}
-        >
-          {t('updates.checkNow')}
-        </Button>
+        {!hideCheckNow && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            isLoading={actionMutation.isPending}
+            disabled={isDownloading}
+            onClick={() => actionMutation.mutate('CheckNow')}
+          >
+            {t('updates.checkNow')}
+          </Button>
+        )}
         {status?.phase === 'PendingApproval' && (
           <>
             <Button
@@ -362,15 +367,10 @@ export default function UpdatePanel({ compact = false }: UpdatePanelProps) {
         )}
       </div>
 
-      {actionMutation.isError && (
+      {actionError && (
         <div className={cn('mt-3 text-semantic-error', typography.caption)} role="alert">
-          <p>{t('updates.actionFailed')}</p>
-          <details className="mt-1" data-testid="update-action-details">
-            <summary className="cursor-pointer select-none">{t('updates.technicalDetails')}</summary>
-            <code className="mt-1 block break-words rounded bg-surface-secondary p-2">
-              {technicalErrorMessage(actionMutation.error)}
-            </code>
-          </details>
+          <p>{actionError.text}</p>
+          <SupportDetails detail={actionError.detail} />
         </div>
       )}
     </Card>

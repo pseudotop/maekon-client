@@ -132,8 +132,7 @@ impl AppRuntimeLaunchBuilder {
             cua_safe_mode,
         )?;
         let capture_paused = capture_wiring.capture_paused.clone();
-        let indicator_visible = capture_wiring.indicator_visible.clone();
-        let detection_active = capture_wiring.detection_active.clone();
+        let capture_pause_state = capture_wiring.capture_pause_state.clone();
         let shared_capture_services = capture_wiring.shared_capture_services.clone();
         let capture_consent_manager = capture_wiring.consent_manager.clone();
         // One FocusAnalyzer instance is shared by scheduler loops and Tauri
@@ -281,8 +280,8 @@ impl AppRuntimeLaunchBuilder {
                 .with_overlay_driver(Arc::new(
                     crate::magic_overlay_driver::MagicOverlayDriver::new(self.app_handle.clone()),
                 ))
-                .with_capture_paused(capture_paused.clone())
-                .with_detection_active(detection_active.clone())
+                .with_capture_paused(capture_paused.clone(), capture_pause_state.clone())
+                .with_detection_active(capture_wiring.detection_active.clone())
                 .with_focus_mode(focus_mode.clone())
                 .with_shared_regime(shared_regime_state.clone())
                 .with_health_flags(
@@ -443,7 +442,8 @@ impl AppRuntimeLaunchBuilder {
             magic_overlay,
             coaching_engine,
             capture_paused,
-            indicator_visible,
+            capture_pause_state,
+            indicator_visible: capture_wiring.indicator_visible,
             server_connected,
             llm_connected,
             cli_connected,
@@ -464,7 +464,7 @@ impl AppRuntimeLaunchBuilder {
             session_manager,
             suggestion_manager: suggestion_manager.clone(),
             shared_regime_state: shared_regime_state.clone(),
-            detection_active,
+            detection_active: capture_wiring.detection_active,
             scene_finder_slot,
             automation_controller,
             analysis_health_flag,

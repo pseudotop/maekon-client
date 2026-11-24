@@ -49,7 +49,11 @@ if (Object.keys(overrides).length === 0) {
 // alerts when touching this block; a pin that is never re-measured stops being
 // a guard and becomes the thing holding the vulnerability in place.
 const expectedOverrides = {
-  'serialize-javascript': '7.0.5',
+  // #13264: bound indexed source-map offsets without pinning safe releases.
+  'source-map-js@>=1.0.0 <1.2.2': '1.2.2',
+  // #13584: preserve parser 6.x and the serializer's vulnerable-range floor.
+  'postcss-selector-parser@>=6.1.0 <6.1.5': '6.1.5',
+  'serialize-javascript@<7.1.3': '7.1.3',
   '@babel/core': '7.29.6',
   'form-data': '4.0.6',
   // #12497: the 4.3.1 pin itself became vulnerable (GHSA-2883-xcg3-v3hh).
@@ -57,19 +61,35 @@ const expectedOverrides = {
   ws: '8.21.0',
   // #12763: fix IPv6 link-local and local-use NAT64 classification.
   // #12783: the 10.5.1 pin itself became vulnerable (GHSA-j6r3-76f7-8jcv).
-  'ip-address@<10.7.1': '10.7.1',
-  // #12783: GHSA-w293-vg96-wgc3 and five more undici advisories (< 7.29.1).
-  'cheerio>undici': '7.29.1',
+  // #13584: 10.7.1 became vulnerable to GHSA-rxp7-6hxx-x8q5.
+  'ip-address@<10.7.4': '10.7.4',
   // #12783: GHSA-q2hr-2g5m-vwhr across the three in-tree brace-expansion lines.
   'brace-expansion@<1.1.21': '1.1.21',
   'brace-expansion@>=2.0.0 <2.1.7': '2.1.7',
   'brace-expansion@>=4.0.0 <5.0.12': '5.0.12',
-  'webdriver>undici': '6.28.1',
+  // #13555: the cheerio>undici 7.29.1 and webdriver>undici 6.28.1 pins became
+  // the vulnerable versions. Keep the patched floors, not those exact parents.
+  'undici@>=6.0.0 <6.29.1': '6.29.1',
+  'undici@>=7.0.0 <7.30.1': '7.30.1',
+  'nanoid@<3.3.18': '3.3.18',
+  'basic-ftp@<=6.2.0': '6.2.5',
+  'deepmerge-ts@<8.0.0': '8.0.2',
 }
 
 for (const [packageName, expectedVersion] of Object.entries(expectedOverrides)) {
   if (overrides[packageName] !== expectedVersion) {
     fail(`${packageName} must be overridden to ${expectedVersion}.`)
+  }
+}
+
+for (const packageName of [
+  'source-map-js',
+  'postcss-selector-parser',
+  'serialize-javascript',
+  'ip-address',
+]) {
+  if (Object.hasOwn(overrides, packageName)) {
+    fail(`${packageName} must use a vulnerable-range override, not an unconditional pin.`)
   }
 }
 

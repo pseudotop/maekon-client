@@ -14,7 +14,7 @@ describe('ScheduleSettings', () => {
 
     renderWithProviders(<ScheduleSettings schedule={formData.schedule} onChange={vi.fn()} />)
 
-    expect(screen.getByRole('checkbox', { name: /Pause on Battery Saver/i })).not.toBeDisabled()
+    expect(screen.getByRole('switch', { name: /Pause on Battery Saver/i })).not.toBeDisabled()
     expect(screen.queryByText(/Not available on this platform/i)).not.toBeInTheDocument()
   })
 
@@ -25,7 +25,7 @@ describe('ScheduleSettings', () => {
       <ScheduleSettings schedule={formData.schedule} onChange={vi.fn()} powerStatusAvailable={false} />,
     )
 
-    expect(screen.getByRole('checkbox', { name: /Pause on Battery Saver/i })).toBeDisabled()
+    expect(screen.getByRole('switch', { name: /Pause on Battery Saver/i })).toBeDisabled()
     expect(screen.getByText(/Not available on this platform/i)).toBeInTheDocument()
   })
 })

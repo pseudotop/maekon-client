@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { type ErrorDisplay, useErrorDisplay } from '../i18n/errorDisplay'
 
 /**
  * Durable task lifecycle hook (ADR-028, #8577).
@@ -42,6 +44,27 @@ export interface TaskOutcome {
   [key: string]: unknown
 }
 
+export type TaskAction = 'confirm' | 'dismiss' | TodoState
+
+/** A resolved IPC request can still refuse the requested domain transition. */
+export function taskActionFailureKey(result: TaskOutcome, action: TaskAction) {
+  const target = action === 'confirm' ? 'CONFIRMED' : action === 'dismiss' ? 'DISMISSED' : action
+  const applied = action === 'confirm' ? 'confirmed' : action === 'dismiss' ? 'dismissed' : 'transitioned'
+  if (result.outcome === applied && (applied !== 'transitioned' || result.state === target)) return null
+  if (result.outcome === 'already_transitioned' && result.current_state === target) return null
+  switch (result.outcome) {
+    case 'revision_conflict':
+    case 'already_transitioned':
+      return 'durableTasks.actionConflict'
+    case 'consent_required':
+      return 'durableTasks.actionConsentRequired'
+    case 'source_unavailable':
+      return 'durableTasks.actionSourceUnavailable'
+    default:
+      return 'durableTasks.actionFailed'
+  }
+}
+
 /** Lazy-loaded invoke — graceful degradation outside Tauri (ADR-004). */
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke: inv } = await import('@tauri-apps/api/core')
@@ -71,7 +94,7 @@ export interface UseDurableTasks {
   candidates: TaskCandidateView[]
   todos: TodoView[]
   loading: boolean
-  error: string | null
+  error: ErrorDisplay | null
   refresh: () => Promise<void>
   confirmCandidate: (id: string, revision: number, edit?: ConfirmEdit) => Promise<TaskOutcome>
   dismissCandidate: (id: string, revision: number, reason?: string) => Promise<TaskOutcome>
@@ -80,10 +103,14 @@ export interface UseDurableTasks {
 }
 
 export function useDurableTasks(): UseDurableTasks {
+  const { t } = useTranslation()
+  const describeError = useErrorDisplay()
   const [candidates, setCandidates] = useState<TaskCandidateView[]>([])
   const [todos, setTodos] = useState<TodoView[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  // Preserve the rejection value, including null/undefined, until display time.
+  // Locale changes must never change refresh identity or issue another request.
+  const [failure, setFailure] = useState<{ cause: unknown } | null>(null)
   // Monotonic request id so a slow earlier refresh can never clobber the result
   // of a later one (e.g. the mount refresh landing after a post-generation
   // refresh that already loaded a fresh candidate).
@@ -100,10 +127,10 @@ export function useDurableTasks(): UseDurableTasks {
       if (request !== requestRef.current) return
       setCandidates(nextCandidates)
       setTodos(nextTodos)
-      setError(null)
+      setFailure(null)
     } catch (err) {
       if (request !== requestRef.current) return
-      setError(err instanceof Error ? err.message : String(err))
+      setFailure({ cause: err })
     } finally {
       if (request === requestRef.current) setLoading(false)
     }
@@ -170,6 +197,7 @@ export function useDurableTasks(): UseDurableTasks {
     [refresh],
   )
 
+  const error = failure ? describeError(failure.cause, t('durableTasks.loadError')) : null
   return {
     candidates,
     todos,

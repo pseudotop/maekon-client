@@ -42,7 +42,8 @@ done
 
 # --- Check 2: defaultChild validity ---
 # Extract nodes with children and defaultChild, verify match
-node -e "
+# #12910: keep error accounting in this shell and propagate Node failures.
+DEFAULT_CHILD_ERRORS=$(node -e "
   const fs = require('fs');
   const src = fs.readFileSync('$ROUTE_TREE', 'utf8');
   // Simple regex extraction of route entries with defaultChild
@@ -55,9 +56,12 @@ node -e "
       console.log('INVALID:' + parentPath + ':' + defaultChild + ':' + childPaths.join(','));
     }
   }
-" 2>/dev/null | while IFS=: read -r _ parentPath defaultChild childPaths; do
-  log_error "invalid defaultChild: $parentPath defaultChild=$defaultChild not in children [$childPaths]"
-done
+" 2>/dev/null)
+if [ -n "$DEFAULT_CHILD_ERRORS" ]; then
+  while IFS=: read -r _ parentPath defaultChild childPaths; do
+    log_error "invalid defaultChild: $parentPath defaultChild=$defaultChild not in children [$childPaths]"
+  done <<< "$DEFAULT_CHILD_ERRORS"
+fi
 
 # --- Check 3: Rust emit path compatibility ---
 # Extract navigate paths from tray.rs and event bridge
