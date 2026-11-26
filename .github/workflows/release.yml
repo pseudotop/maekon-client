@@ -1429,11 +1429,25 @@ jobs:
             echo "Refusing to replace a pre-existing app on the release runner: $APP_INSTALL_PATH" >&2
             exit 1
           fi
+          # pkgbuild makes the component relocatable by default. When a bundle
+          # with the same identifier is already on disk, Installer upgrades that
+          # copy in place and never writes /Applications. Here that copy is the
+          # build tree's dist/Maekon.app. rc.12 hit it on runner image
+          # macos-26-arm64 20261117 while rc.11 on 20260907 did not. The signed
+          # DMG and PKG already hold the app and no later step reads
+          # dist/Maekon.app, so remove it before installing.
+          rm -rf dist/Maekon.app
           cleanup_installed_app() {
             sudo rm -rf "$APP_INSTALL_PATH"
           }
           trap cleanup_installed_app EXIT
           sudo installer -pkg dist/maekon-macos-universal.pkg -target /
+          if [[ ! -d "$APP_INSTALL_PATH" ]]; then
+            echo "::error::Installer reported success but $APP_INSTALL_PATH is missing. Copies of com.maekon.app on disk and Installer relocation lines follow." >&2
+            mdfind "kMDItemCFBundleIdentifier == 'com.maekon.app'" >&2 || true
+            grep -i 'relocat' /var/log/install.log | tail -n 20 >&2 || true
+            exit 1
+          fi
           python3 scripts/macos_tcc_usage_descriptions.py verify \
             --canonical src-tauri/assets/Info.plist \
             --target "$APP_INSTALL_PATH/Contents/Info.plist"
