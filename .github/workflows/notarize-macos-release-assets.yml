@@ -1,9 +1,12 @@
 name: Notarize macOS Release Assets
 
+# Manual repair path only. A release run notarizes its own installers before
+# it publishes anything (release.yml, job sign-notarize-macos), so this
+# workflow no longer starts from a finished Release run. Dispatch it by hand to
+# notarize, or re-notarize, the installers of a release that is already
+# published. It replaces the published DMG and PKG, so for a release whose own
+# run failed, re-run that run's failed jobs instead.
 on:
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -16,7 +19,7 @@ on:
         type: string
 
 concurrency:
-  group: notarize-macos-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+  group: notarize-macos-${{ inputs.tag }}
   cancel-in-progress: false
 
 permissions:
@@ -27,12 +30,6 @@ permissions:
 
 jobs:
   notarize-macos-assets:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       (startsWith(github.event.workflow_run.head_branch, 'v') ||
-        github.event.workflow_run.event == 'workflow_dispatch'))
     runs-on: macos-latest
     environment: macos-notarization
     timeout-minutes: 180
@@ -51,33 +48,13 @@ jobs:
         id: release
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
           DISPATCH_TAG: ${{ inputs.tag }}
           DISPATCH_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          WORKFLOW_PARENT_EVENT: ${{ github.event.workflow_run.event }}
-          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
 
-          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
-            if [[ "$WORKFLOW_PARENT_EVENT" == "workflow_dispatch" ]]; then
-              # Parent release.yml was manually dispatched; head_branch is
-              # the dispatching branch (typically main), not the tag.
-              # release.yml exposes the tag via `run-name: Release <TAG>`,
-              # which GitHub surfaces as `display_title`. Extract via regex.
-              RELEASE_TAG="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID" \
-                --jq '.display_title // empty' \
-                | grep -oE 'v[0-9][^[:space:]]*' \
-                | head -n1)"
-            else
-              RELEASE_TAG="$WORKFLOW_HEAD_BRANCH"
-            fi
-            SOURCE_RUN_ID="$WORKFLOW_RUN_ID"
-          else
-            RELEASE_TAG="${DISPATCH_TAG:-}"
-            SOURCE_RUN_ID="${DISPATCH_SOURCE_RUN_ID:-}"
-          fi
+          RELEASE_TAG="${DISPATCH_TAG:-}"
+          SOURCE_RUN_ID="${DISPATCH_SOURCE_RUN_ID:-}"
 
           if [[ -z "$RELEASE_TAG" || "$RELEASE_TAG" != v* ]]; then
             echo "Invalid release tag: $RELEASE_TAG" >&2

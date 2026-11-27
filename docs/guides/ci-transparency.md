@@ -118,6 +118,10 @@ The release workflow is defined in [`.github/workflows/release.yml`](../../.gith
 
 Direct stable preparation via the old `prepare-release.sh` path is intentionally blocked.
 
+### Maintainer Approvals
+
+A release run pauses for a maintainer twice: before anything is built (`verify-version`) and before anything is signed (`sign-notarize-macos`). Signing, notarization and stapling all happen in that second job, so a release is never published with installers Gatekeeper would refuse. The job that publishes holds no signing key. It accepts only files signed by an update key pinned in the tagged source, and it downloads the published assets afterwards to confirm they are those files.
+
 ### Pre-flight Checks
 
 Before any build starts, the pipeline verifies:
@@ -147,7 +151,7 @@ For stable tags, the pipeline also verifies:
 | Linux (Debian) | `x86_64-unknown-linux-gnu` | `.deb` |
 | Linux (RPM) | `x86_64-unknown-linux-gnu` | `.rpm` |
 
-macOS `.dmg` files are notarized via Apple's notarization service using the workflow defined in [`.github/workflows/notarize-macos-release-assets.yml`](../../.github/workflows/notarize-macos-release-assets.yml). Gatekeeper will allow installation without warnings.
+macOS `.dmg` files are notarized via Apple's notarization service by the `sign-notarize-macos` job of [`.github/workflows/release.yml`](../../.github/workflows/release.yml), before the release is published. Gatekeeper will allow installation without warnings.
 
 Windows MSI artifacts are currently unsigned. The release publishes separate Korean and English
 installers with SHA-256 checksums and provenance; Authenticode activation remains dependent on the

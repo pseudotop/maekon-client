@@ -197,14 +197,16 @@ exact tag, release, and final published bytes.
 - [ ] macOS artifacts are signed, notarized, and stapled when applicable
 <!-- release-check-id: RC-ARTIFACT-006 -->
 - [ ] Stapling was confirmed **on the published release assets**, not on the
-  notarization run's own output:
-  `./scripts/verify-published-macos-notarization.sh <TAG>`. A green Release
-  workflow does not imply notarization succeeded — `Notarize macOS Release
-  Assets` runs separately and can fail on its own (#10935)
+  release run's own output:
+  `./scripts/verify-published-macos-notarization.sh <TAG>`. The release run
+  notarizes before it publishes (`sign-notarize-macos`), so a published release
+  has passed notarization once; this check proves the installers users
+  download are still those bytes (#10935)
 <!-- release-check-id: RC-ARTIFACT-007 -->
 - [ ] The final notarized bytes for `maekon-macos-universal.dmg` and
-  `maekon-macos-universal.pkg` were republished with regenerated `.sha256`,
-  `.sig`, and provenance after stapling
+  `maekon-macos-universal.pkg` were signed after stapling: their `.sha256`,
+  `.sig`, and provenance cover the stapled files, not the files as they were
+  before notarization
 <!-- release-check-id: RC-ARTIFACT-008 -->
 - [ ] `notarization-final-byte-manifest.json` is present and records the same
   SHA-256 digests as the final downloadable macOS installers
@@ -235,6 +237,13 @@ Required for public RC release:
 - `MACOS_NOTARY_TEAM_ID`
 - `UPDATE_SIGNING_PRIVATE_KEY_B64`
 - `MAEKON_UPDATE_PUBLIC_KEY`
+
+A release run asks for the `release-signing` environment twice: at
+`verify-version` before anything is built, and at `sign-notarize-macos` before
+anything is signed. Nothing after the second approval waits for a person; see
+"Protected environments" in `docs/RELEASE-POLICY.md` for why publishing does
+not need a third. To exercise the whole path without publishing, dispatch
+`release.yml` with `rehearsal` enabled.
 
 Before release, the sole maintainer can dispatch **Signing Keypair Rehearsal**
 (`signing-keypair-rehearsal.yml`) from public `main` and explicitly approve the

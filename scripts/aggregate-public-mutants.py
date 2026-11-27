@@ -17,6 +17,9 @@ REPOSITORY = "pseudotop/maekon-client"
 CRATE = "maekon-core"
 VERSION = "27.1.0"
 TARGET = "x86_64-unknown-linux-gnu"
+# The workflow's `-j` and `max-parallel` must equal these; receipts record them.
+JOBS_PER_SHARD = 2
+SHARD_MAX_PARALLEL = 8
 KINDS = {
     "CaughtMutant": "caught",
     "MissedMutant": "missed",
@@ -93,8 +96,8 @@ def toolchain() -> dict:
         "rustc": output("rustc", "--version", "--verbose"),
         "cargo": output("cargo", "--version"),
         "target": TARGET,
-        "jobs_per_shard": 2,
-        "shard_max_parallel": 2,
+        "jobs_per_shard": JOBS_PER_SHARD,
+        "shard_max_parallel": SHARD_MAX_PARALLEL,
         "cargo_incremental": 1,
         "test_debuginfo": 0,
         "rustc_wrapper": "disabled",

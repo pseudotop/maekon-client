@@ -1,6 +1,6 @@
 name: Release
 
-run-name: Release ${{ inputs.tag_name || github.ref_name }}
+run-name: Release ${{ inputs.tag_name || github.ref_name }}${{ inputs.rehearsal && ' (rehearsal)' || '' }}
 
 on:
   push:
@@ -16,6 +16,11 @@ on:
         description: 'Commit SHA that the release tag points to'
         required: true
         type: string
+      rehearsal:
+        description: 'Rehearsal: build, sign, notarize and smoke-test, but publish nothing'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
@@ -30,6 +35,10 @@ env:
   CARGO_HTTP_MULTIPLEXING: "false"
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
   RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
+  # A rehearsal runs every job, signing and notarization included, and stops
+  # short of publishing. Only a manual dispatch can ask for one: a tag push is
+  # always a real release.
+  RELEASE_REHEARSAL: ${{ github.event_name == 'workflow_dispatch' && inputs.rehearsal && 'true' || 'false' }}
 
 permissions:
   contents: read
@@ -1044,16 +1053,12 @@ jobs:
     name: Build macOS Universal Binary
     needs: [verify-version, build-release]
     runs-on: macos-latest
-    environment: release-signing
-    timeout-minutes: 120
-    env:
-      TAG_REF: ${{ needs.verify-version.outputs.release_tag }}
-      MACOS_APP_CERT_P12_B64: ${{ secrets.MACOS_APP_CERT_P12_B64 }}
-      MACOS_APP_CERT_PASSWORD: ${{ secrets.MACOS_APP_CERT_PASSWORD }}
-      MACOS_INSTALLER_CERT_P12_B64: ${{ secrets.MACOS_INSTALLER_CERT_P12_B64 }}
-      MACOS_INSTALLER_CERT_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERT_PASSWORD }}
-      MACOS_APP_SIGNING_IDENTITY: ${{ secrets.MACOS_APP_SIGNING_IDENTITY }}
-      MACOS_INSTALLER_SIGNING_IDENTITY: ${{ secrets.MACOS_INSTALLER_SIGNING_IDENTITY }}
+    # No environment and no secrets: this job only merges the two architecture
+    # builds. Signing, packaging and notarization happen in sign-notarize-macos.
+    # Measured on rc.11: the whole previous job, signing included, took 106s.
+    timeout-minutes: 10
+    outputs:
+      universal_sha256: ${{ steps.universal.outputs.sha256 }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -1098,6 +1103,7 @@ jobs:
           rm -f binaries/icon.icns
 
       - name: Create universal binary
+        id: universal
         run: |
           lipo -create binaries/maekon-arm64 binaries/maekon-x64 -output binaries/maekon
           lipo -create binaries/maekon-sandbox-worker-arm64 binaries/maekon-sandbox-worker-x64 -output binaries/maekon-sandbox-worker
@@ -1107,6 +1113,7 @@ jobs:
           cp src-tauri/icons/icon.icns binaries/
           tar -czvf dist/maekon-macos-universal.tar.gz -C binaries maekon maekon-sandbox-worker icon.icns
           shasum -a 256 dist/maekon-macos-universal.tar.gz > dist/maekon-macos-universal.tar.gz.sha256
+          echo "sha256=$(shasum -a 256 dist/maekon-macos-universal.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Upload universal artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -1116,14 +1123,519 @@ jobs:
             dist/maekon-macos-universal.tar.gz
             dist/maekon-macos-universal.tar.gz.sha256
 
-      - name: Validate macOS signing secret material
+  release-reliability-smoke:
+    name: Release Reliability Smoke (${{ matrix.name }})
+    needs: [verify-version, build-release, build-macos-universal]
+    environment: desktop-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            # The supported floor the Linux release is built for (build-release).
+            os: ubuntu-24.04
+            artifact_name: maekon-linux-x64-archive
+            run_updater_tests: true
+          - name: macos
+            os: macos-latest
+            artifact_name: maekon-macos-universal
+            run_updater_tests: true
+          - name: windows
+            os: windows-latest
+            artifact_name: maekon-windows-x64-archive
+            run_updater_tests: true
+    runs-on: ${{ matrix.os }}
+    # 실측 n=13 p50=517s max=2119s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ needs.verify-version.outputs.release_sha }}
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-tools
+
+      - name: Download release archive for smoke
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: ${{ matrix.artifact_name }}
+          path: smoke-assets
+
+      - name: Verify downloaded smoke assets
         shell: bash
+        run: |
+          ls -la smoke-assets
+          test -n "$(find smoke-assets -maxdepth 1 -type f)"
+
+      # sign-notarize-macos builds the DMG and PKG from this archive. Hold this
+      # smoke to the exact bytes build-macos-universal produced, so a pass here
+      # is a pass for the binaries that get signed.
+      - name: Bind the smoked macOS archive to the universal build
+        if: matrix.name == 'macos'
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ needs.build-macos-universal.outputs.universal_sha256 }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::build-macos-universal did not report a SHA-256 for the universal archive." >&2
+            exit 1
+          fi
+          ACTUAL_SHA256="$(shasum -a 256 smoke-assets/maekon-macos-universal.tar.gz | awk '{print $1}')"
+          if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::Smoked universal archive is $ACTUAL_SHA256, but build-macos-universal produced $EXPECTED_SHA256." >&2
+            exit 1
+          fi
+          echo "Smoked universal archive matches build-macos-universal: $ACTUAL_SHA256"
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -o DPkg::Lock::Timeout=600
+          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
+            libwebkitgtk-6.0-dev \
+            libjavascriptcoregtk-6.0-dev \
+            libsoup-3.0-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-4-dev \
+            libglib2.0-dev \
+            libpango1.0-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libnotify-dev \
+            libdbus-1-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libclang-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: ./.github/actions/rust-cache
+        with:
+          key: release-reliability-smoke-${{ matrix.name }}
+
+      # The sidecar build below compiles maekon-storage → rusqlite with the
+      # `bundled-sqlcipher` feature, whose openssl-sys build needs OPENSSL_DIR
+      # on Windows (the runner image no longer auto-provides it). Mirror the
+      # build job's OpenSSL setup so the smoke sidecar build doesn't fail with
+      # "Missing environment variable OPENSSL_DIR".
+      - name: Configure OpenSSL for SQLCipher (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.workflow-tools/.github/actions/setup-windows-openssl
+
+      # Tauri externalBin requires `maekon-sandbox-worker-<triple>[.exe]` at
+      # the src-tauri/ root at build time. Build the real sidecar so release
+      # reliability smoke also catches missing/stale sandbox-worker packaging
+      # assumptions instead of relying on a synthetic touch-file.
+      - name: Build sandbox worker sidecar for Tauri externalBin
+        shell: bash
+        run: |
+          TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
+          ./scripts/cargo-cache.sh build --locked --release -p maekon-sandbox-worker
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            SOURCE="target/release/maekon-sandbox-worker.exe"
+            DEST="src-tauri/maekon-sandbox-worker-${TRIPLE}.exe"
+            test -f "$SOURCE"
+            cp "$SOURCE" "$DEST"
+          else
+            SOURCE="target/release/maekon-sandbox-worker"
+            DEST="src-tauri/maekon-sandbox-worker-${TRIPLE}"
+            test -x "$SOURCE"
+            cp "$SOURCE" "$DEST"
+            chmod +x "$DEST"
+          fi
+
+      - name: Run smoke script (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x ./.workflow-tools/scripts/release-reliability-smoke.sh
+          export MAEKON_SMOKE_LOG_DIR="$RUNNER_TEMP/maekon-release-smoke"
+          export MAEKON_SMOKE_REPO_ROOT="$GITHUB_WORKSPACE"
+          if [[ "${{ matrix.run_updater_tests }}" == "true" ]]; then
+            ./.workflow-tools/scripts/release-reliability-smoke.sh --assets-dir smoke-assets
+          else
+            ./.workflow-tools/scripts/release-reliability-smoke.sh --assets-dir smoke-assets --skip-updater-tests
+          fi
+
+      - name: Run smoke script (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:MAEKON_SMOKE_REPO_ROOT = $env:GITHUB_WORKSPACE
+          if ("${{ matrix.run_updater_tests }}" -eq "true") {
+            .\.workflow-tools\scripts\release-reliability-smoke.ps1 -AssetsDir smoke-assets
+          } else {
+            .\.workflow-tools\scripts\release-reliability-smoke.ps1 -AssetsDir smoke-assets -SkipUpdaterTests
+          }
+
+      - name: Sanitize macOS release smoke logs
+        if: failure() && matrix.name == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SANITIZED_DIR="$RUNNER_TEMP/maekon-release-smoke-sanitized"
+          RELEASE_TAG="${RELEASE_TAG_NAME:-${GITHUB_REF_NAME:-v0.0.0-e19-smoke}}"
+          if [[ "$RELEASE_TAG" != v* ]]; then
+            RELEASE_TAG="v0.0.0-e19-smoke"
+          fi
+          ARTIFACT_CHECKSUM="sha256:$(printf '%s' "$GITHUB_SHA" | shasum -a 256 | awk '{print $1}')"
+          python3 .workflow-tools/scripts/sanitize_desktop_evidence.py \
+            --input "$RUNNER_TEMP/maekon-release-smoke/gui-bootstrap-installed-binary.log" \
+            --input-id release-reliability-gui-bootstrap \
+            --artifact-kind log_excerpt \
+            --output-dir "$SANITIZED_DIR" \
+            --commit-sha "$GITHUB_SHA" \
+            --release-tag "$RELEASE_TAG" \
+            --artifact-checksum "$ARTIFACT_CHECKSUM" \
+            --runner-label release-reliability-smoke-${{ matrix.name }} \
+            --cleanup-status pass
+
+      - name: Upload macOS release smoke sanitized bundle
+        if: failure() && matrix.name == 'macos'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-smoke-sanitized-bundle-${{ matrix.name }}
+          path: ${{ runner.temp }}/maekon-release-smoke-sanitized
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Everything the release publishes except the macOS installers and the
+  # signatures. This job has no environment and reads no secret, so the
+  # third-party SBOM action and the generators below never share a runner with
+  # a signing key.
+  assemble-release-payload:
+    name: Assemble Release Payload
+    needs: [verify-version, build-release, build-macos-universal]
+    runs-on: ubuntu-latest
+    # Measured on rc.11: the same steps took 97s inside the previous publish job.
+    timeout-minutes: 35
+    outputs:
+      artifact_id: ${{ steps.upload_payload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload_payload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ needs.verify-version.outputs.release_sha }}
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-tools
+
+      # Fail before the signing approval is requested when this tag is already
+      # fully published. An unreadable or missing release is not an error here:
+      # the publish job makes the authoritative decision.
+      - name: Refuse to rebuild an already published release
+        if: env.RELEASE_REHEARSAL != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_NAME: ${{ needs.verify-version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          existing_assets="$RUNNER_TEMP/existing-release-assets.txt"
+          if ! gh release view "$RELEASE_TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' > "$existing_assets" 2>/dev/null; then
+            echo "No readable release for ${RELEASE_TAG_NAME} yet; continuing."
+            exit 0
+          fi
+          if grep -Fxq "notarization-final-byte-manifest.json" "$existing_assets"; then
+            echo "::error::Release ${RELEASE_TAG_NAME} is already published with notarized final bytes. Cut a new tag, or dispatch this workflow with rehearsal enabled." >&2
+            exit 1
+          fi
+          echo "Release ${RELEASE_TAG_NAME} exists without final macOS bytes; the publish job will complete it."
+
+      # Named downloads rather than `maekon-*`: a later attempt of this run must
+      # never pull installers an earlier attempt already signed into the payload.
+      - name: Download release archives
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          pattern: maekon-*-archive
+          path: dist
+          merge-multiple: true
+
+      - name: Download macOS universal archive
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: maekon-macos-universal
+          path: dist
+          merge-multiple: true
+
+      - name: Download Windows MSI installers
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: maekon-windows-x64-msi
+          path: dist
+          merge-multiple: true
+
+      - name: Download Windows setup installer
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: maekon-windows-x64-setup-exe
+          path: dist
+          merge-multiple: true
+
+      - name: Download Linux DEB package
+        uses: ./.workflow-tools/.github/actions/download-artifact
+        with:
+          github-token: ${{ github.token }}
+          name: maekon-linux-x64-deb
+          path: dist
+          merge-multiple: true
+
+      - name: Flatten nested artifacts
+        run: |
+          # Move installer files from nested paths to dist/
+          find dist -mindepth 2 -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.deb' -o -name '*.dmg' -o -name '*.pkg' \) -exec mv {} dist/ \;
+          # Clean up empty nested directories
+          find dist -mindepth 1 -type d -empty -delete
+
+      - name: Verify release payload coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pattern in \
+            "*.msi" "*.exe" "*.deb" \
+            "maekon-macos-universal.tar.gz" \
+            "maekon-macos-arm64.tar.gz" \
+            "maekon-macos-x64.tar.gz" \
+            "maekon-windows-x64.zip" \
+            "maekon-linux-x64.tar.gz"; do
+            if ! compgen -G "dist/${pattern}" > /dev/null; then
+              echo "Missing expected release payload file: ${pattern}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify artifacts
+        run: find dist -type f
+
+      - name: Include signed runtime policy bundle
+        run: |
+          if [ -f "policy/runtime-policy.json" ]; then
+            cp "policy/runtime-policy.json" "dist/runtime-policy.json"
+            echo "Included runtime policy bundle in release artifacts"
+          else
+            echo "No runtime policy bundle found; skipping"
+          fi
+
+      - name: Generate HTTP OpenAPI snapshot
+        run: ./scripts/generate-http-openapi.sh dist/maekon-web.v1.openapi.yaml
+
+      - name: Ensure checksums exist for all release files
+        run: |
+          shopt -s nullglob
+          for file in dist/*; do
+            [ -f "$file" ] || continue
+            case "$file" in
+              *.sha256|*.sig)
+                continue
+                ;;
+            esac
+            shasum -a 256 "$file" > "$file.sha256"
+          done
+
+      - name: Generate CycloneDX SBOM (F-SC-09/F-SC-13)
+        # F-SC-13: anchore/sbom-action SHA-pinned to the v0.24.0 commit.
+        # The prior pin (61119d4) became unresolvable once anchore re-pointed
+        # an older tag and GC'd the old commit — this is the first release
+        # since that pin landed, so it surfaced now. Re-resolved to the current
+        # v0.24.0 commit (which `git/ref/tags/v0.24.0` reports as type=commit;
+        # for lightweight tags object.sha IS the commit, no dereference needed).
+        # 생성된 sbom.cdx.json 은 dist/ 에 추가되어 릴리스 어셋으로 첨부된다.
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/sbom.cdx.json
+          upload-artifact: false
+
+      - name: Checksum SBOM (F-SC-09)
+        run: shasum -a 256 dist/sbom.cdx.json > dist/sbom.cdx.json.sha256
+
+      - name: Verify release evidence bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/sbom.cdx.json
+          test -s dist/sbom.cdx.json.sha256
+          shasum -a 256 -c dist/sbom.cdx.json.sha256
+
+      - name: Refuse installers or signatures in the unsigned payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          unexpected="$(find dist -mindepth 1 \( ! -type f -o -name '*.dmg' -o -name '*.pkg' -o -name '*.sig' -o -name 'notarization-final-byte-manifest.json*' \) -print)"
+          if [[ -n "$unexpected" ]]; then
+            echo "::error::The unsigned release payload must be flat and must not carry macOS installers, signatures or a notarization manifest." >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
+      - name: Upload unsigned release payload
+        id: upload_payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-payload
+          path: dist
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  # The only job that holds signing material, and the second and last approval
+  # of a release (the first is verify-version). It takes the unsigned payload as
+  # data, builds the macOS installers from the smoke-tested universal binaries,
+  # signs and notarizes them, and signs the complete release set. Nothing it
+  # downloads is executed, and it uses no third-party action.
+  sign-notarize-macos:
+    name: Sign and Notarize macOS
+    needs: [verify-version, build-macos-universal, release-reliability-smoke, assemble-release-payload]
+    runs-on: macos-latest
+    environment: release-signing
+    # Measured: signing and packaging 106s (rc.11), notarize and staple p50=154s
+    # max=156s (n=3). The budget keeps the previous notarization job's 180
+    # minutes for Apple's queue tail, plus 30 for signing and packaging.
+    timeout-minutes: 210
+    env:
+      TAG_REF: ${{ needs.verify-version.outputs.release_tag }}
+    outputs:
+      final_artifact_id: ${{ steps.upload_final.outputs.artifact-id }}
+      final_artifact_digest: ${{ steps.upload_final.outputs.artifact-digest }}
+      dmg_artifact_id: ${{ steps.upload_dmg.outputs.artifact-id }}
+      dmg_artifact_digest: ${{ steps.upload_dmg.outputs.artifact-digest }}
+      pkg_artifact_id: ${{ steps.upload_pkg.outputs.artifact-id }}
+      pkg_artifact_digest: ${{ steps.upload_pkg.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ needs.verify-version.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Download the unsigned release payload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAYLOAD_ARTIFACT_ID: ${{ needs.assemble-release-payload.outputs.artifact_id }}
+          PAYLOAD_ARTIFACT_DIGEST: ${{ needs.assemble-release-payload.outputs.artifact_digest }}
+          UNIVERSAL_SHA256: ${{ needs.build-macos-universal.outputs.universal_sha256 }}
+        run: |
+          set -euo pipefail
+          PAYLOAD_ARTIFACT_DIGEST="${PAYLOAD_ARTIFACT_DIGEST#sha256:}"
+          if [[ ! "$PAYLOAD_ARTIFACT_ID" =~ ^[0-9]+$ || ! "$PAYLOAD_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::assemble-release-payload did not report an artifact id and digest." >&2
+            exit 1
+          fi
+          if [[ ! "$UNIVERSAL_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::build-macos-universal did not report a SHA-256 for the universal archive." >&2
+            exit 1
+          fi
+
+          PAYLOAD_ZIP="$RUNNER_TEMP/release-payload.zip"
+          PAYLOAD_DIR="$RUNNER_TEMP/release-payload"
+          rm -rf "$PAYLOAD_ZIP" "$PAYLOAD_DIR"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PAYLOAD_ARTIFACT_ID/zip" > "$PAYLOAD_ZIP"
+          ACTUAL_DIGEST="$(shasum -a 256 "$PAYLOAD_ZIP" | awk '{print $1}')"
+          if [[ "$ACTUAL_DIGEST" != "$PAYLOAD_ARTIFACT_DIGEST" ]]; then
+            echo "::error::Downloaded payload is $ACTUAL_DIGEST, but assemble-release-payload uploaded $PAYLOAD_ARTIFACT_DIGEST." >&2
+            exit 1
+          fi
+          mkdir -p "$PAYLOAD_DIR"
+          unzip -q "$PAYLOAD_ZIP" -d "$PAYLOAD_DIR"
+          rm -f "$PAYLOAD_ZIP"
+
+          # The payload is data. It must be a flat set of regular files with no
+          # macOS installer, signature or manifest: those are produced here only.
+          unexpected="$(find "$PAYLOAD_DIR" -mindepth 1 \( ! -type f -o -name '*.dmg' -o -name '*.pkg' -o -name '*.sig' -o -name 'notarization-final-byte-manifest.json*' \) -print)"
+          if [[ -n "$unexpected" ]]; then
+            echo "::error::The release payload must be flat and unsigned." >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
+          ACTUAL_UNIVERSAL="$(shasum -a 256 "$PAYLOAD_DIR/maekon-macos-universal.tar.gz" | awk '{print $1}')"
+          if [[ "$ACTUAL_UNIVERSAL" != "$UNIVERSAL_SHA256" ]]; then
+            echo "::error::Payload universal archive is $ACTUAL_UNIVERSAL, but the smoke-tested build is $UNIVERSAL_SHA256." >&2
+            exit 1
+          fi
+          echo "PAYLOAD_DIR=$PAYLOAD_DIR" >> "$GITHUB_ENV"
+
+      - name: Extract the universal binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf binaries
+          mkdir -p binaries
+          tar -xzf "$PAYLOAD_DIR/maekon-macos-universal.tar.gz" -C binaries
+          for binary in maekon maekon-sandbox-worker; do
+            if [[ ! -f "binaries/$binary" || -L "binaries/$binary" ]]; then
+              echo "::error::The universal archive holds no regular file named $binary." >&2
+              exit 1
+            fi
+            archs="$(lipo -archs "binaries/$binary")"
+            if [[ " $archs " != *" arm64 "* || " $archs " != *" x86_64 "* ]]; then
+              echo "::error::$binary is not a universal arm64 + x86_64 binary: $archs" >&2
+              exit 1
+            fi
+          done
+
+      # Every network install below happens before any key reaches this runner.
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Install the update-signing library
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/update-signing-venv"
+          "$RUNNER_TEMP/update-signing-venv/bin/python" -m pip install --upgrade pynacl
+          "$RUNNER_TEMP/update-signing-venv/bin/python" -c 'import nacl.signing'
+
+      # Fail before signing anything when a key a later step needs is absent, so
+      # a half-configured environment never yields a half-signed release.
+      - name: Validate release signing secret material
+        shell: bash
+        env:
+          MACOS_APP_CERT_P12_B64: ${{ secrets.MACOS_APP_CERT_P12_B64 }}
+          MACOS_APP_CERT_PASSWORD: ${{ secrets.MACOS_APP_CERT_PASSWORD }}
+          MACOS_INSTALLER_CERT_P12_B64: ${{ secrets.MACOS_INSTALLER_CERT_P12_B64 }}
+          MACOS_INSTALLER_CERT_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERT_PASSWORD }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
+          UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
         run: |
           required=(
             MACOS_APP_CERT_P12_B64
             MACOS_APP_CERT_PASSWORD
             MACOS_INSTALLER_CERT_P12_B64
             MACOS_INSTALLER_CERT_PASSWORD
+            MACOS_NOTARY_APPLE_ID
+            MACOS_NOTARY_TEAM_ID
+            MACOS_NOTARY_APP_PASSWORD
+            UPDATE_SIGNING_PRIVATE_KEY_B64
           )
           for key in "${required[@]}"; do
             if [[ -z "${!key:-}" ]]; then
@@ -1164,6 +1676,11 @@ jobs:
 
       - name: Import macOS signing certificates
         shell: bash
+        env:
+          MACOS_APP_CERT_P12_B64: ${{ secrets.MACOS_APP_CERT_P12_B64 }}
+          MACOS_APP_CERT_PASSWORD: ${{ secrets.MACOS_APP_CERT_PASSWORD }}
+          MACOS_INSTALLER_CERT_P12_B64: ${{ secrets.MACOS_INSTALLER_CERT_P12_B64 }}
+          MACOS_INSTALLER_CERT_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERT_PASSWORD }}
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/maekon-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)"
@@ -1205,6 +1722,9 @@ jobs:
 
       - name: Resolve macOS signing identities
         shell: bash
+        env:
+          MACOS_APP_SIGNING_IDENTITY: ${{ secrets.MACOS_APP_SIGNING_IDENTITY }}
+          MACOS_INSTALLER_SIGNING_IDENTITY: ${{ secrets.MACOS_INSTALLER_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
 
@@ -1354,9 +1874,6 @@ jobs:
             --expected-build-version "$(python3 scripts/macos-bundle-version.py "$VERSION")" \
             dist/Maekon.app
 
-      - name: Install create-dmg
-        run: brew install create-dmg
-
       - name: Create DMG installer
         shell: bash
         run: |
@@ -1420,6 +1937,15 @@ jobs:
           pkgutil --check-signature dist/maekon-macos-universal.pkg
           rm -f "$UNSIGNED_PKG_TMP"
 
+      # The Developer ID keys are not needed past this point. Drop them before
+      # the PKG is installed for inspection and before the notarization wait.
+      - name: Remove macOS signing keychain
+        shell: bash
+        run: |
+          set -euo pipefail
+          security delete-keychain "$KEYCHAIN_PATH"
+          rm -f "$APP_CERT_PATH" "$INSTALLER_CERT_PATH"
+
       - name: Verify TCC usage descriptions in PKG-installed app
         shell: bash
         run: |
@@ -1454,240 +1980,391 @@ jobs:
           cleanup_installed_app
           trap - EXIT
 
+      - name: Configure notarization keychain profile
+        shell: bash
+        env:
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          NOTARY_KEYCHAIN_PATH="$RUNNER_TEMP/maekon-notary.keychain-db"
+          NOTARY_KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$NOTARY_KEYCHAIN_PASSWORD" "$NOTARY_KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$NOTARY_KEYCHAIN_PATH"
+          security unlock-keychain -p "$NOTARY_KEYCHAIN_PASSWORD" "$NOTARY_KEYCHAIN_PATH"
+          security default-keychain -s "$NOTARY_KEYCHAIN_PATH"
+          security list-keychains -d user -s "$NOTARY_KEYCHAIN_PATH"
+          xcrun notarytool store-credentials "maekon-notary" \
+            --keychain "$NOTARY_KEYCHAIN_PATH" \
+            --apple-id "$MACOS_NOTARY_APPLE_ID" \
+            --team-id "$MACOS_NOTARY_TEAM_ID" \
+            --password "$MACOS_NOTARY_APP_PASSWORD"
+          echo "NOTARY_KEYCHAIN_PATH=$NOTARY_KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Notarize and staple DMG and PKG
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./scripts/notary-submit-and-poll.sh \
+            dist/maekon-macos-universal.dmg \
+            "$NOTARY_KEYCHAIN_PATH" \
+            "maekon-notary" \
+            "10800" \
+            "60"
+          bash ./scripts/notary-submit-and-poll.sh \
+            dist/maekon-macos-universal.pkg \
+            "$NOTARY_KEYCHAIN_PATH" \
+            "maekon-notary" \
+            "10800" \
+            "60"
+          xcrun stapler staple dist/maekon-macos-universal.dmg
+          xcrun stapler staple dist/maekon-macos-universal.pkg
+          xcrun stapler validate dist/maekon-macos-universal.dmg
+          xcrun stapler validate dist/maekon-macos-universal.pkg
+
+          DMG_MOUNTPOINT="$(mktemp -d "$RUNNER_TEMP/maekon-dmg.XXXXXX")"
+          cleanup_dmg_mount() {
+            hdiutil detach "$DMG_MOUNTPOINT" >/dev/null 2>&1 || true
+            rmdir "$DMG_MOUNTPOINT" >/dev/null 2>&1 || true
+          }
+          trap cleanup_dmg_mount EXIT
+
+          hdiutil attach dist/maekon-macos-universal.dmg \
+            -nobrowse \
+            -readonly \
+            -mountpoint "$DMG_MOUNTPOINT" >/dev/null
+          VERSION="${TAG_REF#v}"
+          ./scripts/verify-macos-app-bundle.sh \
+            --expected-short-version "$VERSION" \
+            --expected-build-version "$(python3 scripts/macos-bundle-version.py "$VERSION")" \
+            "$DMG_MOUNTPOINT/Maekon.app"
+          spctl --assess --type execute --verbose=4 "$DMG_MOUNTPOINT/Maekon.app"
+          cleanup_dmg_mount
+          trap - EXIT
+
+          spctl --assess --type install --verbose=4 dist/maekon-macos-universal.pkg
+
+      - name: Remove notarization keychain
+        shell: bash
+        run: |
+          set -euo pipefail
+          security delete-keychain "$NOTARY_KEYCHAIN_PATH"
+
+      - name: Record final notarized checksums
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.verify-version.outputs.release_tag }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          dist = Path("dist")
+          assets = []
+          for artifact_name in (
+              "maekon-macos-universal.dmg",
+              "maekon-macos-universal.pkg",
+          ):
+              artifact = dist / artifact_name
+              digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+              assets.append(
+                  {
+                      "name": artifact_name,
+                      "sha256": digest,
+                      "notary_log": str(dist / "notary-logs" / f"{artifact_name}.notary-log.json"),
+                  }
+              )
+
+          manifest = {
+              "schema_version": 1,
+              "release_tag": os.environ["RELEASE_TAG"],
+              "source_run_id": os.environ["SOURCE_RUN_ID"],
+              "macos_assets": assets,
+          }
+          (dist / "notarization-final-byte-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          cat dist/notarization-final-byte-manifest.json
+
+      - name: Upload notarization logs artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: maekon-macos-notary-logs-${{ needs.verify-version.outputs.release_tag }}-attempt-${{ github.run_attempt }}
+          path: dist/notary-logs/*.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Assemble the final release set
+        shell: bash
+        run: |
+          set -euo pipefail
+          FINAL_ROOT="$RUNNER_TEMP/release-final"
+          rm -rf "$FINAL_ROOT"
+          mkdir -p "$FINAL_ROOT/dist"
+          cp "$PAYLOAD_DIR"/* "$FINAL_ROOT/dist/"
+          cp dist/maekon-macos-universal.dmg \
+            dist/maekon-macos-universal.pkg \
+            dist/notarization-final-byte-manifest.json \
+            "$FINAL_ROOT/dist/"
+          echo "FINAL_ROOT=$FINAL_ROOT" >> "$GITHUB_ENV"
+
+      - name: Sign release artifacts (Ed25519)
+        shell: bash
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
+          TRUSTED_KEYS_SOURCE: ${{ github.workspace }}/src-tauri/src/updater/trusted_keys.rs
+        run: |
+          set -euo pipefail
+          cd "$FINAL_ROOT"
+          "$RUNNER_TEMP/update-signing-venv/bin/python" - <<'PY'
+          import base64
+          import hashlib
+          import os
+          from pathlib import Path
+          from nacl.signing import SigningKey
+
+          key_b64 = os.environ.get("UPDATE_SIGNING_PRIVATE_KEY_B64", "").strip()
+          if not key_b64:
+              raise SystemExit("Missing secret: UPDATE_SIGNING_PRIVATE_KEY_B64")
+
+          seed = base64.b64decode(key_b64)
+          if len(seed) != 32:
+              raise SystemExit(f"UPDATE_SIGNING_PRIVATE_KEY_B64 must decode to 32 bytes, got {len(seed)}")
+
+          signing_key = SigningKey(seed)
+
+          # Sign only with a key the released client already trusts. Assets
+          # signed with any other key would be refused by every installed client.
+          public_key_b64 = base64.b64encode(bytes(signing_key.verify_key)).decode("ascii")
+          trusted_source = Path(os.environ["TRUSTED_KEYS_SOURCE"]).read_text(encoding="utf-8")
+          if f'"{public_key_b64}"' not in trusted_source:
+              raise SystemExit(
+                  "UPDATE_SIGNING_PRIVATE_KEY_B64 does not match any key pinned in "
+                  "src-tauri/src/updater/trusted_keys.rs"
+              )
+
+          dist = Path("dist")
+          # The installers and their manifest get checksum sidecars only now,
+          # after stapling, so the sidecars describe the final notarized bytes.
+          for name in (
+              "maekon-macos-universal.dmg",
+              "maekon-macos-universal.pkg",
+              "notarization-final-byte-manifest.json",
+          ):
+              path = dist / name
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              path.with_suffix(path.suffix + ".sha256").write_text(f"{digest}  {name}\n", encoding="utf-8")
+
+          signed = 0
+          for path in sorted(dist.glob("*")):
+              if not path.is_file():
+                  continue
+              if path.suffix in {".sha256", ".sig"}:
+                  continue
+              if not path.with_suffix(path.suffix + ".sha256").is_file():
+                  raise SystemExit(f"Refusing to sign {path.name}: it has no checksum sidecar")
+              payload = path.read_bytes()
+              signature = signing_key.sign(payload).signature
+              path.with_suffix(path.suffix + ".sig").write_text(base64.b64encode(signature).decode("ascii") + "\n", encoding="utf-8")
+              signed += 1
+
+          if signed == 0:
+              raise SystemExit("No release artifacts were signed")
+          print(f"Signed artifacts: {signed}")
+          PY
+
       - name: Upload DMG artifact
+        id: upload_dmg
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-macos-universal-dmg
           path: dist/maekon-macos-universal.dmg
           if-no-files-found: error
+          overwrite: true
 
       - name: Upload PKG artifact
+        id: upload_pkg
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: maekon-macos-universal-pkg
           path: dist/maekon-macos-universal.pkg
           if-no-files-found: error
+          overwrite: true
 
-      - name: Cleanup macOS signing keychain
+      - name: Upload signed final release set
+        id: upload_final
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-final
+          path: ${{ runner.temp }}/release-final/dist
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+      # Without this, a signing or notarization failure is silent to the owner
+      # (#10935). #12892: the private owner observer polls this exact
+      # run/attempt. Public jobs carry no private Issue/Project credentials.
+      - name: Record sign-and-notarize failure for the private maintainer observer
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'MAEKON_NOTARIZATION_FAILURE_V1 workflow=release.yml run_id=%s attempt=%s source_sha=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA"
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
+          {
+            echo '### macOS sign-and-notarize failure'
+            printf 'Workflow: release.yml\nRun: %s\nAttempt: %s\nSource SHA: %s\n\n' \
+              "$RUN_URL" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA"
+            echo 'Nothing was published: the release is created only after this job succeeds.'
+            echo 'The private ONESHIM maintainer observer files the owner alert for this incident.'
+            echo 'Inspect the first failing step of this job before re-running it.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::macOS notarization failed or was never reached in sign-notarize-macos; nothing was published; private observer incident: $RUN_URL"
+
+      - name: Cleanup signing material
         if: always()
         shell: bash
         run: |
-          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
-          rm -f "$APP_CERT_PATH" "$INSTALLER_CERT_PATH"
+          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
+          if [[ -n "${NOTARY_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$NOTARY_KEYCHAIN_PATH" 2>/dev/null || true
+          fi
+          if [[ -n "${APP_CERT_PATH:-}" ]]; then
+            rm -f "$APP_CERT_PATH"
+          fi
+          if [[ -n "${INSTALLER_CERT_PATH:-}" ]]; then
+            rm -f "$INSTALLER_CERT_PATH"
+          fi
 
-  release-reliability-smoke:
-    name: Release Reliability Smoke (${{ matrix.name }})
-    needs: [verify-version, build-release, build-macos-universal]
+  # Launches the exact DMG and PKG that will be published: notarized, stapled
+  # and already signed for the updater. It runs in the no-reviewer smoke
+  # environment and reads no secret, so launching the app here cannot reach a
+  # signing key.
+  macos-installer-smoke:
+    name: macOS Installer Smoke (final bytes)
+    needs: [verify-version, sign-notarize-macos]
+    runs-on: macos-latest
     environment: desktop-smoke
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux
-            # The supported floor the Linux release is built for (build-release).
-            os: ubuntu-24.04
-            artifact_name: maekon-linux-x64-archive
-            run_updater_tests: true
-          - name: macos
-            os: macos-latest
-            artifact_name: maekon-macos-universal
-            run_updater_tests: true
-          - name: windows
-            os: windows-latest
-            artifact_name: maekon-windows-x64-archive
-            run_updater_tests: true
-    runs-on: ${{ matrix.os }}
-    # 실측 n=13 p50=517s max=2119s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
-    timeout-minutes: 75
+    # Measured on rc.11: the installer smoke script took 44s.
+    timeout-minutes: 30
+    outputs:
+      dmg_sha256: ${{ steps.final_bytes.outputs.dmg_sha256 }}
+      pkg_sha256: ${{ steps.final_bytes.outputs.pkg_sha256 }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          ref: ${{ needs.verify-version.outputs.release_sha }}
-
       - name: Checkout workflow tools
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ github.sha }}
           path: .workflow-tools
 
-      - name: Download release archive for smoke
-        uses: ./.workflow-tools/.github/actions/download-artifact
-        with:
-          github-token: ${{ github.token }}
-          name: ${{ matrix.artifact_name }}
-          path: smoke-assets
-
-      - name: Verify downloaded smoke assets
+      - name: Download the final macOS installers
+        id: final_bytes
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DMG_ARTIFACT_ID: ${{ needs.sign-notarize-macos.outputs.dmg_artifact_id }}
+          DMG_ARTIFACT_DIGEST: ${{ needs.sign-notarize-macos.outputs.dmg_artifact_digest }}
+          PKG_ARTIFACT_ID: ${{ needs.sign-notarize-macos.outputs.pkg_artifact_id }}
+          PKG_ARTIFACT_DIGEST: ${{ needs.sign-notarize-macos.outputs.pkg_artifact_digest }}
         run: |
-          ls -la smoke-assets
-          test -n "$(find smoke-assets -maxdepth 1 -type f)"
+          set -euo pipefail
+          mkdir -p smoke-installers
+          fetch_installer() {
+            local artifact_id="$1"
+            local artifact_digest="${2#sha256:}"
+            local file_name="$3"
+            if [[ ! "$artifact_id" =~ ^[0-9]+$ || ! "$artifact_digest" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::sign-notarize-macos did not report an artifact id and digest for $file_name." >&2
+              exit 1
+            fi
+            local zip_path="$RUNNER_TEMP/$file_name.zip"
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$zip_path"
+            local actual_digest
+            actual_digest="$(shasum -a 256 "$zip_path" | awk '{print $1}')"
+            if [[ "$actual_digest" != "$artifact_digest" ]]; then
+              echo "::error::Downloaded $file_name artifact is $actual_digest, but sign-notarize-macos uploaded $artifact_digest." >&2
+              exit 1
+            fi
+            unzip -q "$zip_path" "$file_name" -d smoke-installers
+            rm -f "$zip_path"
+          }
+          fetch_installer "$DMG_ARTIFACT_ID" "$DMG_ARTIFACT_DIGEST" maekon-macos-universal.dmg
+          fetch_installer "$PKG_ARTIFACT_ID" "$PKG_ARTIFACT_DIGEST" maekon-macos-universal.pkg
 
-      - name: Download macOS installer artifacts for smoke
-        if: matrix.name == 'macos'
-        uses: ./.workflow-tools/.github/actions/download-artifact
-        with:
-          github-token: ${{ github.token }}
-          name: maekon-macos-universal-dmg
-          path: smoke-installers
+          # Final bytes only: both installers must already carry their ticket.
+          xcrun stapler validate smoke-installers/maekon-macos-universal.dmg
+          xcrun stapler validate smoke-installers/maekon-macos-universal.pkg
 
-      - name: Download macOS PKG artifact for smoke
-        if: matrix.name == 'macos'
-        uses: ./.workflow-tools/.github/actions/download-artifact
-        with:
-          github-token: ${{ github.token }}
-          name: maekon-macos-universal-pkg
-          path: smoke-installers
+          echo "dmg_sha256=$(shasum -a 256 smoke-installers/maekon-macos-universal.dmg | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "pkg_sha256=$(shasum -a 256 smoke-installers/maekon-macos-universal.pkg | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Verify downloaded macOS installer assets
-        if: matrix.name == 'macos'
         shell: bash
         run: |
           find smoke-installers -maxdepth 3 -type f
           test -f smoke-installers/maekon-macos-universal.dmg
           test -f smoke-installers/maekon-macos-universal.pkg
 
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -o DPkg::Lock::Timeout=600
-          sudo apt-get install -o DPkg::Lock::Timeout=600 -y \
-            libwebkitgtk-6.0-dev \
-            libjavascriptcoregtk-6.0-dev \
-            libsoup-3.0-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-4-dev \
-            libglib2.0-dev \
-            libpango1.0-dev \
-            libatk1.0-dev \
-            libgdk-pixbuf-2.0-dev \
-            libnotify-dev \
-            libdbus-1-dev \
-            libasound2-dev \
-            libpipewire-0.3-dev \
-            libspa-0.2-dev \
-            libclang-dev \
-            libgbm-dev \
-            libegl1-mesa-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537  # stable
-        with:
-          toolchain: stable
-
-      - name: Cache cargo
-        uses: ./.github/actions/rust-cache
-        with:
-          key: release-reliability-smoke-${{ matrix.name }}
-
-      # The sidecar build below compiles maekon-storage → rusqlite with the
-      # `bundled-sqlcipher` feature, whose openssl-sys build needs OPENSSL_DIR
-      # on Windows (the runner image no longer auto-provides it). Mirror the
-      # build job's OpenSSL setup so the smoke sidecar build doesn't fail with
-      # "Missing environment variable OPENSSL_DIR".
-      - name: Configure OpenSSL for SQLCipher (Windows)
-        if: runner.os == 'Windows'
-        uses: ./.workflow-tools/.github/actions/setup-windows-openssl
-
-      # Tauri externalBin requires `maekon-sandbox-worker-<triple>[.exe]` at
-      # the src-tauri/ root at build time. Build the real sidecar so release
-      # reliability smoke also catches missing/stale sandbox-worker packaging
-      # assumptions instead of relying on a synthetic touch-file.
-      - name: Build sandbox worker sidecar for Tauri externalBin
-        shell: bash
-        run: |
-          TRIPLE=$(rustc -vV | awk '/^host:/ { print $2 }')
-          ./scripts/cargo-cache.sh build --locked --release -p maekon-sandbox-worker
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            SOURCE="target/release/maekon-sandbox-worker.exe"
-            DEST="src-tauri/maekon-sandbox-worker-${TRIPLE}.exe"
-            test -f "$SOURCE"
-            cp "$SOURCE" "$DEST"
-          else
-            SOURCE="target/release/maekon-sandbox-worker"
-            DEST="src-tauri/maekon-sandbox-worker-${TRIPLE}"
-            test -x "$SOURCE"
-            cp "$SOURCE" "$DEST"
-            chmod +x "$DEST"
-          fi
-
-      - name: Run smoke script (macOS/Linux)
-        if: runner.os != 'Windows'
-        run: |
-          chmod +x ./.workflow-tools/scripts/release-reliability-smoke.sh
-          export MAEKON_SMOKE_LOG_DIR="$RUNNER_TEMP/maekon-release-smoke"
-          export MAEKON_SMOKE_REPO_ROOT="$GITHUB_WORKSPACE"
-          if [[ "${{ matrix.run_updater_tests }}" == "true" ]]; then
-            ./.workflow-tools/scripts/release-reliability-smoke.sh --assets-dir smoke-assets
-          else
-            ./.workflow-tools/scripts/release-reliability-smoke.sh --assets-dir smoke-assets --skip-updater-tests
-          fi
-
-      - name: Run smoke script (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:MAEKON_SMOKE_REPO_ROOT = $env:GITHUB_WORKSPACE
-          if ("${{ matrix.run_updater_tests }}" -eq "true") {
-            .\.workflow-tools\scripts\release-reliability-smoke.ps1 -AssetsDir smoke-assets
-          } else {
-            .\.workflow-tools\scripts\release-reliability-smoke.ps1 -AssetsDir smoke-assets -SkipUpdaterTests
-          }
-
       - name: Run macOS installer smoke script
-        if: matrix.name == 'macos'
+        id: installer_smoke
         shell: bash
         run: |
           chmod +x ./.workflow-tools/scripts/release-installer-smoke-macos.sh
           MAEKON_SMOKE_LOG_DIR="$RUNNER_TEMP/maekon-installer-smoke" \
             ./.workflow-tools/scripts/release-installer-smoke-macos.sh --assets-dir smoke-installers
 
-      - name: Sanitize macOS release smoke logs
-        if: failure() && matrix.name == 'macos'
+      - name: Sanitize macOS installer smoke logs
+        if: failure() && steps.installer_smoke.outcome == 'failure'
         shell: bash
+        env:
+          RELEASE_TAG_NAME: ${{ needs.verify-version.outputs.release_tag }}
+          DMG_SHA256: ${{ steps.final_bytes.outputs.dmg_sha256 }}
         run: |
           set -euo pipefail
-          SANITIZED_DIR="$RUNNER_TEMP/maekon-release-smoke-sanitized"
-          RELEASE_TAG="${RELEASE_TAG_NAME:-${GITHUB_REF_NAME:-v0.0.0-e19-smoke}}"
-          if [[ "$RELEASE_TAG" != v* ]]; then
-            RELEASE_TAG="v0.0.0-e19-smoke"
-          fi
-          ARTIFACT_CHECKSUM="sha256:$(printf '%s' "$GITHUB_SHA" | shasum -a 256 | awk '{print $1}')"
+          SANITIZED_DIR="$RUNNER_TEMP/maekon-installer-smoke-sanitized"
           python3 .workflow-tools/scripts/sanitize_desktop_evidence.py \
-            --input "$RUNNER_TEMP/maekon-release-smoke/gui-bootstrap-installed-binary.log" \
-            --input-id release-reliability-gui-bootstrap \
-            --input "$RUNNER_TEMP/maekon-installer-smoke/gui-bootstrap-installed-app.log" \
-            --input-id release-installer-gui-bootstrap \
+            --input "$RUNNER_TEMP/maekon-installer-smoke/gui-bootstrap-dmg.log" \
+            --input-id release-installer-gui-bootstrap-dmg \
+            --input "$RUNNER_TEMP/maekon-installer-smoke/gui-bootstrap-pkg.log" \
+            --input-id release-installer-gui-bootstrap-pkg \
             --artifact-kind log_excerpt \
             --output-dir "$SANITIZED_DIR" \
             --commit-sha "$GITHUB_SHA" \
-            --release-tag "$RELEASE_TAG" \
-            --artifact-checksum "$ARTIFACT_CHECKSUM" \
-            --runner-label release-reliability-smoke-${{ matrix.name }} \
+            --release-tag "$RELEASE_TAG_NAME" \
+            --artifact-checksum "sha256:$DMG_SHA256" \
+            --runner-label macos-installer-smoke \
             --cleanup-status pass
 
-      - name: Upload macOS release smoke sanitized bundle
-        if: failure() && matrix.name == 'macos'
+      - name: Upload macOS installer smoke sanitized bundle
+        if: failure() && steps.installer_smoke.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: release-smoke-sanitized-bundle-${{ matrix.name }}
-          path: ${{ runner.temp }}/maekon-release-smoke-sanitized
+          name: release-installer-smoke-sanitized-bundle
+          path: ${{ runner.temp }}/maekon-installer-smoke-sanitized
           if-no-files-found: ignore
           retention-days: 7
 
+  # Publishes, and holds no signing key and needs no approval. That is safe
+  # because it cannot run unless sign-notarize-macos (approved) succeeded, and
+  # it publishes only bytes that pass the final-byte gate below.
   create-release:
     name: Create GitHub Release
-    needs: [verify-version, build-release, build-macos-universal, release-reliability-smoke]
-    if: needs.build-release.result == 'success' && needs.build-macos-universal.result == 'success' && needs.release-reliability-smoke.result == 'success'
+    needs: [verify-version, build-release, build-macos-universal, release-reliability-smoke, assemble-release-payload, sign-notarize-macos, macos-installer-smoke]
+    if: needs.build-release.result == 'success' && needs.build-macos-universal.result == 'success' && needs.release-reliability-smoke.result == 'success' && needs.assemble-release-payload.result == 'success' && needs.sign-notarize-macos.result == 'success' && needs.macos-installer-smoke.result == 'success'
     runs-on: ubuntu-latest
     # 실측 n=2 p50=928s max=928s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
     timeout-minutes: 35
-    environment: release-signing
     permissions:
       actions: read
       contents: write
@@ -1704,20 +2381,30 @@ jobs:
           ref: ${{ github.sha }}
           path: .workflow-tools
 
-      - name: Download all artifacts
-        uses: ./.workflow-tools/.github/actions/download-artifact
-        with:
-          github-token: ${{ github.token }}
-          pattern: maekon-*
-          path: dist
-          merge-multiple: true
-
-      - name: Flatten nested artifacts
+      - name: Download the signed final release set
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINAL_ARTIFACT_ID: ${{ needs.sign-notarize-macos.outputs.final_artifact_id }}
+          FINAL_ARTIFACT_DIGEST: ${{ needs.sign-notarize-macos.outputs.final_artifact_digest }}
         run: |
-          # Move installer files from nested paths to dist/
-          find dist -mindepth 2 -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.deb' -o -name '*.dmg' -o -name '*.pkg' \) -exec mv {} dist/ \;
-          # Clean up empty nested directories
-          find dist -mindepth 1 -type d -empty -delete
+          set -euo pipefail
+          FINAL_ARTIFACT_DIGEST="${FINAL_ARTIFACT_DIGEST#sha256:}"
+          if [[ ! "$FINAL_ARTIFACT_ID" =~ ^[0-9]+$ || ! "$FINAL_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::sign-notarize-macos did not report an artifact id and digest for the final release set." >&2
+            exit 1
+          fi
+          FINAL_ZIP="$RUNNER_TEMP/release-final.zip"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$FINAL_ARTIFACT_ID/zip" > "$FINAL_ZIP"
+          ACTUAL_DIGEST="$(shasum -a 256 "$FINAL_ZIP" | awk '{print $1}')"
+          if [[ "$ACTUAL_DIGEST" != "$FINAL_ARTIFACT_DIGEST" ]]; then
+            echo "::error::Downloaded final release set is $ACTUAL_DIGEST, but sign-notarize-macos uploaded $FINAL_ARTIFACT_DIGEST." >&2
+            exit 1
+          fi
+          rm -rf dist
+          mkdir -p dist
+          unzip -q "$FINAL_ZIP" -d dist
+          rm -f "$FINAL_ZIP"
 
       - name: Verify installer coverage
         run: |
@@ -1731,109 +2418,40 @@ jobs:
       - name: Verify artifacts
         run: find dist -type f
 
-      - name: Include signed runtime policy bundle
-        run: |
-          if [ -f "policy/runtime-policy.json" ]; then
-            cp "policy/runtime-policy.json" "dist/runtime-policy.json"
-            echo "Included runtime policy bundle in release artifacts"
-          else
-            echo "No runtime policy bundle found; skipping"
-          fi
-
-      - name: Generate HTTP OpenAPI snapshot
-        run: ./scripts/generate-http-openapi.sh dist/maekon-web.v1.openapi.yaml
-
-      - name: Ensure checksums exist for all release files
-        run: |
-          shopt -s nullglob
-          for file in dist/*; do
-            [ -f "$file" ] || continue
-            case "$file" in
-              *.sha256|*.sig)
-                continue
-                ;;
-            esac
-            shasum -a 256 "$file" > "$file.sha256"
-          done
-
-      - name: Generate CycloneDX SBOM (F-SC-09/F-SC-13)
-        # F-SC-13: anchore/sbom-action SHA-pinned to the v0.24.0 commit.
-        # The prior pin (61119d4) became unresolvable once anchore re-pointed
-        # an older tag and GC'd the old commit — this is the first release
-        # since that pin landed, so it surfaced now. Re-resolved to the current
-        # v0.24.0 commit (which `git/ref/tags/v0.24.0` reports as type=commit;
-        # for lightweight tags object.sha IS the commit, no dereference needed).
-        # 생성된 sbom.cdx.json 은 dist/ 에 추가되어 릴리스 어셋으로 첨부된다.
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
-        with:
-          path: .
-          format: cyclonedx-json
-          output-file: dist/sbom.cdx.json
-          upload-artifact: false
-
-      - name: Checksum SBOM (F-SC-09)
-        run: shasum -a 256 dist/sbom.cdx.json > dist/sbom.cdx.json.sha256
-
-      - name: Verify release evidence bundle
+      # Publication gate. Every file must carry a checksum and a signature that
+      # verifies under a key pinned in the release tree, the manifest must name
+      # this tag and this run, and the installers must be the bytes the
+      # installer smoke just launched.
+      - name: Verify final bytes against the pinned update keys
         shell: bash
+        env:
+          RELEASE_TAG_NAME: ${{ needs.verify-version.outputs.release_tag }}
+          SMOKED_DMG_SHA256: ${{ needs.macos-installer-smoke.outputs.dmg_sha256 }}
+          SMOKED_PKG_SHA256: ${{ needs.macos-installer-smoke.outputs.pkg_sha256 }}
         run: |
           set -euo pipefail
-          test -s dist/sbom.cdx.json
-          test -s dist/sbom.cdx.json.sha256
-          shasum -a 256 -c dist/sbom.cdx.json.sha256
+          python3 .workflow-tools/scripts/verify-release-final-bytes.py \
+            --dist dist \
+            --trusted-keys src-tauri/src/updater/trusted_keys.rs \
+            --release-tag "$RELEASE_TAG_NAME" \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --expect-sha256 "maekon-macos-universal.dmg=$SMOKED_DMG_SHA256" \
+            --expect-sha256 "maekon-macos-universal.pkg=$SMOKED_PKG_SHA256"
 
-      - name: Install signing dependencies
+      - name: Install signature verification dependencies
         run: python3 -m pip install --upgrade pynacl
 
-      - name: Sign release artifacts (Ed25519)
-        env:
-          UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
-        run: |
-          python3 - <<'PY'
-          import base64
-          import os
-          from pathlib import Path
-          from nacl.signing import SigningKey
-
-          key_b64 = os.environ.get("UPDATE_SIGNING_PRIVATE_KEY_B64", "").strip()
-          if not key_b64:
-              raise SystemExit("Missing secret: UPDATE_SIGNING_PRIVATE_KEY_B64")
-
-          seed = base64.b64decode(key_b64)
-          if len(seed) != 32:
-              raise SystemExit(f"UPDATE_SIGNING_PRIVATE_KEY_B64 must decode to 32 bytes, got {len(seed)}")
-
-          signing_key = SigningKey(seed)
-          dist = Path("dist")
-          signed = 0
-          for path in dist.glob("*"):
-              if not path.is_file():
-                  continue
-              if path.suffix in {".sha256", ".sig"}:
-                  continue
-              payload = path.read_bytes()
-              signature = signing_key.sign(payload).signature
-              path.with_suffix(path.suffix + ".sig").write_text(base64.b64encode(signature).decode("ascii") + "\n", encoding="utf-8")
-              signed += 1
-
-          if signed == 0:
-              raise SystemExit("No release artifacts were signed")
-          print(f"Signed artifacts: {signed}")
-          PY
-
+      # No MAEKON_UPDATE_PUBLIC_KEY override: install.sh verifies against the key
+      # it pins, exactly as a user's install does.
       - name: Run signed release reliability smoke
         env:
           MAEKON_SMOKE_LOG_DIR: ${{ runner.temp }}/maekon-signed-release-smoke
-          # install.sh prefers $MAEKON_UPDATE_PUBLIC_KEY over its hardcoded
-          # fallback. We pass the secret-pair public key explicitly here so
-          # the signed smoke verifies against the same key that signed the
-          # artifacts (UPDATE_SIGNING_PRIVATE_KEY_B64 in the prior step).
-          MAEKON_UPDATE_PUBLIC_KEY: ${{ secrets.MAEKON_UPDATE_PUBLIC_KEY }}
         run: |
           chmod +x ./scripts/release-reliability-smoke.sh
           ./scripts/release-reliability-smoke.sh --assets-dir dist --asset-name maekon-linux-x64.tar.gz --skip-updater-tests --require-signature
 
       - name: Attest release artifacts provenance
+        if: env.RELEASE_REHEARSAL != 'true'
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
         with:
           subject-path: dist/*
@@ -1978,6 +2596,7 @@ jobs:
           esac
 
       - name: Create or update Release
+        if: env.RELEASE_REHEARSAL != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG_NAME: ${{ needs.verify-version.outputs.release_tag }}
@@ -2023,8 +2642,80 @@ jobs:
 
           gh release create "${create_args[@]}" dist/*
 
+      # The release is public from the step above. Read it back and hold it to
+      # the same gate: a release that does not match what was verified is
+      # deleted rather than left published.
+      - name: Verify published release bytes
+        if: env.RELEASE_REHEARSAL != 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG_NAME: ${{ needs.verify-version.outputs.release_tag }}
+          SMOKED_DMG_SHA256: ${{ needs.macos-installer-smoke.outputs.dmg_sha256 }}
+          SMOKED_PKG_SHA256: ${{ needs.macos-installer-smoke.outputs.pkg_sha256 }}
+        run: |
+          set -euo pipefail
+          rm -rf published-assets
+          mkdir -p published-assets
+
+          set +e
+          verify_status=0
+          gh release download "$RELEASE_TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir published-assets \
+            || verify_status=$?
+
+          if [[ "$verify_status" -eq 0 ]]; then
+            python3 .workflow-tools/scripts/verify-release-final-bytes.py \
+              --dist published-assets \
+              --trusted-keys src-tauri/src/updater/trusted_keys.rs \
+              --release-tag "$RELEASE_TAG_NAME" \
+              --source-run-id "$GITHUB_RUN_ID" \
+              --expect-sha256 "maekon-macos-universal.dmg=$SMOKED_DMG_SHA256" \
+              --expect-sha256 "maekon-macos-universal.pkg=$SMOKED_PKG_SHA256" \
+              || verify_status=$?
+          fi
+
+          if [[ "$verify_status" -eq 0 ]]; then
+            # GitHub rewrites some characters in asset names (the DEB's `~rc`
+            # is published as `.rc`), so compare content, never names.
+            (cd dist && shasum -a 256 -- * | awk '{print $1}' | LC_ALL=C sort) > "$RUNNER_TEMP/verified-digests.txt"
+            (cd published-assets && shasum -a 256 -- * | awk '{print $1}' | LC_ALL=C sort) > "$RUNNER_TEMP/published-digests.txt"
+            if [[ ! -s "$RUNNER_TEMP/verified-digests.txt" ]] ||
+              ! diff "$RUNNER_TEMP/verified-digests.txt" "$RUNNER_TEMP/published-digests.txt" >/dev/null; then
+              echo "::error::Published assets are not the verified release set."
+              verify_status=1
+            fi
+          fi
+          set -e
+
+          if [[ "$verify_status" -ne 0 ]]; then
+            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG_NAME}" --jq '.id')"
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+            echo "::error::Deleted invalid release for ${RELEASE_TAG_NAME}: final byte sidecar validation failed."
+            exit "$verify_status"
+          fi
+
+      - name: Report rehearsal result
+        if: env.RELEASE_REHEARSAL == 'true'
+        shell: bash
+        env:
+          RELEASE_TAG_NAME: ${{ needs.verify-version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo '### Release rehearsal passed'
+            echo
+            echo "Tag: \`${RELEASE_TAG_NAME}\`"
+            echo
+            echo 'Every release job ran, signing, notarization and the final-byte gate included.'
+            echo 'Nothing was attested, published or announced.'
+            echo
+            echo "Verified files: $(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Trigger maekon-landing redeploy
-        if: success()
+        if: success() && env.RELEASE_REHEARSAL != 'true'
         shell: bash
         env:
           DEPLOY_HOOK_URL: ${{ secrets.MAEKON_LANDING_DEPLOY_HOOK }}
