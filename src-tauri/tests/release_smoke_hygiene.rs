@@ -408,6 +408,19 @@ fn macos_release_verifies_final_app_bundles_and_uses_apple_build_versions() {
         release.matches("./scripts/verify-macos-app-bundle.sh").count() >= 2,
         "release packaging should verify both the signed staging app and the app copied into the DMG"
     );
+    // The release run notarizes its own installers now, so the check that
+    // used to live only in the notarization workflow has to follow the staple
+    // step here as well.
+    let staple = release
+        .find("xcrun stapler staple dist/maekon-macos-universal.dmg")
+        .expect("release workflow should staple the DMG it publishes");
+    let last_bundle_check = release
+        .rfind("./scripts/verify-macos-app-bundle.sh")
+        .expect("release workflow should verify the app bundle");
+    assert!(
+        staple < last_bundle_check,
+        "the release run should re-verify the app inside the DMG after stapling it"
+    );
     assert!(
         notarize.contains("./scripts/verify-macos-app-bundle.sh"),
         "notarization should re-verify the app inside the final stapled DMG"

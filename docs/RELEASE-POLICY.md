@@ -57,17 +57,46 @@ CHANGELOG entries use [Conventional Commits](https://www.conventionalcommits.org
 
 ## Protected environments
 
-Public release automation uses three GitHub environments with required reviewers:
+Public release automation uses three GitHub environments. `release-signing`
+and `macos-notarization` have required reviewers; `desktop-smoke` does not.
 
-- `release-signing`: release App token creation, macOS signing certificates,
-  update signing private key, release creation, final notarized asset
-  publication, and provenance publishing.
-- `macos-notarization`: Apple notarization credentials, notary logs, and
-  stapled DMG/PKG final-byte artifact creation. This environment must not hold
-  the update signing private key.
-- `desktop-smoke`: live AI smoke and GUI/desktop smoke runners. This
-  environment must not contain release signing, update signing, release App, or
-  Apple notarization secrets.
+A release run waits for a reviewer twice, both times on `release-signing`:
+
+1. `verify-version`, before anything is built: release App token creation,
+   the signed-tag and alert-state checks, and the update signing keypair
+   preflight.
+2. `sign-notarize-macos`, after every build and smoke job has passed and
+   before anything is signed: macOS signing certificates, Apple notarization
+   credentials, and the update signing private key. The job signs, notarizes
+   and staples the installers, then signs every release file.
+
+No other job in a release run reads a signing secret
+(`scripts/test_release_workflow_two_approvals.py` enforces this). The installer
+smoke launches the notarized installers under `desktop-smoke`, on a runner that
+holds no key. `create-release` publishes without an environment: it needs no
+reviewer because it cannot choose what to publish. It accepts only a file set
+whose signatures verify under an update key pinned in the release tree, whose
+manifest names this tag and this run, and whose installer digests equal the
+ones the installer smoke launched (`scripts/verify-release-final-bytes.py`).
+It then reads the published assets back and deletes the release if they differ.
+
+- `release-signing`: the two approvals above, the signing keypair rehearsal,
+  and the publishing half of the manual notarization repair workflow.
+- `macos-notarization`: the notarizing half of the manual repair workflow
+  (`notarize-macos-release-assets.yml`), dispatched by hand to notarize again
+  the installers of a release that is already published. This environment must
+  not hold the update signing private key.
+- `desktop-smoke`: live AI smoke and GUI/desktop smoke runners, including the
+  final-byte installer smoke of a release run. This environment must not
+  contain release signing, update signing, release App, or Apple notarization
+  secrets.
+
+Moving notarization into the release run put the Apple notarization credentials
+and the update signing key on the same macOS runner, where they were on two
+runners before. In exchange the update signing key no longer shares a runner
+with the SBOM action or the OpenAPI and release-note generators, each secret is
+scoped to the one step that uses it, and every network install in the signing
+job finishes before the first secret is loaded.
 
 Environment secrets are the expected control. Do not duplicate
 `UPDATE_SIGNING_PRIVATE_KEY_B64`, `MAEKON_RELEASE_APP_PRIVATE_KEY`,
@@ -82,6 +111,9 @@ follow-up rotation decision in the release notes or release-decision manifest
 before publishing assets. An emergency rerun may reuse the same protected
 environment only when the source SHA, release tag, and artifact checksums are
 unchanged; any secret exposure suspicion requires key rotation before rerun.
+Re-running a failed `sign-notarize-macos` job asks for the `release-signing`
+approval again and signs the same smoke-tested binaries: the job refuses a
+payload whose digest differs from the one the build uploaded.
 
 ## Source trust
 

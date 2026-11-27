@@ -14,7 +14,7 @@ on:
         required: true
         type: string
       shards:
-        description: Shard count (two concurrent jobs, two workers each)
+        description: Shard count (up to eight concurrent jobs, two workers each)
         required: true
         default: '8'
         type: choice
@@ -72,7 +72,10 @@ jobs:
     timeout-minutes: 360
     strategy:
       fail-fast: false
-      max-parallel: 2
+      # Each hosted job is its own VM, so concurrency does not change per-mutant
+      # timing or outcomes; it only shortens wall clock (rc.11 run 36549082033: 2-wide took 3h30m).
+      # Standard hosted runners are free on this public repository.
+      max-parallel: 8
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

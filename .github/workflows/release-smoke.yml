@@ -14,6 +14,12 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_TERM_COLOR: always
+  # Same cargo network tolerance as release.yml. The installer packaging
+  # rehearsal below installs cargo-wix and tauri-cli from crates.io, and a
+  # transient fetch error that the tag build would retry must not fail the
+  # rehearsal (#14011).
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
   changes:
@@ -115,9 +121,17 @@ jobs:
           - name: windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            # Same values as the Windows row of release.yml build-release; the
+            # installer packaging rehearsal below reads them (#14011).
+            artifact_name: maekon-windows-x64
+            asset_ext: zip
     runs-on: ${{ matrix.os }}
-    # 실측 n=37 p50=711s max=1694s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
-    timeout-minutes: 60
+    # 실측 n=13 max=1868s (windows 행) + n=5 max=1042s (release.yml 의 같은 패키징
+    # 스텝) = 2910s → 2 × 최대 (5분 올림, 하한 10 · 상한 120)
+    # #14011: the Windows row now also rehearses installer packaging. No run of
+    # the combined row exists yet, so the budget adds the two measured parts;
+    # re-measure after the first live dispatch.
+    timeout-minutes: 100
     environment: desktop-smoke
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -275,32 +289,6 @@ jobs:
           if ($sz -lt 1MB) { throw "binary too small: $sz bytes" }
           Write-Host "Binary OK: $bin ($([math]::Round($sz / 1MB, 1)) MB)"
 
-      # This lane exists to rehearse the release before the tag is cut, so it
-      # must run the gate that can strand a tag. Without it the rehearsal built
-      # the shipped binary and never inspected its import table: the v0.0.1-rc.7
-      # closure failure (`maekon.exe -> mmdevapi.dll`) was reachable here and
-      # went unseen, surfacing only in release.yml after the tag existed.
-      - name: Stage and verify signed Microsoft VC runtime (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          ./scripts/stage-windows-vc-runtime.ps1 `
-            -PayloadRoot "target/${{ matrix.target }}/release"
-
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
-          $dumpbin = Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse |
-            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
-          if (!$dumpbin) { throw "x64 dumpbin.exe was not found under $installation" }
-          node scripts/verify-windows-runtime-closure.mjs `
-            --payload-root "target/${{ matrix.target }}/release" `
-            --dependency-tool $dumpbin.FullName `
-            --binary maekon.exe
-
       - name: GUI bootstrap smoke (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -375,6 +363,195 @@ jobs:
           fi
 
           echo "GUI bootstrap smoke OK (rc=$RC)"
+
+      # ── Windows installer packaging rehearsal (#14011) ─────────────────────
+      # From here to "Record Windows Authenticode policy state" this row runs
+      # the Windows packaging sequence of release.yml's `build-release` job,
+      # step for step: same names, same bodies, same order. release.yml runs
+      # that sequence only after the tag is pushed, so a break in it strands
+      # the tag. The prebuilt closure failed on the v0.0.1-rc.7 tag (#10698,
+      # `maekon.exe -> mmdevapi.dll`) before this row inspected imports at
+      # all, and the packaged closure step failed on the v0.0.1-rc.11 tag
+      # (#12776) while this row still checked `maekon.exe` alone and packaged
+      # nothing.
+      #
+      # Do not edit one side alone. The internal SSOT guard
+      # `test_maekon_release_smoke_installer_parity.py` compares these steps
+      # with release.yml and fails when either workflow drifts. The tag-bound
+      # `Verify MSI version`, the checksums and the uploads stay in release.yml
+      # only: nothing built here is uploaded, and the rehearsal reads no secret.
+      # The Authenticode record belongs here only while the policy state is
+      # `prepared_not_active` (report mode). Once it is `active` that step
+      # demands signed artifacts, which this workflow can never have, and it
+      # must leave the rehearsal.
+      - name: Stage signed Microsoft VC runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/stage-windows-vc-runtime.ps1 `
+            -PayloadRoot "target/${{ matrix.target }}/release"
+
+      - name: Verify prebuilt Windows runtime DLL closure
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
+          $dumpbins = @(Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse)
+          $dumpbin = $dumpbins |
+            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$dumpbin) { $dumpbin = $dumpbins | Sort-Object FullName -Descending | Select-Object -First 1 }
+          if (!$dumpbin) { throw "dumpbin.exe was not found under $installation" }
+          node scripts/verify-windows-runtime-closure.mjs `
+            --payload-root "target/${{ matrix.target }}/release" `
+            --dependency-tool $dumpbin.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Prebuilt runtime closure verification failed with exit $LASTEXITCODE" }
+
+      - name: Validate WiX assets
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (!(Test-Path "src-tauri/wix/main.wxs")) {
+            Write-Error "Missing WiX manifest: src-tauri/wix/main.wxs"
+            exit 1
+          }
+          if (!(Test-Path "src-tauri/wix/license.rtf")) {
+            Write-Error "Missing WiX license file: src-tauri/wix/license.rtf"
+            exit 1
+          }
+          python scripts/verify_wix_installer_assets.py
+
+      - name: Install cargo-wix
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./scripts/cargo-cache.sh install cargo-wix --version 0.3.9 --locked --force
+
+      - name: Install Tauri CLI
+        if: runner.os == 'Windows'
+        shell: bash
+        # The version pin and --locked are explained next to the same step in
+        # release.yml.
+        run: ./scripts/cargo-cache.sh install tauri-cli --version 2.11.2 --locked --force
+
+      - name: Build MSI installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash ./scripts/build-localized-msi.sh "${{ matrix.target }}" "../target/${{ matrix.target }}/release" all
+
+      - name: Verify localized MSI wizard metadata
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msiFiles = @(Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)
+          ./scripts/verify-localized-msi-metadata.ps1 -MsiPath $msiFiles.FullName
+
+      - name: Build NSIS setup installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONFIG_PATH="${RUNNER_TEMP}/tauri-nsis-ci-config.json"
+          RUNTIME_ROOT="$(cygpath -m "$(pwd)/target/${{ matrix.target }}/release")"
+          printf '{"build":{"beforeBuildCommand":""},"bundle":{"resources":{"%s/vcruntime140.dll":"vcruntime140.dll","%s/vcruntime140_1.dll":"vcruntime140_1.dll"}}}\n' \
+            "$RUNTIME_ROOT" "$RUNTIME_ROOT" > "$CONFIG_PATH"
+          ./scripts/cargo-cache.sh tauri build \
+            --bundles nsis \
+            --target ${{ matrix.target }} \
+            --features grpc,windows-sandbox,lan-sync,stt,download \
+            --ci \
+            --config "$CONFIG_PATH"
+
+      - name: Package (Windows zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path target/${{ matrix.target }}/release/maekon.exe,target/${{ matrix.target }}/release/maekon-sandbox-worker.exe,target/${{ matrix.target }}/release/vcruntime140.dll,target/${{ matrix.target }}/release/vcruntime140_1.dll -DestinationPath dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}
+
+      - name: Verify packaged Windows runtime DLL closure
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$installation) { throw "Visual Studio C++ tools are required for PE closure verification" }
+          $dumpbins = @(Get-ChildItem -Path (Join-Path $installation "VC\Tools\MSVC") -Filter dumpbin.exe -Recurse)
+          $dumpbin = $dumpbins |
+            Where-Object { $_.FullName -match '[\\/]Hostx64[\\/]x64[\\/]dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$dumpbin) { $dumpbin = $dumpbins | Sort-Object FullName -Descending | Select-Object -First 1 }
+          if (!$dumpbin) { throw "dumpbin.exe was not found under $installation" }
+
+          $zipRoot = Join-Path $env:RUNNER_TEMP "maekon-zip-runtime-closure"
+          Remove-Item -LiteralPath $zipRoot -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath "dist/${{ matrix.artifact_name }}.${{ matrix.asset_ext }}" -DestinationPath $zipRoot
+          node scripts/verify-windows-runtime-closure.mjs --payload-root $zipRoot --dependency-tool $dumpbin.FullName
+          if ($LASTEXITCODE -ne 0) { throw "ZIP runtime closure verification failed with exit $LASTEXITCODE" }
+
+          $msiFiles = @(Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)
+          if ($msiFiles.Count -ne 2) { throw "Expected exactly two localized MSI files, found $($msiFiles.Count)" }
+          foreach ($locale in @("en-US", "ko-KR")) {
+            if (@($msiFiles | Where-Object { $_.Name -like "*-$locale-*" }).Count -ne 1) {
+              throw "Expected exactly one $locale MSI file"
+            }
+          }
+          foreach ($msi in $msiFiles) {
+            $msiRoot = Join-Path $env:RUNNER_TEMP "maekon-msi-runtime-closure-$($msi.BaseName)"
+            Remove-Item -LiteralPath $msiRoot -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $msiRoot -Force | Out-Null
+            # msiexec.exe is a GUI-subsystem program, so the call operator
+            # returns before extraction finishes and never sets $LASTEXITCODE.
+            # v0.0.1-rc.11 checked an empty directory 0.11 s later, then read
+            # that check's stale exit code as an extraction failure (#12776).
+            $extract = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$msiRoot`"") -Wait -PassThru
+            if ($extract.ExitCode -ne 0) { throw "MSI administrative extraction failed for $($msi.Name) with exit $($extract.ExitCode)" }
+            node scripts/verify-windows-runtime-closure.mjs --payload-root $msiRoot --dependency-tool $dumpbin.FullName
+            if ($LASTEXITCODE -ne 0) { throw "MSI runtime closure verification failed for $($msi.Name) with exit $LASTEXITCODE" }
+          }
+
+          $setup = Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis","src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$setup) { throw "No NSIS setup file found for runtime closure verification" }
+          $nsisRoot = Join-Path $env:RUNNER_TEMP "maekon-nsis-runtime-closure"
+          Remove-Item -LiteralPath $nsisRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $nsisRoot -Force | Out-Null
+          & 7z.exe x "-o$nsisRoot" -y $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed with exit $LASTEXITCODE" }
+          node scripts/verify-windows-runtime-closure.mjs --payload-root $nsisRoot --dependency-tool $dumpbin.FullName
+          if ($LASTEXITCODE -ne 0) { throw "NSIS runtime closure verification failed with exit $LASTEXITCODE" }
+
+      - name: Record Windows Authenticode policy state
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $policy = Get-Content -LiteralPath "supply-chain/windows-authenticode-policy.json" -Raw | ConvertFrom-Json
+          $mode = switch ($policy.enforcement_state) {
+            "prepared_not_active" { "Report" }
+            "active" { "Required" }
+            default { throw "Unknown Authenticode enforcement state: $($policy.enforcement_state)" }
+          }
+          $msiFiles = @(Get-ChildItem -Path "target/wix","src-tauri/target/wix" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue)
+          $setupFiles = @(Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis","src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue)
+          $artifacts = @(
+            "target/${{ matrix.target }}/release/maekon.exe",
+            "target/${{ matrix.target }}/release/maekon-sandbox-worker.exe"
+          ) + $msiFiles.FullName + $setupFiles.FullName
+          $verification = @{
+            Path = $artifacts
+            Mode = $mode
+            ExpectedPublisherSubject = [string] $policy.publisher_subject
+            ReceiptPath = "dist/windows-authenticode-receipt.json"
+          }
+          if ($mode -eq "Required") {
+            $verification.RequireTimestamp = $true
+            $verification.RequireSignTool = $true
+          }
+          ./scripts/verify-windows-authenticode.ps1 @verification
 
       - name: Sanitize macOS GUI smoke evidence
         if: always() && runner.os == 'macOS'
